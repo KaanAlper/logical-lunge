@@ -241,6 +241,34 @@ class Overlay : Form
 class Ring : Form
 {
     [DllImport("gdi32.dll")] static extern int CombineRgn(IntPtr dest, IntPtr a, IntPtr b, int mode);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateRectRgn(int l, int t, int r, int b);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateEllipticRgn(int l, int t, int r, int b);
+
+    static void Or(IntPtr rgn, IntPtr other) { CombineRgn(rgn, rgn, other, 2); Native.DeleteObject(other); } // RGN_OR
+
+    // Köşe yayı: dış elips - iç elips, yalnızca ilgili çeyrekte
+    static IntPtr Arc(int ex, int ey, int size, int bw, int qx, int qy, int qs)
+    {
+        IntPtr o = CreateEllipticRgn(ex, ey, ex + size + 1, ey + size + 1), i = CreateEllipticRgn(ex + bw, ey + bw, ex + size - bw + 1, ey + size - bw + 1), q = CreateRectRgn(qx, qy, qx + qs, qy + qs);
+        CombineRgn(o, o, i, 4); // RGN_DIFF
+        CombineRgn(o, o, q, 1); // RGN_AND
+        Native.DeleteObject(i); Native.DeleteObject(q);
+        return o;
+    }
+
+    IntPtr BuildRing(int w, int h)
+    {
+        int r = Math.Max(bw + 1, Math.Min(radius, Math.Min(w, h) / 2)), b = bw;
+        IntPtr rgn = CreateRectRgn(r, 0, w - r, b);
+        Or(rgn, CreateRectRgn(r, h - b, w - r, h));
+        Or(rgn, CreateRectRgn(0, r, b, h - r));
+        Or(rgn, CreateRectRgn(w - b, r, w, h - r));
+        Or(rgn, Arc(0, 0, 2 * r, b, 0, 0, r));
+        Or(rgn, Arc(w - 2 * r, 0, 2 * r, b, w - r, 0, r));
+        Or(rgn, Arc(0, h - 2 * r, 2 * r, b, 0, h - r, r));
+        Or(rgn, Arc(w - 2 * r, h - 2 * r, 2 * r, b, w - r, h - r, r));
+        return rgn;
+    }
     readonly int bw = 2, radius = 14;
     int lastW = -1, lastH = -1;
     bool shown;
@@ -292,11 +320,7 @@ class Ring : Form
         if (w <= 2 * bw || h <= 2 * bw) return;
         if (w != lastW || h != lastH)
         {
-            IntPtr outer = Native.CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * radius, 2 * radius);
-            IntPtr inner = Native.CreateRoundRectRgn(bw, bw, w - bw + 1, h - bw + 1, 2 * Math.Max(0, radius - bw), 2 * Math.Max(0, radius - bw));
-            CombineRgn(outer, outer, inner, 4); // RGN_DIFF
-            Native.DeleteObject(inner);
-            Native.SetWindowRgn(Handle, outer, false); // bölgenin sahibi artık pencere
+            Native.SetWindowRgn(Handle, BuildRing(w, h), false); // bölgenin sahibi artık pencere
             lastW = w; lastH = h;
         }
         Native.SetWindowPos(Handle, new IntPtr(-1), x, y, w, h, 0x0010 | 0x0040); // TOPMOST, NOACTIVATE | SHOWWINDOW
@@ -373,8 +397,7 @@ class Slider
         return 3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u * u * u;
     }
 
-    public class Thumb { public IntPtr Id; public Native.RECT Dest; public IntPtr Src; public int Cx, Cy; public Native.RECT Ins; public IntPtr Real; public bool Snap; public Native.RECT SnapIns; }
-    static IntPtr RealOf(Thumb t) { return t.Real != IntPtr.Zero ? t.Real : t.Src; }
+    public class Thumb { public IntPtr Id; public Native.RECT Dest; public IntPtr Src; public int Cx, Cy; public Native.RECT Ins; }
 
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
@@ -528,13 +551,6 @@ class Slider
     // alınır. Boyut değişirken Hyprland gibi ölçeklenir.
     static void PlaceVisible(Thumb t, Native.RECT dest)
     {
-        if (t.Snap)
-        {
-            // Sabit görüntü (görünen çerçeve): pencere dikdörtgeninden gölge paylarını düşerek ölçekle
-            var pr0 = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = Deflate(dest, t.SnapIns) };
-            Native.DwmUpdateThumbnailProperties(t.Id, ref pr0);
-            return;
-        }
         Native.SIZE src;
         var r = dest;
         if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) == 0 && src.cx > 0 && src.cy > 0)
@@ -546,169 +562,11 @@ class Slider
         Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
     }
 
-    // ---- Sabit görüntüler (Hyprland'in yaptığı gibi): boyutu değişecek pencerenin hareketten ÖNCEKİ görüntüsü alınır ve
-    // animasyon o resim ölçeklenerek oynar. Gerçek pencere altta yeni boyutuna geçip çizimini bitirirken önizleme
-    // sıçramaz; animasyon sonunda canlı görüntüye yumuşakça geçilir (CrossfadeLive). Resim, ekran dışında duran ve
-    // yalnızca DWM önizlemesinin kaynağı olan küçük bir pencerede tutulur (GPU ölçekler, kare başına çizim yok).
-    class SnapForm : Form
-    {
-        public Bitmap Bmp;
-        [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }
-        [StructLayout(LayoutKind.Sequential)] struct SZ { public int cx, cy; }
-        [StructLayout(LayoutKind.Sequential)] struct BLEND { public byte Op, Flags, Alpha, Format; }
-        [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr hdcDst, ref PT pptDst, ref SZ psize, IntPtr hdcSrc, ref PT pptSrc, uint crKey, ref BLEND pblend, uint flags);
-        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
-        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
-        [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
-        [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-        [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
-        [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr obj);
-        public SnapForm()
-        {
-            FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
-            Text = "ll-snap";
-        }
-        protected override bool ShowWithoutActivation { get { return true; } }
-        // Katmanlı (UpdateLayeredWindow) pencere: yüzeyin tamamı ekran dışında bile DWM'de kalır; normal pencerede yalnızca
-        // ekranda görünen kısım çizilir ve önizleme kırpılırdı.
-        protected override CreateParams CreateParams { get { var cp = base.CreateParams; cp.ExStyle |= 0x80 | 0x08000000 | 0x00080000; return cp; } } // TOOLWINDOW | NOACTIVATE | LAYERED
-        public void SetBitmap(Bitmap b)
-        {
-            if (Bmp != null) Bmp.Dispose();
-            Bmp = b;
-            var loc = Environment.GetEnvironmentVariable("LL_SNAP_ONSCREEN") == "1" ? new Point(300, 300) : new Point(-15000, 100);
-            SetBounds(loc.X, loc.Y, b.Width, b.Height);
-            if (!Visible) Show();
-            IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc), hbm = b.GetHbitmap(Color.FromArgb(0)), old = SelectObject(memDc, hbm);
-            try
-            {
-                var dst = new PT { x = loc.X, y = loc.Y }; var sz = new SZ { cx = b.Width, cy = b.Height }; var srcPt = new PT();
-                var bl = new BLEND { Op = 0, Flags = 0, Alpha = 255, Format = 0 }; // sabit alfa 255: ekran görüntüsünde alfa kanalı 0 olabilir
-                UpdateLayeredWindow(Handle, screenDc, ref dst, ref sz, memDc, ref srcPt, 0, ref bl, 2); // ULW_ALPHA
-            }
-            finally { SelectObject(memDc, old); DeleteObject(hbm); DeleteDC(memDc); ReleaseDC(IntPtr.Zero, screenDc); }
-        }
-    }
-    // sınama: --snap-demo — imlecin olduğu monitörde tüm pencereleri sabit görüntüyle dondurur, 2.5 sn tutar, bırakır
-    public static void SnapDemo()
-    {
-        var f = new Form { ShowInTaskbar = false, WindowState = FormWindowState.Minimized, FormBorderStyle = FormBorderStyle.None, Opacity = 0 };
-        f.Load += (s, e) => f.Hide();
-        var hnd = f.Handle;
-        var gl = new Glaze();
-        var sl = new Slider(gl);
-        Ui = f;
-        Frozen fr = null; List<long> hs = new List<long>();
-        var t = new System.Windows.Forms.Timer { Interval = 500 };
-        t.Tick += (s, e) =>
-        {
-            t.Stop();
-            var cur = Cursor.Position; Rectangle mr = Rectangle.Empty;
-            foreach (var m in gl.Monitors())
-            {
-                var r = new Rectangle(J.Int(m, "x"), J.Int(m, "y"), J.Int(m, "width"), J.Int(m, "height"));
-                if (r.Contains(cur)) mr = r;
-                if (r.Contains(cur))
-                    foreach (Dictionary<string, object> ws in J.Children(m))
-                    {
-                        if (!J.Bool(ws, "isDisplayed")) continue;
-                        var wl = new List<IntPtr>(); J.Windows(ws, wl);
-                        foreach (var h in wl) hs.Add(h.ToInt64());
-                    }
-            }
-            fr = sl.Freeze(mr, hs, null, 0, true);
-            Log("snap-demo: dondu, pencere=" + hs.Count + ", önizleme=" + fr.All.Count);
-            var t2 = new System.Windows.Forms.Timer { Interval = 2500 };
-            t2.Tick += (s2, e2) => { t2.Stop(); sl.Finish(fr, hs, 0, 300); Application.ExitThread(); };
-            t2.Start();
-        };
-        t.Start();
-        Application.Run(f);
-    }
-
-    readonly List<SnapForm> snapPool = new List<SnapForm>();
-    readonly List<SnapForm> snapUsed = new List<SnapForm>();
-
-    static Bitmap CaptureRect(Rectangle r)
-    {
-        try
-        {
-            var b = new Bitmap(r.Width, r.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-            using (var g = Graphics.FromImage(b)) g.CopyFromScreen(r.X, r.Y, 0, 0, r.Size, CopyPixelOperation.SourceCopy);
-            return b;
-        }
-        catch { return null; }
-    }
-
-    Thumb MakeSnapThumb(IntPtr real, Bitmap desk, Rectangle deskRect, int ox, int oy)
-    {
-        try
-        {
-            if (desk == null || !Native.IsWindow(real)) return null;
-            var wr = WinRect(real); var ins = FrameInsets(real);
-            var fr = Deflate(wr, ins);
-            var src = new Rectangle(fr.Left - deskRect.X, fr.Top - deskRect.Y, fr.Right - fr.Left, fr.Bottom - fr.Top);
-            if (src.Width <= 0 || src.Height <= 0 || src.Left < 0 || src.Top < 0 || src.Right > desk.Width || src.Bottom > desk.Height) return null;
-            var crop = desk.Clone(src, desk.PixelFormat);
-            try { if (Environment.GetEnvironmentVariable("LL_SNAP_DEBUG") == "1") { crop.Save(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-snap-" + real.ToInt64() + ".png")); Log("snap crop " + src + " ins=" + ins.Left + "," + ins.Top + "," + ins.Right + "," + ins.Bottom); } } catch { }
-            SnapForm sf;
-            if (snapPool.Count > 0) { sf = snapPool[snapPool.Count - 1]; snapPool.RemoveAt(snapPool.Count - 1); }
-            else sf = new SnapForm();
-            sf.SetBitmap(crop);
-            snapUsed.Add(sf);
-            var t = Register(sf.Handle, Shift(wr, ox, oy), null);
-            if (t == null) return null;
-            t.Real = real; t.Snap = true; t.SnapIns = ins;
-            PlaceVisible(t, t.Dest);
-            return t;
-        }
-        catch (Exception ex) { Log("snap: " + ex.Message); return null; }
-    }
-
-    void ReleaseSnaps()
-    {
-        foreach (var sf in snapUsed) { try { sf.Hide(); } catch { } snapPool.Add(sf); }
-        snapUsed.Clear();
-    }
-
-    // Animasyon sonunda sabit görüntüden canlı pencereye yumuşak geçiş: gerçek pencere yeni boyutunda çizimini bitirmiş olur;
-    // bitirmediyse bile geçiş sıçramayı gizler.
-    void CrossfadeLive(IEnumerable<Thumb> snaps, int ox, int oy, List<Thumb> keepList)
-    {
-        var lives = new List<Thumb>();
-        foreach (var t in snaps)
-        {
-            if (!t.Snap || !Native.IsWindow(t.Real)) continue;
-            int cv;
-            if (Native.DwmGetWindowAttribute(t.Real, Native.DWMWA_CLOAKED, out cv, 4) == 0 && cv != 0) continue; // artık gizli workspace'te
-            var end = VisualDest(t.Real, IntPtr.Zero, ox, oy);
-            var lt = Register(t.Real, end, null);
-            if (lt == null) continue;
-            PlaceVisible(lt, end);
-            var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_OPACITY, opacity = 0 };
-            Native.DwmUpdateThumbnailProperties(lt.Id, ref pr);
-            lives.Add(lt); keepList.Add(lt);
-        }
-        if (lives.Count == 0) return;
-        var sw = Stopwatch.StartNew();
-        while (!Interrupt)
-        {
-            double k = Math.Min(1.0, sw.ElapsedMilliseconds / 130.0);
-            foreach (var lt in lives)
-            {
-                var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_OPACITY, opacity = (byte)Math.Min(255, (int)(255 * k)) };
-                Native.DwmUpdateThumbnailProperties(lt.Id, ref pr);
-            }
-            Native.DwmFlush();
-            if (k >= 1.0) break;
-        }
-    }
-
     public class Frozen { public int Ox, Oy; public Rectangle Mon; public readonly List<Thumb> All = new List<Thumb>(); public readonly Dictionary<long, Thumb> Win = new Dictionary<long, Thumb>(); }
 
     // Dondur: katmanı aç, pencereleri şu anki görünür yerlerinde (ya da verilen eski ekran dikdörtgenlerinde)
     // canlı görüntüleriyle göster. Arkasında GlazeWM ne yaparsa yapsın kullanıcı zıplama görmez. UI thread'inde.
-    public Frozen Freeze(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden = 0, bool snap = false)
+    public Frozen Freeze(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden = 0)
     {
         Interrupt = false;
         int barH = BarPx(mon.X + mon.Width / 2, mon.Y + mon.Height / 2);
@@ -723,16 +581,10 @@ class Slider
             var wt = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mon.Width, Bottom = mon.Height - barH }, src);
             if (wt != null) f.All.Add(wt);
         }
-        Bitmap desk = snap ? CaptureRect(mon) : null;
         foreach (var h in handles)
         {
             var hw = new IntPtr(h);
             if (!Native.IsWindowVisible(hw)) continue;
-            if (snap && h != hidden && startScreen == null)
-            {
-                var st = MakeSnapThumb(hw, desk, mon, ox, oy);
-                if (st != null) { f.All.Add(st); f.Win[h] = st; continue; }
-            }
             var t = Register(hw, new Native.RECT(), null);
             if (t == null) continue;
             Native.RECT old;
@@ -746,13 +598,12 @@ class Slider
             else PlaceVisible(t, t.Dest);
             f.All.Add(t); f.Win[h] = t;
         }
-        if (desk != null) desk.Dispose();
         Animating = true;
         overlay.Show();
         RaisePinned();
         overlay.Refresh();
         Thumb focusedT; // kenarlık katmanın üstünde
-        if (f.Win.TryGetValue(FocusedTop().ToInt64(), out focusedT)) ring.Place(Deflate(Unshift(focusedT.Dest, ox, oy), FrameInsets(RealOf(focusedT))));
+        if (f.Win.TryGetValue(FocusedTop().ToInt64(), out focusedT)) ring.Place(Deflate(Unshift(focusedT.Dest, ox, oy), FrameInsets(focusedT.Src)));
         Native.DwmFlush();
         return f;
     }
@@ -794,10 +645,8 @@ class Slider
         IntPtr focusedH = FocusedTop();
         var sw = Stopwatch.StartNew();
         int frames = 0; long lastFrame = 0, maxGap = 0;
-        long tUpd = 0, tRing = 0, tFlush = 0; var prof = Stopwatch.StartNew();
         while (!Interrupt)
         {
-            prof.Restart();
             long nowMs = sw.ElapsedMilliseconds;
             if (frames > 0 && nowMs - lastFrame > maxGap) maxGap = nowMs - lastFrame;
             lastFrame = nowMs; frames++;
@@ -806,7 +655,7 @@ class Slider
             foreach (var a in anims)
             {
                 var r = Lerp(a.Value.Key, a.Value.Value, e);
-                if (RealOf(a.Key) == focusedH) { long t0 = prof.ElapsedTicks; ring.Place(Deflate(Unshift(r, f.Ox, f.Oy), FrameInsets(focusedH))); tRing += prof.ElapsedTicks - t0; }
+                if (a.Key.Src == focusedH) ring.Place(Deflate(Unshift(r, f.Ox, f.Oy), FrameInsets(focusedH)));
                 if (a.Key == pop)
                 {
                     // Hyprland windowsIn "popin 80%": ölçekli büyüyerek ve belirerek
@@ -816,23 +665,12 @@ class Slider
                 }
                 else PlaceVisible(a.Key, r);
             }
-            long tf0 = prof.ElapsedTicks;
             Native.DwmFlush();
-            tFlush += prof.ElapsedTicks - tf0;
-            tUpd += tf0;
             if (p >= 1.0) break;
         }
-        double tk = 1000.0 / Stopwatch.Frequency;
-        Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + anims.Count + " pencere | kare başına: güncelle " + (frames > 0 ? (tUpd * tk / frames).ToString("0.0") : "-") + " ms (halka " + (frames > 0 ? (tRing * tk / frames).ToString("0.0") : "-") + "), DwmFlush " + (frames > 0 ? (tFlush * tk / frames).ToString("0.0") : "-") + " ms");
-        if (!Interrupt)
-        {
-            var visibleSnaps = new List<Thumb>();
-            foreach (var kv in f.Win) if (kv.Value.Snap && keep.Contains(kv.Key)) visibleSnaps.Add(kv.Value);
-            CrossfadeLive(visibleSnaps, f.Ox, f.Oy, f.All);
-        }
+        Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + anims.Count + " pencere");
         overlay.Hide(); ring.HideRing();
         foreach (var t in f.All) Native.DwmUnregisterThumbnail(t.Id);
-        ReleaseSnaps();
         Animating = false;
     }
 
@@ -1105,7 +943,7 @@ class Slider
         if (Ui != null)
         {
             Interrupt = true;
-            try { frozen = (Frozen)Ui.Invoke((Func<Frozen>)(() => Freeze(monRect, hs, null, 0, true))); } catch (Exception ex) { Log("freeze: " + ex.Message); }
+            try { frozen = (Frozen)Ui.Invoke((Func<Frozen>)(() => Freeze(monRect, hs, null))); } catch (Exception ex) { Log("freeze: " + ex.Message); }
         }
         // GlazeWM (fork) Hyprland dwindle movewindow yapar: o yönde pencere varsa onu uzun kenarından böler; yoksa
         // bölme yönü değişir (yan yana iki pencerede Super+Shift+Yukarı -> odaktaki üstte tam genişlik).
@@ -1214,19 +1052,15 @@ class Slider
         Thumb carried = null;
         var oldWins = new List<IntPtr>();
         J.Windows(oldWs, oldWins);
-        var deskRect = new Rectangle(mx, my, mw, mh);
-        Bitmap deskSnap = moveFollow ? CaptureRect(deskRect) : null; // boyutu değişecek pencereler için sabit görüntü
         foreach (var h in oldWins)
         {
             Native.RECT r;
             if (!Native.IsWindowVisible(h) || !Native.GetWindowRect(h, out r)) continue;
-            Thumb t = moveFollow ? MakeSnapThumb(h, deskSnap, deskRect, ox, oy) : null;
-            if (t == null) t = RegisterWindow(h, ox, oy);
+            var t = RegisterWindow(h, ox, oy);
             if (t == null) continue;
             thumbs.Add(t);
             if (moveFollow && h == carriedH) carried = t; else oldThumbs.Add(t);
         }
-        if (deskSnap != null) deskSnap.Dispose();
 
         Log("snapshot " + clock.ElapsedMilliseconds + "ms old=" + oldThumbs.Count);
 
@@ -1292,7 +1126,7 @@ class Slider
             Native.RECT carriedStart = carried != null ? WinRect(carried.Src) : new Native.RECT();
             Func<bool> WindowsMoved = () =>
             {
-                if (carried != null) { var nowR = WinRect(RealOf(carried)); if (nowR.Left != carriedStart.Left || nowR.Top != carriedStart.Top || nowR.Right != carriedStart.Right || nowR.Bottom != carriedStart.Bottom) return true; }
+                if (carried != null) { var nowR = WinRect(carried.Src); if (nowR.Left != carriedStart.Left || nowR.Top != carriedStart.Top || nowR.Right != carriedStart.Right || nowR.Bottom != carriedStart.Bottom) return true; }
                 return false;
             };
             var sw0 = Stopwatch.StartNew();
@@ -1319,15 +1153,15 @@ class Slider
                 {
                     int dx = fdir * (mw + GAP) - fdir * shift;
                     if (!moveFollow) { Move(t, dx); continue; }
-                    var r = swR == null ? from[t] : Lerp(from[t], VisualDest(RealOf(t), IntPtr.Zero, ox, oy), eR);
+                    var r = swR == null ? from[t] : Lerp(from[t], VisualDest(t.Src, t.Id, ox, oy), eR);
                     r.Left += dx; r.Right += dx;
                     PlaceVisible(t, r);
                 }
                 if (moveFollow && carried != null)
                 {
-                    var rc = swR == null ? from[carried] : Lerp(from[carried], VisualDest(RealOf(carried), IntPtr.Zero, ox, oy), eR);
+                    var rc = swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR);
                     PlaceVisible(carried, rc);
-                    ring.Place(Deflate(Unshift(rc, ox, oy), FrameInsets(RealOf(carried))));
+                    ring.Place(Deflate(Unshift(rc, ox, oy), FrameInsets(carried.Src)));
                 }
                 Native.DwmFlush();
                 if (p >= 1.0 && (!moveFollow || pR >= 1.0)) break;
@@ -1344,19 +1178,13 @@ class Slider
             while (!task.IsCompleted && waitSw.ElapsedMilliseconds < 1500)
             {
                 bool done = oldThumbs.Count + newThumbs.Count > 0;
-                foreach (var t in oldThumbs) if (!cloaked(RealOf(t))) { done = false; break; }
-                if (done) foreach (var t in newThumbs) if (cloaked(RealOf(t))) { done = false; break; }
+                foreach (var t in oldThumbs) if (!cloaked(t.Src)) { done = false; break; }
+                if (done) foreach (var t in newThumbs) if (cloaked(t.Src)) { done = false; break; }
                 if (done) { viaState = true; break; }
                 Thread.Sleep(4);
             }
-            if (moveFollow && !Interrupt)
-            {
-                var snaps = new List<Thumb>(oldThumbs); if (carried != null) snaps.Add(carried);
-                CrossfadeLive(snaps, ox, oy, thumbs);
-            }
             overlay.Hide(); ring.HideRing();
             foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
-            ReleaseSnaps();
             Animating = false;
             Log("fast done " + clock.ElapsedMilliseconds + "ms (animasyon " + dur0 + "ms, bitti " + animEnd + "ms, " + (viaState ? "pencereler hazır" : "komut " + (task.IsCompleted ? "bitti" : "sürüyor")) + ")");
             return;
@@ -5071,8 +4899,6 @@ static class Program
             uo.Write(ut); uo.Flush();
             return;
         }
-        // ll-helper.exe --snap-demo: sabit görüntü katmanını sına (bkz. Slider.SnapDemo)
-        if (args.Length == 1 && args[0] == "--snap-demo") { Slider.SnapDemo(); return; }
         // ll-helper.exe --switcher-demo: Alt+Tab menüsünü 6 sn göster (sınama; kısayolsuz)
         if (args.Length == 1 && args[0] == "--switcher-demo") { Switcher.Demo(); return; }
         // ll-helper.exe --log <metin>: widget'ların hata ayıklama günlüğü (%TEMP%\ll-helper.log)
