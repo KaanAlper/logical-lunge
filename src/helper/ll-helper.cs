@@ -411,8 +411,17 @@ class Slider
     // Pencerenin ekranda görünen hali (DWM kaynağının tamamı) hangi dikdörtgene çizilmeli: kaynak boyutu
     // pencere, çerçeve ya da bölge kutusuyla eşleşir. Animasyonun başı ve sonu hep buradan hesaplanır ki
     // katman kalkınca pencere "oturmasın".
-    // Tüm animasyon dikdörtgenleri pencerenin GÖRÜNEN çerçevesidir (gölge kenarları hariç; GlazeWM de yerleşimi
-    // bununla yapar). Başlangıç ve bitiş aynı türden olunca pencereler arası boşluk animasyon boyunca sabit kalır.
+    // Animasyon dikdörtgenleri pencere dikdörtgenidir (GetWindowRect). DWM önizlemesi gerçek pencerenin ekranda
+    // gösterdiğinin aynısını (saydam gölge kenarları dahil) gösterir; başlangıç ve bitiş aynı türden olunca
+    // boşluklar sabit kalır. "Görünen çerçeve" her uygulamada güvenilir değil: WezTerm onun dışına da çiziyor.
+    public static Native.RECT WinRect(IntPtr h)
+    {
+        Native.RECT r;
+        Native.GetWindowRect(h, out r);
+        return r;
+    }
+
+    // Görünen çerçeve (tacky-borders kenarlığı buna çizilir).
     public static Native.RECT FrameRect(IntPtr h)
     {
         Native.RECT fr;
@@ -423,27 +432,35 @@ class Slider
 
     static Native.RECT VisualDest(IntPtr h, IntPtr thumb, int ox, int oy)
     {
-        return Shift(FrameRect(h), ox, oy);
+        return Shift(WinRect(h), ox, oy);
     }
 
-    // DWM kaynağının içinde görünen çerçevenin yeri. Kaynak pencereye göre değişir: pencerenin tamamı (gölge
-    // dahil), yalnızca çerçeve ya da SetWindowRgn bölgesinin kutusu (yuvarlatılmış pencereler).
-    static Native.RECT FrameInSource(IntPtr h, Native.SIZE src)
+    // DWM kaynağı pencere dikdörtgeninin neresini kaplıyor: pencerenin tamamı, yalnızca çerçeve ya da
+    // SetWindowRgn bölgesinin kutusu (yuvarlatılmış pencereler). Dönen değer pencere kenarlarından içe payladır.
+    static Native.RECT SourceInsets(IntPtr h, Native.SIZE src)
     {
         Native.RECT wr, box;
         Native.GetWindowRect(h, out wr);
+        int ww = wr.Right - wr.Left, wh = wr.Bottom - wr.Top;
+        if (src.cx == ww && src.cy == wh) return new Native.RECT();
         var fr = FrameRect(h);
-        int ww = wr.Right - wr.Left, wh = wr.Bottom - wr.Top, fw = fr.Right - fr.Left, fh = fr.Bottom - fr.Top;
-        int sx, sy;
-        if (src.cx == ww && src.cy == wh) { sx = wr.Left; sy = wr.Top; }
-        else if (src.cx == fw && src.cy == fh) { sx = fr.Left; sy = fr.Top; }
-        else if (Native.GetWindowRgnBox(h, out box) != 0 && src.cx == box.Right - box.Left && src.cy == box.Bottom - box.Top) { sx = wr.Left + box.Left; sy = wr.Top + box.Top; }
-        else return new Native.RECT { Left = 0, Top = 0, Right = src.cx, Bottom = src.cy };
-        return new Native.RECT
-        {
-            Left = Math.Max(0, fr.Left - sx), Top = Math.Max(0, fr.Top - sy),
-            Right = Math.Min(src.cx, fr.Right - sx), Bottom = Math.Min(src.cy, fr.Bottom - sy)
-        };
+        if (src.cx == fr.Right - fr.Left && src.cy == fr.Bottom - fr.Top)
+            return new Native.RECT { Left = fr.Left - wr.Left, Top = fr.Top - wr.Top, Right = wr.Right - fr.Right, Bottom = wr.Bottom - fr.Bottom };
+        if (Native.GetWindowRgnBox(h, out box) != 0 && src.cx == box.Right - box.Left && src.cy == box.Bottom - box.Top)
+            return new Native.RECT { Left = box.Left, Top = box.Top, Right = ww - box.Right, Bottom = wh - box.Bottom };
+        return new Native.RECT();
+    }
+
+    // Pencere dikdörtgeninden görünen çerçeveye içe paylar (kenarlık halkası için).
+    static Native.RECT FrameInsets(IntPtr h)
+    {
+        var wr = WinRect(h); var fr = FrameRect(h);
+        return new Native.RECT { Left = Math.Max(0, fr.Left - wr.Left), Top = Math.Max(0, fr.Top - wr.Top), Right = Math.Max(0, wr.Right - fr.Right), Bottom = Math.Max(0, wr.Bottom - fr.Bottom) };
+    }
+
+    static Native.RECT Deflate(Native.RECT r, Native.RECT d)
+    {
+        return new Native.RECT { Left = r.Left + d.Left, Top = r.Top + d.Top, Right = r.Right - d.Right, Bottom = r.Bottom - d.Bottom };
     }
 
     // GlazeWM pencereleri SetWindowPos ile (kısmen eşzamansız) taşır: dikdörtgenler iki ölçüm arka arkaya aynı
@@ -489,17 +506,14 @@ class Slider
         }
     }
 
-    // Önizlemeyi yerleştir: hedef, pencerenin görünen çerçevesi; kaynak da çerçevenin DWM kaynağındaki yeri. Boyut
-    // değişirken Hyprland gibi ölçeklenir; kenar çizgileri korunur, gölge kenarı yüzünden kayma/boşluk olmaz.
+    // Önizlemeyi yerleştir: hedef pencere dikdörtgenidir; kaynak onun bir kısmını kaplıyorsa aynı paylarla içe
+    // alınır. Boyut değişirken Hyprland gibi ölçeklenir.
     static void PlaceVisible(Thumb t, Native.RECT dest)
     {
         Native.SIZE src;
-        var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = dest };
-        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) == 0 && src.cx > 0 && src.cy > 0)
-        {
-            pr.dwFlags |= Native.DWM_TNP_RECTSOURCE;
-            pr.rcSource = FrameInSource(t.Src, src);
-        }
+        var r = dest;
+        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) == 0 && src.cx > 0 && src.cy > 0) r = Deflate(dest, SourceInsets(t.Src, src));
+        var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = r };
         Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
     }
 
@@ -543,7 +557,7 @@ class Slider
         RaisePinned();
         overlay.Refresh();
         Thumb focusedT; // kenarlık katmanın üstünde
-        if (f.Win.TryGetValue(FocusedTop().ToInt64(), out focusedT)) ring.Place(Unshift(focusedT.Dest, ox, oy));
+        if (f.Win.TryGetValue(FocusedTop().ToInt64(), out focusedT)) ring.Place(Deflate(Unshift(focusedT.Dest, ox, oy), FrameInsets(focusedT.Src)));
         Native.DwmFlush();
         return f;
     }
@@ -591,7 +605,7 @@ class Slider
             foreach (var a in anims)
             {
                 var r = Lerp(a.Value.Key, a.Value.Value, e);
-                if (a.Key.Src == focusedH) ring.Place(Unshift(r, f.Ox, f.Oy));
+                if (a.Key.Src == focusedH) ring.Place(Deflate(Unshift(r, f.Ox, f.Oy), FrameInsets(focusedH)));
                 if (a.Key == pop)
                 {
                     // Hyprland windowsIn "popin 80%": ölçekli büyüyerek ve belirerek
@@ -612,7 +626,7 @@ class Slider
     Thumb RegisterWindow(IntPtr h, int ox, int oy)
     {
         if (!Native.IsWindow(h)) return null;
-        var t = Register(h, Shift(FrameRect(h), ox, oy), null);
+        var t = Register(h, Shift(WinRect(h), ox, oy), null);
         if (t == null) return null;
         PlaceVisible(t, t.Dest);
         return t;
@@ -1079,7 +1093,7 @@ class Slider
                 {
                     var rc = swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR);
                     PlaceVisible(carried, rc);
-                    ring.Place(Unshift(rc, ox, oy));
+                    ring.Place(Deflate(Unshift(rc, ox, oy), FrameInsets(carried.Src)));
                 }
                 Native.DwmFlush();
                 if (p >= 1.0 && (!moveFollow || pR >= 1.0)) break;
@@ -1230,7 +1244,7 @@ class Dwindle
     static Dictionary<long, Native.RECT> Visual(IEnumerable<long> handles)
     {
         var v = new Dictionary<long, Native.RECT>();
-        foreach (var h in handles) { var hw = new IntPtr(h); if (Native.IsWindow(hw)) v[h] = Slider.FrameRect(hw); }
+        foreach (var h in handles) { var hw = new IntPtr(h); if (Native.IsWindow(hw)) v[h] = Slider.WinRect(hw); }
         return v;
     }
 
