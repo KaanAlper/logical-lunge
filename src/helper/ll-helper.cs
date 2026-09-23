@@ -356,7 +356,7 @@ class Slider
         return 3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u * u * u;
     }
 
-    public class Thumb { public IntPtr Id; public Native.RECT Dest; public IntPtr Src; }
+    public class Thumb { public IntPtr Id; public Native.RECT Dest; public IntPtr Src; public int Cx, Cy; public Native.RECT Ins; }
 
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
@@ -512,7 +512,11 @@ class Slider
     {
         Native.SIZE src;
         var r = dest;
-        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) == 0 && src.cx > 0 && src.cy > 0) r = Deflate(dest, SourceInsets(t.Src, src));
+        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) == 0 && src.cx > 0 && src.cy > 0)
+        {
+            if (src.cx != t.Cx || src.cy != t.Cy) { t.Ins = SourceInsets(t.Src, src); t.Cx = src.cx; t.Cy = src.cy; }
+            r = Deflate(dest, t.Ins);
+        }
         var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = r };
         Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
     }
@@ -598,8 +602,12 @@ class Slider
 
         IntPtr focusedH = FocusedTop();
         var sw = Stopwatch.StartNew();
+        int frames = 0; long lastFrame = 0, maxGap = 0;
         while (!Interrupt)
         {
+            long nowMs = sw.ElapsedMilliseconds;
+            if (frames > 0 && nowMs - lastFrame > maxGap) maxGap = nowMs - lastFrame;
+            lastFrame = nowMs; frames++;
             double p = Math.Min(1.0, sw.ElapsedMilliseconds / (double)durationMs);
             double e = Bezier(0.05, 0.7, 0.1, 1, p); // Hyprland emphasizedDecel
             foreach (var a in anims)
@@ -618,6 +626,7 @@ class Slider
             Native.DwmFlush();
             if (p >= 1.0) break;
         }
+        Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + anims.Count + " pencere");
         overlay.Hide(); ring.HideRing();
         foreach (var t in f.All) Native.DwmUnregisterThumbnail(t.Id);
         Animating = false;
@@ -1069,16 +1078,23 @@ class Slider
             if (moveFollow) { foreach (var t in newThumbs) from[t] = t.Dest; if (carried != null) from[carried] = carried.Dest; }
             Stopwatch swR = null;
             int durR = 0;
+            Native.RECT carriedStart = carried != null ? WinRect(carried.Src) : new Native.RECT();
+            Func<bool> WindowsMoved = () =>
+            {
+                if (carried != null) { var nowR = WinRect(carried.Src); if (nowR.Left != carriedStart.Left || nowR.Top != carriedStart.Top || nowR.Right != carriedStart.Right || nowR.Bottom != carriedStart.Bottom) return true; }
+                return false;
+            };
             var sw0 = Stopwatch.StartNew();
             while (!Interrupt)
             {
                 double p = Math.Min(1.0, sw0.ElapsedMilliseconds / (double)dur0);
                 double e = Bezier(0.1, 1, 0, 1, p);
                 int shift = (int)Math.Round(e * (mw + GAP));
-                if (moveFollow && swR == null && task.IsCompleted)
+                if (moveFollow && swR == null && (task.IsCompleted || WindowsMoved()))
                 {
+                    // Pencere yeni boyutuna geçti: yerleşme kayma ile BİRLİKTE, en az 300 ms'lik yumuşak bir geçişle
                     swR = Stopwatch.StartNew();
-                    durR = Math.Max(MIN_MS, (int)(dur0 - sw0.ElapsedMilliseconds));
+                    durR = Math.Max(300, (int)(dur0 - sw0.ElapsedMilliseconds));
                 }
                 double pR = swR == null ? 0 : Math.Min(1.0, swR.ElapsedMilliseconds / (double)durR);
                 double eR = Bezier(0.05, 0.7, 0.1, 1, pR);
@@ -2116,6 +2132,26 @@ class Keys2
     Native.LowLevelKeyboardProc proc;
     bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected;
     int winVk = VK_LWIN, lastWinEvent;
+    int lastKeyEvent = Environment.TickCount; // Win basılıyken görülen son tuş olayı
+    const int STALE_WIN_MS = 3000;
+
+    // Win "basılı" görünüyor ama 3 sn'dir hiçbir tuş olayı yok: bırakma olayını kaçırmışız (güvenli masaüstü /
+    // UAC, kancanın yük altında Windows tarafından sökülmesi, kilit ekranı). Tutulan tek başına Win'de otomatik
+    // tekrar zaten sürekli olay üretir, bu yüzden gerçek bir basılı tutuşu bozmaz. Yapışık bırakılırsa sonraki her
+    // tuş Win+tuş sayılırdı.
+    void ResetStuckWin(bool force)
+    {
+        if (!winDown) return;
+        if (!force && Environment.TickCount - lastKeyEvent < STALE_WIN_MS) return;
+        winDown = false; otherKeyWhileWin = false; swallowedWithWin = false; modifierWhileWin = false;
+        held.Clear();
+        if (winInjected)
+        {
+            winInjected = false;
+            Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, UIntPtr.Zero); // enjekte ettiğimiz Win basılı kalmasın
+        }
+        Slider.Log("keys: yapışık Win durumu temizlendi");
+    }
 
     public Keys2(Control ui, Slider slider) { this.ui = ui; this.slider = slider; }
 
@@ -2129,7 +2165,8 @@ class Keys2
 
     public void Reinstall()
     {
-        // Tuş basılıyken değiştirme (durum karışmasın)
+        // Tuş basılıyken değiştirme (durum karışmasın); ama Win yapışık kaldıysa önce temizle
+        ResetStuckWin(false);
         if (winDown) return;
         IntPtr fresh = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
         if (fresh == IntPtr.Zero) return;
@@ -2183,6 +2220,8 @@ class Keys2
         bool isDown = msg == Native.WM_KEYDOWN || msg == Native.WM_SYSKEYDOWN;
         bool isUp = msg == Native.WM_KEYUP || msg == Native.WM_SYSKEYUP;
         int vk = (int)k.vkCode;
+        ResetStuckWin(false);
+        lastKeyEvent = Environment.TickCount;
 
         // Gerçek Win tuşu Windows'a HİÇ iletilmez: Windows tek başına bir Win basışı görmediği için Başlat
         // menüsü (ve görev çubuğundaki logo) hiçbir tuş sırasıyla açılamaz. Bizim işlemediğimiz bir kombinasyon
