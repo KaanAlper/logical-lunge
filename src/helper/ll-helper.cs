@@ -1944,7 +1944,7 @@ static class Binds
         { "ws-6", "Super+6" }, { "ws-7", "Super+7" }, { "ws-8", "Super+8" }, { "ws-9", "Super+9" }, { "ws-10", "Super+0" },
         { "terminal", "Super+Enter" }, { "terminal-alt", "Super+T" },
         { "browser", "Super+W" }, { "files", "Super+E" }, { "code", "Super+C" }, { "editor", "Super+X" },
-        { "close", "Alt+F4" }, { "screenshot", "Print" },
+        { "close", "Alt+F4" }, { "screenshot", "Print" }, { "screenshot-screen", "Ctrl+Print" },
     };
 
     static readonly object gate = new object();
@@ -2338,6 +2338,11 @@ class Keys2
         {
             // Kanca thread'inde süreç başlatma (ShellExecute 50-200 ms): o sırada tüm klavye beklerdi
             ThreadPool.QueueUserWorkItem(_ => { try { Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--snip") { UseShellExecute = true }); } catch { } });
+            return true;
+        }
+        if (act == "screenshot-screen")
+        {
+            ThreadPool.QueueUserWorkItem(_ => { try { Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--snip-screen") { UseShellExecute = true }); } catch { } });
             return true;
         }
         if (act == "close")
@@ -3185,6 +3190,37 @@ static class SnipTool
         }
     }
 
+    // Ctrl+Print: farenin bulunduğu monitörün tamamı; hiçbir şey sormadan panoya kopyalanır ve Resimler\Screenshots'a kaydedilir.
+    public static void RunScreen()
+    {
+        var mon = Screen.FromPoint(Cursor.Position).Bounds;
+        var bmp = new Bitmap(mon.Width, mon.Height);
+        using (var g = Graphics.FromImage(bmp)) g.CopyFromScreen(mon.Left, mon.Top, 0, 0, mon.Size);
+        try { Clipboard.SetDataObject(bmp, true, 5, 100); } catch { }
+        try
+        {
+            string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Screenshots");
+            System.IO.Directory.CreateDirectory(dir);
+            bmp.Save(System.IO.Path.Combine(dir, "Screenshot_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".png"), System.Drawing.Imaging.ImageFormat.Png);
+        }
+        catch { }
+        // Deklanşör hissi: monitör bir an beyaza döner ve sönerek geri gelir
+        var flash = new Form { FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false, TopMost = true, StartPosition = FormStartPosition.Manual, Bounds = mon, BackColor = Color.White, Opacity = 0.55 };
+        flash.Shown += (o, e) =>
+        {
+            var t = new System.Windows.Forms.Timer { Interval = 15 };
+            int t0 = Environment.TickCount;
+            t.Tick += (o2, e2) =>
+            {
+                double k = Math.Min(1, (Environment.TickCount - t0) / 260.0);
+                flash.Opacity = 0.55 * (1 - k) * (1 - k);
+                if (k >= 1) { t.Stop(); flash.Close(); }
+            };
+            t.Start();
+        };
+        Application.Run(flash);
+    }
+
     public static void Run()
     {
         var vs = SystemInformation.VirtualScreen;
@@ -3895,6 +3931,13 @@ static class Program
         {
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write(Binds.ListJson()); so.Flush();
+            return;
+        }
+        // ll-helper.exe --snip-screen: farenin olduğu monitörün tamamı, sormadan panoya + dosyaya
+        if (args.Length == 1 && args[0] == "--snip-screen")
+        {
+            try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
+            SnipTool.RunScreen();
             return;
         }
         // ll-helper.exe --snip: bölge ekran alıntısı + düzenleme (Hyprland Print: grim + slurp + swappy)

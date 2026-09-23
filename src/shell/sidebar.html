@@ -222,11 +222,11 @@
         'ws-prev': 'Önceki workspace', 'ws-next': 'Sonraki workspace',
         'ws-move-prev': "Pencereyi önceki workspace'e taşı", 'ws-move-next': "Pencereyi sonraki workspace'e taşı",
         terminal: 'Terminal', 'terminal-alt': 'Terminal (ikinci kısayol)', browser: 'Tarayıcı', files: 'Dosya yöneticisi',
-        code: 'Kod editörü', editor: 'Metin editörü', close: 'Pencereyi kapat', screenshot: 'Ekran alıntısı',
+        code: 'Kod editörü', editor: 'Metin editörü', close: 'Pencereyi kapat', screenshot: 'Ekran alıntısı', 'screenshot-screen': 'Monitörün tamamı (panoya)',
       };
       const llLabel = id => LL_LABELS[id] || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
       const llGroup = id => id.startsWith('focus-') || id.startsWith('move-') || id === 'close' ? 'win'
-        : id.startsWith('ws-') ? 'ws' : id === 'screenshot' ? 'sys' : 'app';
+        : id.startsWith('ws-') ? 'ws' : id.startsWith('screenshot') ? 'sys' : 'app';
       function gwmLabel(cmds) {
         const c = cmds.join(' ; ');
         let m;

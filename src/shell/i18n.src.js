@@ -1,4 +1,4 @@
-// i18n.json üreticisi: node i18n.src.js  (Zebar paketine yalnızca üretilen i18n.json girer)
+﻿// i18n.json üreticisi: node i18n.src.js  (Zebar paketine yalnızca üretilen i18n.json girer)
 // Her satır: [Türkçe (kaynak), en, de, fr, es, it, pt, ru, uk, pl, ja, zh, ko, ar]
 // "$1" içeren satırlar desendir (değişken kısım).
 const LANGS = ['en', 'de', 'fr', 'es', 'it', 'pt', 'ru', 'uk', 'pl', 'ja', 'zh', 'ko', 'ar'];
@@ -51,6 +51,7 @@ const ROWS = [
   ['Gece Işığı', 'Night Light', 'Nachtlicht', 'Éclairage nocturne', 'Luz nocturna', 'Luce notturna', 'Luz noturna', 'Ночной свет', 'Нічне світло', 'Światło nocne', '夜間モード', '夜间模式', '야간 모드', 'الضوء الليلي'],
   ['Gece ışığı', 'Night light', 'Nachtlicht', 'Éclairage nocturne', 'Luz nocturna', 'Luce notturna', 'Luz noturna', 'Ночной свет', 'Нічне світло', 'Światło nocne', '夜間モード', '夜间模式', '야간 모드', 'الضوء الليلي'],
   ['Karanlık mod', 'Dark mode', 'Dunkelmodus', 'Mode sombre', 'Modo oscuro', 'Modalità scura', 'Modo escuro', 'Тёмная тема', 'Темна тема', 'Tryb ciemny', 'ダークモード', '深色模式', '다크 모드', 'الوضع الداكن'],
+  ['Monitörün tamamı (panoya)', 'Whole monitor (to clipboard)', 'Ganzer Monitor (in Zwischenablage)', 'Écran entier (presse-papiers)', 'Monitor completo (portapapeles)', 'Monitor intero (appunti)', 'Monitor inteiro (área de transferência)', 'Весь монитор (в буфер)', 'Весь монітор (у буфер)', 'Cały monitor (do schowka)', 'モニター全体（クリップボード）', '整个显示器（复制到剪贴板）', '모니터 전체 (클립보드)', 'الشاشة كاملة (إلى الحافظة)'],
   ['Ekran alıntısı', 'Screen snip', 'Bildschirmausschnitt', 'Capture d’écran', 'Recorte de pantalla', 'Ritaglio schermo', 'Recorte de tela', 'Фрагмент экрана', 'Фрагмент екрана', 'Wycinek ekranu', '画面領域切り取り', '屏幕截图', '화면 캡처', 'قص الشاشة'],
   ['Bildirimler', 'Notifications', 'Benachrichtigungen', 'Notifications', 'Notificaciones', 'Notifiche', 'Notificações', 'Уведомления', 'Сповіщення', 'Powiadomienia', '通知', '通知', '알림', 'الإشعارات'],
   ['Kullanılabilir ağlar', 'Available networks', 'Verfügbare Netzwerke', 'Réseaux disponibles', 'Redes disponibles', 'Reti disponibili', 'Redes disponíveis', 'Доступные сети', 'Доступні мережі', 'Dostępne sieci', '利用可能なネットワーク', '可用网络', '사용 가능한 네트워크', 'الشبكات المتاحة'],
