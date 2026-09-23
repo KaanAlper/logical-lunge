@@ -313,6 +313,21 @@ class Ring : Form
 
 class Slider
 {
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromPoint(Point pt, uint flags);
+    [DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr hmon, int type, out uint dx, out uint dy);
+    // Zebar'ın bar'ı 40 CSS px: DPI ölçeği %125/%150 olan monitörde 50/60 fiziksel piksel. Katmanlar bar'ın altından
+    // başlamalı; ölçek monitör başına değişebilir (2-3 monitörlü kurulumlar).
+    static int BarPx(int cx, int cy)
+    {
+        try
+        {
+            IntPtr m = MonitorFromPoint(new Point(cx, cy), 2); // MONITOR_DEFAULTTONEAREST
+            uint dx, dy;
+            if (GetDpiForMonitor(m, 0, out dx, out dy) == 0 && dx > 0) return (int)Math.Round(BAR_H * dx / 96.0);
+        }
+        catch { }
+        return BAR_H;
+    }
     const int BAR_H = 40;             // ii baseBarHeight — bar sabit kalır, altı kayar
     const int DURATION_MS = 520;       // Hyprland workspaces speed 7 (~700ms), menu_decel kuyruğu kısaltıldı
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
@@ -530,15 +545,16 @@ class Slider
     public Frozen Freeze(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden = 0)
     {
         Interrupt = false;
-        int ox = mon.X, oy = mon.Y + BAR_H;
+        int barH = BarPx(mon.X + mon.Width / 2, mon.Y + mon.Height / 2);
+        int ox = mon.X, oy = mon.Y + barH;
         var f = new Frozen { Ox = ox, Oy = oy, Mon = mon };
-        overlay.Bounds = new Rectangle(mon.X, oy, mon.Width, mon.Height - BAR_H);
+        overlay.Bounds = new Rectangle(mon.X, oy, mon.Width, mon.Height - barH);
         Native.RECT wsrc;
         IntPtr wall = WallpaperSource(out wsrc);
         if (wall != IntPtr.Zero)
         {
-            var src = new Native.RECT { Left = mon.X - wsrc.Left, Top = oy - wsrc.Top, Right = mon.X - wsrc.Left + mon.Width, Bottom = oy - wsrc.Top + mon.Height - BAR_H };
-            var wt = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mon.Width, Bottom = mon.Height - BAR_H }, src);
+            var src = new Native.RECT { Left = mon.X - wsrc.Left, Top = oy - wsrc.Top, Right = mon.X - wsrc.Left + mon.Width, Bottom = oy - wsrc.Top + mon.Height - barH };
+            var wt = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mon.Width, Bottom = mon.Height - barH }, src);
             if (wt != null) f.All.Add(wt);
         }
         foreach (var h in handles)
@@ -697,8 +713,9 @@ class Slider
         Log("anim: " + from.Count + "->" + to.Count + " pencere" + (popin != 0 ? " +popin" : ""));
 
         Interrupt = false;
-        int ox = mon.X, oy = mon.Y + BAR_H;
-        overlay.Bounds = new Rectangle(mon.X, oy, mon.Width, mon.Height - BAR_H);
+        int barH = BarPx(mon.X + mon.Width / 2, mon.Y + mon.Height / 2);
+        int ox = mon.X, oy = mon.Y + barH;
+        overlay.Bounds = new Rectangle(mon.X, oy, mon.Width, mon.Height - barH);
         var all = new List<Thumb>();
         var anims = new List<KeyValuePair<Thumb, KeyValuePair<Native.RECT, Native.RECT>>>();
 
@@ -706,8 +723,8 @@ class Slider
         IntPtr wall = WallpaperSource(out wsrc);
         if (wall != IntPtr.Zero)
         {
-            var src = new Native.RECT { Left = mon.X - wsrc.Left, Top = oy - wsrc.Top, Right = mon.X - wsrc.Left + mon.Width, Bottom = oy - wsrc.Top + mon.Height - BAR_H };
-            var t = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mon.Width, Bottom = mon.Height - BAR_H }, src);
+            var src = new Native.RECT { Left = mon.X - wsrc.Left, Top = oy - wsrc.Top, Right = mon.X - wsrc.Left + mon.Width, Bottom = oy - wsrc.Top + mon.Height - barH };
+            var t = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mon.Width, Bottom = mon.Height - barH }, src);
             if (t != null) all.Add(t);
         }
 
@@ -979,8 +996,9 @@ class Slider
                         }
 
         int mx = J.Int(mon, "x"), my = J.Int(mon, "y"), mw = J.Int(mon, "width"), mh = J.Int(mon, "height");
-        overlay.Bounds = new Rectangle(mx, my + BAR_H, mw, mh - BAR_H);
-        int ox = mx, oy = my + BAR_H;
+        int barH = BarPx(mx + mw / 2, my + mh / 2);
+        overlay.Bounds = new Rectangle(mx, my + barH, mw, mh - barH);
+        int ox = mx, oy = my + barH;
 
         var thumbs = new List<Thumb>();
         var oldThumbs = new List<Thumb>();
@@ -991,8 +1009,8 @@ class Slider
         IntPtr wall = WallpaperSource(out wsrc);
         if (wall != IntPtr.Zero)
         {
-            var src = new Native.RECT { Left = mx - wsrc.Left, Top = oy - wsrc.Top, Right = mx - wsrc.Left + mw, Bottom = oy - wsrc.Top + mh - BAR_H };
-            var t = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mw, Bottom = mh - BAR_H }, src);
+            var src = new Native.RECT { Left = mx - wsrc.Left, Top = oy - wsrc.Top, Right = mx - wsrc.Left + mw, Bottom = oy - wsrc.Top + mh - barH };
+            var t = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mw, Bottom = mh - barH }, src);
             if (t != null) thumbs.Add(t);
         }
 
@@ -1080,6 +1098,7 @@ class Slider
             if (moveFollow) { foreach (var t in newThumbs) from[t] = t.Dest; if (carried != null) from[carried] = carried.Dest; }
             Stopwatch swR = null;
             int durR = 0;
+            int mfFrames = 0; long mfLast = 0, mfMax = 0, cmdDoneAt = -1, movedAt = -1;
             Native.RECT carriedStart = carried != null ? WinRect(carried.Src) : new Native.RECT();
             Func<bool> WindowsMoved = () =>
             {
@@ -1089,6 +1108,11 @@ class Slider
             var sw0 = Stopwatch.StartNew();
             while (!Interrupt)
             {
+                long nowMs0 = sw0.ElapsedMilliseconds;
+                if (mfFrames > 0 && nowMs0 - mfLast > mfMax) mfMax = nowMs0 - mfLast;
+                mfLast = nowMs0; mfFrames++;
+                if (cmdDoneAt < 0 && task.IsCompleted) cmdDoneAt = nowMs0;
+                if (movedAt < 0 && moveFollow && WindowsMoved()) movedAt = nowMs0;
                 double p = Math.Min(1.0, sw0.ElapsedMilliseconds / (double)dur0);
                 double e = Bezier(0.1, 1, 0, 1, p);
                 int shift = (int)Math.Round(e * (mw + GAP));
@@ -1120,6 +1144,7 @@ class Slider
                 if (p >= 1.0 && swR == null && sw0.ElapsedMilliseconds > dur0 + 1500) break; // komut takıldı
             }
             long animEnd = clock.ElapsedMilliseconds;
+            Log("slide" + (moveFollow ? "+taşı" : "") + ": " + mfFrames + " kare, en uzun kare " + mfMax + " ms, komut bitti " + cmdDoneAt + " ms, pencere yer değiştirdi " + movedAt + " ms");
             // Katmanı GlazeWM'in yanıtını değil GERÇEK durumu bekleyerek kaldır: eski workspace'in pencereleri gizlenip
             // (cloak) yenininkiler göründüğü an. GlazeWM bazen pencereleri gösterdikten ~250 ms sonra yanıt veriyordu
             // ve hızlı basışta her geçiş bunu bekliyordu. Yanıt arkada gelmeye devam eder.
