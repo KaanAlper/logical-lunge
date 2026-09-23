@@ -1,0 +1,5 @@
+/dist/
+/build/
+src/shell/i18n.json
+*.part
+__pycache__/

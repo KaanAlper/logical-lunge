@@ -1,0 +1,6 @@
+# helpers packaged with PyInstaller (build machine only)
+shazamio
+pyaudiowpatch
+materialyoucolor==2.0.10
+pillow
+pyinstaller

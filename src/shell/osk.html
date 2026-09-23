@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+(function () {
+  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
+// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
+// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      apply();
+      return next;
+    }
+  };
+})();
+    </script>
+    <!-- ii modules/ii/onScreenKeyboard: alttan kayarak gelen klavye. OskKey: 45x45, rounding.small,
+         colLayer1; panel colLayer0, windowRounding (18), aralık 5. Tuşlar ll-helper --osk ile
+         odaktaki pencereye gönderilir; pencere odak almaz (helper WS_EX_NOACTIVATE verir). -->
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block');
+      :root {
+        --m3primary: #d0bcff; --m3onPrimary: #381e72;
+        --colLayer0: #141218; --colLayer0Border: #2c2a31; --colLayer1: #1d1b20; --colLayer1Hover: #2b2930;
+        --colOnLayer1: #e6e0e9; --m3outlineVariant: #49454f;
+        --emphDecel: cubic-bezier(0.05, 0.7, 0.1, 1); --emphAccel: cubic-bezier(0.3, 0, 0.8, 0.15);
+        --bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
+      }
+      :root[data-theme="light"] {
+        --m3primary: #6750a4; --m3onPrimary: #ffffff;
+        --colLayer0: #fef7ff; --colLayer0Border: #e6e0e9; --colLayer1: #f3edf7; --colLayer1Hover: #e6e0e9;
+        --colOnLayer1: #1d1b20; --m3outlineVariant: #cac4d0;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+      body { font-family: 'Google Sans Flex', 'Rubik', 'Segoe UI Variable Text', sans-serif; color: var(--colOnLayer1); }
+      .icon { font-family: 'Material Symbols Rounded'; line-height: 1; font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+      .osk {
+        position: absolute; left: 50%; bottom: 10px;
+        display: flex; gap: 5px; padding: 10px;
+        background: var(--colLayer0); border: 1px solid var(--colLayer0Border);
+        border-radius: 18px; box-shadow: 0 4px 18px rgba(0 0 0 / 45%);
+        transform: translate(-50%, 0); opacity: 1;
+        transition: transform 320ms var(--emphDecel), opacity 200ms;
+      }
+      .osk.hidden { transform: translate(-50%, calc(100% + 20px)); opacity: 0; transition: transform 240ms var(--emphAccel), opacity 240ms; }
+      .side { display: flex; flex-direction: column; gap: 5px; justify-content: flex-start; }
+      .side button {
+        width: 40px; height: 40px; border-radius: 17px; background: var(--colLayer1); color: inherit; border: 0;
+        display: flex; align-items: center; justify-content: center; cursor: pointer;
+        transition: height 220ms var(--bounce), background 150ms;
+      }
+      .side button:active { height: 50px; }
+      .side button.on { background: var(--m3primary); color: var(--m3onPrimary); }
+      .side .icon { font-size: 19px; }
+      .divider { width: 1px; margin: 20px 0; background: var(--m3outlineVariant); }
+      .rows { display: flex; flex-direction: column; gap: 5px; }
+      .row { display: flex; gap: 5px; }
+      .key {
+        height: 45px; min-width: 45px; border: 0; border-radius: 12px;
+        background: var(--colLayer1); color: var(--colOnLayer1);
+        font: inherit; font-size: 17px; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        transition: transform 200ms var(--bounce), background 120ms, border-radius 200ms;
+      }
+      .key:hover { background: var(--colLayer1Hover); }
+      .key:active { transform: scaleY(1.12); border-radius: 17px; }
+      .key.fn { height: 30px; font-size: 13px; }
+      .key.on { background: var(--m3primary); color: var(--m3onPrimary); }
+      .key .icon { font-size: 22px; }
+    </style>
+  </head>
+  <body>
+    <div id="osk" class="osk hidden">
+      <div class="side">
+        <button id="pin" title="Sabitle"><span class="icon">keep</span></button>
+        <button id="close" title="Kapat"><span class="icon">keyboard_hide</span></button>
+      </div>
+      <div class="divider"></div>
+      <div class="rows" id="rows"></div>
+    </div>
+    <script type="module">
+      import * as zebar from 'https://esm.sh/zebar@3';
+      import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+
+      const win = zebar.currentWidget().tauriWindow;
+      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
+      const osk = document.getElementById('osk');
+      const rowsEl = document.getElementById('rows');
+      let open = false, pinned = false, shift = false, caps = false;
+      const mods = { ctrl: false, alt: false, win: false, altgr: false };
+
+      // Türkçe Q düzeni. w: genişlik çarpanı. vk: sanal tuş kodu; t: normal / s: Shift karakteri
+      const L = (t, s, vk) => ({ t, s, vk });
+      const K = (label, vk, w = 1, extra = {}) => ({ label, vk, w, ...extra });
+      const LAYOUT = [
+        [K('Esc', 27, 1, { fn: 1 }), ...Array.from({ length: 12 }, (_, i) => K(`F${i + 1}`, 112 + i, 1, { fn: 1 })), K('Del', 46, 1, { fn: 1 })],
+        [L('"', 'é', 192), L('1', '!', 49), L('2', "'", 50), L('3', '^', 51), L('4', '+', 52), L('5', '%', 53), L('6', '&', 54),
+         L('7', '/', 55), L('8', '(', 56), L('9', ')', 57), L('0', '=', 48), L('*', '?', 223), L('-', '_', 189), K('backspace', 8, 2, { icon: 1 })],
+        [K('Tab', 9, 1.5), L('q', 'Q', 81), L('w', 'W', 87), L('e', 'E', 69), L('r', 'R', 82), L('t', 'T', 84), L('y', 'Y', 89),
+         L('u', 'U', 85), L('ı', 'I', 73), L('o', 'O', 79), L('p', 'P', 80), L('ğ', 'Ğ', 219), L('ü', 'Ü', 221), L(',', ';', 188)],
+        [K('Caps', 20, 1.8, { toggle: 'caps' }), L('a', 'A', 65), L('s', 'S', 83), L('d', 'D', 68), L('f', 'F', 70), L('g', 'G', 71),
+         L('h', 'H', 72), L('j', 'J', 74), L('k', 'K', 75), L('l', 'L', 76), L('ş', 'Ş', 186), L('i', 'İ', 222), K('keyboard_return', 13, 1.8, { icon: 1 })],
+        [K('Shift', 16, 1.3, { toggle: 'shift' }), L('<', '>', 226), L('z', 'Z', 90), L('x', 'X', 88), L('c', 'C', 67), L('v', 'V', 86),
+         L('b', 'B', 66), L('n', 'N', 78), L('m', 'M', 77), L('ö', 'Ö', 191), L('ç', 'Ç', 220), L('.', ':', 190), K('Shift', 16, 2.2, { toggle: 'shift' })],
+        [K('Ctrl', 17, 1.3, { toggle: 'ctrl' }), K('Win', 91, 1.3, { toggle: 'win' }), K('Alt', 18, 1.3, { toggle: 'alt' }),
+         K(' ', 32, 6.4, { space: 1 }), K('AltGr', 165, 1.3, { toggle: 'altgr' }),
+         K('arrow_back', 37, 1, { icon: 1 }), K('arrow_upward', 38, 1, { icon: 1 }), K('arrow_downward', 40, 1, { icon: 1 }), K('arrow_forward', 39, 1, { icon: 1 })],
+      ];
+
+      // ---- helper'a tuş gönderme (tek uzun süreç, satır satır) ----
+      let proc = null;
+      async function ensureProc() {
+        if (proc) return proc;
+        try {
+          proc = await zebar.shellSpawn(HELPER, ['--osk']);
+          proc.onExit(() => { proc = null; });
+        } catch (e) { console.error('osk', e); proc = null; }
+        return proc;
+      }
+      async function send(line) { const p = await ensureProc(); p?.write(line + '\n'); }
+
+      const MODVK = { ctrl: 17, alt: 18, win: 91, altgr: 165 };
+      async function press(k) {
+        if (k.toggle) {
+          if (k.toggle === 'shift') shift = !shift;
+          else if (k.toggle === 'caps') caps = !caps;
+          else mods[k.toggle] = !mods[k.toggle];
+          render();
+          return;
+        }
+        const anyMod = mods.ctrl || mods.alt || mods.win || mods.altgr;
+        const isChar = k.t !== undefined;
+        if (isChar && !anyMod) {
+          const upper = shift !== caps;
+          const letter = /\p{L}/u.test(k.t);
+          await send('text ' + (shift ? k.s : letter && upper ? k.s : k.t));
+        } else {
+          // Kısayol ya da özel tuş: sanal tuş kodu + basılı değiştiriciler (Ctrl+C gibi)
+          const held = Object.keys(MODVK).filter(m => mods[m]);
+          if (shift) held.push('shift');
+          for (const m of held) await send('down ' + (m === 'shift' ? 16 : MODVK[m]));
+          await send('tap ' + k.vk);
+          for (const m of held.reverse()) await send('up ' + (m === 'shift' ? 16 : MODVK[m]));
+          Object.keys(mods).forEach(m => (mods[m] = false));
+        }
+        if (shift) shift = false; // tek seferlik Shift (ii'deki gibi)
+        render();
+      }
+
+      function render() {
+        rowsEl.innerHTML = '';
+        for (const row of LAYOUT) {
+          const r = document.createElement('div');
+          r.className = 'row';
+          for (const k of row) {
+            const b = document.createElement('button');
+            const on = (k.toggle === 'shift' && shift) || (k.toggle === 'caps' && caps) || (k.toggle && mods[k.toggle]);
+            b.className = 'key' + (k.fn ? ' fn' : '') + (on ? ' on' : '');
+            b.style.width = `${45 * (k.w || 1) + 5 * ((k.w || 1) - 1)}px`;
+            if (k.icon) b.innerHTML = `<span class="icon">${k.label}</span>`;
+            else if (k.t !== undefined) {
+              const letter = /\p{L}/u.test(k.t);
+              b.textContent = shift ? k.s : letter && (shift !== caps) ? k.s : k.t;
+            } else b.textContent = k.label;
+            // mousedown: tıklama odak değiştirmesin
+            b.addEventListener('mousedown', e => e.preventDefault());
+            b.addEventListener('click', () => press(k));
+            r.appendChild(b);
+          }
+          rowsEl.appendChild(r);
+        }
+      }
+      render();
+
+      async function setOpen(v) {
+        open = v;
+        osk.classList.toggle('hidden', !v);
+        // Kapalıyken pencere tıklamaları tamamen geçirir (görünmez)
+        try { await win.setIgnoreCursorEvents(!v); } catch {}
+        if (v) {
+          ensureProc();
+          // en üste al ama odak verme (tuşlar yazılan uygulamaya gitsin)
+          zebar.shellExec(HELPER, ['--top', 'Zebar - logical-lunge / osk']).catch(() => {});
+        }
+      }
+      setOpen(false);
+
+      document.getElementById('pin').addEventListener('click', e => { pinned = !pinned; e.currentTarget.classList.toggle('on', pinned); });
+      document.getElementById('close').addEventListener('click', () => setOpen(false));
+      listen('ll:osk-toggle', () => setOpen(!open));
+    </script>
+  </body>
+</html>

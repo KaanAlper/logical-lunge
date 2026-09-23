@@ -1,0 +1,72 @@
+# Hyprland (illogical-impulse) benzeri kenarlıklar — Windows 10'da GlazeWM yerine bu çiziyor.
+# Odaklı pencere: göze batmayan mor, diğerleri: neredeyse görünmez.
+watch_config_changes: True
+enable_logging: True
+enable_ipc_server: True
+rendering_backend: V2
+
+global:
+  border_width: 2
+  border_offset: 0
+  # Hyprland'daki rounding = 18. Win10 pencere köşelerini kendisi yuvarlatamaz,
+  # o yüzden çok büyük radius köşelerde pencere taşması gösterir; 12 dengeli.
+  border_radius: 14
+  border_z_order: AboveWindow
+  follow_native_border: True
+  # Windows pencere animasyonları kapatıldı -> gecikmeye gerek yok (kenarlık hemen gelsin)
+  initialize_delay: 0
+  unminimize_delay: 0
+
+  active_color: "#b69df8cc"
+  # Hyprland custom/general.lua: inactive_border = rgba(1b1b1b33) -> hafif görünür, köşeler tüm pencerelerde yuvarlak
+  inactive_color: "#3a3a4099"
+
+  komorebi_colors:
+    stack_color: "#e762b7"
+    monocle_color: "#62e793"
+    floating_color: "#f5f5a5"
+    enabled: False
+
+  animations:
+    active:
+      - type: Fade
+        duration: 180
+        easing: EaseInOutQuad
+    inactive:
+      - type: Fade
+        duration: 180
+        easing: EaseInOutQuad
+    fps: 60
+    enabled: True
+
+  effects:
+    active:
+      - type: Glow
+        blur: 6.0
+        spread: 0.0
+        opacity: 0.35
+    inactive: []
+    enabled: True
+
+window_rules:
+  - match: Class
+    name: "Windows.UI.Core.CoreWindow"
+    enabled: False
+  - match: Class
+    name: "XamlExplorerHostIslandWindow"
+    enabled: False
+  - match: Process
+    name: "tacky-borders"
+    enabled: False
+  - match: Process
+    name: "ll-helper"
+    enabled: False
+  - match: Process
+    name: "zebar"
+    enabled: False
+  - match: Title
+    name: "Picture-in-Picture"
+    enabled: False
+  - match: Class
+    name: "Shell_TrayWnd"
+    enabled: False

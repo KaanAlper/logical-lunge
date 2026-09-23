@@ -1,0 +1,959 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+(function () {
+  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
+// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
+// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      apply();
+      return next;
+    }
+  };
+})();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="./styles.css" />
+    <script
+      src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"
+      integrity="sha256-aS0B0wnsaDByLfE16h4MDCP1fQFccysd1YWOcV+gbBo="
+      crossorigin="anonymous"
+    ></script>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+      import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'https://esm.sh/react@18';
+      import { createRoot } from 'https://esm.sh/react-dom@18/client';
+      import * as zebar from 'https://esm.sh/zebar@3';
+      import { emit, listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+      // Her monitörde ayrı bir bar penceresi var; OSD'yi tek monitörde göstermek için kimlik
+      const BAR_ID = Math.random().toString(36).slice(2);
+      import { LogicalSize } from 'https://esm.sh/@tauri-apps/api@2/dpi';
+
+      // ---- ii ölçüleri (Appearance.qml) ----
+      const SHOWN = 10;              // bar.workspaces.shown
+      const WS = 26, MARGIN = 2;     // workspaceButtonWidth, activeWorkspaceMargin
+      const BAR_H = 40;              // sizes.baseBarHeight
+      const SIDE_W = [360, 280, 190];                 // barCenterSideModuleWidth / Shortened / HellaShortened
+      // ii eşikleri 1200/1000; Windows'ta tray + başlık daha geniş, 1280'lik ekran için biraz yukarı çekildi
+      const shortenLevel = w => (w <= 1100 ? 2 : w <= 1440 ? 1 : 0);
+
+      const providers = zebar.createProviderGroup({
+        glazewm: { type: 'glazewm' },
+        cpu: { type: 'cpu', refreshInterval: 3000 },
+        memory: { type: 'memory', refreshInterval: 3000 },
+        battery: { type: 'battery' },
+        network: { type: 'network' },
+        audio: { type: 'audio' },
+        media: { type: 'media' },
+        systray: { type: 'systray' },
+        time: { type: 'date', formatting: 'HH:mm' },
+        day: { type: 'date', formatting: 'EEEE, dd/MM', locale: (window.LL_LOCALE || 'en').slice(0, 2) },
+      });
+
+      const Icon = ({ name, fill, className = '', style }) => (
+        <span className={`icon ${fill ? 'fill' : ''} ${className}`} style={style}>{name}</span>
+      );
+
+      // ---- Bar penceresi yüksekliği: tray paneli / OSD aynı anda isteyebilir ----
+      const heightRequests = {};
+      let lastHeight = BAR_H;
+      function requestHeight(key, h) {
+        heightRequests[key] = h;
+        const target = Math.max(BAR_H, ...Object.values(heightRequests));
+        if (target === lastHeight) return;
+        lastHeight = target;
+        const win = zebar.currentWidget().tauriWindow;
+        win.setSize(new LogicalSize(window.innerWidth, target)).catch(err => console.error('resize', err));
+        // Bar uzadığında (OSD / tray paneli) uygulamaların üstünde kalsın, sonra normale dönsün
+        win.setAlwaysOnTop(target > BAR_H).catch(err => console.error('ontop', err));
+      }
+
+      const shell = (prog, args) => zebar.shellSpawn(prog, args).catch(err => console.error(prog, err));
+
+      // Workspace geçişi ll-helper üzerinden: Hyprland'deki slide animasyonuyla.
+      // Helper yoksa / hata verirse doğrudan GlazeWM komutu.
+      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
+      const ART = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\media-art.exe';
+      const TEMPS = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\tools\\lhm\\ll-temps.exe';
+      function slide(target, run) {
+        zebar.shellSpawn(HELPER, ['--slide', target]).catch(() => {
+          run(target === 'next' ? 'focus --next-workspace' : target === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${target}`);
+        });
+      }
+      // PowerShell her zaman ll-helper üzerinden: hiç konsol penceresi açılmaz
+      const psFile = (file, args = []) => zebar.shellExec(HELPER, ['--ps', `${LL}\\${file}`, ...args]);
+      const LL = `${'{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts'}`;
+
+      // ---- Parlaklık (WMI → dahili ekran; olmazsa DDC/CI) ----
+      // Bar hangi monitördeyse onun parlaklığı (GlazeWM currentMonitor.deviceName)
+      let MONITOR = 'Primary';
+      let brightnessCache = null;
+      async function readBrightness() {
+        try {
+          const out = await psFile('brightness.ps1', ['get', MONITOR]);
+          const v = parseInt(out.stdout.trim(), 10);
+          if (!isNaN(v)) brightnessCache = v;
+        } catch {}
+        return brightnessCache;
+      }
+      // Gama (parlaklık 0'ın altı): helper ekran başına saklar, yeniden başlatınca da uygular
+      let gammaCache = 100, gammaTimer = null;
+      const gammaDev = () => MONITOR.split('\\Monitor')[0];
+      function readGamma() {
+        return zebar.shellExec(HELPER, ['--gamma', gammaDev()]).then(r => { try { gammaCache = JSON.parse(r.stdout).gamma; } catch {} }).catch(() => {});
+      }
+      function setGamma(v) {
+        gammaCache = v;
+        clearTimeout(gammaTimer);
+        gammaTimer = setTimeout(() => zebar.shellExec(HELPER, ['--gamma', gammaDev(), String(v)]).catch(() => {}), 40);
+      }
+      let brightnessTimer = null;
+      let lastBrightnessSet = 0;
+      function setBrightness(v) {
+        brightnessCache = v;
+        lastBrightnessSet = Date.now();
+        clearTimeout(brightnessTimer);
+        brightnessTimer = setTimeout(() => psFile('brightness.ps1', ['set', String(v), MONITOR]).catch(() => {}), 120);
+      }
+
+      createRoot(document.getElementById('root')).render(<App />);
+
+      function App() {
+        const [o, setO] = useState(providers.outputMap);
+        const [vw, setVw] = useState(window.innerWidth);
+        const [osd, setOsd] = useState(null); // { kind, value }
+        const osdTimer = useRef(null);
+
+        // ---- Üzerine gelince açılan kutular (ii StyledPopup: ResourcesPopup, medya kutusu) ----
+        const [pop, setPop] = useState(null); // { kind, left, width }
+        const popTimer = useRef(null);
+        // Kapanırken de yukarı kayarak gitsin: önce 'closing' (çıkış animasyonu), sonra kaldır
+        const closePop = () => {
+          popTimer.current = setTimeout(() => {
+            setPop(p => (p ? { ...p, closing: true } : p));
+            popTimer.current = setTimeout(() => setPop(null), 170);
+          }, 200);
+        };
+        const popup = kind => ({
+          onMouseEnter: e => {
+            clearTimeout(popTimer.current);
+            const r = e.currentTarget.getBoundingClientRect();
+            setPop(p => (p && p.kind === kind && !p.closing ? p : { kind, left: r.left, width: r.width }));
+          },
+          onMouseLeave: closePop,
+        });
+        const keepPop = {
+          onMouseEnter: () => { clearTimeout(popTimer.current); setPop(p => (p && p.closing ? { ...p, closing: false } : p)); },
+          onMouseLeave: closePop,
+        };
+        useEffect(() => { requestHeight('popup', pop ? BAR_H + (pop.kind === 'media' ? 150 : 130) : BAR_H); }, [pop?.kind]);
+
+        // ---- Uygulama ikonları (overview'ün listesi): workspace noktalarında gösterilir ----
+        const [apps, setApps] = useState([]);
+        useEffect(() => { fetch(`./apps.json?t=${Date.now()}`).then(r => r.json()).then(setApps).catch(() => {}); }, []);
+        const iconFor = useCallback(proc => {
+          const p = (proc || '').toLowerCase();
+          if (!p) return null;
+          const flat = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          const a = apps.find(x => x.icon && x.exe === p)
+            || apps.find(x => x.icon && flat(x.name) === flat(p))
+            || apps.find(x => x.icon && (flat(x.name).includes(flat(p)) || flat(p).includes(flat(x.name))));
+          return a?.icon ?? null;
+        }, [apps]);
+
+        useEffect(() => { providers.onOutput(() => setO({ ...providers.outputMap })); }, []);
+        const devName = o.glazewm?.currentMonitor?.deviceName;
+        useEffect(() => {
+          if (!devName) return;
+          MONITOR = `${devName}\\Monitor0`;
+          brightnessCache = null;
+          readGamma();
+          // Parlaklık DDC/CI'dan okunması ~0.5 sn sürüyor: ilk tekerlekte beklememek için önceden oku,
+          // arada bir tazele (başka yerden değiştirilirse de güncel kalsın)
+          readBrightness();
+          const t = setInterval(() => { if (Date.now() - lastBrightnessSet > 5000) readBrightness(); }, 30000);
+          return () => clearInterval(t);
+        }, [devName]);
+        useEffect(() => {
+          const r = () => setVw(window.innerWidth);
+          window.addEventListener('resize', r);
+          return () => window.removeEventListener('resize', r);
+        }, []);
+
+        const showOsd = useCallback((kind, value) => {
+          setOsd({ kind, value });
+          clearTimeout(osdTimer.current);
+          osdTimer.current = setTimeout(() => setOsd(null), 1000); // ii: osd.timeout = 1000
+        }, []);
+
+        // OSD yalnızca TEK monitörde: tekerlekle değiştirilen bar'da, yoksa odaktaki monitörde.
+        // (Her monitördeki bar ses değişimini ayrı yakalıyordu; 2. monitörde de çıkıyordu.)
+        const localWheel = useRef(0);   // bu bar'da en son tekerlek
+        const remoteWheel = useRef(0);  // başka bir bar'da en son tekerlek
+        useEffect(() => {
+          const un = listen('ll:osd-wheel', e => { if (e.payload?.id !== BAR_ID) remoteWheel.current = Date.now(); });
+          return () => { un.then(f => f()); };
+        }, []);
+        const isFocusedMonitor = () => {
+          const g = providers.outputMap.glazewm;
+          return !g || !g.focusedMonitor || g.currentMonitor?.id === g.focusedMonitor.id;
+        };
+        const shouldShowOsd = () => {
+          const now = Date.now();
+          if (now - localWheel.current < 800) return true;
+          if (now - remoteWheel.current < 800) return false;
+          return isFocusedMonitor();
+        };
+
+        // Ses nereden değişirse değişsin (klavye tuşları dahil) OSD göster — ii gibi
+        const vol = o.audio?.defaultPlaybackDevice ? Math.round(o.audio.defaultPlaybackDevice.volume) : null;
+        const muted = !!o.audio?.defaultPlaybackDevice?.isMuted;
+        const prevVol = useRef(null);
+        useEffect(() => {
+          if (vol === null) return;
+          if (prevVol.current !== null && (prevVol.current.vol !== vol || prevVol.current.muted !== muted) && shouldShowOsd()) {
+            showOsd('volume', muted ? 0 : vol);
+          }
+          prevVol.current = { vol, muted };
+        }, [vol, muted]);
+
+        // Mikrofon aç/kapa da OSD gösterir
+        const mic = o.audio?.defaultRecordingDevice;
+        const micMuted = mic ? !!mic.isMuted : null;
+        const prevMic = useRef(null);
+        useEffect(() => {
+          if (micMuted === null) return;
+          if (prevMic.current !== null && prevMic.current !== micMuted && isFocusedMonitor()) {
+            showOsd('mic', micMuted ? 0 : Math.round(mic.volume));
+          }
+          prevMic.current = micMuted;
+        }, [micMuted]);
+
+        useEffect(() => { requestHeight('osd', osd ? BAR_H + 90 : BAR_H); }, [!!osd]);
+
+        const gwm = o.glazewm;
+        const run = cmd => gwm?.runCommand(cmd);
+        const level = shortenLevel(vw);
+        const sideW = SIDE_W[level];
+
+        const lastWheel = useRef(0);
+        const throttled = () => {
+          const now = Date.now();
+          if (now - lastWheel.current < 40) return false;
+          lastWheel.current = now;
+          return true;
+        };
+
+        // Hyprland'deki gibi tek eksen: gama 0..100, sonra parlaklık 0..100. Parlaklık 0'dayken aşağı
+        // kaydırmaya devam edince gama (yazılımsal karartma) düşer; yukarıda önce gama 100'e döner.
+        const onLeftWheel = async e => {
+          if (!throttled()) return;
+          const up = e.deltaY < 0;
+          if (gammaCache < 100 && up) {
+            setGamma(Math.min(100, gammaCache + 5));
+            showOsd('gamma', gammaCache);
+            return;
+          }
+          const cur = brightnessCache ?? (await readBrightness());
+          if (cur === null || cur === undefined) {
+            // DDC desteklemeyen ekran: yalnızca gama
+            setGamma(Math.max(0, Math.min(100, gammaCache + (up ? 5 : -5))));
+            showOsd('gamma', gammaCache);
+            return;
+          }
+          if (!up && cur === 0) {
+            setGamma(Math.max(0, gammaCache - 5));
+            showOsd('gamma', gammaCache);
+            return;
+          }
+          const next = Math.max(0, Math.min(100, cur + (up ? 5 : -5)));
+          setBrightness(next);
+          showOsd('brightness', next);
+        };
+        const onRightWheel = e => {
+          if (!throttled()) return;
+          const dev = o.audio?.defaultPlaybackDevice;
+          if (!dev) return;
+          localWheel.current = Date.now();
+          emit('ll:osd-wheel', { id: BAR_ID }).catch(() => {});
+          const next = Math.max(0, Math.min(100, Math.round(dev.volume) + (e.deltaY < 0 ? 5 : -5)));
+          o.audio.setVolume(next);
+          if (dev.isMuted && e.deltaY < 0) o.audio.setMute(false);
+        };
+
+        const toggleOverview = () => emit('ll:overview-toggle').catch(() => {});
+        const toggleSidebarRight = () => emit('ll:sidebar-right-toggle').catch(() => {});
+        const toggleSidebarLeft = () => emit('ll:sidebar-left-toggle').catch(() => {});
+
+        const middleW = sideW * 2 + (SHOWN * WS + 6) + 8;
+        const sideSpace = (vw - middleW) / 2;
+
+        return (
+          <>
+            <div className="bar" onMouseDownCapture={e => { if (!e.target.closest('.sidebar-btn')) emit('ll:bar-click').catch(() => {}); }}>
+              <div className="left scroll-zone" style={{ width: sideSpace }} onWheel={onLeftWheel}
+                   >
+                <button className="sidebar-btn" title="Arama / Overview (Super)" onClick={toggleOverview}>
+                  {/* ii spark simgesi yerine arama: overview'un ne işe yaradığı ilk bakışta anlaşılsın */}
+                  <Icon name="search" style={{ fontSize: 21 }} />
+                </button>
+                {level === 0 && <ActiveWindow gwm={gwm} onClick={toggleSidebarLeft} />}
+                {gwm?.isPaused && (
+                  <button className="pill-mode paused" onClick={() => run('wm-toggle-pause')}>Duraklatıldı</button>
+                )}
+                {gwm?.bindingModes?.map(m => (
+                  <button key={m.name} className="pill-mode" onClick={() => run(`wm-disable-binding-mode --name ${m.name}`)}>
+                    {m.displayName ?? m.name}
+                  </button>
+                ))}
+                <ScrollHint icon="light_mode" side="left" />
+              </div>
+
+              <div className="middle">
+                <div className="group side" style={{ width: sideW }}>
+                  <Resources cpu={o.cpu} memory={o.memory} popup={popup} />
+                  {level < 2 && <Media media={o.media} popup={popup} />}
+                </div>
+
+                <div className="group ws-group">
+                  <Workspaces gwm={gwm} run={run} onRightClick={toggleOverview} iconFor={iconFor} />
+                </div>
+
+                <div className="group side" style={{ width: sideW }}>
+                  <div className="clock">
+                    <span className="time">{o.time?.formatted}</span>
+                    {level < 2 && <><span className="sep">•</span><span className="date">{o.day?.formatted}</span></>}
+                  </div>
+                  {level === 0 && <UtilButtons />}
+                  {level < 2 && <Battery battery={o.battery} />}
+                </div>
+              </div>
+
+              <div className="right scroll-zone" style={{ width: sideSpace }} onWheel={onRightWheel}
+                   /* sağ panel yalnızca kendi butonuyla (Indicators) açılır */>
+                <Indicators audio={o.audio} network={o.network} onClick={toggleSidebarRight} />
+                {level === 0 && <Tray systray={o.systray} />}
+                <ScrollHint icon="volume_up" side="right" />
+              </div>
+            </div>
+            {osd && <Osd {...osd} />}
+            {pop && (
+              <div className={`bar-pop ${pop.closing ? 'closing' : ''}`} {...keepPop}
+                   style={{ left: Math.max(8, Math.min(vw - (pop.kind === 'media' ? 360 : 460) - 8, pop.left + pop.width / 2 - (pop.kind === 'media' ? 180 : 230))) }}>
+                {pop.kind === 'res' && <ResourcesPopup memory={o.memory} cpu={o.cpu} />}
+                {pop.kind === 'media' && <MediaPopup media={o.media} />}
+              </div>
+            )}
+          </>
+        );
+      }
+
+      // ii ScrollHint.qml: kenara gelince beliren küçük ipucu
+      function ScrollHint({ icon, side }) {
+        return (
+          <div className={`hint hint-${side === 'left' ? 'l' : 'r'}`}>
+            <Icon name="keyboard_arrow_up" />
+            <Icon name={icon} />
+            <Icon name="keyboard_arrow_down" />
+          </div>
+        );
+      }
+
+      // ii OsdValueIndicator.qml
+      function Osd({ kind, value }) {
+        const isVol = kind === 'volume', isMic = kind === 'mic';
+        const icon = isVol ? (value === 0 ? 'volume_off' : 'volume_up')
+          : isMic ? (value === 0 ? 'mic_off' : 'mic') : kind === 'gamma' ? 'brightness_4' : 'light_mode';
+        return (
+          <div className="osd">
+            <div className="osd-icon">
+              <Icon name={icon} style={kind === 'brightness' ? { fontSize: 20 + 10 * (value / 100) } : undefined} />
+            </div>
+            <div className="osd-body">
+              <div className="osd-row"><span>{isVol ? 'Ses' : isMic ? 'Mikrofon' : kind === 'gamma' ? 'Gama' : 'Parlaklık'}</span><span>{Math.round(value)}</span></div>
+              <div className="osd-bar"><div className="osd-fill" style={{ width: `${value}%` }} /><div className="osd-stop" /></div>
+            </div>
+          </div>
+        );
+      }
+
+      function ActiveWindow({ gwm, onClick }) {
+        const w = gwm?.focusedContainer;
+        const isWin = w?.type === 'window';
+        return (
+          <div className="active-window" onClick={onClick}>
+            <span className="cls">{isWin ? (w.processName || '').replace(/\.exe$/i, '').toLowerCase() : 'Masaüstü'}</span>
+            <span className="title">{isWin ? w.title : `Workspace ${gwm?.focusedWorkspace?.name ?? 1}`}</span>
+          </div>
+        );
+      }
+
+      function Ring({ value }) {
+        const r = 8.5, c = 2 * Math.PI * r;
+        return (
+          <svg viewBox="0 0 20 20" width="20" height="20">
+            <circle className="track" cx="10" cy="10" r={r} fill="none" strokeWidth="2" />
+            <circle className="value" cx="10" cy="10" r={r} fill="none" strokeWidth="2" strokeLinecap="round"
+              strokeDasharray={c} strokeDashoffset={c * (1 - Math.min(1, Math.max(0, value)))} />
+          </svg>
+        );
+      }
+
+      function Resource({ icon, pct, warn }) {
+        return (
+          <div className={`resource ${pct >= warn ? 'warn' : ''}`}>
+            <div className="ring"><Ring value={pct / 100} /><Icon name={icon} /></div>
+            <span className="pct">{Math.round(pct)}</span>
+          </div>
+        );
+      }
+
+      // ii Resources.qml (alwaysShowSwap / alwaysShowCpu açık): RAM, Swap, CPU; üzerine gelince ResourcesPopup
+      function Resources({ cpu, memory, popup }) {
+        useTemps();
+        return (
+          <div className="resources" {...popup('res')}>
+            {memory && <Resource icon="memory" pct={memory.usage} warn={95} />}
+            {memory && memory.totalSwap > 0 && (
+              <Resource icon="swap_horiz" pct={(memory.usedSwap / memory.totalSwap) * 100} warn={85} />
+            )}
+            {cpu && <Resource icon="planner_review" pct={cpu.usage} warn={90} />}
+          </div>
+        );
+      }
+
+      const GB = b => `${(b / 1073741824).toFixed(1)} GB`;
+
+      // ii ResourcesPopup.qml: RAM | Swap | CPU sütunları
+      // Bizim payımız: CPU / GPU sıcaklığı (tools\lhm\ll-temps.exe, LibreHardwareMonitor). CPU için PawnIO + LL\Temps görevi gerekir.
+      // Bar'daki Resources (hep açık) de çağırır: kutu açıldığında son değer hazırdır.
+      let tempsCache = null;
+      function useTemps() {
+        const [t, setT] = useState(tempsCache);
+        useEffect(() => {
+          const read = () => zebar.shellExec(TEMPS, ['--read']).then(r => { try { setT(tempsCache = JSON.parse(r.stdout)); } catch {} }).catch(() => {});
+          read();
+          const id = setInterval(read, 2000);
+          return () => clearInterval(id);
+        }, []);
+        return t;
+      }
+      const deg = (v, hot) => (v == null ? '—' : <span className={v >= hot ? 'temp-hot' : ''}>{v}°C</span>);
+
+      function ResourcesPopup({ memory, cpu }) {
+        const t = useTemps();
+        const Row = ({ icon, label, value }) => (
+          <div className="pop-row"><Icon name={icon} /><span>{label}:</span><span className="v">{value}</span></div>
+        );
+        return (
+          <div className="res-pop">
+            <div className="res-col">
+              <div className="pop-head"><Icon name="memory" />RAM</div>
+              <Row icon="clock_loader_60" label="Kullanılan" value={memory ? GB(memory.usedMemory) : '—'} />
+              <Row icon="check_circle" label="Boş" value={memory ? GB(memory.freeMemory) : '—'} />
+              <Row icon="empty_dashboard" label="Toplam" value={memory ? GB(memory.totalMemory) : '—'} />
+            </div>
+            {memory && memory.totalSwap > 0 && (
+              <div className="res-col">
+                <div className="pop-head"><Icon name="swap_horiz" />Swap</div>
+                <Row icon="clock_loader_60" label="Kullanılan" value={GB(memory.usedSwap)} />
+                <Row icon="check_circle" label="Boş" value={GB(memory.freeSwap)} />
+                <Row icon="empty_dashboard" label="Toplam" value={GB(memory.totalSwap)} />
+              </div>
+            )}
+            <div className="res-col">
+              <div className="pop-head"><Icon name="planner_review" />CPU</div>
+              <Row icon="bolt" label="Yük" value={cpu ? `${Math.round(cpu.usage)}%` : '—'} />
+              {cpu?.frequency > 0 && <Row icon="speed" label="Frekans" value={`${(cpu.frequency / 1000).toFixed(2)} GHz`} />}
+            </div>
+            <div className="res-col">
+              <div className="pop-head"><Icon name="device_thermostat" />Sıcaklık</div>
+              <Row icon="planner_review" label="CPU" value={deg(t?.cpu, 85)} />
+              <Row icon="developer_board" label="GPU" value={deg(t?.gpu, 80)} />
+              {t?.gpuHot != null && <Row icon="local_fire_department" label="Sıcak nokta" value={deg(t.gpuHot, 95)} />}
+              {t?.gpuLoad != null && <Row icon="bolt" label="GPU yükü" value={`${t.gpuLoad}%`} />}
+            </div>
+          </div>
+        );
+      }
+
+      const fmtTime = s => {
+        if (!isFinite(s) || s < 0) s = 0;
+        const m = Math.floor(s / 60), ss = Math.floor(s % 60);
+        return `${m}:${String(ss).padStart(2, '0')}`;
+      };
+
+      // ii Media.qml: ilerleme halkalı ikon + başlık; medya yoksa "Medya yok". Üzerine gelince medya kutusu.
+      function Media({ media, popup }) {
+        const s = media?.currentSession;
+        trackMedia(s);
+        useEffect(() => { if (s?.title) loadArt(s.title); }, [s?.title]);
+        if (!s?.title) {
+          return (
+            <div className="media empty">
+              <div className="play"><Icon name="music_note" fill /></div>
+              <span className="text">Medya yok</span>
+            </div>
+          );
+        }
+        const text = s.artist ? `${s.title} • ${s.artist}` : s.title;
+        const progress = s.endTime > 0 ? Math.min(1, s.position / s.endTime) : 0;
+        return (
+          <div className="media" {...popup('media')}
+               onClick={() => media.togglePlayPause?.()}
+               onContextMenu={e => { e.preventDefault(); media.next?.(); }}
+               onAuxClick={e => { if (e.button === 1) media.previous?.(); }}>
+            <div className="play">
+              <svg viewBox="0 0 22 22" width="22" height="22" className="media-ring">
+                <circle cx="11" cy="11" r="9.5" fill="none" strokeWidth="2" className="track" />
+                <circle cx="11" cy="11" r="9.5" fill="none" strokeWidth="2" className="value" strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 9.5} strokeDashoffset={2 * Math.PI * 9.5 * (1 - progress)} />
+              </svg>
+              <Icon name={s.isPlaying ? 'pause' : 'music_note'} fill />
+            </div>
+            <span className="text">{text}</span>
+          </div>
+        );
+      }
+
+      // ii medya kutusu: kapak, başlık, sanatçı, süre, oynat/duraklat, önceki / ilerleme / sonraki
+      // Kutu açılmadan önce hazır olsun: kapak şarkı değişir değişmez, konum saati de bar her güncellendiğinde
+      // (kutu kapalıyken bile) tutulur. Böylece üzerine gelince 0:00 / boş kapakla açılıp sonradan dolmaz.
+      const artCache = {}, artWaiters = {};
+      function loadArt(title) {
+        if (!title || artCache[title] !== undefined) return Promise.resolve(artCache[title]);
+        if (!artWaiters[title]) {
+          artWaiters[title] = zebar.shellExec(ART, []).then(r => {
+            const url = (r.stdout || '').trim();
+            return (artCache[title] = url.startsWith('data:') ? url : null);
+          }).catch(() => null).finally(() => { delete artWaiters[title]; });
+        }
+        return artWaiters[title];
+      }
+      const mediaClock = { key: '', pos: 0, at: 0 };
+      function trackMedia(s) {
+        const key = `${s?.title}|${s?.position}|${s?.isPlaying}`;
+        if (key !== mediaClock.key) Object.assign(mediaClock, { key, pos: s?.position ?? 0, at: Date.now() });
+      }
+      const mediaPos = s => Math.min(s.endTime || Infinity, mediaClock.pos + (s.isPlaying ? (Date.now() - mediaClock.at) / 1000 : 0));
+
+      function MediaPopup({ media }) {
+        const s = media?.currentSession;
+        const [art, setArt] = useState(s?.title ? artCache[s.title] : null);
+        const [, tick] = useState(0);
+
+        useEffect(() => { if (s?.title) loadArt(s.title).then(a => setArt(a ?? null)); }, [s?.title]);
+        useEffect(() => { const t = setInterval(() => tick(x => x + 1), 250); return () => clearInterval(t); }, []);
+
+        if (!s?.title) return <div className="media-pop"><div className="mp-info"><div className="mp-title">Medya yok</div></div></div>;
+        trackMedia(s);
+        const end = s.endTime || 0;
+        const pos = mediaPos(s);
+        const pct = end > 0 ? Math.min(100, (pos / end) * 100) : 0;
+        const opt = { sessionId: s.sessionId };
+        return (
+          <div className="media-pop" style={art ? { '--art': `url("${art}")` } : undefined}>
+            <div className="mp-bg" />
+            <div className="mp-art">{art ? <img src={art} alt="" /> : <Icon name="music_note" fill />}</div>
+            <div className="mp-info">
+              <div className="mp-title">{s.title}</div>
+              <div className="mp-artist">{s.artist || ''}</div>
+              <div className="mp-time">{fmtTime(pos)} / {fmtTime(end)}</div>
+              <div className="mp-controls">
+                <button onClick={() => media.previous?.(opt)}><Icon name="skip_previous" fill /></button>
+                <div className="mp-bar" title="Sarmak için tıkla" onClick={e => {
+                  if (!end) return;
+                  const r = e.currentTarget.getBoundingClientRect();
+                  const sec = Math.max(0, Math.min(end, ((e.clientX - r.left) / r.width) * end));
+                  Object.assign(mediaClock, { pos: sec, at: Date.now() });
+                  zebar.shellExec(ART, ['--seek', sec.toFixed(1)]).catch(() => {});
+                }}><div className="mp-fill" style={{ width: `${pct}%` }} /><div className="mp-knob" style={{ left: `${pct}%` }} /></div>
+                <button onClick={() => media.next?.(opt)}><Icon name="skip_next" fill /></button>
+              </div>
+            </div>
+            <button className="mp-play" onClick={() => media.togglePlayPause?.(opt)}>
+              <Icon name={s.isPlaying ? 'pause' : 'play_arrow'} fill />
+            </button>
+          </div>
+        );
+      }
+
+      // Workspace'teki en büyük pencerenin ikonu (ii: bar.workspaces.showAppIcons, biggestWindow)
+      function biggestWindows(gwm) {
+        const out = {};
+        const walk = (node, name) => {
+          for (const c of node.children ?? []) {
+            if (c.type === 'window') {
+              if (c.state?.type === 'minimized') continue; // simge durumundaki pencere workspace'i dolu göstermesin
+              const area = (c.width || 0) * (c.height || 0);
+              if (!out[name] || area > out[name].area) out[name] = { area, proc: c.processName, title: c.title };
+            } else walk(c, name);
+          }
+        };
+        (gwm?.allWorkspaces ?? []).forEach(ws => walk(ws, ws.name));
+        return out;
+      }
+
+      // ii Workspaces.qml — occupied arka planı birleşik, aktif gösterge "trailing":
+      // ön kenar 100ms, arka kenar 300ms (AnimatedTabIndexPair), OutSine. Dolu olanlarda uygulama ikonu.
+      function Workspaces({ gwm, run, onRightClick, iconFor }) {
+        const lastWheel = useRef(0);
+        const prevIdx = useRef(null);
+        const [dir, setDir] = useState(0);
+
+        const current = parseInt(gwm?.focusedWorkspace?.name ?? '1', 10) || 1;
+        const base = Math.floor((current - 1) / SHOWN) * SHOWN;
+        const idx = current - base - 1;
+
+        useLayoutEffect(() => {
+          if (prevIdx.current !== null && prevIdx.current !== idx) setDir(idx > prevIdx.current ? 1 : -1);
+          prevIdx.current = idx;
+        }, [idx]);
+
+        if (!gwm) return <div className="ws-track" style={{ width: SHOWN * WS }} />;
+
+        const big = biggestWindows(gwm);
+        const occupied = new Set(Object.keys(big).map(n => parseInt(n, 10)));
+        const slots = Array.from({ length: SHOWN }, (_, i) => base + i + 1);
+
+        const runs = [];
+        slots.forEach((n, i) => {
+          if (!occupied.has(n)) return;
+          const last = runs[runs.length - 1];
+          if (last && last.end === i - 1) last.end = i;
+          else runs.push({ start: i, end: i });
+        });
+
+        const ease = 'cubic-bezier(0.61, 1, 0.88, 1)';
+        const transition = dir >= 0
+          ? `right 100ms ${ease}, left 300ms ${ease}`
+          : `left 100ms ${ease}, right 300ms ${ease}`;
+
+        const onWheel = e => {
+          e.stopPropagation();
+          const now = Date.now();
+          if (now - lastWheel.current < 100) return;
+          lastWheel.current = now;
+          slide(e.deltaY > 0 ? 'next' : 'prev', run);
+        };
+
+        return (
+          <div className="ws-track" onWheel={onWheel} style={{ width: SHOWN * WS }}
+               onContextMenu={e => { e.preventDefault(); onRightClick(); }}>
+            {runs.map(r => (
+              <div key={r.start} className="ws-occ" style={{ left: r.start * WS, width: (r.end - r.start + 1) * WS }} />
+            ))}
+            <div className="ws-active" style={{ left: idx * WS + MARGIN, right: (SHOWN - idx - 1) * WS + MARGIN, transition }} />
+            {slots.map((n, i) => {
+              const b = big[String(n)];
+              const ic = b ? iconFor(b.proc) : null;
+              return (
+                <button key={n}
+                  className={`ws ${occupied.has(n) ? 'occupied' : ''} ${i === idx ? 'active' : ''}`}
+                  title={b ? `${n}: ${b.title}` : String(n)}
+                  onClick={() => slide(String(n), run)}>
+                  {ic ? <img className="ws-icon" src={ic} alt="" /> : <span className="dot" />}
+                  <span className="num">{n}</span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      }
+
+      // ii UtilButtons.qml: ekran alıntısı, ekran klavyesi, karanlık mod
+      function UtilButtons() {
+        const [theme, setTheme] = useState(window.llTheme?.get() ?? 'dark');
+        useEffect(() => {
+          const f = () => setTheme(window.llTheme?.get() ?? 'dark');
+          window.addEventListener('storage', f);
+          return () => window.removeEventListener('storage', f);
+        }, []);
+        const stop = fn => e => { e.stopPropagation(); fn(); };
+        return (
+          <div className="utils">
+            <button className="circle-btn" title="Bölge ekran görüntüsü" onClick={stop(() => zebar.shellSpawn(HELPER, ['--snip']).catch(() => {}))}>
+              <Icon name="screenshot_region" />
+            </button>
+            <button className="circle-btn" title="Ekran klavyesi" onClick={stop(() => emit('ll:osk-toggle').catch(() => {}))}>
+              <Icon name="keyboard" />
+            </button>
+            <button className="circle-btn" title="Karanlık / aydınlık" onClick={stop(() => setTheme(window.llTheme?.toggle() ?? 'dark'))}>
+              <Icon name={theme === 'light' ? 'dark_mode' : 'light_mode'} />
+            </button>
+          </div>
+        );
+      }
+
+      // ii BatteryIndicator.qml (ClippedProgressBar)
+      function Battery({ battery }) {
+        if (!battery) return null;
+        const p = Math.round(battery.chargePercent);
+        return (
+          <div className={`battery ${p <= 20 && !battery.isCharging ? 'low' : ''}`} title={`${p}%`}>
+            <div className="fill" style={{ width: `${p}%` }} />
+            <span className="label" style={{ color: p > 55 ? '#1d1b20' : '#e8def8' }}>
+              {battery.isCharging && p < 100 && <Icon name="bolt" fill />}
+              {p}
+            </span>
+          </div>
+        );
+      }
+
+      // ---- Tray: ii SysTray.qml — sabitlenenler bar'da, diğerleri ok işaretinin altında.
+      // Windows 10'daki gibi sürükle-bırak. HTML5 sürükle-bırak, bar penceresi panel için büyüyünce
+      // WebView'da iptal oluyordu; bu yüzden fare olaylarıyla kendi sürüklememiz:
+      // basılı tutup 5px kaydır -> panel açılır, ikon imleci izler; bırakınca:
+      //   bar'daki bir ikonun üstü = onun önüne sabitle, bar'daki boşluk = sona sabitle, panel = sakla.
+      const PIN_KEY = 'll.tray.pinned';
+      const DEFAULT_PINNED = 4;
+      const loadPins = () => { try { return JSON.parse(localStorage.getItem(PIN_KEY)); } catch { return null; } };
+      const savePins = p => { try { localStorage.setItem(PIN_KEY, JSON.stringify(p)); } catch {} };
+      // Sabitleme exe yoluna değil tooltip'in ilk kelimesine göre (id her açılışta değişebiliyor)
+      const pinKey = ic => (ic.tooltip || ic.id).split(/[\s\-–:]/)[0].toLowerCase();
+
+      function TrayItem({ ic, systray, big, drag }) {
+        return (
+          <button
+            className={`tray-item ${drag.key === pinKey(ic) ? 'dragging' : ''}`}
+            data-pin={pinKey(ic)}
+            title={ic.tooltip}
+            onPointerDown={e => { if (e.button === 0) drag.begin(e, ic); }}
+            onClick={e => { e.preventDefault(); e.stopPropagation(); if (!drag.justDropped()) systray.onLeftClick(ic.id); }}
+            onDoubleClick={e => { e.preventDefault(); e.stopPropagation(); systray.onLeftDoubleClick(ic.id); }}
+            onAuxClick={e => { if (e.button === 1) { e.stopPropagation(); systray.onMiddleClick(ic.id); } }}
+            onContextMenu={e => { e.preventDefault(); e.stopPropagation(); systray.onRightClick(ic.id); }}
+          >
+            <img src={ic.iconUrl} alt="" style={big ? { width: 18, height: 18 } : undefined} draggable={false} />
+          </button>
+        );
+      }
+
+      function Tray({ systray }) {
+        const [open, setOpen] = useState(false);
+        const [pins, setPins] = useState(loadPins);
+        const [dragKey, setDragKey] = useState(null);
+        const [ghost, setGhost] = useState(null); // { x, y, src }
+        const btnRef = useRef(null);
+        const dropTime = useRef(0);
+        const icons = systray?.icons ?? [];
+
+        // İlk açılışta ilk birkaç simge bar'da görünsün
+        useEffect(() => {
+          if (pins === null && icons.length) {
+            const p = icons.slice(0, DEFAULT_PINNED).map(pinKey);
+            setPins(p); savePins(p);
+          }
+        }, [icons.length]);
+
+        useEffect(() => {
+          const onBlur = () => { if (!dragKey) setOpen(false); };
+          window.addEventListener('blur', onBlur);
+          return () => window.removeEventListener('blur', onBlur);
+        }, [dragKey]);
+
+        const list = pins ?? [];
+        const update = next => { setPins(next); savePins(next); };
+
+        const drag = {
+          key: dragKey,
+          justDropped: () => Date.now() - dropTime.current < 250,
+          begin: (e, ic) => {
+            const key = pinKey(ic), sx = e.clientX, sy = e.clientY;
+            let started = false;
+            const move = ev => {
+              if (!started && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 5) return;
+              if (!started) { started = true; setDragKey(key); setOpen(true); }
+              setGhost({ x: ev.clientX, y: ev.clientY, src: ic.iconUrl });
+            };
+            const up = ev => {
+              window.removeEventListener('pointermove', move);
+              window.removeEventListener('pointerup', up);
+              if (!started) return;
+              dropTime.current = Date.now();
+              setGhost(null); setDragKey(null);
+              const el = document.elementFromPoint(ev.clientX, ev.clientY);
+              const rest = list.filter(k => k !== key);
+              if (el?.closest('.tray-popup')) { update(rest); return; }          // panele: sakla
+              const onItem = el?.closest('.tray-bar-items [data-pin]');
+              if (onItem && onItem.dataset.pin !== key) {                       // bir ikonun önüne
+                const at = rest.indexOf(onItem.dataset.pin);
+                if (at >= 0) rest.splice(at, 0, key); else rest.push(key);
+                update(rest); return;
+              }
+              if (el?.closest('.tray')) { rest.push(key); update(rest); }       // bar'a: sona
+            };
+            window.addEventListener('pointermove', move);
+            window.addEventListener('pointerup', up);
+          },
+        };
+
+        const pinned = list.map(k => icons.find(ic => pinKey(ic) === k)).filter(Boolean);
+        const unpinned = icons.filter(ic => !list.includes(pinKey(ic)));
+
+        const COLS = 6;
+        const popupH = Math.max(1, Math.ceil(unpinned.length / COLS)) * 32 + 18;
+        const showPopup = open && (unpinned.length > 0 || dragKey);
+        // Kapanırken yukarı kayarak gitsin: animasyon bitene kadar çizili kalır
+        const [trayShown, setTrayShown] = useState(false);
+        const [trayClosing, setTrayClosing] = useState(false);
+        useEffect(() => {
+          if (showPopup) { setTrayShown(true); setTrayClosing(false); return; }
+          if (!trayShown) return;
+          setTrayClosing(true);
+          const t = setTimeout(() => { setTrayShown(false); setTrayClosing(false); }, 170);
+          return () => clearTimeout(t);
+        }, [showPopup]);
+        useEffect(() => {
+          requestHeight('tray', trayShown ? BAR_H + 4 + popupH + 12 : BAR_H);
+        }, [trayShown, popupH]);
+
+        if (!icons.length) return null;
+
+        const popupW = COLS * 30 + (COLS - 1) * 2 + 18;
+        const rect = btnRef.current?.getBoundingClientRect();
+        const popupLeft = rect
+          ? Math.max(8, Math.min(window.innerWidth - popupW - 8, rect.left + rect.width / 2 - popupW / 2))
+          : window.innerWidth - popupW - 8;
+
+        return (
+          <div className={`tray ${dragKey ? 'drop-target' : ''}`}>
+            <button ref={btnRef} className={`tray-item tray-more ${open ? 'open' : ''}`}
+                    onClick={e => { e.stopPropagation(); setOpen(v => !v); }}
+                    title="Diğer simgeler (sürükleyerek taşı)">
+              <Icon name="expand_more" />
+            </button>
+            <div className="tray-bar-items">
+              {pinned.map(ic => <TrayItem key={ic.id} ic={ic} systray={systray} drag={drag} />)}
+            </div>
+            {trayShown && (
+              <div className={`tray-popup ${dragKey ? 'drop-zone' : ''} ${trayClosing ? 'closing' : ''}`} style={{ left: popupLeft }} onClick={e => e.stopPropagation()}>
+                {unpinned.map(ic => <TrayItem key={ic.id} ic={ic} systray={systray} big drag={drag} />)}
+                {unpinned.length === 0 && <span className="tray-empty">Buraya bırak</span>}
+              </div>
+            )}
+            {ghost && <img className="tray-ghost" src={ghost.src} alt="" style={{ left: ghost.x - 9, top: ghost.y - 9 }} />}
+          </div>
+        );
+      }
+
+      function networkIcon(net) {
+        const type = net?.defaultInterface?.type;
+        if (type === 'ethernet') return 'lan';
+        if (type === 'wifi') {
+          const s = net.defaultGateway?.signalStrength ?? 0;
+          if (s >= 75) return 'signal_wifi_4_bar';
+          if (s >= 50) return 'network_wifi_3_bar';
+          if (s >= 25) return 'network_wifi_2_bar';
+          return 'network_wifi_1_bar';
+        }
+        return 'signal_wifi_off';
+      }
+
+      // ii BarContent.qml sağ gösterge butonu: sessiz, mik kapalı, ağ
+      function Indicators({ audio, network, onClick }) {
+        const dev = audio?.defaultPlaybackDevice;
+        const muted = dev && (dev.isMuted || Math.round(dev.volume) === 0);
+        const mic = audio?.defaultRecordingDevice;
+        return (
+          <button className="indicators" onClick={e => { e.stopPropagation(); onClick(); }}>
+            {muted && <Icon name="volume_off" />}
+            {mic?.isMuted && <Icon name="mic_off" />}
+            <Icon name={networkIcon(network)} />
+          </button>
+        );
+      }
+    </script>
+  </body>
+</html>

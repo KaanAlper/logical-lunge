@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+(function () {
+  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
+// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
+// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      apply();
+      return next;
+    }
+  };
+})();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="./overview.css" />
+    <script
+      src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"
+      integrity="sha256-aS0B0wnsaDByLfE16h4MDCP1fQFccysd1YWOcV+gbBo="
+      crossorigin="anonymous"
+    ></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-type="module">
+      // ii modules/ii/overview: Super ile açılır. Üstte SearchWidget, altında OverviewWidget.
+      import React, { useState, useEffect, useRef, useMemo } from 'https://esm.sh/react@18';
+      import { createRoot } from 'https://esm.sh/react-dom@18/client';
+      import * as zebar from 'https://esm.sh/zebar@3';
+      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
+
+      const win = zebar.currentWidget().tauriWindow;
+      // ll-helper (tek başına Super) pencereyi başlığından bulur
+      win.setTitle('ll-overview').catch(() => {});
+
+      const providers = zebar.createProviderGroup({ glazewm: { type: 'glazewm' } });
+
+      // ii Config.options.search.prefix
+      const PREFIX = { action: '/', app: '>', math: '=', shell: '$', web: '?' };
+      const SEARCH_ENGINE = 'https://www.google.com/search?q=';
+      const LL = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts';
+
+      const Icon = ({ name, style }) => <span className="icon" style={style}>{name}</span>;
+      const spawn = (p, a) => zebar.shellSpawn(p, a).catch(e => console.error(p, e));
+      // Komut / adres tek argüman olarak script'e gider (tırnak kaçışı derdi yok). Script hiç konsol
+      // penceresi açmaz; sonucu JSON döner, ii tarzı bildirim (toast widget'ı) olarak gösterilir.
+      const toast = payload => emit('ll:toast', payload).catch(() => {});
+      // Hyprland dwindle: yeni pencere farenin altındaki pencereyi böler. Overview gizlendikten sonra
+      // fare altındakini odakla, sonra uygulamayı aç (GlazeWM yeni pencereyi odaktakinin yanına koyar).
+      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
+      async function focusUnderCursor() {
+        await new Promise(r => setTimeout(r, 60));
+        try { await zebar.shellExec(HELPER, ['--focus-under-cursor']); } catch {}
+      }
+      async function runScript(mode, text) {
+        try {
+          const r = await zebar.shellExec(HELPER, ['--ps', `${LL}\\run.ps1`, mode, text]);
+          const out = (r.stdout || '').trim();
+          if (out) {
+            const res = JSON.parse(out.split(/\r?\n/).pop());
+            toast({ ...res, mono: res.kind === 'ok' && res.icon === 'terminal' });
+          }
+        } catch (e) {
+          toast({ kind: 'error', title: 'Çalıştırılamadı', body: String(e?.message ?? e), icon: 'error' });
+        }
+      }
+
+      // ---- ii fuzzy (Fuzzy.qml'e yakın): ardışık eşleşme ve kelime başı bonusu ----
+      const low = s => s.toLocaleLowerCase(window.LL_LOCALE);
+      function fuzzyScore(text, query) {
+        const t = low(text), q = low(query).trim();
+        if (!q) return 0;
+        if (t === q) return 1000;
+        if (t.startsWith(q)) return 900 - t.length;
+        const words = t.split(/[\s\-_.()]+/).filter(Boolean);
+        // Her sorgu kelimesi bir kelimenin başıyla eşleşiyorsa ("ekr kla" -> "Ekran Klavyesi")
+        const qWords = q.split(/\s+/);
+        if (qWords.every(qw => words.some(w => w.startsWith(qw)))) return 700 - t.length;
+        const wi = t.indexOf(q);
+        if (wi >= 0) return (words.some(w => w.startsWith(q)) ? 600 : 400) - wi - t.length * 0.2;
+        // Baş harfler: "ek" -> "Ekran Klavyesi", "vsc" -> "Visual Studio Code"
+        const initials = words.map(w => w[0]).join('');
+        if (q.length >= 2 && initials.startsWith(q.replace(/\s/g, ''))) return 500 - t.length;
+        // Harf atlamalı eşleşme yalnızca uzun sorgularda ve harflerin çoğu ardışıksa
+        if (q.length < 4) return -1;
+        let ti = 0, contiguous = 0;
+        for (let qi = 0; qi < q.length; qi++) {
+          const found = t.indexOf(q[qi], ti);
+          if (found < 0) return -1;
+          if (found === ti) contiguous++;
+          ti = found + 1;
+        }
+        if (contiguous < q.length * 0.6) return -1;
+        return 200 + contiguous * 10 - t.length;
+      }
+
+      function highlight(content, q) {
+        if (!q) return content;
+        const out = []; let qi = 0; const lq = low(q).replace(/\s/g, '');
+        for (let i = 0; i < content.length; i++) {
+          if (qi < lq.length && low(content[i]) === lq[qi]) { out.push(<u key={i}>{content[i]}</u>); qi++; }
+          else out.push(content[i]);
+        }
+        return out;
+      }
+
+      // ii qalc karşılığı: sayı, işlem, parantez, fonksiyon (sqrt sin cos tan log ln abs ...), sabit (pi e),
+      // üs (^), faktöriyel (!), yüzde (%). Tek başına "9" bile sonuç verir. Güvenli: yalnızca izinli adlar.
+      const MATH_FN = {
+        sqrt: 'Math.sqrt', cbrt: 'Math.cbrt', abs: 'Math.abs', exp: 'Math.exp', ln: 'Math.log', log: 'Math.log10',
+        log2: 'Math.log2', log10: 'Math.log10', sin: 'Math.sin', cos: 'Math.cos', tan: 'Math.tan',
+        asin: 'Math.asin', acos: 'Math.acos', atan: 'Math.atan', sinh: 'Math.sinh', cosh: 'Math.cosh', tanh: 'Math.tanh',
+        floor: 'Math.floor', ceil: 'Math.ceil', round: 'Math.round', min: 'Math.min', max: 'Math.max', pow: 'Math.pow',
+        karekok: 'Math.sqrt', 'karekök': 'Math.sqrt', fact: '__fact',
+      };
+      const MATH_CONST = { pi: 'Math.PI', 'π': 'Math.PI', e: 'Math.E', tau: '(2*Math.PI)', phi: '((1+Math.sqrt(5))/2)' };
+      const __fact = n => { if (n < 0 || n > 170 || n % 1) return NaN; let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; };
+      function tryMath(expr) {
+        let e = expr.trim().toLowerCase();
+        if (!e || !/[\dπ]|\b(pi|tau|phi)\b/.test(e)) return null; // tek başına "e" uygulama aramasıdır
+        e = e.replace(/×/g, '*').replace(/÷/g, '/').replace(/√\s*(\d+(?:[.,]\d+)?|\([^()]*\))/g, 'sqrt($1)').replace(/√/g, 'sqrt');
+        // Fonksiyon çağrısı yoksa virgül ondalık ayracıdır (3,5 + 1)
+        if (!/[a-zçğıöşü]+\s*\(/.test(e)) e = e.replace(/(\d),(\d)/g, '$1.$2');
+        let out = '', ok = true;
+        const re = /\s+|(\d+(?:\.\d+)?(?:e[+-]?\d+)?)|([a-zçğıöşüπ][a-z0-9çğıöşü]*)|(\*\*|[+\-*/%^(),!])/gy;
+        let m, last = '';
+        while (re.lastIndex < e.length && (m = re.exec(e))) {
+          if (m[1]) { out += (/[\d)]$|Math\.\w+$/.test(last) && last.endsWith(')') ? '*' : '') + m[1]; last = m[1]; }
+          else if (m[2]) {
+            const id = m[2];
+            const pre = /[\d)]$/.test(out) ? '*' : ''; // 2pi, 3sqrt(4)
+            if (MATH_FN[id]) { out += pre + MATH_FN[id]; last = id; }
+            else if (MATH_CONST[id]) { out += pre + MATH_CONST[id]; last = ')'; }
+            else { ok = false; break; }
+          }
+          else if (m[3]) {
+            const op = m[3];
+            if (op === '^') out += '**';
+            else if (op === '!') {
+              // son sayı ya da parantezli ifade: 5! / (2+3)!
+              const mm = out.match(/(\d+(?:\.\d+)?|\([^()]*\))$/);
+              if (!mm) { ok = false; break; }
+              out = out.slice(0, -mm[1].length) + `__fact(${mm[1]})`;
+            }
+            else if (op === '%') out += /[\d)]$/.test(out) && !/^[\s]*[\d(]/.test(e.slice(re.lastIndex)) ? '/100' : '%';
+            else out += op;
+            last = op;
+          }
+        }
+        if (!ok || re.lastIndex < e.length) return null;
+        // açık kalan parantezleri kapat: "sqrt(9" -> "sqrt(9)"
+        const open = (out.match(/\(/g) || []).length - (out.match(/\)/g) || []).length;
+        if (open < 0) return null;
+        out += ')'.repeat(open);
+        try {
+          const v = Function('__fact', `"use strict"; return (${out});`)(__fact);
+          if (typeof v !== 'number' || !isFinite(v)) return null;
+          return +v.toPrecision(12);
+        } catch { return null; }
+      }
+      // ii /action'ları (Config.options.search.actions karşılıkları)
+      const ACTIONS = [
+        { name: 'dark', desc: 'Karanlık/aydınlık tema', run: () => window.llTheme?.toggle() },
+        { name: 'lock', desc: 'Ekranı kilitle', run: () => spawn('rundll32', ['user32.dll,LockWorkStation']) },
+        { name: 'sleep', desc: 'Uyku', run: () => spawn('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0']) },
+        { name: 'logout', desc: 'Oturumu kapat', run: () => spawn('shutdown', ['/l']) },
+        { name: 'restart', desc: 'Yeniden başlat', run: () => spawn('shutdown', ['/r', '/t', '0']) },
+        { name: 'shutdown', desc: 'Kapat', run: () => spawn('shutdown', ['/s', '/t', '0']) },
+        { name: 'reload', desc: 'GlazeWM config yenile', run: gwm => gwm?.runCommand('wm-reload-config') },
+        { name: 'apps', desc: 'Uygulama listesini yenile', run: () => zebar.shellExec(HELPER, ['--ps', `${LL}\\build-apps.ps1`]).then(() => window.__llLoadApps?.()).catch(() => {}) },
+      ];
+
+      // ---- ii services/SongRec.qml: çalan müziği tanı (Shazam). ii Linux'ta songrec kullanır; burada
+      // tools\songrec\recognize.py aynı Shazam servisine sorar, sesi hoparlör çıkışından (loopback) alır.
+      const songRec = {
+        proc: null, stopped: false, subs: new Set(),
+        get running() { return !!this.proc; },
+        emit() { this.subs.forEach(f => f(this.running)); },
+        async toggle() {
+          if (this.proc) { this.stopped = true; try { await this.proc.kill(); } catch {} this.proc = null; this.emit(); return; }
+          this.stopped = false;
+          let out = '';
+          try {
+            // ii Config.options.musicRecognition: interval 4, timeout 16... burada 2 sn aralık, 30 sn toplam
+            this.proc = await zebar.shellSpawn(HELPER, ['--songrec', '-i', '2', '-t', '30', '-s', 'monitor']);
+          } catch (e) {
+            toast({ kind: 'error', title: 'Müzik tanınamadı', body: 'Tanıma aracı başlatılamadı', icon: 'music_off' });
+            return;
+          }
+          this.emit();
+          this.proc.onStdout(s => { out += s; });
+          this.proc.onExit(() => {
+            this.proc = null; this.emit();
+            if (this.stopped) return;
+            let r = null; try { r = JSON.parse(out.trim().split(/\r?\n/).pop()); } catch {}
+            if (r?.title) {
+              const q = encodeURIComponent(`${r.title} - ${r.subtitle}`);
+              toast({ kind: 'ok', title: 'Müzik tanındı', body: `${r.title} - ${r.subtitle}`, icon: 'music_note', image: r.cover, timeout: 12000,
+                      actions: [{ label: 'Spotify', url: `spotify:search:${q}` }, { label: 'YouTube', url: `https://www.youtube.com/results?search_query=${q}` }] });
+            } else if (r?.error === 'audio') {
+              toast({ kind: 'error', title: 'Müzik tanınamadı', body: 'Ses çıkışı dinlenemedi', icon: 'music_off' });
+            } else {
+              toast({ kind: 'error', title: 'Müzik tanınamadı', body: 'Dinlediğin şey fazla niş olabilir', icon: 'music_off' });
+            }
+          });
+        },
+      };
+      function useSongRec() {
+        const [running, setRunning] = useState(songRec.running);
+        useEffect(() => { songRec.subs.add(setRunning); return () => songRec.subs.delete(setRunning); }, []);
+        return running;
+      }
+
+      function App() {
+        const [open, setOpen] = useState(false);
+        const [enterKey, setEnterKey] = useState(0);
+        const [query, setQuery] = useState('');
+        const [sel, setSel] = useState(0);
+        const [apps, setApps] = useState([]);
+        const [gwm, setGwm] = useState(providers.outputMap.glazewm);
+        const inputRef = useRef(null);
+        const resultsRef = useRef(null);
+
+        useEffect(() => { providers.onOutput(() => setGwm(providers.outputMap.glazewm)); }, []);
+
+        const loadApps = () => fetch(`./apps.json?t=${Date.now()}`).then(r => r.json()).then(setApps).catch(() => {});
+        window.__llLoadApps = loadApps;
+        const songRunning = useSongRec();
+        useEffect(() => { loadApps(); }, []);
+
+        const show = async () => {
+          setQuery(''); setSel(0); setOpen(true); setEnterKey(k => k + 1);
+          try { await win.show(); await win.setFocus(); } catch {}
+          setTimeout(() => inputRef.current?.focus(), 30);
+        };
+        const hide = () => { setOpen(false); win.hide().catch(() => {}); };
+
+        // Açılışta gizli başla; Super (ll-helper) ya da bar olayı açar
+        useEffect(() => { win.hide().catch(() => {}); }, []);
+
+        useEffect(() => {
+          const un = listen('ll:overview-toggle', () => (document.hasFocus() && open ? hide() : show()));
+          // Bar'da herhangi bir yere tıklanınca kapan (bar penceresi odak almadığı için blur gelmiyordu)
+          const unBar = listen('ll:bar-click', () => { if (open) hide(); });
+          const onFocus = () => { if (!open) show(); else inputRef.current?.focus(); };
+          const onBlur = () => hide();
+          window.addEventListener('focus', onFocus);
+          window.addEventListener('blur', onBlur);
+          return () => { un.then(f => f()); unBar.then(f => f()); window.removeEventListener('focus', onFocus); window.removeEventListener('blur', onBlur); };
+        }, [open]);
+
+        // ---- Sonuçlar (ii LauncherSearch) ----
+        const results = useMemo(() => {
+          const q = query;
+          if (!q) return [];
+          const out = [];
+          const push = r => out.push(r);
+
+          if (q.startsWith(PREFIX.action)) {
+            const a = q.slice(1).toLowerCase();
+            ACTIONS.filter(x => x.name.startsWith(a.split(' ')[0]))
+              .forEach(x => push({ key: 'a' + x.name, type: 'Eylem', name: `/${x.name}`, sub: x.desc, material: 'settings_suggest', verb: 'Çalıştır', exec: () => x.run(gwm) }));
+            return out;
+          }
+          if (q.startsWith(PREFIX.shell)) {
+            const cmd = q.slice(1).trim();
+            push({ key: 'sh', type: 'Komut', name: cmd || 'komut yaz…', material: 'terminal', mono: true, verb: 'Çalıştır', exec: () => cmd && runScript('term', cmd) });
+            return out;
+          }
+          if (q.startsWith(PREFIX.web)) {
+            const s = q.slice(1).trim();
+            push({ key: 'web', type: 'Web araması', name: s, material: 'travel_explore', verb: 'Ara', exec: () => runScript('url', SEARCH_ENGINE + encodeURIComponent(s)) });
+            return out;
+          }
+
+          const appOnly = q.startsWith(PREFIX.app);
+          const mathOnly = q.startsWith(PREFIX.math);
+          const term = (appOnly || mathOnly) ? q.slice(1).trim() : q.trim();
+
+          const m = tryMath(term);
+          if (m !== null) {
+            push({ key: 'math', type: 'Hesap makinesi', name: String(m), bigText: '=', verb: 'Kopyala',
+              exec: () => navigator.clipboard?.writeText(String(m)) });
+          } else if (term.length >= 2) {
+            // Hesap makinesini tanıt: "sqrt", "sin", "hesap" yazınca bile görünsün; seçince ifadeyi başlatır
+            const lt = low(term);
+            const fn = Object.keys(MATH_FN).find(f => f !== 'fact' && f.startsWith(lt));
+            const kw = /^(hesap|calc|matemat|math|=)/.test(lt);
+            if (fn || kw) {
+              const start = fn ? `${fn}(` : '';
+              push({ key: 'mathhint', type: 'Hesap makinesi', name: fn ? `${fn}( … )` : '2+2 · sqrt(9) · 5! · 2^10 · %20',
+                bigText: '=', verb: 'Yaz', stay: true,
+                exec: () => { setQuery(start); setTimeout(() => inputRef.current?.focus(), 0); } });
+            }
+          }
+          if (mathOnly) return out;
+
+          if (term) {
+            apps.map(a => ({ a, s: a.alias && low(a.alias) === low(term) ? 2000 : fuzzyScore(a.name, term) }))
+              .filter(x => x.s >= 0)
+              .sort((x, y) => y.s - x.s)
+              .slice(0, 15)
+              .forEach(({ a }) => push({ key: 'app' + a.path, type: 'Uygulama', name: a.name, img: a.icon, material: 'apps', verb: 'Aç', q: term,
+                exec: async () => { await focusUnderCursor(); spawn('explorer', [a.path]); } }));
+          }
+          if (!appOnly && term) {
+            push({ key: 'run', type: 'Komut çalıştır', name: term, material: 'terminal', mono: true, verb: 'Çalıştır',
+              exec: () => runScript('run', term) });
+            push({ key: 'web', type: 'Web araması', name: term, material: 'travel_explore', verb: 'Ara',
+              exec: () => runScript('url', SEARCH_ENGINE + encodeURIComponent(term)) });
+          }
+          return out;
+        }, [query, apps, gwm]);
+
+        useEffect(() => { setSel(0); }, [query]);
+        useEffect(() => {
+          resultsRef.current?.querySelector('.item.selected')?.scrollIntoView({ block: 'nearest' });
+        }, [sel]);
+
+        const exec = r => { if (!r?.stay) hide(); r?.exec?.(); };
+
+        const onKey = e => {
+          if (e.key === 'Escape') { e.preventDefault(); if (query) setQuery(''); else hide(); }
+          else if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => Math.min(results.length - 1, s + 1)); }
+          else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
+          else if (e.key === 'Enter') { e.preventDefault(); exec(results[sel]); }
+          else if (e.key === 'Tab') { e.preventDefault(); if (results[0]) setQuery(results[sel]?.name ?? results[0].name); }
+        };
+
+        const prefixType = query.startsWith(PREFIX.action) ? 'action' : query.startsWith(PREFIX.app) ? 'app'
+          : query.startsWith(PREFIX.math) ? 'math' : query.startsWith(PREFIX.shell) ? 'shell'
+          : query.startsWith(PREFIX.web) ? 'web' : 'default';
+        const prefixIcon = { action: 'settings_suggest', app: 'apps', math: 'calculate', shell: 'terminal', web: 'travel_explore', default: 'search' }[prefixType];
+
+        // ii: searchWidthCollapsed 210, searchWidth 360 (+ kenar boşlukları ve butonlar)
+        const width = (query ? 360 : 210) + 10 + 6 + 40 + 6 + 40 + 40 + 4;
+
+        if (!open) return null;
+
+        return (
+          <>
+            <div className="backdrop" onMouseDown={hide} />
+            <div className="column enter" key={enterKey}>
+              <div className="search" style={{ width: Math.max(width, query ? 560 : 0) }} onKeyDown={onKey}>
+                <div className="search-bar">
+                  <div className="search-shape">
+                    <Shape type={prefixType} />
+                    <Icon name={prefixIcon} />
+                  </div>
+                  <input ref={inputRef} value={query} placeholder="Ara, hesapla veya çalıştır"
+                         onChange={e => setQuery(e.target.value)} spellCheck={false} autoFocus />
+                  <button className="tool-btn" title="Google Lens" onClick={() => { hide(); setTimeout(() => spawn(HELPER, ['--lens']), 280); }}>
+                    <Icon name="image_search" />
+                  </button>
+                  <button className={`tool-btn songrec ${songRunning ? 'on' : ''}`} title="Müziği tanı" onClick={() => songRec.toggle()}>
+                    <span className="songrec-bg" />
+                    <Icon name="music_cast" />
+                  </button>
+                </div>
+                {query && results.length > 0 && (
+                  <>
+                    <div className="sep" />
+                    <div className="results" ref={resultsRef}>
+                      {results.map((r, i) => (
+                        <div key={r.key} className={`item ${i === sel ? 'selected' : ''}`}
+                             onMouseEnter={() => setSel(i)} onClick={() => exec(r)}>
+                          <div className="ico">
+                            {r.img ? <img src={r.img} alt="" />
+                              : r.bigText ? <span className="big">{r.bigText}</span>
+                              : <Icon name={r.material} />}
+                          </div>
+                          <div className="txt">
+                            <span className="type">{r.type}{r.sub ? ` · ${r.sub}` : ''}</span>
+                            <span className="name" style={r.mono ? { fontFamily: 'Consolas, monospace' } : undefined}>
+                              {r.q ? highlight(r.name, r.q) : r.name}
+                            </span>
+                          </div>
+                          <span className="verb">{r.verb}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+              {!query && <WorkspaceOverview gwm={gwm} apps={apps} onDone={hide} />}
+            </div>
+          </>
+        );
+      }
+
+      // MaterialShape: prefix türüne göre şekil (Cookie7Sided, Clover4Leaf, PixelCircle...)
+      function Shape({ type }) {
+        const n = { default: 7, app: 4, math: 4, shell: 12, web: 10, action: 2 }[type] ?? 7;
+        const depth = { default: 0.12, app: 0.22, math: 0.2, shell: 0.04, web: 0.1, action: 0 }[type] ?? 0.1;
+        const rot = type === 'math' ? 45 : 0;
+        const pts = [];
+        for (let i = 0; i <= 360; i += 3) {
+          const a = (i * Math.PI) / 180;
+          const r = 20 * (1 - depth + depth * Math.cos(n * a));
+          pts.push(`${(20 + r * Math.cos(a)).toFixed(2)},${(20 + r * Math.sin(a)).toFixed(2)}`);
+        }
+        const d = type === 'action' ? 'M8,10 h24 a10,10 0 0 1 0,20 h-24 a10,10 0 0 1 0,-20z' : `M${pts.join('L')}Z`;
+        return (
+          <svg viewBox="0 0 40 40" width="40" height="40" style={{ transform: `rotate(${rot}deg)` }}>
+            <path d={d} />
+          </svg>
+        );
+      }
+
+      // ii OverviewWidget.qml: workspace'lerin küçük önizlemesi, pencereler ikonlarıyla;
+      // tıkla -> odakla, sürükle-bırak -> başka workspace'e taşı.
+      function WorkspaceOverview({ gwm, apps, onDone }) {
+        const [drag, setDrag] = useState(null);
+        const [over, setOver] = useState(null);
+        if (!gwm) return null;
+
+        const mon = gwm.focusedMonitor ?? gwm.allMonitors?.[0];
+        if (!mon) return null;
+        const scale = 0.18; // Config.options.overview.scale
+        const rows = 2, cols = 5; // overview.rows / columns
+        const W = Math.round(mon.width * scale), H = Math.round(mon.height * scale);
+        const current = parseInt(gwm.focusedWorkspace?.name ?? '1', 10) || 1;
+        const base = Math.floor((current - 1) / (rows * cols)) * rows * cols;
+
+        const iconFor = proc => {
+          const p = (proc || '').toLowerCase();
+          const flat = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const withIcon = apps.filter(x => x.icon);
+          const a = withIcon.find(x => x.exe === p)
+            || withIcon.find(x => flat(x.name) === flat(p))
+            || withIcon.find(x => flat(x.name).includes(flat(p)) || flat(p).includes(flat(x.name)));
+          return a?.icon;
+        };
+
+        // Her workspace kendi monitörüne göre ölçeklenir (eskiden hepsi odaktaki monitöre göre çiziliyor,
+        // diğer monitördeki pencereler kutunun dışına düşüp görünmüyordu). Simge durumundakiler gösterilmez.
+        const byWs = {}, monOf = {};
+        const walk = (node, wsName) => {
+          for (const c of node.children ?? []) {
+            if (c.type === 'window') { if (c.state?.type !== 'minimized') (byWs[wsName] ??= []).push(c); }
+            else walk(c, wsName);
+          }
+        };
+        (gwm.allMonitors ?? []).forEach(m => (m.children ?? []).forEach(ws => { monOf[ws.name] = m; walk(ws, ws.name); }));
+
+        const run = cmd => gwm.runCommand(cmd).catch(() => {});
+
+        return (
+          <div className="overview" style={{ gridTemplateColumns: `repeat(${cols}, ${W}px)` }}>
+            {Array.from({ length: rows * cols }, (_, i) => {
+              const n = String(base + i + 1);
+              const wins = byWs[n] ?? [];
+              return (
+                <div key={n}
+                     className={`ws ${n === gwm.focusedWorkspace?.name ? 'active' : ''} ${over === n ? 'drop' : ''}`}
+                     style={{ width: W, height: H }}
+                     onClick={() => { onDone(); zebar.shellSpawn('{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe', ['--slide', n]).catch(() => run(`focus --workspace ${n}`)); }}
+                     onDragOver={e => { e.preventDefault(); setOver(n); }}
+                     onDragLeave={() => setOver(o => (o === n ? null : o))}
+                     onDrop={e => {
+                       e.preventDefault(); setOver(null);
+                       if (drag) gwm.runCommand(`move --workspace ${n}`, drag).catch(() => {});
+                       setDrag(null);
+                     }}>
+                  <span className="num">{n}</span>
+                  {wins.map(w => {
+                    const wm = monOf[n] ?? mon;
+                    const sx = W / wm.width, sy = H / wm.height;
+                    const x = (w.x - wm.x) * sx, y = (w.y - wm.y) * sy;
+                    const ic = iconFor(w.processName);
+                    return (
+                      <div key={w.id}
+                           className={`win ${w.hasFocus ? 'focused' : ''} ${drag === w.id ? 'dragging' : ''}`}
+                           title={w.title}
+                           style={{ left: x, top: y, width: Math.max(8, w.width * sx), height: Math.max(8, w.height * sy) }}
+                           draggable
+                           onDragStart={e => { setDrag(w.id); e.dataTransfer.effectAllowed = 'move'; }}
+                           onDragEnd={() => setDrag(null)}
+                           onClick={e => { e.stopPropagation(); run(`focus --container-id ${w.id}`); onDone(); }}>
+                        {ic ? <img src={ic} alt="" /> : <span className="icon fallback">web_asset</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        );
+      }
+
+      createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>

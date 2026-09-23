@@ -1,0 +1,444 @@
+/* end-4 illogical-impulse (quickshell ii) bar'ının Zebar portu.
+   Ölçüler modules/common/Appearance.qml ve modules/ii/bar/*.qml'den alındı. */
+@import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block');
+
+:root {
+  /* Material You koyu, mor tohum (odak kenarlığıyla aynı ton) */
+  --m3primary: #d0bcff;
+  --m3onPrimary: #381e72;
+  --m3secondaryContainer: #4a4458;
+  --m3onSecondaryContainer: #e8def8;
+  --m3outline: #938f99;
+  --m3outlineVariant: #49454f;
+  --m3error: #ffb4ab;
+
+  --colLayer0: #141218;                      /* bar arka planı (m3background) — ii'de dolu */
+  --colLayer1: #1d1b20;                      /* BarGroup arka planı (surfaceContainerLow) */
+  --colLayer1Hover: #36323b;
+  --colOnLayer0: #e6e0e9;
+  --colOnLayer1: #e6e0e9;
+  --colSubtext: var(--m3outline);
+  --colOnLayer1Inactive: #8a8591;
+  --occupied: rgba(74 68 88 / 60%);          /* secondaryContainer, 0.4 transparentize */
+
+  --bar-h: 40px;                             /* sizes.baseBarHeight */
+  --screen-rounding: 23px;                   /* rounding.screenRounding */
+  --group-radius: 12px;                      /* rounding.small */
+  --center-side-w: 360px;                    /* sizes.barCenterSideModuleWidth (verbose) */
+  --ws: 26px;                                /* workspaceButtonWidth */
+  --ws-active: 22px;                         /* activeWorkspaceSize */
+
+  --elementMove: cubic-bezier(0.38, 1.21, 0.22, 1); /* expressiveDefaultSpatial */
+  --outSine: cubic-bezier(0.61, 1, 0.88, 1);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+}
+
+body {
+  font-family: 'Google Sans Flex', 'Rubik', 'Segoe UI Variable Text', sans-serif;
+  font-variation-settings: 'wght' 450;
+  font-size: 15px;
+  color: var(--colOnLayer0);
+  -webkit-font-smoothing: antialiased;
+}
+
+.icon {
+  font-family: 'Material Symbols Rounded';
+  font-size: 19px; /* pixelSize.larger */
+  line-height: 1;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+.icon.fill { font-variation-settings: 'FILL' 1, 'wght' 600, 'GRAD' 0, 'opsz' 20; }
+
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+
+.bar {
+  position: relative;
+  height: var(--bar-h);
+  background: var(--colLayer0);
+  display: flex;
+  align-items: center;
+}
+
+/* ---------- Sol ---------- */
+.left {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  display: flex; align-items: center;
+  padding-left: var(--screen-rounding);
+}
+.sidebar-btn {
+  width: 32px; height: 32px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 200ms;
+}
+.sidebar-btn:hover { background: var(--colLayer1Hover); }
+.sidebar-btn .icon { font-size: 20px; color: var(--colOnLayer0); }
+
+.active-window {
+  margin-left: 10px;
+  display: flex; flex-direction: column; justify-content: center;
+  min-width: 0;
+}
+.active-window .cls {
+  font-size: 12px; color: var(--colSubtext);
+  line-height: 14px; margin-bottom: -2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.active-window .title {
+  font-size: 15px; color: var(--colOnLayer0);
+  line-height: 19px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ---------- Orta ---------- */
+.middle {
+  position: absolute; left: 50%; top: 0; bottom: 0;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 4px;
+}
+
+.group {
+  height: 32px;                 /* 40 - 4*2 */
+  border-radius: var(--group-radius);
+  background: var(--colLayer1);
+  display: flex; align-items: center;
+  padding: 0 5px; gap: 4px;
+}
+.group.side { width: var(--center-side-w); }
+
+/* Kaynaklar: dairesel ilerleme halkası + sayı */
+.resources { display: flex; align-items: center; gap: 6px; padding: 0 4px; }
+.resource { display: flex; align-items: center; gap: 2px; }
+.ring { position: relative; width: 20px; height: 20px; }
+.ring svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+.ring .track { stroke: var(--m3secondaryContainer); }
+.ring .value { stroke: var(--m3onSecondaryContainer); transition: stroke-dashoffset 400ms var(--elementMove); }
+.resource.warn .ring .value { stroke: var(--m3error); }
+.ring .icon {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: var(--m3onSecondaryContainer);
+  font-variation-settings: 'FILL' 1, 'wght' 600, 'GRAD' 0, 'opsz' 20;
+}
+.resource .pct { font-size: 15px; min-width: 26px; text-align: center; font-variant-numeric: tabular-nums; color: var(--colOnLayer1); }
+
+/* Medya */
+.media {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 6px; padding: 0 4px;
+}
+.media .play {
+  width: 22px; height: 22px; border-radius: 999px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--m3secondaryContainer);
+}
+.media .play .icon { font-size: 16px; color: var(--m3onSecondaryContainer); }
+.media .text { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--colOnLayer1); }
+
+/* Workspaces */
+.ws-group { padding: 0 3px; }
+.ws-track { position: relative; display: flex; height: var(--ws); }
+
+.ws-occ {
+  position: absolute; top: 0; height: var(--ws);
+  background: var(--occupied);
+  border-radius: 999px;
+  transition: left 220ms var(--elementMove), width 220ms var(--elementMove);
+}
+
+.ws-active {
+  position: absolute; top: 2px; height: var(--ws-active);
+  border-radius: 999px;
+  background: var(--m3primary);
+  z-index: 1;
+}
+
+.ws {
+  position: relative; z-index: 2;
+  width: var(--ws); height: var(--ws);
+  display: flex; align-items: center; justify-content: center;
+}
+.ws .dot {
+  width: 4.7px; height: 4.7px; border-radius: 50%;
+  background: var(--colOnLayer1Inactive);
+  transition: background 200ms, transform 200ms var(--elementMove), opacity 150ms;
+}
+.ws.occupied .dot { background: var(--m3onSecondaryContainer); }
+.ws.active .dot { background: var(--m3onPrimary); }
+.ws .num {
+  position: absolute; font-size: 13px; color: var(--colOnLayer1Inactive);
+  opacity: 0; transform: scale(0.7);
+  transition: opacity 150ms, transform 200ms var(--elementMove);
+}
+.ws.occupied .num { color: var(--m3onSecondaryContainer); }
+.ws.active .num { color: var(--m3onPrimary); }
+.show-numbers .ws .num { opacity: 1; transform: scale(1); }
+.show-numbers .ws .dot { opacity: 0; transform: scale(0); }
+.ws:hover::after {
+  content: ''; position: absolute; inset: 2px; border-radius: 999px;
+  background: rgba(208 188 255 / 10%);
+}
+
+/* Saat + araçlar + pil */
+.clock { flex: 1; display: flex; align-items: center; justify-content: center; gap: 4px; }
+.clock .time { font-size: 17px; color: var(--colOnLayer1); font-variant-numeric: tabular-nums; }
+.clock .sep, .clock .date { font-size: 15px; color: var(--colOnLayer1); }
+
+.utils { display: flex; align-items: center; gap: 4px; }
+.circle-btn {
+  width: 26px; height: 26px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--m3secondaryContainer);
+  transition: filter 150ms;
+}
+.circle-btn:hover { filter: brightness(1.2); }
+.circle-btn .icon { font-size: 16px; color: var(--m3onSecondaryContainer); }
+
+.battery {
+  position: relative; width: 38px; height: 18px; border-radius: 999px; overflow: hidden;
+  background: var(--m3secondaryContainer); margin: 0 4px;
+  display: flex; align-items: center; justify-content: center;
+}
+.battery .fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: var(--m3onSecondaryContainer);
+  transition: width 400ms var(--elementMove);
+}
+.battery.low .fill { background: var(--m3error); }
+.battery .label {
+  position: relative; font-size: 11px; font-weight: 600; color: #1d1b20;
+  mix-blend-mode: normal; display: flex; align-items: center;
+}
+.battery .label .icon { font-size: 12px; margin: 0 -1px; }
+
+/* ---------- Sağ ---------- */
+.right {
+  position: absolute; right: 0; top: 0; bottom: 0;
+  display: flex; flex-direction: row-reverse; align-items: center; gap: 5px;
+  padding-right: var(--screen-rounding);
+}
+.tray { display: flex; align-items: center; gap: 2px; }
+.tray-item {
+  width: 26px; height: 26px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+}
+.tray-item:hover { background: var(--colLayer1Hover); }
+.tray-item img { width: 16px; height: 16px; }
+
+.indicators {
+  height: 30px; padding: 0 10px; border-radius: 999px;
+  display: flex; align-items: center; gap: 15px;
+  transition: background 200ms;
+}
+.indicators:hover { background: var(--colLayer1Hover); }
+.indicators .icon { color: var(--colOnLayer0); }
+
+.pill-mode {
+  height: 26px; padding: 0 10px; border-radius: 999px; margin-left: 8px;
+  background: var(--m3primary); color: var(--m3onPrimary); font-size: 13px;
+  display: flex; align-items: center;
+}
+.pill-mode.paused { background: #93000a; color: #ffdad6; }
+
+
+/* Tray taşma oku + açılır panel (ii SysTray.qml: pinned olmayanlar oka gizlenir) */
+.tray-more .icon { font-size: 20px; color: var(--colOnLayer0); transition: transform 250ms var(--elementMove); }
+.tray-more.open .icon { transform: rotate(180deg); }
+.tray-popup {
+  position: fixed; top: 44px;
+  display: grid; grid-template-columns: repeat(6, 30px); gap: 2px;
+  padding: 8px; border-radius: 17px;               /* rounding.normal */
+  background: var(--colLayer0);
+  border: 1px solid rgba(73 69 79 / 60%);
+  box-shadow: 0 4px 14px rgba(0 0 0 / 35%);
+  animation: popDown 240ms cubic-bezier(0.05, 0.7, 0.1, 1);
+  transform-origin: top center;
+}
+.tray-popup .tray-item { width: 30px; height: 30px; }
+/* ii popup'ları: bar'ın altından yukarıdan aşağı hızlıca kayarak açılır */
+@keyframes popDown {
+  from { opacity: 0; transform: translateY(-14px); clip-path: inset(0 0 100% 0 round 12px); }
+  60% { opacity: 1; }
+  to { opacity: 1; transform: none; clip-path: inset(0 0 -40px 0 round 12px); }
+}
+@keyframes popIn { from { opacity: 0; transform: scale(0.93); } to { opacity: 1; transform: scale(1); } }
+
+
+/* ---------- Kenar kaydırma bölgeleri (ii FocusedScrollMouseArea + ScrollHint) ---------- */
+.scroll-zone { overflow: visible; }
+.left.scroll-zone, .right.scroll-zone { min-width: 0; }
+.left .active-window { flex: 1; min-width: 0; margin-right: var(--screen-rounding); }
+/* ii ScrollHint.qml: Revealer içinde 3 MaterialSymbol (14px, colSubtext, spacing -5), arka plan yok.
+   Sınıf adları .left/.right DEĞİL — onlar bar'ın yan bölgeleri. */
+.hint {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  width: 0; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center;
+  pointer-events: none;
+  transition: width 200ms var(--elementMove);
+}
+.hint .icon {
+  font-size: 14px; line-height: 14px; height: 14px; color: var(--colSubtext);
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+}
+.hint .icon + .icon { margin-top: -5px; }
+.hint-l { left: 4px; }
+.hint-r { right: 4px; }
+/* İpuçları her zaman görünür (kullanıcı kenarda kaydırma olduğunu bilsin): soluk durur, üzerine gelince belirginleşir.
+   Bar'ın kenar boşluğu (--screen-rounding 23px) ipucuna yetiyor, içeriğin üstüne binmez. */
+.hint { width: 14px; opacity: 0.45; transition: opacity 200ms var(--elementMove), transform 200ms var(--elementMove); }
+.scroll-zone:hover .hint { opacity: 1; }
+.clickable { cursor: pointer; }
+.active-window { cursor: pointer; }
+
+/* Medya ilerleme halkası (ii Media.qml: CircularProgress) */
+.media { cursor: pointer; }
+.media .play { position: relative; background: none; }
+.media .media-ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+.media .media-ring .track { stroke: var(--m3secondaryContainer); }
+.media .media-ring .value { stroke: var(--m3onSecondaryContainer); transition: stroke-dashoffset 800ms linear; }
+.media .play .icon { position: relative; font-size: 14px; }
+
+/* ---------- OSD (ii OsdValueIndicator.qml): osdWidth 180 + elevationMargin ---------- */
+.osd {
+  position: fixed; top: 50px; left: 50%;
+  width: 200px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 20px 9px 10px;
+  border-radius: 999px;
+  background: var(--colLayer0);
+  box-shadow: 0 2px 10px rgba(0 0 0 / 35%);
+  animation: osdIn 220ms cubic-bezier(0.05, 0.7, 0.1, 1);
+}
+@keyframes osdIn { from { opacity: 0; transform: translateX(-50%) translateY(-8px) scale(0.96); } to { opacity: 1; transform: translateX(-50%); } }
+.osd-icon { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; }
+.osd-icon .icon { font-size: 30px; color: var(--colOnLayer0); transition: font-size 200ms var(--elementMove); }
+.osd-body { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+.osd-row { display: flex; justify-content: space-between; font-size: 15px; padding: 0 2px; }
+/* StyledProgressBar: kalın dolu kısım + boşluk + ince iz + bitiş noktası */
+.osd-bar { position: relative; height: 4px; border-radius: 999px; background: var(--m3secondaryContainer); }
+.osd-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--m3primary); transition: width 150ms var(--elementMove); }
+.osd-stop { position: absolute; right: 0; top: 0; width: 4px; height: 4px; border-radius: 50%; background: var(--m3primary); }
+/* ---- Açık tema (ii: appearance dark mode kapalı) — Material You açık, mor tohum.
+   Tema düğmesi yalnızca bizim kabuğu değiştirir (Windows'a dokunmaz): tercih localStorage 'll.theme'da, <html data-theme> ile uygulanır. ---- */
+:root[data-theme="light"] {
+    --m3primary: #6750a4;
+    --m3onPrimary: #ffffff;
+    --m3primaryContainer: #eaddff;
+    --m3onPrimaryContainer: #21005d;
+    --m3secondaryContainer: #e8def8;
+    --m3onSecondaryContainer: #1d192b;
+    --m3onSurface: #1d1b20;
+    --m3onSurfaceVariant: #49454f;
+    --m3outline: #79747e;
+    --m3outlineVariant: #cac4d0;
+    --m3error: #b3261e;
+    --m3errorContainer: #f9dedc;
+    --m3onErrorContainer: #410e0b;
+    --colLayer0: #fef7ff;
+    --colLayer0Border: #e6e0e9;
+    --colLayer1: #f3edf7;
+    --colLayer1Hover: #e6e0e9;
+    --colLayer2: #ece6f0;
+    --colLayer2Hover: #e0dae4;
+    --colBackgroundSurfaceContainer: #f3edf7;
+    --colSurfaceContainerHigh: #ece6f0;
+    --colOnLayer0: #1d1b20;
+    --colOnLayer1: #1d1b20;
+    --colSubtext: #79747e;
+    --colOnLayer1Inactive: #9e98a3;
+    --occupied: rgba(232 222 248 / 90%);
+  }
+/* ---------- Üzerine gelince açılan kutular (ii StyledPopup) ---------- */
+.bar-pop {
+  position: fixed; top: 44px; z-index: 50;
+  animation: popDown 240ms cubic-bezier(0.05, 0.7, 0.1, 1);
+  transform-origin: top center;
+}
+.res-pop, .media-pop {
+  background: var(--colLayer0);
+  border: 1px solid rgba(73 69 79 / 60%);
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(0 0 0 / 35%);
+  color: var(--colOnLayer0);
+}
+.res-pop { display: flex; gap: 18px; padding: 10px 14px; font-size: 12px; width: max-content; }
+.res-col { flex: none; }
+.res-col { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.pop-head { display: flex; align-items: center; gap: 5px; font-size: 13px; margin-bottom: 3px; }
+.pop-head .icon { font-size: 15px; color: var(--colSubtext); }
+.pop-row { display: flex; align-items: center; gap: 4px; white-space: nowrap; color: var(--colOnLayer1); }
+.pop-row .icon { font-size: 13px; color: var(--colSubtext); }
+.pop-row .v { font-variant-numeric: tabular-nums; }
+
+.media-pop {
+  position: relative; overflow: hidden; width: 360px;
+  display: flex; gap: 12px; align-items: stretch; padding: 10px;
+}
+.media-pop .mp-bg {
+  position: absolute; inset: -20px; background: var(--art, none) center / cover;
+  filter: blur(24px) brightness(0.35) saturate(1.4); opacity: 0.9;
+}
+.media-pop > *:not(.mp-bg) { position: relative; }
+.mp-art { width: 90px; height: 90px; flex: none; border-radius: 12px; overflow: hidden; background: var(--m3secondaryContainer); display: flex; align-items: center; justify-content: center; }
+.mp-art img { width: 100%; height: 100%; object-fit: cover; }
+.mp-art .icon { font-size: 36px; color: var(--m3onSecondaryContainer); }
+.mp-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.mp-title { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mp-artist { font-size: 11px; color: var(--colSubtext); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mp-time { font-size: 12px; color: var(--colSubtext); margin-top: 10px; font-variant-numeric: tabular-nums; }
+.mp-controls { margin-top: auto; display: flex; align-items: center; gap: 6px; }
+.mp-controls button { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; border-radius: 999px; }
+.mp-controls button:hover { background: rgba(255 255 255 / 10%); }
+.mp-controls .icon { font-size: 18px; }
+.mp-bar { position: relative; flex: 1; height: 3px; cursor: pointer; border-radius: 999px; background: rgba(255 255 255 / 20%); }
+.mp-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--m3primary); }
+.mp-knob { position: absolute; top: 50%; width: 3px; height: 14px; border-radius: 2px; background: var(--m3primary); transform: translate(-50%, -50%); }
+.mp-play {
+  align-self: center; width: 36px; height: 36px; flex: none; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255 255 255 / 12%);
+  transition: border-radius 200ms var(--elementMove), background 150ms;
+}
+.mp-play:hover { background: rgba(255 255 255 / 20%); }
+.mp-play:active { border-radius: 10px; }
+.mp-play .icon { font-size: 22px; }
+.media.empty { cursor: default; }
+.media.empty .text { color: var(--colSubtext); }
+
+/* ---------- Workspace uygulama ikonları (ii showAppIcons: workspaceIconSize = 26 * 0.69) ---------- */
+.ws .ws-icon {
+  width: 18px; height: 18px; border-radius: 50%; object-fit: cover;
+  transition: transform 200ms var(--elementMove), filter 200ms;
+  filter: saturate(0.7);
+}
+.ws.active .ws-icon { filter: none; transform: scale(1.05); }
+.show-numbers .ws .ws-icon { transform: scale(0.72) translate(6px, 6px); }
+
+/* ---------- Tray sürükle-bırak ---------- */
+.tray.drop-target { outline: 1px dashed var(--m3primary); outline-offset: 2px; border-radius: 999px; }
+.tray-item[draggable="true"] { cursor: grab; }
+.tray-empty { grid-column: 1 / -1; text-align: center; font-size: 12px; color: var(--colSubtext); padding: 6px 0; }
+.tray-bar-items { display: flex; align-items: center; gap: 2px; }
+.tray-item.dragging { opacity: 0.35; }
+.tray-popup.drop-zone { outline: 1px dashed var(--m3primary); outline-offset: -4px; }
+.tray-ghost { position: fixed; width: 18px; height: 18px; pointer-events: none; z-index: 100; filter: drop-shadow(0 2px 4px rgba(0 0 0 / 50%)); }
+.tray-item, .tray-item img { touch-action: none; user-select: none; }
+.mp-bar::before { content: ''; position: absolute; left: 0; right: 0; top: -7px; bottom: -7px; } /* geniş tıklama alanı */
+
+.temp-hot { color: var(--colError, #ffb4ab); font-weight: 600; }
+
+/* Kapanış: bar'ın altına doğru yukarı kayarak */
+@keyframes popUp {
+  from { opacity: 1; transform: none; clip-path: inset(0 0 -40px 0 round 12px); }
+  to { opacity: 0; transform: translateY(-12px); clip-path: inset(0 0 100% 0 round 12px); }
+}
+.bar-pop.closing, .tray-popup.closing { animation: popUp 170ms cubic-bezier(0.3, 0, 0.8, 0.15) forwards; pointer-events: none; }

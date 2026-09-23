@@ -1,0 +1,258 @@
+# end-4 illogical-impulse (Hyprland) kurulumunun Windows karşılığı.
+# Yedek: config.yaml.bak-20260922
+#
+# Win10'da GlazeWM kenarlık rengi / köşe yuvarlatma yapamıyor (Win11'e özel API).
+# Mor odak kenarlığı + yuvarlak köşeleri tacky-borders çiziyor:
+#   ~/.glzr/logical-lunge/tools/tacky-borders.exe   config: ~/.config/tacky-borders/config.yaml
+
+general:
+  startup_commands:
+    - 'shell-exec zebar'
+    - 'shell-exec %USERPROFILE%\.glzr\logical-lunge\tools\tacky-borders.exe'
+    # Workspace slide animasyonu, yuvarlak köşeler, tek Super -> ii overview
+    - 'shell-exec %USERPROFILE%\.glzr\logical-lunge\helper\ll-helper.exe'
+    # Görev çubuğu tamamen gizli; işlevini Zebar'daki ii bar'ı görüyor.
+    - 'shell-exec --hide-window powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\.glzr\logical-lunge\scripts\hide-taskbar.ps1'
+  shutdown_commands:
+    - 'shell-exec taskkill /IM zebar.exe /F'
+    - 'shell-exec taskkill /IM tacky-borders.exe /F'
+    - 'shell-exec taskkill /IM ll-helper.exe /F'
+    - 'shell-exec --hide-window powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\.glzr\logical-lunge\scripts\show-taskbar.ps1'
+  config_reload_commands: []
+
+  # Hyprland input.follow_mouse = 1 -> ll-helper yapıyor (yalnızca gerçek fare hareketinde).
+  # GlazeWM'inki ara sıra tıklama gerektiriyordu; pencere kapanınca da odağı bozmasın diye kapalı.
+  focus_follows_cursor: false
+  toggle_workspace_on_refocus: false
+
+  cursor_jump:
+    enabled: true
+    trigger: 'monitor_focus'
+
+  hide_method: 'cloak'
+  show_all_in_taskbar: false
+
+# Hyprland: gaps_in = 4 (her iki tarafa) -> 8px, gaps_out = 5, üstte bar (40px) + 5
+gaps:
+  scale_with_dpi: true
+  inner_gap: '8px'
+  outer_gap:
+    top: '45px'
+    right: '5px'
+    bottom: '5px'
+    left: '5px'
+
+window_effects:
+  # Kenarlıkları tacky-borders çiziyor; buradakiler zaten Win10'da çalışmaz.
+  focused_window:
+    border:
+      enabled: false
+      color: '#b69df8'
+    hide_title_bar:
+      enabled: false
+    corner_style:
+      enabled: false
+      style: 'rounded'
+    transparency:
+      enabled: false
+      opacity: '100%'
+  other_windows:
+    border:
+      enabled: false
+      color: '#313136'
+    hide_title_bar:
+      enabled: false
+    corner_style:
+      enabled: false
+      style: 'rounded'
+    transparency:
+      enabled: false
+      opacity: '100%'
+
+window_behavior:
+  initial_state: 'tiling'
+  state_defaults:
+    # Yüzen uygulamalar (updater, istemciler, diyaloglar) ve tam ekran oyunlar döşenmiş
+    # pencerelerin arkasına düşmesin: her zaman üstte.
+    floating:
+      centered: true
+      shown_on_top: true
+    fullscreen:
+      maximized: false
+      shown_on_top: true
+
+# Hyprland'da workspace'ler sınırsızdı; GlazeWM önceden tanımlı ister -> 30 tane.
+# Boş olanlar bar'da nokta olarak görünür, açılınca otomatik silinir.
+workspaces:
+  - name: '1'
+  - name: '2'
+  - name: '3'
+  - name: '4'
+  - name: '5'
+  - name: '6'
+  - name: '7'
+  - name: '8'
+  - name: '9'
+  - name: '10'
+  - name: '11'
+  - name: '12'
+  - name: '13'
+  - name: '14'
+  - name: '15'
+  - name: '16'
+  - name: '17'
+  - name: '18'
+  - name: '19'
+  - name: '20'
+  - name: '21'
+  - name: '22'
+  - name: '23'
+  - name: '24'
+  - name: '25'
+  - name: '26'
+  - name: '27'
+  - name: '28'
+  - name: '29'
+  - name: '30'
+
+window_rules:
+  - commands: ['ignore']
+    match:
+      - window_process: { equals: 'zebar' }
+      - window_process: { equals: 'tacky-borders' }
+      - window_process: { equals: 'll-helper' }
+      - window_title: { regex: '[Pp]icture.in.[Pp]icture' }
+        window_class: { regex: 'Chrome_WidgetWin_1|MozillaDialogClass' }
+      - window_process: { equals: 'PowerToys' }
+        window_class: { regex: 'HwndWrapper\[PowerToys\.PowerAccent.*?\]' }
+      - window_title: { equals: 'Command Palette' }
+        window_class: { equals: 'WinUIDesktopWin32WindowClass' }
+      - window_process: { equals: 'PowerToys' }
+        window_title: { regex: '.*? - Peek' }
+      - window_process: { equals: 'Lively' }
+        window_class: { regex: 'HwndWrapper' }
+      - window_process: { equals: 'EXCEL' }
+        window_class: { not_regex: 'XLMAIN' }
+      - window_process: { equals: 'WINWORD' }
+        window_class: { not_regex: 'OpusApp' }
+      - window_process: { equals: 'POWERPNT' }
+        window_class: { not_regex: 'PPTFrameClass' }
+
+  # Genel diyalog sınıfları. Diğer her şey (boyutlanamayan, çerçevesiz açılır, sahipli pencereler,
+  # tam ekran oyunlar) uygulamaya özel kural olmadan ll-helper'da pencere özelliklerine göre karar verilir.
+  - commands: ['set-floating --centered']
+    match:
+      - window_class: { equals: 'MozillaDialogClass' }
+      - window_process: { equals: 'SystemSettings' }
+      - window_process: { equals: 'Taskmgr' }
+      - window_title: { regex: '^(Open|Save|Save As|Aç|Kaydet|Farklı Kaydet).*' }
+      - window_class: { equals: '#32770' }
+
+binding_modes:
+  - name: 'resize'
+    keybindings:
+      - commands: ['resize --width -2%']
+        bindings: ['h', 'left']
+      - commands: ['resize --width +2%']
+        bindings: ['l', 'right']
+      - commands: ['resize --height +2%']
+        bindings: ['k', 'up']
+      - commands: ['resize --height -2%']
+        bindings: ['j', 'down']
+      - commands: ['wm-disable-binding-mode --name resize']
+        bindings: ['escape', 'enter']
+
+keybindings:
+  # --- Pencere odağı: Super + ok ---
+  # ll-helper'da: yalnızca mevcut workspace'in pencereleri arasında gezer, asla başka
+  # workspace/monitöre atlamaz. GlazeWM'in "focus --direction"ı atladığı için burada bağlı DEĞİL.
+
+  # --- Pencereyi kaydır / layout değiştir: Super + Shift + ok ---
+  # ll-helper'da: yalnızca workspace içinde (GlazeWM'inki kenarda 2. monitöre geçiriyordu), fare pencereyi izler.
+
+  # --- Workspace geçişi: Super + Ctrl + ←/→ (ve PageUp/PageDown) ---
+  # ll-helper çalışırken Super+Ctrl+←/→, Super+Ctrl+Shift+←/→ ve Super+sayı'yı o yakalar
+  # (slide animasyonlu); aşağıdakiler helper kapalıyken yedek.
+  - commands: ['focus --prev-workspace']
+    bindings: ['lwin+page_up', 'lwin+ctrl+page_up']
+  - commands: ['focus --next-workspace']
+    bindings: ['lwin+page_down', 'lwin+ctrl+page_down']
+  # Super + Ctrl + Alt + ←/→ : sadece dolu workspace'ler arası
+  - commands: ['focus --prev-active-workspace']
+    bindings: ['lwin+ctrl+alt+left']
+  - commands: ['focus --next-active-workspace']
+    bindings: ['lwin+ctrl+alt+right']
+
+  # --- Pencereyi workspace'ler arası taşı: Ctrl + Shift + Super + ←/→ ---
+  - commands: ['move --prev-workspace', 'focus --prev-workspace']
+    bindings: ['lwin+shift+page_up']
+  - commands: ['move --next-workspace', 'focus --next-workspace']
+    bindings: ['lwin+shift+page_down']
+
+  # --- Super + sayı, Super+Ctrl+←/→, Super+Ctrl+Shift+←/→: ll-helper'da (keybinds.json, sağ panel > Kısayollar) ---
+
+  # --- Super + Alt + sayı: pencereyi gönder (takip etmeden, Hyprland'daki gibi) ---
+  - commands: ['move --workspace 1']
+    bindings: ['lwin+alt+1']
+  - commands: ['move --workspace 2']
+    bindings: ['lwin+alt+2']
+  - commands: ['move --workspace 3']
+    bindings: ['lwin+alt+3']
+  - commands: ['move --workspace 4']
+    bindings: ['lwin+alt+4']
+  - commands: ['move --workspace 5']
+    bindings: ['lwin+alt+5']
+  - commands: ['move --workspace 6']
+    bindings: ['lwin+alt+6']
+  - commands: ['move --workspace 7']
+    bindings: ['lwin+alt+7']
+  - commands: ['move --workspace 8']
+    bindings: ['lwin+alt+8']
+  - commands: ['move --workspace 9']
+    bindings: ['lwin+alt+9']
+  - commands: ['move --workspace 10']
+    bindings: ['lwin+alt+0']
+
+  # --- Pencere durumu ---
+  - commands: ['toggle-fullscreen']
+    bindings: ['lwin+f']
+  - commands: ['toggle-floating --centered']
+    bindings: ['lwin+alt+space']
+  - commands: ['toggle-tiling-direction']
+    bindings: ['lwin+j']
+  - commands: ['toggle-minimized']
+    bindings: ['lwin+m']
+  - commands: ['wm-cycle-focus']
+    bindings: ['lwin+space']
+
+  # Split oranı: Super + ; / '   (Hyprland splitratio)
+  - commands: ['resize --width -10%']
+    bindings: ['lwin+oem_1']
+  - commands: ['resize --width +10%']
+    bindings: ['lwin+oem_7']
+  - commands: ['wm-enable-binding-mode --name resize']
+    bindings: ['lwin+alt+r']
+
+  # Kapatma: Hyprland custom'unda olduğu gibi sadece Alt+F4 (Windows'un kendisi yapıyor)
+
+  # --- Uygulamalar ---
+  # Super+Enter/T (terminal), Super+W (Zen), E (Explorer), C (VS Code), X (Not Defteri) ll-helper'da:
+  # önce farenin altındaki pencereyi odaklıyor (Hyprland dwindle yeni pencereyi oraya açar).
+  # GlazeWM'in shell-exec'i boşluklu tırnaklı yolları da ayrıştıramıyordu.
+  - commands: ['shell-exec %USERPROFILE%\.glzr\logical-lunge\tools\wezterm\wezterm-gui.exe']
+    bindings: ['ctrl+alt+t']
+  - commands: ['shell-exec ms-settings:']
+    bindings: ['lwin+i']
+  - commands: ['shell-exec sndvol']
+    bindings: ['lwin+ctrl+v']
+
+  # --- WM ---
+  - commands: ['wm-reload-config']
+    bindings: ['lwin+shift+r']
+  - commands: ['wm-redraw']
+    bindings: ['lwin+shift+w']
+  - commands: ['wm-toggle-pause']
+    bindings: ['lwin+shift+p']
+  - commands: ['wm-exit']
+    bindings: ['lwin+shift+alt+e']
+

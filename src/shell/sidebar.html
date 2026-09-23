@@ -1,0 +1,1244 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+(function () {
+  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
+// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
+// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      apply();
+      return next;
+    }
+  };
+})();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="./sidebar.css" />
+    <script
+      src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"
+      integrity="sha256-aS0B0wnsaDByLfE16h4MDCP1fQFccysd1YWOcV+gbBo="
+      crossorigin="anonymous"
+    ></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="text/babel" data-type="module">
+      // ii modules/ii/sidebarRight/SidebarRightContent.qml:
+      //   SystemButtonRow, AndroidQuickPanel (quickToggles.style = "android"),
+      //   CenterWidgetGroup (NotificationList), BottomWidgetGroup (takvim / yapılacaklar / zamanlayıcı)
+      import React, { useState, useEffect, useRef, useCallback } from 'https://esm.sh/react@18';
+      import { createRoot } from 'https://esm.sh/react-dom@18/client';
+      import * as zebar from 'https://esm.sh/zebar@3';
+      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
+
+      const win = zebar.currentWidget().tauriWindow;
+      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
+      const LL = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts';
+      const providers = zebar.createProviderGroup({
+        audio: { type: 'audio' },
+        host: { type: 'host', refreshInterval: 60000 },
+        network: { type: 'network', refreshInterval: 10000 },
+        glazewm: { type: 'glazewm' },
+      });
+
+      const Icon = ({ name, fill }) => <span className={`icon ${fill ? 'fill' : ''}`}>{name}</span>;
+      // Hepsi ll-helper üzerinden: hiç konsol penceresi açılmaz
+      const helper = args => zebar.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
+      const psFile = (file, args = []) => helper(['--ps', `${LL}\\${file}`, ...args]);
+      const json = s => { try { return JSON.parse(s); } catch { return null; } };
+      const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+      const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
+      function App() {
+        const [open, setOpen] = useState(false);
+        const [page, setPage] = useState(null); // 'keys' | 'walls'
+        useEffect(() => { if (!open) setTimeout(() => setPage(null), 280); }, [open]);
+        const [o, setO] = useState(providers.outputMap);
+        const openedFocus = useRef(null);
+        useEffect(() => { providers.onOutput(() => setO({ ...providers.outputMap })); }, []);
+
+        const hide = useCallback(() => {
+          setOpen(false);
+          setTimeout(() => win.hide().catch(() => {}), 260);
+        }, []);
+        const show = useCallback(async () => {
+          openedFocus.current = providers.outputMap.glazewm?.focusedContainer?.id ?? null;
+          // Gizlenip yeniden gösterilince "her zaman üstte" düşebiliyor: her açılışta yeniden ver
+          try { await win.show(); } catch {}
+          // Zebar'ın setAlwaysOnTop'u gizle/göster sonrası etkisiz: helper Windows API ile en üste alıp odaklar
+          helper(['--raise', 'Zebar - logical-lunge / sidebar-right']).catch(() => {});
+          requestAnimationFrame(() => setOpen(true));
+        }, []);
+
+        useEffect(() => { win.hide().catch(() => {}); }, []);
+
+        useEffect(() => {
+          const un1 = listen('ll:sidebar-right-toggle', () => (open ? hide() : show()));
+          const un2 = listen('ll:overview-toggle', () => { if (open) hide(); });
+          const onBlur = () => { if (open) hide(); };
+          const onKey = e => { if (e.key === 'Escape') hide(); };
+          window.addEventListener('blur', onBlur);
+          window.addEventListener('keydown', onKey);
+          return () => { un1.then(f => f()); un2.then(f => f()); window.removeEventListener('blur', onBlur); window.removeEventListener('keydown', onKey); };
+        }, [open]);
+
+        // Panel her zaman odak almayabiliyor (blur hiç gelmez): başka pencereye odak geçince
+        // (tık, kısayol ya da fareyle) kapan.
+        const focusedId = o.glazewm?.focusedContainer?.id;
+        useEffect(() => {
+          if (open && openedFocus.current !== null && focusedId && focusedId !== openedFocus.current) hide();
+        }, [focusedId]);
+
+        return (
+          <div className={`panel ${open ? '' : 'closed'}`}>
+            <SystemButtonRow host={o.host} onPage={setPage} />
+            <AndroidQuickPanel o={o} open={open} />
+            <NotificationList open={open} />
+            <BottomWidgetGroup />
+            {page === 'keys' && <ShortcutsPage onClose={() => setPage(null)} />}
+            {page === 'walls' && <WallpaperPage onClose={() => setPage(null)} />}
+          </div>
+        );
+      }
+
+      // ======================= Sayfalar: Kısayollar / Duvar kağıtları =======================
+      // Panelin üstüne sağdan kayarak açılan tam sayfalar (ii WindowDialog hissi, panel içinde).
+      function Page({ title, icon, onClose, actions, children }) {
+        const [shown, setShown] = useState(false);
+        useEffect(() => { requestAnimationFrame(() => setShown(true)); }, []);
+        const close = () => { setShown(false); setTimeout(onClose, 260); };
+        useEffect(() => {
+          const k = e => { if (e.key === 'Escape' && !window.__llCapturing) { e.stopPropagation(); close(); } };
+          window.addEventListener('keydown', k, true);
+          return () => window.removeEventListener('keydown', k, true);
+        }, []);
+        return (
+          <div className={`page ${shown ? 'shown' : ''}`}>
+            <div className="page-head">
+              <button className="qbtn" onClick={close} title="Geri"><Icon name="arrow_back" /></button>
+              <Icon name={icon} />
+              <span className="page-title">{title}</span>
+              <div className="page-actions">{actions}</div>
+            </div>
+            <div className="page-body">{children}</div>
+          </div>
+        );
+      }
+
+      const low = s => String(s || '').toLocaleLowerCase(window.LL_LOCALE);
+
+      // ---- Kısayollar ----
+      const LL_LABELS = {
+        'focus-left': 'Sola odaklan', 'focus-right': 'Sağa odaklan', 'focus-up': 'Yukarı odaklan', 'focus-down': 'Aşağı odaklan',
+        'move-left': 'Pencereyi sola taşı', 'move-right': 'Pencereyi sağa taşı', 'move-up': 'Pencereyi yukarı taşı', 'move-down': 'Pencereyi aşağı taşı',
+        'ws-prev': 'Önceki workspace', 'ws-next': 'Sonraki workspace',
+        'ws-move-prev': "Pencereyi önceki workspace'e taşı", 'ws-move-next': "Pencereyi sonraki workspace'e taşı",
+        terminal: 'Terminal', 'terminal-alt': 'Terminal (ikinci kısayol)', browser: 'Tarayıcı', files: 'Dosya yöneticisi',
+        code: 'Kod editörü', editor: 'Metin editörü', close: 'Pencereyi kapat', screenshot: 'Ekran alıntısı',
+      };
+      const llLabel = id => LL_LABELS[id] || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
+      const llGroup = id => id.startsWith('focus-') || id.startsWith('move-') || id === 'close' ? 'win'
+        : id.startsWith('ws-') ? 'ws' : id === 'screenshot' ? 'sys' : 'app';
+      function gwmLabel(cmds) {
+        const c = cmds.join(' ; ');
+        let m;
+        if ((m = c.match(/^move --workspace (\d+)$/))) return `Pencereyi workspace ${m[1]}'e gönder`;
+        const map = {
+          'focus --prev-workspace': 'Önceki workspace (PageUp)', 'focus --next-workspace': 'Sonraki workspace (PageDown)',
+          'focus --prev-active-workspace': 'Önceki dolu workspace', 'focus --next-active-workspace': 'Sonraki dolu workspace',
+          'move --prev-workspace ; focus --prev-workspace': "Pencereyi önceki workspace'e taşı (PageUp)",
+          'move --next-workspace ; focus --next-workspace': "Pencereyi sonraki workspace'e taşı (PageDown)",
+          'toggle-fullscreen': 'Tam ekran', 'toggle-floating --centered': 'Yüzen pencere', 'toggle-tiling-direction': 'Bölme yönünü değiştir',
+          'toggle-minimized': 'Simge durumuna küçült', 'wm-cycle-focus': 'Yüzen / döşeli pencereler arasında geç',
+          'resize --width -10%': 'Pencereyi daralt', 'resize --width +10%': 'Pencereyi genişlet', 'wm-enable-binding-mode --name resize': 'Boyutlandırma modu',
+          'shell-exec ms-settings:': 'Windows ayarları', 'shell-exec sndvol': 'Ses karıştırıcı',
+          'wm-reload-config': 'GlazeWM ayarlarını yenile', 'wm-redraw': 'Pencereleri yeniden çiz', 'wm-toggle-pause': "GlazeWM'i duraklat", 'wm-exit': "GlazeWM'den çık",
+        };
+        if (map[c]) return map[c];
+        if (/wezterm/i.test(c)) return 'Terminal (yedek)';
+        return c;
+      }
+      const gwmGroup = cmds => {
+        const c = cmds.join(' ');
+        if (/workspace/.test(c)) return 'ws';
+        if (/shell-exec/.test(c)) return 'app';
+        if (/^wm-(reload|redraw|toggle-pause|exit)/.test(c)) return 'sys';
+        return 'win';
+      };
+      const GROUPS = [['win', 'Pencereler', 'select_window'], ['ws', 'Workspace', 'view_carousel'], ['app', 'Uygulamalar', 'apps'], ['sys', 'Sistem', 'settings']];
+      const KEY_GLYPH = { Left: '←', Right: '→', Up: '↑', Down: '↓', Enter: '↵', PageUp: 'PgUp', PageDown: 'PgDn' };
+
+      function Keycaps({ combo }) {
+        if (!combo) return <span className="kc-none">—</span>;
+        return (
+          <span className="kcs">
+            {combo.split('+').map((k, i) => (
+              <span key={i} className={`kc ${k === 'Super' ? 'super' : ''}`}>
+                {k === 'Super' ? <><svg viewBox="0 0 24 24" width="11" height="11"><path fill="currentColor" d="M3 5.5 10 4.5v7H3zM11 4.4 21 3v8.5H11zM3 12.5h7v7l-7-1zM11 12.5h10V21l-10-1.4z"/></svg>Super</> : (KEY_GLYPH[k] || k)}
+              </span>
+            ))}
+          </span>
+        );
+      }
+
+      function ShortcutsPage({ onClose }) {
+        const [ll, setLl] = useState([]);
+        const [gwm, setGwm] = useState([]);
+        const [locked, setLocked] = useState(true);
+        const [capturing, setCapturing] = useState(null); // satır anahtarı
+        const [msg, setMsg] = useState(null);
+        const [q, setQ] = useState('');
+        const load = useCallback(() => {
+          helper(['--keybinds']).then(s => { const r = json(s); if (Array.isArray(r)) setLl(r); }).catch(() => {});
+          psFile('keybinds-gwm.ps1', ['list']).then(s => { const r = json(s); if (Array.isArray(r)) setGwm(r); }).catch(() => {});
+        }, []);
+        useEffect(load, []);
+        useEffect(() => { window.__llCapturing = !!capturing; }, [capturing]);
+
+        const rows = [
+          { key: 'super', group: 'sys', label: 'Arama / overview', combo: 'Super', fixed: true },
+          ...ll.map(b => ({ key: 'll:' + b.id, group: llGroup(b.id), label: llLabel(b.id), combo: b.combo, def: b.default, src: 'll', id: b.id })),
+          ...gwm.map(g => ({ key: 'gwm:' + g.index, group: gwmGroup(g.commands), label: gwmLabel(g.commands), combo: g.bindings[0] || '', extra: g.bindings.slice(1), src: 'gwm', id: g.index })),
+        ];
+        const shown = q ? rows.filter(r => low(r.label).includes(low(q)) || low(r.combo).includes(low(q))) : rows;
+
+        const capture = async row => {
+          if (locked || row.fixed || capturing) return;
+          setMsg(null); setCapturing(row.key);
+          let combo = '';
+          try { combo = (await helper(['--capture'])).trim(); } catch {}
+          setCapturing(null);
+          if (!combo) return;
+          const clash = rows.find(r => r.key !== row.key && (r.combo === combo || (r.extra || []).includes(combo)));
+          if (clash) { setMsg({ kind: 'error', text: `${combo} zaten "${clash.label}" için kullanılıyor` }); return; }
+          await apply(row, combo);
+        };
+        const apply = async (row, combo) => {
+          if (row.src === 'll') await helper(['--bind', row.id, combo]).catch(() => {});
+          else await psFile('keybinds-gwm.ps1', ['set', String(row.id), combo]).catch(() => {});
+          setMsg({ kind: 'ok', text: `${row.label}: ${combo || 'kapatıldı'}` });
+          load();
+        };
+        const resetAll = async () => {
+          await helper(['--bind-reset']).catch(() => {});
+          await psFile('keybinds-gwm.ps1', ['reset']).catch(() => {});
+          setMsg({ kind: 'ok', text: 'Tüm kısayollar varsayılana döndü' });
+          load();
+        };
+
+        return (
+          <Page title="Kısayollar" icon="keyboard" onClose={onClose} actions={<>
+            <button className={`chip ${locked ? '' : 'on'}`} onClick={() => { setLocked(v => !v); setMsg(null); }}
+                    title={locked ? 'Düzenlemeyi aç' : 'Salt okunur yap'}>
+              <Icon name={locked ? 'lock' : 'lock_open'} />{locked ? 'Salt okunur' : 'Düzenleme'}
+            </button>
+          </>}>
+            <div className="kb-tools">
+              <div className="kb-search"><Icon name="search" /><input value={q} onChange={e => setQ(e.target.value)} placeholder="Kısayol ara" spellCheck={false} /></div>
+              <button className="chip" disabled={locked} onClick={resetAll} title="Varsayılanlara sıfırla"><Icon name="restart_alt" />Sıfırla</button>
+            </div>
+            {!locked && <div className="kb-hint"><Icon name="info" />Değiştirmek için bir satıra tıkla ve yeni tuşlara bas. Esc: iptal.</div>}
+            {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
+            {GROUPS.map(([g, title, icon]) => {
+              const list = shown.filter(r => r.group === g);
+              if (!list.length) return null;
+              return (
+                <div key={g} className="kb-group">
+                  <div className="kb-gtitle"><Icon name={icon} />{title}</div>
+                  {list.map(r => (
+                    <div key={r.key} className={`kb-row ${locked || r.fixed ? '' : 'editable'} ${capturing === r.key ? 'capturing' : ''}`} onClick={() => capture(r)}>
+                      <span className="kb-label">{r.label}</span>
+                      {capturing === r.key
+                        ? <span className="kb-wait"><Icon name="keyboard" />Tuşlara bas…</span>
+                        : <Keycaps combo={r.combo} />}
+                      {!locked && r.src === 'll' && r.def && r.combo !== r.def && capturing !== r.key && (
+                        <button className="kb-mini" title={`Varsayılan: ${r.def}`} onClick={e => { e.stopPropagation(); apply(r, r.def); }}><Icon name="undo" /></button>
+                      )}
+                      {!locked && !r.fixed && r.combo && capturing !== r.key && (
+                        <button className="kb-mini" title="Kısayolu kaldır" onClick={e => { e.stopPropagation(); apply(r, ''); }}><Icon name="close" /></button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })}
+          </Page>
+        );
+      }
+
+      // ---- Duvar kağıtları ----
+      const WALL_CATS = [['anime', 'Anime', 'animation'], ['nature', 'Doğa', 'forest'], ['space', 'Uzay', 'rocket'], ['city', 'Şehir', 'location_city'], ['minimal', 'Minimal', 'crop_square'], ['local', 'Kütüphanem', 'photo_library']];
+      const wallCache = {};
+      function WallRow({ items, busy, onPick, onCustom, customLabel, wide }) {
+        const ref = useRef(null);
+        return (
+          <div className={`wall-row ${wide ? 'wide' : ''}`} ref={ref}
+               onWheel={e => { if (ref.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { ref.current.scrollLeft += e.deltaY; } }}>
+            <button className="wall-tile custom" onClick={onCustom}>
+              <Icon name="add_photo_alternate" /><span>{customLabel}</span>
+            </button>
+            {items === null && <div className="wall-tile ghost"><Icon name="progress_activity" /></div>}
+            {items && items.length === 0 && <div className="wall-empty">Bir şey bulunamadı</div>}
+            {items && items.map(it => (
+              <button key={it.key} className={`wall-tile ${busy === it.key ? 'busy' : ''}`} onClick={() => onPick(it)} title={it.res || it.name || ''}>
+                <img src={it.thumb} alt="" loading="lazy" />
+                {it.res && <span className="wall-res">{it.res}</span>}
+                {busy === it.key && <span className="wall-spin"><Icon name="progress_activity" /></span>}
+              </button>
+            ))}
+          </div>
+        );
+      }
+
+      function WallpaperPage({ onClose }) {
+        const [info, setInfo] = useState(null);
+        const [target, setTarget] = useState('all');
+        const [cat, setCat] = useState(load('ll.wall.cat', 'anime'));
+        const [items, setItems] = useState(null);
+        const [spanItems, setSpanItems] = useState(null);
+        const [busy, setBusy] = useState(null);
+        const [msg, setMsg] = useState(null);
+        const loadInfo = () => helper(['--wall-info']).then(s => { const r = json(s); if (r && r.monitors) setInfo(r); }).catch(() => {});
+        useEffect(() => { loadInfo(); }, []);
+
+        const fetchCat = async c => {
+          if (wallCache[c]) return wallCache[c];
+          if (c === 'local') {
+            const files = json(await helper(['--wall-local']).catch(() => '[]')) || [];
+            const out = [];
+            for (const f of files.slice(0, 16)) {
+              const t = await helper(['--wall-thumb', f.path]).catch(() => '');
+              if (t.startsWith('data:')) out.push({ key: f.path, thumb: t, path: f.path, name: f.name });
+            }
+            return out; // yerel liste önbelleğe alınmaz (yeni eklenenler görünsün)
+          }
+          const r = json(await helper(['--wall-browse', c]).catch(() => '[]')) || [];
+          return (wallCache[c] = r.map(x => ({ key: x.id, thumb: x.thumb, full: x.full, res: x.res })));
+        };
+        useEffect(() => { let alive = true; setItems(null); save('ll.wall.cat', cat); fetchCat(cat).then(r => alive && setItems(r)); return () => { alive = false; }; }, [cat]);
+        const multi = (info?.monitors?.length || 0) > 1;
+        useEffect(() => { if (multi) fetchCat('span').then(setSpanItems); }, [multi]);
+
+        const applyItem = async (it, mode) => {
+          setBusy(it.key); setMsg(null);
+          const r = json(it.path ? await helper(['--wall-set', it.path, mode]).catch(() => '') : await helper(['--wall-get', it.full, mode]).catch(() => '')) || {};
+          setBusy(null);
+          if (r.error) setMsg({ kind: 'error', text: r.error }); else { setMsg({ kind: 'ok', text: 'Duvar kağıdı ayarlandı' }); loadInfo(); }
+        };
+        const custom = mode => helper(['--wall-pick', mode]).then(() => loadInfo()).catch(() => {});
+
+        // Monitör yerleşimi (Windows ekran ayarları gibi küçük harita)
+        const mons = info?.monitors || [];
+        const minX = Math.min(...mons.map(m => m.x), 0), minY = Math.min(...mons.map(m => m.y), 0);
+        const maxX = Math.max(...mons.map(m => m.x + m.w), 1), maxY = Math.max(...mons.map(m => m.y + m.h), 1);
+        const sc = Math.min(360 / (maxX - minX), 90 / (maxY - minY));
+
+        return (
+          <Page title="Duvar kağıtları" icon="wallpaper" onClose={onClose}>
+            {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
+            <div className="wall-sec">
+              <div className="kb-gtitle"><Icon name="desktop_windows" />Her monitöre</div>
+              {mons.length > 0 && (
+                <div className="mon-map" style={{ height: (maxY - minY) * sc + 8 }}>
+                  {mons.map((m, i) => (
+                    <button key={m.id} className={`mon ${target === 'all' || target === m.id ? 'sel' : ''}`}
+                            style={{ left: (m.x - minX) * sc, top: (m.y - minY) * sc, width: m.w * sc - 4, height: m.h * sc - 4 }}
+                            onClick={() => setTarget(t => (t === m.id ? 'all' : m.id))} title={`${m.w}×${m.h}`}>
+                      <span>{i + 1}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="wall-target">
+                <button className={`chip ${target === 'all' ? 'on' : ''}`} onClick={() => setTarget('all')}><Icon name="select_all" />Tümü</button>
+                {mons.map((m, i) => (
+                  <button key={m.id} className={`chip ${target === m.id ? 'on' : ''}`} onClick={() => setTarget(m.id)}>{`Monitör ${i + 1}`}</button>
+                ))}
+              </div>
+              <div className="wall-cats">
+                {WALL_CATS.map(([k, label, icon]) => (
+                  <button key={k} className={`chip ${cat === k ? 'on' : ''}`} onClick={() => setCat(k)}><Icon name={icon} />{label}</button>
+                ))}
+              </div>
+              <WallRow items={items} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom(target)} onPick={it => applyItem(it, target)} />
+            </div>
+            {multi && (
+              <div className="wall-sec">
+                <div className="kb-gtitle"><Icon name="panorama_wide_angle" />Superscreen · tüm monitörlere yayılan tek resim</div>
+                <div className="kb-hint"><Icon name="info" />Ultra geniş (32:9) öneriler; resim monitörlerin gerçek yerleşimine göre bölünür.</div>
+                <WallRow wide items={spanItems} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom('span')} onPick={it => applyItem(it, 'span')} />
+              </div>
+            )}
+            <div className="wall-credit">Öneriler: wallhaven.cc (yalnızca güvenli içerik)</div>
+          </Page>
+        );
+      }
+
+      // ---- SystemButtonRow: "Çalışma süresi 1d, 31m" + düzenle / ayarlar / oturum ----
+      function formatUptime(ms) {
+        const m = Math.floor(ms / 60000), h = Math.floor(m / 60), d = Math.floor(h / 24);
+        if (d) return `${d}d, ${h % 24}h`;
+        if (h) return `${h}h, ${m % 60}m`;
+        return `${m}m`;
+      }
+
+      let setEditModeGlobal = () => {};
+      function SystemButtonRow({ host, onPage }) {
+        const [session, setSession] = useState(false);
+        const [edit, setEdit] = useState(false);
+        useEffect(() => { setEditModeGlobal(edit); }, [edit]);
+        return (
+          <>
+            <div className="sysrow">
+              <div className="uptime">
+                <svg viewBox="0 0 24 24" className="distro"><path fill="currentColor" d="M3 5.5 10 4.5v7H3zM11 4.4 21 3v8.5H11zM3 12.5h7v7l-7-1zM11 12.5h10V21l-10-1.4z"/></svg>
+                <span>Çalışma süresi {host ? formatUptime(host.uptime) : '…'}</span>
+              </div>
+              <div className="btngroup">
+                <button className="qbtn" title="Duvar kağıtları" onClick={() => onPage('walls')}>
+                  <Icon name="wallpaper" />
+                </button>
+                <button className="qbtn" title="Kısayollar" onClick={() => onPage('keys')}>
+                  <Icon name="keyboard" />
+                </button>
+                <button className={`qbtn ${edit ? 'on' : ''}`} title="Hızlı ayarları düzenle (tık: ekle/kaldır, sağ tık: boyut, tekerlek: sıra)" onClick={() => setEdit(e => !e)}>
+                  <Icon name="edit" />
+                </button>
+                <button className="qbtn" title="Ayarlar klasörü" onClick={() => zebar.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.glzr\\logical-lunge'])}>
+                  <Icon name="settings" />
+                </button>
+                <button className={`qbtn ${session ? 'on' : ''}`} title="Oturum" onClick={() => setSession(s => !s)}>
+                  <Icon name="power_settings_new" />
+                </button>
+              </div>
+            </div>
+            {session && <SessionRow />}
+          </>
+        );
+      }
+
+      // ii sessionScreen: kilitle / uyku / çıkış / yeniden başlat / kapat
+      function SessionRow() {
+        const act = (prog, args) => zebar.shellSpawn(prog, args);
+        const items = [
+          ['lock', 'Kilitle', () => act('rundll32', ['user32.dll,LockWorkStation'])],
+          ['dark_mode', 'Uyku', () => act('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0'])],
+          ['logout', 'Çıkış', () => act('shutdown', ['/l'])],
+          ['restart_alt', 'Yeniden', () => act('shutdown', ['/r', '/t', '0'])],
+          ['power_settings_new', 'Kapat', () => act('shutdown', ['/s', '/t', '0'])],
+        ];
+        return (
+          <div className="session">
+            {items.map(([ic, label, fn]) => (
+              <button key={ic} className="session-btn" onClick={fn} title={label}><Icon name={ic} /><span>{label}</span></button>
+            ))}
+          </div>
+        );
+      }
+
+      // ---- AndroidQuickPanel + AndroidQuickToggleButton ----
+      const COLUMNS = 5, CELL_H = 56, SPACING = 6, PADDING = 6;
+      const DEFAULT_TOGGLES = [
+        { type: 'wifi', size: 2 }, { type: 'ethernet', size: 2 }, { type: 'idleInhibitor', size: 1 },
+        { type: 'mic', size: 1 }, { type: 'bluetooth', size: 2 }, { type: 'audio', size: 2 },
+        { type: 'nightLight', size: 2 },
+      ];
+      const AVAILABLE = ['wifi', 'ethernet', 'bluetooth', 'idleInhibitor', 'nightLight', 'darkMode', 'screenSnip', 'onScreenKeyboard', 'mic', 'audio', 'notifications'];
+
+      // Eski kayıtlı düzende tek "network" kutucuğu vardı: Wi-Fi + Ethernet'e böl
+      function loadToggles() {
+        let t = load('ll.quickToggles', DEFAULT_TOGGLES);
+        const before = JSON.stringify(t);
+        const i = t.findIndex(x => x.type === 'network');
+        if (i >= 0) t = [...t.slice(0, i), { type: 'wifi', size: 2 }, { type: 'ethernet', size: 2 }, ...t.slice(i + 1)];
+        t = t.filter(x => AVAILABLE.includes(x.type));
+        if (JSON.stringify(t) !== before) save('ll.quickToggles', t);
+        return t;
+      }
+
+      function rowsFor(list) {
+        const rows = []; let row = [], total = 0;
+        for (const t of list) {
+          if (total + t.size > COLUMNS) { rows.push(row); row = []; total = 0; }
+          row.push(t); total += t.size;
+        }
+        if (row.length) rows.push(row);
+        return rows;
+      }
+
+      const signalIcon = s => (s >= 75 ? 'signal_wifi_4_bar' : s >= 50 ? 'network_wifi_3_bar' : s >= 25 ? 'network_wifi_2_bar' : 'network_wifi_1_bar');
+      const openSettings = uri => zebar.shellSpawn('explorer', [uri]);
+
+      let awakeRestarted = false;
+      function AndroidQuickPanel({ o, open }) {
+        const [toggles, setToggles] = useState(loadToggles);
+        const [edit, setEdit] = useState(false);
+        const [menu, setMenu] = useState(null); // kutucuğun altında kayarak açılan kart: 'wifi' | 'ethernet' | 'bluetooth'
+        // Son bilinen donanım durumu önbellekten: panel açılınca kutucuklar yerinde hazır gelir, sonradan belirmez
+        const [st, setSt] = useState(() => ({ radios: {}, eth: null, bt: null, awake: false, mic: null, ...load('ll.qs.cache', {}), theme: window.llTheme?.get() ?? 'dark', dnd: load('ll.dnd', false) }));
+        setEditModeGlobal = setEdit;
+        useEffect(() => { if (!open) setMenu(null); }, [open]);
+        useEffect(() => { save('ll.qs.cache', { radios: st.radios, eth: st.eth, bt: st.bt, awake: st.awake, mic: st.mic }); }, [st.radios, st.eth, st.bt, st.awake, st.mic]);
+        const panelRef = useRef(null);
+
+        const refresh = useCallback(() => {
+          psFile('radios.ps1', ['get']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, radios: r })); }).catch(() => {});
+          psFile('eth.ps1', ['status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, eth: r })); }).catch(() => {});
+          psFile('bt.ps1').then(s => { const r = json(s); if (r) setSt(x => ({ ...x, bt: r })); }).catch(() => {});
+          helper(['--nightlight', 'status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, night: r })); }).catch(() => {});
+          psFile('status.ps1').then(s => {
+            const r = json(s); if (!r) return;
+            // Yeniden başlatmadan sonra: açık bırakılmışsa uyanık tutmayı yeniden başlat
+            if (!r.awake && load('ll.awake.want', false) && !awakeRestarted) {
+              awakeRestarted = true;
+              helper(['--ps-bg', `${LL}\\keep-awake.ps1`]).catch(() => {});
+              r.awake = true;
+            }
+            setSt(x => ({ ...x, awake: !!r.awake }));
+          }).catch(() => {});
+          helper(['--mic', 'status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, mic: !r.muted })); }).catch(() => {});
+        }, []);
+        // Açılışta (panel gizliyken) bir kez ve her açılışta tazele
+        useEffect(() => { refresh(); }, []);
+        useEffect(() => { if (open) refresh(); }, [open]);
+        useEffect(() => {
+          const f = () => setSt(x => ({ ...x, theme: window.llTheme?.get() ?? 'dark', dnd: load('ll.dnd', false) }));
+          window.addEventListener('storage', f);
+          return () => window.removeEventListener('storage', f);
+        }, []);
+
+        const out = o.audio?.defaultPlaybackDevice;
+        const ssid = o.network?.defaultGateway?.ssid || null;
+        const wifiOn = st.radios.wifi === 'On';
+        const eth = st.eth;
+        const toggleMenu = type => setMenu(m => (m === type ? null : type));
+
+        const defs = {
+          wifi: {
+            name: 'Wi-Fi', alt: true, hidden: !st.radios.wifi, // adaptör yoksa hiç gösterme
+            icon: !wifiOn ? 'wifi_off' : ssid ? 'wifi' : 'wifi_find', toggled: wifiOn,
+            status: !wifiOn ? 'Kapalı' : ssid || 'Bağlı değil',
+            action: () => {
+              const next = wifiOn ? 'Off' : 'On';
+              setSt(x => ({ ...x, radios: { ...x.radios, wifi: next } }));
+              psFile('radios.ps1', ['set', 'wifi', next]).then(refresh).catch(refresh);
+            },
+            menu: () => toggleMenu('wifi'),
+          },
+          ethernet: {
+            // kablo takılı değilse gösterme; ama devre dışı bırakıldıysa göster ki geri açılabilsin
+            name: 'Ethernet', alt: true, hidden: !eth || eth.state === 'none' || eth.state === 'disconnected',
+            icon: eth?.state === 'disabled' ? 'settings_ethernet' : 'lan', toggled: eth?.state === 'up',
+            status: eth?.state === 'disabled' ? 'Devre dışı' : eth?.speed ? `Bağlı · ${eth.speed}` : 'Bağlı',
+            action: () => {
+              setSt(x => ({ ...x, eth: { ...x.eth, state: x.eth?.state === 'disabled' ? 'up' : 'disabled' } }));
+              psFile('eth.ps1', ['toggle']).then(s => {
+                const r = json(s);
+                if (r && !r.ok) emit('ll:toast', { kind: 'error', title: 'Ethernet', body: 'Yönetici görevi bulunamadı: scripts\\setup-eth-tasks.ps1 bir kez yönetici olarak çalıştırılmalı.', icon: 'lan' }).catch(() => {});
+                setTimeout(refresh, 2500);
+              }).catch(refresh);
+            },
+            menu: () => toggleMenu('ethernet'),
+          },
+          bluetooth: (() => {
+            // Her zaman görünür; adaptör yoksa tıklanınca bizim toast ile uyarır
+            const noAdapter = st.bt ? !st.bt.adapter : st.radios.bluetooth === null;
+            const warn = () => emit('ll:toast', { kind: 'error', title: 'Bluetooth', body: 'Bluetooth adaptörü bulunamadı.', icon: 'bluetooth_disabled' }).catch(() => {});
+            return {
+              name: 'Bluetooth', alt: true,
+              icon: st.radios.bluetooth === 'On' ? (st.bt?.devices?.some(d => d.connected) ? 'bluetooth_connected' : 'bluetooth') : 'bluetooth_disabled',
+              toggled: !noAdapter && st.radios.bluetooth === 'On',
+              status: noAdapter ? 'Adaptör yok' : st.radios.bluetooth !== 'On' ? 'Kapalı' : (st.bt?.devices?.find(d => d.connected)?.name || 'Bağlı değil'),
+              action: () => {
+                if (noAdapter) return warn();
+                const next = st.radios.bluetooth === 'On' ? 'Off' : 'On';
+                setSt(x => ({ ...x, radios: { ...x.radios, bluetooth: next } }));
+                psFile('radios.ps1', ['set', 'bluetooth', next]).then(refresh).catch(refresh);
+              },
+              menu: () => (noAdapter ? warn() : toggleMenu('bluetooth')),
+            };
+          })(),
+          idleInhibitor: {
+            name: 'Uyanık tut', icon: 'coffee', toggled: st.awake, status: st.awake ? 'Açık' : 'Kapalı',
+            action: () => {
+              const next = !st.awake;
+              save('ll.awake.want', next);
+              setSt(x => ({ ...x, awake: next }));
+              if (next) helper(['--ps-bg', `${LL}\\keep-awake.ps1`]).catch(() => {});
+              else psFile('status.ps1', ['stop-awake']).catch(() => {});
+            },
+          },
+          mic: {
+            name: 'Mikrofon', icon: st.mic === false ? 'mic_off' : 'mic', toggled: st.mic !== false,
+            status: st.mic === false ? 'Kapalı' : 'Açık',
+            action: () => {
+              setSt(x => ({ ...x, mic: !(x.mic !== false) }));
+              helper(['--mic', 'toggle']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, mic: !r.muted })); }).catch(() => {});
+            },
+          },
+          audio: {
+            name: 'Ses çıkışı', alt: true, icon: out?.isMuted ? 'volume_off' : 'volume_up', toggled: !out?.isMuted,
+            status: out?.isMuted ? 'Sessiz' : 'Sessiz değil',
+            action: () => out && o.audio.setMute(!out.isMuted),
+          },
+          nightLight: (() => {
+            const n = st.night || {};
+            const sched = n.mode === 'after' ? `${n.from} sonrası` : n.mode === 'range' ? `${n.from}–${n.to}` : null;
+            return {
+              name: 'Gece Işığı', alt: true, icon: n.active ? 'nightlight' : 'nightlight', toggled: !!n.on,
+              status: !n.on ? 'Kapalı' : sched ? (n.active ? `Açık · ${sched}` : `Bekliyor · ${sched}`) : `Açık · %${n.level ?? 50}`,
+              action: () => {
+                setSt(x => ({ ...x, night: { ...(x.night || {}), on: !(x.night && x.night.on) } }));
+                helper(['--nightlight', 'toggle']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, night: r })); }).catch(() => {});
+              },
+              menu: () => toggleMenu('nightLight'),
+            };
+          })(),
+          darkMode: {
+            name: 'Karanlık mod', icon: 'contrast', toggled: st.theme === 'dark', status: st.theme === 'dark' ? 'Açık' : 'Kapalı',
+            action: () => setSt(x => ({ ...x, theme: window.llTheme?.toggle() ?? 'dark' })),
+          },
+          screenSnip: {
+            name: 'Ekran alıntısı', icon: 'screenshot_region', toggled: false, status: '',
+            action: () => { emit('ll:sidebar-right-toggle').catch(() => {}); zebar.shellSpawn(HELPER, ['--snip', '350']).catch(() => {}); },
+          },
+          onScreenKeyboard: {
+            name: 'Ekran klavyesi', icon: 'keyboard', toggled: false, status: '',
+            action: () => emit('ll:osk-toggle').catch(() => {}),
+          },
+          notifications: {
+            name: 'Bildirimler', icon: st.dnd ? 'notifications_paused' : 'notifications_active', toggled: !st.dnd,
+            status: st.dnd ? 'Sessiz' : 'Açık',
+            action: () => { const v = !st.dnd; save('ll.dnd', v); setSt(x => ({ ...x, dnd: v })); },
+          },
+        };
+
+        const update = t => { setToggles(t); save('ll.quickToggles', t); };
+        const editClick = type => {
+          const i = toggles.findIndex(t => t.type === type);
+          update(i >= 0 ? toggles.filter(t => t.type !== type) : [...toggles, { type, size: 1 }]);
+        };
+        const editSize = type => update(toggles.map(t => (t.type === type ? { ...t, size: 3 - t.size } : t)));
+        const editMove = (type, off) => {
+          const i = toggles.findIndex(t => t.type === type), j = i + off;
+          if (i < 0 || j < 0 || j >= toggles.length) return;
+          const n = [...toggles]; [n[i], n[j]] = [n[j], n[i]]; update(n);
+        };
+
+        // Düzenleme modunda gizli (adaptörü olmayan) kutucuklar da görünsün
+        const visible = toggles.filter(t => defs[t.type] && (edit || !defs[t.type].hidden));
+        const unused = AVAILABLE.filter(a => !toggles.some(t => t.type === a)).map(type => ({ type, size: 1 }));
+        const renderRows = list => rowsFor(list).map((row, ri) => (
+          <div className="qrow" key={ri}>
+            {row.map(t => (
+              <QuickToggle key={t.type} type={t.type} def={defs[t.type]} size={t.size} edit={edit} active={menu === t.type}
+                onEditClick={() => editClick(t.type)} onEditSize={() => editSize(t.type)}
+                onEditWheel={d => editMove(t.type, d)} />
+            ))}
+          </div>
+        ));
+
+        // Kart, tıklanan kutucuğun hemen altında panelden ayrı yüzer; altındaki içeriği itmez.
+        const [card, setCard] = useState(null); // { type, top, closing }
+        useEffect(() => {
+          if (menu) {
+            const el = panelRef.current?.querySelector(`[data-qt="${menu}"]`);
+            const top = el ? el.offsetTop + el.offsetHeight + 6 : 0;
+            setCard({ type: menu, top, closing: false });
+          } else setCard(c => (c ? { ...c, closing: true } : c));
+        }, [menu]);
+        useEffect(() => {
+          if (!card?.closing) return;
+          const t = setTimeout(() => setCard(null), 180);
+          return () => clearTimeout(t);
+        }, [card?.closing]);
+        // Kartın ve kutucukların dışına tıklayınca kapan
+        useEffect(() => {
+          if (!menu) return;
+          const f = e => { if (!e.target.closest('.qcard, .qt')) setMenu(null); };
+          document.addEventListener('mousedown', f);
+          return () => document.removeEventListener('mousedown', f);
+        }, [menu]);
+
+        return (
+          <div className="quickpanel" ref={panelRef} style={{ padding: PADDING, gap: SPACING }}>
+            {renderRows(visible)}
+            {edit && <div className="qsep" />}
+            {edit && renderRows(unused)}
+            {card && (
+              <div key={card.type} className={`qcard ${card.closing ? 'closing' : ''}`} style={{ top: card.top }}>
+                {card.type === 'wifi' && <WifiMenu radioOn={wifiOn} />}
+                {card.type === 'ethernet' && <EthernetMenu eth={eth} />}
+                {card.type === 'bluetooth' && <BluetoothMenu bt={st.bt} on={st.radios.bluetooth === 'On'} onScan={refresh} />}
+                {card.type === 'nightLight' && <NightLightMenu night={st.night || {}} onChange={r => setSt(x => ({ ...x, night: r }))} />}
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      // ---- Kayarak açılan bölümler (ii WifiDialog / BluetoothDialog içerikleri) ----
+      function MenuFooter({ onScan, settings }) {
+        return (
+          <div className="qm-foot">
+            {onScan && <button className="chip" onClick={onScan}><Icon name="refresh" />Tara</button>}
+            <button className="chip" onClick={() => openSettings(settings)}><Icon name="open_in_new" />Daha fazla</button>
+          </div>
+        );
+      }
+
+      function WifiMenu({ radioOn }) {
+        const [data, setData] = useState(null);
+        const [busy, setBusy] = useState(null);
+        const [ask, setAsk] = useState(null);
+        const [pw, setPw] = useState('');
+        const [err, setErr] = useState('');
+        const [scanning, setScanning] = useState(false);
+        const scan = useCallback(() => {
+          setScanning(true);
+          return psFile('wifi.ps1', ['list']).then(s => { const r = json(s); if (r) setData(r); }).catch(() => {}).finally(() => setScanning(false));
+        }, []);
+        useEffect(() => { if (radioOn) { scan(); const t = setInterval(scan, 10000); return () => clearInterval(t); } }, [radioOn]);
+
+        const connect = async (n, password) => {
+          setErr(''); setBusy(n.ssid);
+          const r = json(await psFile('wifi.ps1', ['connect', n.ssid, ...(password ? [password] : [])]).catch(() => '')) || {};
+          setBusy(null);
+          if (r.needPassword) { setAsk(n.ssid); setPw(''); return; }
+          if (!r.ok) { setErr(r.error || 'Bağlanılamadı'); return; }
+          setAsk(null); scan();
+        };
+
+        return (
+          <div className="qm">
+            <div className="qm-title">Kullanılabilir ağlar {scanning && <Icon name="progress_activity" />}</div>
+            {!radioOn && <div className="qm-empty">Wi-Fi kapalı</div>}
+            {radioOn && !data && <div className="qm-empty">Taranıyor…</div>}
+            <div className="qm-list">
+              {radioOn && data?.networks.map(n => {
+                const cur = data.connected === n.ssid;
+                return (
+                  <div key={n.ssid} className={`net ${cur ? 'cur' : ''}`}>
+                    <button className="net-row" disabled={!!busy}
+                      onClick={() => (cur ? psFile('wifi.ps1', ['disconnect']).then(scan)
+                        : (n.known || !n.secure) ? connect(n) : (setAsk(ask === n.ssid ? null : n.ssid), setPw(''), setErr('')))}>
+                      <Icon name={signalIcon(n.signal)} fill={cur} />
+                      <span className="net-name">{n.ssid}</span>
+                      {busy === n.ssid ? <Icon name="progress_activity" /> : cur ? <span className="net-state">Bağlı</span> : n.secure && <Icon name="lock" />}
+                    </button>
+                    {ask === n.ssid && (
+                      <form className="net-pw" onSubmit={e => { e.preventDefault(); if (pw) connect(n, pw); }}>
+                        <input type="password" autoFocus value={pw} onChange={e => setPw(e.target.value)} placeholder="Şifre" />
+                        <button className="fab" type="submit" disabled={!pw || !!busy}><Icon name="arrow_forward" /></button>
+                      </form>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {err && <div className="qm-err">{err}</div>}
+            <MenuFooter onScan={radioOn ? scan : null} settings="ms-settings:network-wifi" />
+          </div>
+        );
+      }
+
+      function EthernetMenu({ eth }) {
+        const Row = ({ label, value }) => <div className="qm-kv"><span>{label}</span><span>{value || '—'}</span></div>;
+        return (
+          <div className="qm">
+            <div className="qm-title">Ethernet</div>
+            <Row label="Durum" value={eth?.state === 'up' ? 'Bağlı' : eth?.state === 'disabled' ? 'Devre dışı' : 'Kablo takılı değil'} />
+            <Row label="Kart" value={eth?.desc} />
+            <Row label="Hız" value={eth?.speed} />
+            <Row label="IP adresi" value={eth?.ip} />
+            <MenuFooter settings="ms-settings:network-ethernet" />
+          </div>
+        );
+      }
+
+      // ii NightLightDialog: şimdi aç, otomatik (burada: saatten sonra / saat aralığı), yoğunluk
+      function NightLightMenu({ night, onChange }) {
+        const [level, setLevel] = useState(night.level ?? 50);
+        const timer = useRef(null);
+        useEffect(() => { setLevel(night.level ?? 50); }, [night.level]);
+        const set = (k, v) => helper(['--nightlight-set', k, String(v)]).then(s => { const r = json(s); if (r) onChange(r); }).catch(() => {});
+        const slide = v => {
+          setLevel(v);
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => set('level', v), 60); // kaydırırken canlı önizleme
+        };
+        const mode = night.mode || 'manual';
+        const kelvin = Math.round((6500 - 46 * level) / 100) * 100;
+        const modes = [['manual', 'Her zaman', 'wb_sunny'], ['after', 'Saatten sonra', 'bedtime'], ['range', 'Saat aralığı', 'schedule']];
+        return (
+          <div className="qm nl">
+            <button className="nl-row" onClick={() => helper(['--nightlight', 'toggle']).then(s => { const r = json(s); if (r) onChange(r); })}>
+              <Icon name="nightlight" fill={night.on} />
+              <span className="net-name">Gece ışığı</span>
+              <span className={`switch ${night.on ? 'on' : ''}`}><span /></span>
+            </button>
+            <div className="qm-title">Zamanlama</div>
+            <div className="nl-seg">
+              {modes.map(([k, label, icon]) => (
+                <button key={k} className={mode === k ? 'sel' : ''} onClick={() => set('mode', k)}>
+                  <Icon name={icon} fill={mode === k} />{label}
+                </button>
+              ))}
+            </div>
+            {mode !== 'manual' && (
+              <div className="nl-times">
+                <label><span>Başlangıç</span><input type="time" value={night.from || '20:00'} onChange={e => e.target.value && set('from', e.target.value)} /></label>
+                {mode === 'range'
+                  ? <label><span>Bitiş</span><input type="time" value={night.to || '07:00'} onChange={e => e.target.value && set('to', e.target.value)} /></label>
+                  : <div className="nl-note"><Icon name="wb_twilight" />Sabah 07:00'de kapanır</div>}
+              </div>
+            )}
+            <div className="qm-title">Yoğunluk <span className="nl-val">%{level} · {kelvin}K</span></div>
+            <div className="nl-slider" style={{ '--p': `${level}%` }}>
+              <input type="range" min="0" max="100" step="5" value={level} onChange={e => slide(+e.target.value)} />
+              <div className="nl-ticks">{[25, 50, 75].map(t => <span key={t} style={{ left: `${t}%` }} />)}</div>
+            </div>
+            <div className="nl-presets">
+              {[25, 50, 75, 100].map(v => <button key={v} className={`chip ${level === v ? 'on' : ''}`} onClick={() => slide(v)}>%{v}</button>)}
+            </div>
+          </div>
+        );
+      }
+
+      function BluetoothMenu({ bt, on, onScan }) {
+        const devices = bt?.devices ?? [];
+        const connected = devices.filter(d => d.connected), paired = devices.filter(d => !d.connected);
+        const Dev = d => (
+          <div key={d.name} className={`net ${d.connected ? 'cur' : ''}`}>
+            <div className="net-row"><Icon name={d.kind} fill={d.connected} /><span className="net-name">{d.name}</span>{d.connected && <span className="net-state">Bağlı</span>}</div>
+          </div>
+        );
+        return (
+          <div className="qm">
+            {!on && <div className="qm-empty">Bluetooth kapalı</div>}
+            {on && connected.length > 0 && <><div className="qm-title">Bağlı cihazlar</div><div className="qm-list">{connected.map(Dev)}</div></>}
+            {on && <><div className="qm-title">Eşleşmiş cihazlar</div>
+              <div className="qm-list">{paired.length ? paired.map(Dev) : <div className="qm-empty">Eşleşmiş başka cihaz yok</div>}</div></>}
+            <MenuFooter onScan={on ? onScan : null} settings="ms-settings:bluetooth" />
+          </div>
+        );
+      }
+
+      // ii AndroidQuickToggleButton.qml (GroupButton): basınca yaylanarak genişler, köşe küçülür.
+      // Geniş ve menülü kutucukta: soldaki yuvarlak ikon = aç/kapa, sağdaki yazı alanı = alta kayan bölüm.
+      function QuickToggle({ type, def, size, edit, active, onEditClick, onEditSize, onEditWheel }) {
+        if (!def) return null;
+        const expanded = size === 2;
+        const altLook = def.alt && expanded; // ii: altAction varken geniş kutucuğun zemini koyu kalır, ikon dairesi renklenir
+        const available = def.available !== false;
+        const cls = ['qt', expanded ? 'expanded' : 'single', def.toggled ? 'toggled' : '', altLook ? 'alt' : '', edit ? 'editing' : '', available ? '' : 'disabled', active ? 'menu-open' : '', def.hidden ? 'ghosted' : ''].join(' ');
+        const width = `calc((100% - ${SPACING * (COLUMNS - 1)}px) / ${COLUMNS} * ${size} + ${SPACING * (size - 1)}px)`;
+        return (
+          <button className={cls} style={{ width, height: CELL_H }} title={def.name} data-qt={type}
+            onClick={() => (edit ? onEditClick() : !available ? null : (expanded && def.menu) ? def.menu() : def.action())}
+            onContextMenu={e => { e.preventDefault(); if (edit) onEditSize(); else if (def.menu) def.menu(); }}
+            onWheel={e => { if (edit) { e.preventDefault(); onEditWheel(e.deltaY > 0 ? 1 : -1); } }}>
+            <span className="qt-icon" onClick={e => { if (!edit && expanded && def.menu && available) { e.stopPropagation(); def.action(); } }}>
+              <Icon name={def.icon} fill={def.toggled} />
+            </span>
+            {expanded && (
+              <span className="qt-text">
+                <span className="qt-name">{def.name}</span>
+                {def.status && <span className="qt-status">{def.status}</span>}
+              </span>
+            )}
+            {expanded && def.menu && <Icon name={active ? 'expand_less' : 'expand_more'} />}
+          </button>
+        );
+      }
+
+      // ---- NotificationList (Windows Bildirim Merkezi, wpndatabase.db) ----
+      function friendlyTime(ms) {
+        const diff = (Date.now() - ms) / 1000;
+        if (diff < 60) return 'Şimdi';
+        if (diff < 3600) return `${Math.floor(diff / 60)}dk`;
+        if (diff < 86400) return `${Math.floor(diff / 3600)}sa`;
+        return new Date(ms).toLocaleDateString(window.LL_LOCALE, { day: 'numeric', month: 'long' });
+      }
+
+      function NotificationList({ open }) {
+        const [list, setList] = useState([]);
+        const [dismissed, setDismissed] = useState(load('ll.notif.dismissed', []));
+        const [dnd, setDnd] = useState(load('ll.dnd', false));
+
+        const refresh = useCallback(() => {
+          psFile('notifications.ps1').then(s => { const r = json(s); if (Array.isArray(r)) setList(r); }).catch(() => {});
+        }, []);
+        useEffect(() => {
+          if (!open) return;
+          refresh();
+          const t = setInterval(refresh, 5000);
+          return () => clearInterval(t);
+        }, [open]);
+        useEffect(() => {
+          const f = () => setDnd(load('ll.dnd', false));
+          window.addEventListener('storage', f);
+          return () => window.removeEventListener('storage', f);
+        }, []);
+
+        const dismiss = ids => { const n = [...new Set([...load('ll.notif.dismissed', []), ...ids])].slice(-2000); setDismissed(n); save('ll.notif.dismissed', n); };
+        // Tümünü temizle: alttan yukarı sırayla, hızlıca sağa kayarak silinir
+        const [clearing, setClearing] = useState(false);
+        const clearAll = () => {
+          if (clearing || !visible.length) return;
+          const ids = visible.map(n => n.id);
+          const groupCount = new Set(visible.map(n => n.app)).size;
+          setClearing(true);
+          setTimeout(() => { dismiss(ids); setClearing(false); }, (groupCount - 1) * 45 + 260);
+        };
+        const visible = list.filter(n => !dismissed.includes(n.id));
+        const groups = [];
+        for (const n of visible) {
+          let g = groups.find(x => x.app === n.app);
+          if (!g) groups.push(g = { app: n.app, icon: n.icon, items: [] });
+          g.items.push(n);
+        }
+
+        return (
+          <div className="center">
+            <div className="notif-list">
+              {groups.map((g, i) => <NotificationGroup key={g.app} group={g} onDismiss={dismiss}
+                leaving={clearing} delay={(groups.length - 1 - i) * 45} />)}
+              {groups.length === 0 && (
+                <div className="notif-empty"><div className="ghost"><Icon name="notifications_active" /></div><span>Bildirim yok</span></div>
+              )}
+            </div>
+            <div className="statusrow">
+              <button className={`sbtn icon-only ${dnd ? 'on' : ''}`} title="Sessiz"
+                      onClick={() => { save('ll.dnd', !dnd); setDnd(!dnd); }}>
+                <Icon name="notifications_paused" />
+              </button>
+              <div className="sbtn wide">{visible.length} bildirim</div>
+              <button className="sbtn icon-only" title="Tümünü temizle" onClick={clearAll}>
+                <Icon name="delete_sweep" />
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      // ii NotificationGroup.qml: ikon + (uygulama adı, zaman, sayaç) + son 2 bildirim; genişletince hepsi
+      function NotificationGroup({ group, onDismiss, leaving, delay }) {
+        const [expanded, setExpanded] = useState(false);
+        const [gone, setGone] = useState(false);
+        const count = group.items.length;
+        const multiple = count > 1;
+        const shown = expanded ? group.items : group.items.slice(0, 2);
+        const kill = () => { setGone(true); setTimeout(() => onDismiss(group.items.map(n => n.id)), 250); };
+        return (
+          <div className={`ngroup ${gone || leaving ? 'gone' : ''}`} style={leaving ? { transitionDelay: `${delay}ms` } : undefined}
+               onContextMenu={e => { e.preventDefault(); setExpanded(v => !v); }}
+               onAuxClick={e => { if (e.button === 1) kill(); }}>
+            <div className="napp">{group.icon ? <img src={group.icon} alt="" /> : <Icon name="chat" />}</div>
+            <div className="nbody">
+              <div className="nhead">
+                <span className="nappname">{multiple ? group.app : (group.items[0].title || group.app)}</span>
+                <span className="ntime">{friendlyTime(group.items[0].time)}</span>
+                <button className="nexpand" onClick={() => setExpanded(v => !v)} title="Sağ tık da genişletir">
+                  {count}<Icon name={expanded ? 'expand_less' : 'expand_more'} />
+                </button>
+              </div>
+              {shown.map((n, i) => (
+                <div key={n.id} className="nitem" style={!expanded && i === 1 && count > 2 ? { opacity: 0.5 } : undefined}>
+                  {(multiple || !expanded) && <span className="nsummary">{n.title}</span>}
+                  <span className={`ntext ${expanded ? 'full' : ''}`}>{n.body}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      }
+
+      // ---- BottomWidgetGroup ----
+      const TABS = [
+        { type: 'calendar', name: 'Takvim', icon: 'calendar_month' },
+        { type: 'todo', name: 'Yapılacaklar', icon: 'done_outline' },
+        { type: 'timer', name: 'Zamanlayıcı', icon: 'schedule' },
+      ];
+
+      function BottomWidgetGroup() {
+        const [tab, setTab] = useState(load('ll.sidebar.tab', 0));
+        const [collapsed, setCollapsed] = useState(load('ll.sidebar.collapsed', false));
+        const pick = i => { setTab(i); save('ll.sidebar.tab', i); };
+        const col = v => { setCollapsed(v); save('ll.sidebar.collapsed', v); };
+        const todos = load('ll.todo', []).filter(t => !t.done).length;
+        const now = new Date();
+
+        if (collapsed) {
+          return (
+            <div className="bottom collapsed">
+              <div className="collapsed-row">
+                <button className="circle-btn" onClick={() => col(false)}><Icon name="keyboard_arrow_up" /></button>
+                <span>{now.toLocaleDateString(window.LL_LOCALE, { weekday: 'long', day: 'numeric', month: 'long' })}   •   {todos} görev</span>
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div className="bottom">
+            <div className="rail">
+              <button className="circle-btn collapse" onClick={() => col(true)}><Icon name="keyboard_arrow_down" /></button>
+              {TABS.map((t, i) => (
+                <button key={t.type} className={`railbtn ${tab === i ? 'on' : ''}`} onClick={() => pick(i)}>
+                  <span className="pill"><Icon name={t.icon} /></span>
+                  {t.name}
+                </button>
+              ))}
+            </div>
+            <div className="tabbody" key={tab}>
+              {tab === 0 && <Calendar />}
+              {tab === 1 && <Todo />}
+              {tab === 2 && <Pomodoro />}
+            </div>
+          </div>
+        );
+      }
+
+      // Takvim başlığına tıklayınca açılan ay / yıl seçici (ay ızgarası + yıl okları, tekerlek yılı değiştirir)
+      // Sistem dilinde kısa ay adları (Oca, Şub... / Jan, Feb...)
+      const MONTHS = Array.from({ length: 12 }, (_, i) => new Date(2000, i, 1).toLocaleDateString(window.LL_LOCALE, { month: 'short' }).replace('.', ''));
+      // Pazartesiden başlayan kısa gün adları (2024-01-01 pazartesi)
+      const WEEKDAYS = Array.from({ length: 7 }, (_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(window.LL_LOCALE, { weekday: 'short' }).slice(0, 2));
+      function MonthPicker({ view, today, onPick, onClose }) {
+        const [year, setYear] = useState(view.getFullYear());
+        const [dir, setDir] = useState(0);
+        const step = d => { setDir(d); setYear(y => y + d); };
+        const ref = useRef(null);
+        useEffect(() => {
+          const f = e => { if (ref.current && !ref.current.contains(e.target) && !e.target.closest('.cal-title')) onClose(); };
+          document.addEventListener('mousedown', f);
+          return () => document.removeEventListener('mousedown', f);
+        }, []);
+        return (
+          <div className="mpick" ref={ref} onWheel={e => { e.stopPropagation(); step(e.deltaY > 0 ? 1 : -1); }}>
+            <div className="mpick-head">
+              <button className="circle-btn" onClick={() => step(-1)}><Icon name="chevron_left" /></button>
+              <span key={year} className={`mpick-year ${dir > 0 ? 'from-r' : dir < 0 ? 'from-l' : ''}`}>{year}</span>
+              <button className="circle-btn" onClick={() => step(1)}><Icon name="chevron_right" /></button>
+            </div>
+            <div key={year} className={`mpick-grid ${dir > 0 ? 'from-r' : dir < 0 ? 'from-l' : ''}`}>
+              {MONTHS.map((m, i) => {
+                const sel = year === view.getFullYear() && i === view.getMonth();
+                const now = year === today.getFullYear() && i === today.getMonth();
+                return <button key={m} className={`mpick-m ${sel ? 'sel' : ''} ${now ? 'now' : ''}`} onClick={() => onPick(year, i)}>{m}</button>;
+              })}
+            </div>
+            <div className="mpick-foot">
+              <button className="chip" onClick={() => onPick(today.getFullYear(), today.getMonth())}><Icon name="today" />Bugün</button>
+            </div>
+          </div>
+        );
+      }
+
+      // calendar/CalendarWidget.qml
+      function Calendar() {
+        const [offset, setOffset] = useState(0);
+        const today = new Date();
+        const view = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+        const first = (view.getDay() + 6) % 7; // pazartesi başlangıç
+        const days = new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate();
+        const prevDays = new Date(view.getFullYear(), view.getMonth(), 0).getDate();
+        const cells = [];
+        for (let i = 0; i < 42; i++) {
+          const d = i - first + 1;
+          if (d < 1) cells.push({ n: prevDays + d, other: true });
+          else if (d > days) cells.push({ n: d - days, other: true });
+          else cells.push({ n: d, today: offset === 0 && d === today.getDate() });
+        }
+        const [picker, setPicker] = useState(false);
+        const go = (y, m) => setOffset((y - today.getFullYear()) * 12 + (m - today.getMonth()));
+        return (
+          <div className="cal" onWheel={e => { if (!picker) setOffset(o => o + (e.deltaY > 0 ? 1 : -1)); }}>
+            {picker && <MonthPicker view={view} today={today} onPick={(y, m) => { go(y, m); setPicker(false); }} onClose={() => setPicker(false)} />}
+            <div className="cal-head">
+              <button className={`cal-title ${picker ? 'on' : ''}`} onClick={() => setPicker(p => !p)}>
+                {view.toLocaleDateString(window.LL_LOCALE, { month: 'long', year: 'numeric' })}
+              </button>
+              <div>
+                <button className="circle-btn" onClick={() => setOffset(o => o - 1)}><Icon name="chevron_left" /></button>
+                <button className="circle-btn" onClick={() => setOffset(o => o + 1)}><Icon name="chevron_right" /></button>
+              </div>
+            </div>
+            <div className="cal-grid">
+              {WEEKDAYS.map(w => <div key={w} className="wd">{w}</div>)}
+              {cells.map((c, i) => <div key={i} className={`cal-day ${c.other ? 'other' : ''} ${c.today ? 'today' : ''}`}>{c.n}</div>)}
+            </div>
+          </div>
+        );
+      }
+
+      // todo/TodoWidget.qml
+      function Todo() {
+        const [list, setList] = useState(load('ll.todo', []));
+        const [showDone, setShowDone] = useState(false);
+        const [text, setText] = useState('');
+        const upd = l => { setList(l); save('ll.todo', l); };
+        const shown = list.map((t, i) => ({ ...t, i })).filter(t => t.done === showDone);
+        return (
+          <div className="todo">
+            <div className="todo-tabs">
+              <button className={`chip ${!showDone ? 'on' : ''}`} onClick={() => setShowDone(false)}>Yapılacak</button>
+              <button className={`chip ${showDone ? 'on' : ''}`} onClick={() => setShowDone(true)}>Tamamlanan</button>
+            </div>
+            <div className="todo-list">
+              {shown.length === 0 && (
+                <div className="empty-small"><Icon name={showDone ? 'checklist' : 'check_circle'} />{showDone ? 'Tamamlanan yok' : 'Görev yok'}</div>
+              )}
+              {shown.map(t => (
+                <div key={t.i} className={`todo-item ${t.done ? 'done' : ''}`}>
+                  <span className="t">{t.content}</span>
+                  <button className="circle-btn" onClick={() => upd(list.map((x, j) => (j === t.i ? { ...x, done: !x.done } : x)))}>
+                    <Icon name={t.done ? 'remove_done' : 'check'} />
+                  </button>
+                  <button className="circle-btn" onClick={() => upd(list.filter((_, j) => j !== t.i))}><Icon name="delete_forever" /></button>
+                </div>
+              ))}
+            </div>
+            {!showDone && (
+              <form className="todo-add" onSubmit={e => { e.preventDefault(); if (text.trim()) { upd([...list, { content: text.trim(), done: false }]); setText(''); } }}>
+                <input value={text} onChange={e => setText(e.target.value)} placeholder="Görev ekle" />
+                <button className="fab" type="submit"><Icon name="add" /></button>
+              </form>
+            )}
+          </div>
+        );
+      }
+
+      // pomodoro/PomodoroWidget.qml — 25/5 dk, 4 turda uzun mola
+      function Pomodoro() {
+        const FOCUS = 25 * 60, BREAK = 5 * 60, LONG = 15 * 60;
+        const [st, setSt] = useState(load('ll.pomo', { running: false, phase: 'focus', left: FOCUS, cycle: 0 }));
+        useEffect(() => {
+          const t = setInterval(() => {
+            setSt(s => {
+              if (!s.running) return s;
+              const left = s.left - 1;
+              if (left > 0) { const n = { ...s, left }; save('ll.pomo', n); return n; }
+              const focusDone = s.phase === 'focus';
+              const cycle = focusDone ? s.cycle + 1 : s.cycle;
+              const phase = focusDone ? (cycle % 4 === 0 ? 'long' : 'break') : 'focus';
+              const n = { ...s, phase, cycle, left: phase === 'focus' ? FOCUS : phase === 'long' ? LONG : BREAK };
+              save('ll.pomo', n);
+              return n;
+            });
+          }, 1000);
+          return () => clearInterval(t);
+        }, []);
+        const total = st.phase === 'focus' ? FOCUS : st.phase === 'long' ? LONG : BREAK;
+        const r = 80, c = 2 * Math.PI * r;
+        const mm = String(Math.floor(st.left / 60)).padStart(2, '0'), ss = String(st.left % 60).padStart(2, '0');
+        const set = n => { setSt(n); save('ll.pomo', n); };
+        return (
+          <div className="pomo">
+            <div className="pomo-ring">
+              <svg viewBox="0 0 180 180"><circle className="track" cx="90" cy="90" r={r} fill="none" strokeWidth="8" />
+                <circle className="value" cx="90" cy="90" r={r} fill="none" strokeWidth="8" strokeLinecap="round"
+                  strokeDasharray={c} strokeDashoffset={c * (1 - st.left / total)} /></svg>
+              <div className="pomo-time"><span className="t">{mm}:{ss}</span>
+                <span className="l">{st.phase === 'focus' ? 'Odak' : st.phase === 'long' ? 'Uzun mola' : 'Mola'} · {st.cycle % 4}/4</span></div>
+            </div>
+            <div className="pomo-btns">
+              <button className="chip primary" onClick={() => set({ ...st, running: !st.running })}>{st.running ? 'Duraklat' : 'Başlat'}</button>
+              <button className="chip" onClick={() => set({ running: false, phase: 'focus', left: FOCUS, cycle: 0 })}>Sıfırla</button>
+            </div>
+          </div>
+        );
+      }
+
+      createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
