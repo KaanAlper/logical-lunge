@@ -59,7 +59,7 @@ A complete Windows desktop that looks and behaves like the **illogical-impulse**
 
 Recreating ii on Windows means fixing things nobody warns you about:
 
-1. **Lone Super opens Start**, and Ctrl+Super spam leaks it anyway → the helper owns the Win key completely and re-injects it only for combos the shell doesn't handle (Win+L, Win+V still work).
+1. **Lone Super opens Start**, and Ctrl+Super spam leaks it anyway → the helper owns the Win key completely and re-injects it only for combos the shell doesn't handle (Win+L still works; Win+V opens our clipboard history; Win+D / Win+M are blocked because they break the tiling layout).
 2. **GlazeWM's focus/move jumps to the other monitor** when there is no window in that direction → focus and move stay inside the workspace; moving at an edge re-splits the layout like Hyprland.
 3. **Workspace switches lag** by 100–200 ms with many windows → the slide starts from DWM thumbnails before the WM finishes, at high process priority.
 4. **Apps reset rounded window regions**, dialogs flicker under focus-follows-mouse, Windows error boxes pop up → all handled (rounded corners, real-mouse-movement focus, error dialogs turned into ii-style toasts).
@@ -97,6 +97,9 @@ Windows asks for permission **once**. The installer silently downloads whatever 
 | `Super + F` | Fullscreen |
 | `Alt + F4` | Close window |
 | `Print` | Screenshot + annotate |
+| `Ctrl + Print` | Whole monitor to clipboard + `Pictures\Screenshots` |
+| `Super + V` | Clipboard history (press again to close) |
+| `Alt + Tab` | Window switcher (Shift reverses, arrows / Enter / Esc / mouse work) |
 
 All of them can be changed in **sidebar → ⌨ Shortcuts** (read-only until you unlock it; "reset to defaults" included).
 
