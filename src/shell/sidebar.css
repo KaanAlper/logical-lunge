@@ -556,3 +556,15 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 
 /* hızlı ayarları düzenle düğmesi: ii'de olduğu gibi kutucukların sağ altında */
 .qedit-row { display: flex; justify-content: flex-end; margin-top: -2px; }
+
+/* üst satır: tek satırlık, iki katmanlı çalışma süresi + eşit boyutlu düğmeler */
+.sysrow { align-items: center; gap: 10px; }
+.uptime { padding: 5px 16px 5px 12px; gap: 10px; flex: 1 1 auto; min-width: 0; }
+.uptime .distro { flex: none; opacity: 0.9; }
+.up-txt { display: flex; flex-direction: column; line-height: 1.12; white-space: nowrap; min-width: 0; }
+.up-lbl { font-size: 11px; color: var(--colSubtext); letter-spacing: 0.02em; }
+.up-val { font-size: 16px; font-variation-settings: 'wght' 560; }
+.btngroup { flex: none; gap: 2px; padding: 3px; }
+.btngroup .qbtn { width: 38px; height: 38px; }
+.btngroup .qbtn .icon { font-size: 21px; }
+.btngroup .qbtn:last-child { color: var(--m3error); }

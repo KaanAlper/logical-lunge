@@ -193,10 +193,11 @@
     <div id="hint">Esc ile kapat</div>
     <script type="module">
       import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
 
       const win = zebar.currentWidget().tauriWindow;
       win.setTitle('ll-session').catch(() => {});
+      win.hide().catch(() => {});
       const run = (prog, args) => zebar.shellSpawn(prog, args).catch(e => console.error(prog, e));
       // ii sessionScreen: kilitle, uyku, oturumu kapat, yeniden başlat, kapat, ürün yazılımı (UEFI/BIOS) ayarları
       const ITEMS = [
@@ -208,19 +209,23 @@
         { key: 's', icon: 'power_settings_new', label: 'Kapat', danger: true, act: () => run('shutdown', ['/s', '/t', '0']) },
       ];
       const row = document.getElementById('row'), scrim = document.getElementById('scrim');
+      // Her monitörde bir pencere açılır (karartma hepsinde); odak ve tuşlar yalnızca birincil monitördekinde
+      let primary = true;   // izlenemezse (API yoksa) her pencere birincil sayılır
+      try { Promise.resolve(win.currentMonitor()).then(m => { primary = !!m && m.position.x === 0 && m.position.y === 0; }).catch(() => {}); } catch {}
+      const hideAll = () => { hide(); emit('ll:session-hide').catch(() => {}); };
       let sel = 0, open = false;
       row.innerHTML = ITEMS.map((it, i) => `<button class="sbtn ${it.danger ? 'danger' : ''}" data-i="${i}"><kbd>${it.key.toUpperCase()}</kbd><span class="icon">${it.icon}</span><span>${it.label}</span></button>`).join('');
       const btns = [...row.querySelectorAll('.sbtn')];
       const mark = () => btns.forEach((b, i) => b.classList.toggle('sel', i === sel));
       btns.forEach((b, i) => {
         b.addEventListener('mouseenter', () => { sel = i; mark(); });
-        b.addEventListener('click', () => { hide(); ITEMS[i].act(); });
+        b.addEventListener('click', () => { hideAll(); ITEMS[i].act(); });
       });
 
       async function show() {
         if (open) return;
         open = true; sel = 0; mark();
-        try { await win.show(); await win.setFocus(); } catch {}
+        try { await win.show(); if (primary) await win.setFocus(); } catch {}
         requestAnimationFrame(() => { scrim.classList.add('on'); row.classList.add('on'); });
       }
       function hide() {
@@ -230,18 +235,22 @@
         setTimeout(() => { if (!open) win.hide().catch(() => {}); }, 260);
       }
       win.hide().catch(() => {});
-      listen('ll:session-toggle', () => (open ? hide() : show()));
-      window.addEventListener('blur', () => hide());
-      scrim.addEventListener('mousedown', hide);
-      document.getElementById('stage').addEventListener('mousedown', e => { if (e.target.id === 'stage') hide(); });
+      // Zebar pencereyi betik çalıştıktan sonra da gösterebiliyor (çok monitörlü açılış): gizli kalana dek tekrarla,
+      // yoksa tam ekran saydam pencere fare tıklamalarını yutar.
+      [800, 2000, 4500, 9000, 16000].forEach(ms => setTimeout(() => { if (!open) win.hide().catch(() => {}); }, ms));
+      listen('ll:session-toggle', () => (open ? hideAll() : show()));
+      listen('ll:session-hide', () => hide());
+      window.addEventListener('blur', () => { if (primary) hideAll(); });
+      scrim.addEventListener('mousedown', hideAll);
+      document.getElementById('stage').addEventListener('mousedown', e => { if (e.target.id === 'stage') hideAll(); });
       window.addEventListener('keydown', e => {
         if (!open) return;
         const k = e.key.toLowerCase();
-        if (k === 'escape') { e.preventDefault(); hide(); }
+        if (k === 'escape') { e.preventDefault(); hideAll(); }
         else if (k === 'arrowright' || k === 'tab') { e.preventDefault(); sel = (sel + 1) % ITEMS.length; mark(); }
         else if (k === 'arrowleft') { e.preventDefault(); sel = (sel + ITEMS.length - 1) % ITEMS.length; mark(); }
-        else if (k === 'enter' || k === ' ') { e.preventDefault(); const it = ITEMS[sel]; hide(); it.act(); }
-        else { const i = ITEMS.findIndex(x => x.key === k); if (i >= 0) { e.preventDefault(); hide(); ITEMS[i].act(); } }
+        else if (k === 'enter' || k === ' ') { e.preventDefault(); const it = ITEMS[sel]; hideAll(); it.act(); }
+        else { const i = ITEMS.findIndex(x => x.key === k); if (i >= 0) { e.preventDefault(); hideAll(); ITEMS[i].act(); } }
       });
     </script>
   </body>
