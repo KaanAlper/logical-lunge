@@ -10,6 +10,15 @@ public static class TB {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr h, uint c);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassName(IntPtr h, System.Text.StringBuilder s, int n);
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  static string Cls(IntPtr h) { var s = new System.Text.StringBuilder(64); GetClassName(h, s, 64); return s.ToString(); }
+  // Başlat düğmesi: görev çubuğunun sahip olduğu üst düzey Button (FindWindow onu bulmuyor)
+  public static void StartButtons(bool show) {
+    EnumWindows((h, l) => { if (Cls(h) == "Button" && Cls(GetWindow(h, 4)).StartsWith("Shell_") && IsWindowVisible(h) != show) ShowWindow(h, show ? 5 : 0); return true; }, IntPtr.Zero);
+  }
 }
 '@
 
@@ -21,6 +30,10 @@ while ($true) {
             $h = [TB]::FindWindowEx([IntPtr]::Zero, $h, $cls, $null)
         }
     }
+
+    # Win10 Başlat düğmesi görev çubuğunun sahip olduğu AYRI bir üst pencere (Button); görev çubuğu gizlenince
+    # ikinci monitördeki sol altta tek başına kalıyordu.
+    [TB]::StartButtons($false)
 
     # Win10 ses/parlaklık/medya flyout'u: NativeHWNDHost > DirectUIHWND.
     # Küçültülmüş (SW_MINIMIZE) host bir daha görünmez — HideVolumeOSD'nin yöntemi.

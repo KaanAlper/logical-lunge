@@ -2310,7 +2310,8 @@ class Keys2
         if (Apps.TryGetValue(act, out app)) { ui.BeginInvoke((Action)(() => Launch(app))); return true; }
         if (act == "screenshot")
         {
-            try { Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--snip") { UseShellExecute = true }); } catch { }
+            // Kanca thread'inde süreç başlatma (ShellExecute 50-200 ms): o sırada tüm klavye beklerdi
+            ThreadPool.QueueUserWorkItem(_ => { try { Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--snip") { UseShellExecute = true }); } catch { } });
             return true;
         }
         if (act == "close")
