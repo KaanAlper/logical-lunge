@@ -2982,6 +2982,38 @@ static class KillJob
         AssignProcessToJobObject(job, p.Handle);
     }
 }
+// ---------------- Varsayılan ses cihazı (ii ses menüsü: çıkış / giriş cihazı seçimi) ----------------
+// Windows'un belgelenmemiş ama Windows 7'den 11'e kadar aynı kalan IPolicyConfig arayüzü (Ses ayarları da bunu kullanır).
+[ComImport, Guid("f8679f50-850a-41cf-9c72-430f290290c8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IPolicyConfig
+{
+    [PreserveSig] int GetMixFormat([MarshalAs(UnmanagedType.LPWStr)] string id, IntPtr format);
+    [PreserveSig] int GetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string id, bool def, IntPtr format);
+    [PreserveSig] int ResetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string id);
+    [PreserveSig] int SetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string id, IntPtr endpointFormat, IntPtr mixFormat);
+    [PreserveSig] int GetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string id, bool def, IntPtr defPeriod, IntPtr minPeriod);
+    [PreserveSig] int SetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string id, IntPtr period);
+    [PreserveSig] int GetShareMode([MarshalAs(UnmanagedType.LPWStr)] string id, IntPtr mode);
+    [PreserveSig] int SetShareMode([MarshalAs(UnmanagedType.LPWStr)] string id, IntPtr mode);
+    [PreserveSig] int GetPropertyValue([MarshalAs(UnmanagedType.LPWStr)] string id, bool fxStore, IntPtr key, IntPtr value);
+    [PreserveSig] int SetPropertyValue([MarshalAs(UnmanagedType.LPWStr)] string id, bool fxStore, IntPtr key, IntPtr value);
+    [PreserveSig] int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string id, int role);
+    [PreserveSig] int SetEndpointVisibility([MarshalAs(UnmanagedType.LPWStr)] string id, bool visible);
+}
+[ComImport, Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9")] class CPolicyConfigClient { }
+
+static class AudioDefault
+{
+    // eConsole, eMultimedia, eCommunications: Ses ayarlarındaki "varsayılan" üçünü birden değiştirir
+    public static int Set(string id)
+    {
+        var pc = (IPolicyConfig)new CPolicyConfigClient();
+        int hr = 0;
+        for (int role = 0; role < 3; role++) { int r = pc.SetDefaultEndpoint(id, role); if (r != 0) hr = r; }
+        Marshal.ReleaseComObject(pc);
+        return hr;
+    }
+}
 // ---------------- Açılış perdesi ----------------
 static class Splash
 {
@@ -3167,7 +3199,15 @@ static class Program
         // ll-helper.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // GlazeWM ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
-        // ll-helper.exe --songrec [-i 2 -t 30 -s monitor]: müzik tanıma exe'sini konsolsuz çalıştır, sonucu aktar.
+        // ll-helper.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
+        if (args.Length == 2 && args[0] == "--audio-default")
+        {
+            int hr;
+            try { hr = AudioDefault.Set(args[1]); } catch (Exception ex) { hr = Marshal.GetHRForException(ex); }
+            var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            so.Write("{\"ok\":" + (hr == 0 ? "true" : "false") + ",\"hr\":" + hr + "}"); so.Flush();
+            return;
+        }        // ll-helper.exe --songrec [-i 2 -t 30 -s monitor]: müzik tanıma exe'sini konsolsuz çalıştır, sonucu aktar.
         // Overview düğmesi bu süreci durdurursa (kill) Job Object sayesinde tanıma da hemen kapanır.
         if (args.Length >= 1 && args[0] == "--songrec")
         {

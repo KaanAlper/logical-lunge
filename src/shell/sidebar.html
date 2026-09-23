@@ -663,11 +663,13 @@
               setSt(x => ({ ...x, mic: !(x.mic !== false) }));
               helper(['--mic', 'toggle']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, mic: !r.muted })); }).catch(() => {});
             },
+            menu: () => toggleMenu('mic'),
           },
           audio: {
             name: 'Ses çıkışı', alt: true, icon: out?.isMuted ? 'volume_off' : 'volume_up', toggled: !out?.isMuted,
             status: out?.isMuted ? 'Sessiz' : 'Sessiz değil',
             action: () => out && o.audio.setMute(!out.isMuted),
+            menu: () => toggleMenu('audio'),
           },
           nightLight: (() => {
             const n = st.night || {};
@@ -758,6 +760,8 @@
                 {card.type === 'wifi' && <WifiMenu radioOn={wifiOn} />}
                 {card.type === 'ethernet' && <EthernetMenu eth={eth} />}
                 {card.type === 'bluetooth' && <BluetoothMenu bt={st.bt} on={st.radios.bluetooth === 'On'} onScan={refresh} />}
+                {card.type === 'audio' && <AudioMenu kind="out" audio={o.audio} />}
+                {card.type === 'mic' && <AudioMenu kind="in" audio={o.audio} />}
                 {card.type === 'nightLight' && <NightLightMenu night={st.night || {}} onChange={r => setSt(x => ({ ...x, night: r }))} />}
               </div>
             )}
@@ -840,6 +844,57 @@
             <Row label="Hız" value={eth?.speed} />
             <Row label="IP adresi" value={eth?.ip} />
             <MenuFooter settings="ms-settings:network-ethernet" />
+          </div>
+        );
+      }
+
+      // ii AudioDialog: cihaz seç (varsayılan yapar), seçili cihazın sesi ve sessize alma
+      function AudioMenu({ kind, audio }) {
+        const devs = (kind === 'out' ? audio?.playbackDevices : audio?.recordingDevices) || [];
+        const def = devs.find(d => (kind === 'out' ? d.isDefaultPlayback : d.isDefaultRecording));
+        const [vol, setVol] = useState(def?.volume ?? 0);
+        const [busy, setBusy] = useState(null);
+        const dragging = useRef(false), timer = useRef(null);
+        useEffect(() => { if (!dragging.current && def) setVol(Math.round(def.volume)); }, [def?.deviceId, def?.volume]);
+        const slide = v => {
+          setVol(v); dragging.current = true;
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => { if (def) audio.setVolume(v, { deviceId: def.deviceId }); dragging.current = false; }, 40);
+        };
+        const makeDefault = d => {
+          if (d === def) return;
+          setBusy(d.deviceId);
+          helper(['--audio-default', d.deviceId]).catch(() => {}).finally(() => setTimeout(() => setBusy(null), 400));
+        };
+        const icon = kind === 'out' ? (def?.isMuted || vol === 0 ? 'volume_off' : vol < 50 ? 'volume_down' : 'volume_up') : (def?.isMuted ? 'mic_off' : 'mic');
+        return (
+          <div className="qm au">
+            <div className="qm-title">{kind === 'out' ? 'Çıkış cihazı' : 'Giriş cihazı'}</div>
+            {def && (
+              <div className="au-vol" style={{ '--p': `${vol}%` }}>
+                <button className={`au-mute ${def.isMuted ? 'on' : ''}`} title={def.isMuted ? 'Sesi aç' : 'Sessize al'}
+                        onClick={() => audio.setMute(!def.isMuted, { deviceId: def.deviceId })}>
+                  <Icon name={icon} fill />
+                </button>
+                <input type="range" min="0" max="100" value={vol} onChange={e => slide(+e.target.value)}
+                       onWheel={e => slide(Math.max(0, Math.min(100, vol + (e.deltaY < 0 ? 2 : -2))))} />
+                <span className="au-val">{vol}</span>
+              </div>
+            )}
+            <div className="qm-list">
+              {devs.length === 0 && <div className="qm-empty">Bir şey bulunamadı</div>}
+              {devs.map(d => {
+                const isDef = d === def;
+                return (
+                  <button key={d.deviceId} className={`net-row ${isDef ? 'cur' : ''}`} onClick={() => makeDefault(d)}>
+                    <Icon name={kind === 'out' ? (/(head|kulak|buds|airpods)/i.test(d.name) ? 'headphones' : 'speaker') : 'mic'} fill={isDef} />
+                    <span className="net-name">{d.name}</span>
+                    {busy === d.deviceId ? <Icon name="progress_activity" /> : isDef && <Icon name="check" />}
+                  </button>
+                );
+              })}
+            </div>
+            <MenuFooter settings="ms-settings:sound" />
           </div>
         );
       }

@@ -537,3 +537,19 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .wall-tile.busy { box-shadow: 0 0 0 2px var(--m3primary); }
 .wall-empty { font-size: 13px; color: var(--m3onSurfaceVariant); align-self: center; padding: 0 8px; }
 .wall-credit { font-size: 11px; color: var(--m3outline); text-align: center; }
+
+/* Ses / mikrofon kartı (ii AudioDialog) */
+.au-vol { display: flex; align-items: center; gap: 10px; padding: 4px 6px 6px; }
+.au-mute { width: 36px; height: 36px; border-radius: 12px; flex: none; display: flex; align-items: center; justify-content: center;
+  background: var(--m3secondaryContainer); color: var(--m3onSecondaryContainer); transition: border-radius 200ms var(--elementMove, ease), background 200ms; }
+.au-mute.on { background: #93000a; color: #ffdad6; border-radius: 18px; }
+.au-mute .icon { font-size: 20px; }
+.au-vol input[type=range] {
+  -webkit-appearance: none; appearance: none; flex: 1; height: 14px; border-radius: 999px; margin: 0; cursor: pointer;
+  background: linear-gradient(90deg, var(--m3primary) 0 var(--p), var(--colLayer3, #36343b) var(--p) 100%);
+}
+.au-vol input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 5px; height: 26px; border-radius: 3px; background: var(--m3primary);
+  box-shadow: 0 0 0 3px var(--colLayer2, #2b2930);
+}
+.au-val { width: 28px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--m3onSurfaceVariant); }

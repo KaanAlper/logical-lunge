@@ -223,6 +223,10 @@ const ROWS = [
   ['Tamamlandı', 'Done', 'Fertig', 'Terminé', 'Hecho', 'Fatto', 'Concluído', 'Готово', 'Готово', 'Gotowe', '完了', '完成', '완료', 'تم'],
   ['Bağlanılamadı (şifre yanlış olabilir)', 'Could not connect (wrong password?)', 'Verbindung fehlgeschlagen (falsches Passwort?)', 'Connexion impossible (mot de passe incorrect ?)', 'No se pudo conectar (¿contraseña incorrecta?)', 'Impossibile connettersi (password errata?)', 'Não foi possível conectar (senha errada?)', 'Не удалось подключиться (неверный пароль?)', 'Не вдалося підключитися (неправильний пароль?)', 'Nie udało się połączyć (złe hasło?)', '接続できませんでした（パスワード違い？）', '无法连接（密码错误？）', '연결할 수 없음 (비밀번호 오류?)', 'تعذر الاتصال (كلمة مرور خاطئة؟)'],
   ['GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM : $1', 'GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM: $1', 'GlazeWM：$1', 'GlazeWM: $1', 'GlazeWM: $1'],
+  ['Çıkış cihazı', 'Output device', 'Ausgabegerät', 'Périphérique de sortie', 'Dispositivo de salida', 'Dispositivo di uscita', 'Dispositivo de saída', 'Устройство вывода', 'Пристрій виводу', 'Urządzenie wyjściowe', '出力デバイス', '输出设备', '출력 장치', 'جهاز الإخراج'],
+  ['Giriş cihazı', 'Input device', 'Eingabegerät', 'Périphérique d’entrée', 'Dispositivo de entrada', 'Dispositivo di ingresso', 'Dispositivo de entrada', 'Устройство ввода', 'Пристрій вводу', 'Urządzenie wejściowe', '入力デバイス', '输入设备', '입력 장치', 'جهاز الإدخال'],
+  ['Sessize al', 'Mute', 'Stummschalten', 'Couper le son', 'Silenciar', 'Disattiva audio', 'Silenciar', 'Выключить звук', 'Вимкнути звук', 'Wycisz', 'ミュート', '静音', '음소거', 'كتم الصوت'],
+  ['Sesi aç', 'Unmute', 'Ton an', 'Réactiver le son', 'Activar sonido', 'Riattiva audio', 'Ativar som', 'Включить звук', 'Увімкнути звук', 'Wyłącz wyciszenie', 'ミュート解除', '取消静音', '음소거 해제', 'إلغاء كتم الصوت'],
 ];
 
 const out = { langs: LANGS, keys: ROWS.map(r => r[0]) };
