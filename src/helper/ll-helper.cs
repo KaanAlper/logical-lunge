@@ -3252,18 +3252,75 @@ static class Wallpaper
         return json.Serialize(new Dictionary<string, object> { { "span", w.GetPosition() == SPAN }, { "monitors", mons }, { "dir", Dir } });
     }
 
-    // mode: "all" | "span" | monitör kimliği
-    public static void Apply(string path, string mode)
+    static void SetRaw(string path, string mode)
     {
-        path = System.IO.Path.GetFullPath(path);
         var w = Api();
         if (mode == "span") { w.SetPosition(SPAN); w.SetWallpaper(null, path); }
         else
         {
-            if (w.GetPosition() == SPAN) w.SetPosition(FILL);
-            else w.SetPosition(FILL);
+            w.SetPosition(FILL);
             w.SetWallpaper(mode == "all" ? null : mode, path);
         }
+    }
+
+    // Seçilen duvar kağıdı kalıcıdır: başka araçlar (ör. Superpaper) açılışta kendi resmini uygularsa, birkaç dakika
+    // içinde bizim seçimimiz geri yüklenir. Kayıt: satır başına "mod<TAB>yol".
+    static string StatePath { get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\wallpaper.txt"); } }
+
+    static void SaveState(string path, string mode)
+    {
+        try
+        {
+            var d = new Dictionary<string, string>();
+            if (mode != "all" && mode != "span" && System.IO.File.Exists(StatePath))
+                foreach (var l in System.IO.File.ReadAllLines(StatePath)) { var a = l.Split('\t'); if (a.Length == 2 && a[0] != "all" && a[0] != "span") d[a[0]] = a[1]; }
+            d[mode] = path; // "tümü"/"span" seçimi öncekilerin hepsinin yerine geçer
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(StatePath));
+            var lines = new List<string>(); foreach (var kv in d) lines.Add(kv.Key + "\t" + kv.Value);
+            System.IO.File.WriteAllLines(StatePath, lines.ToArray());
+        }
+        catch { }
+    }
+
+    public static void StartKeeper()
+    {
+        var t = new Thread(() =>
+        {
+            int fixes = 0;
+            for (int i = 0; i < 40 && fixes < 3; i++) // ~3 dk
+            {
+                Thread.Sleep(i == 0 ? 15000 : 5000);
+                try
+                {
+                    if (!System.IO.File.Exists(StatePath)) return;
+                    var w = Api();
+                    bool fixedOne = false;
+                    foreach (var l in System.IO.File.ReadAllLines(StatePath))
+                    {
+                        var a = l.Split('\t');
+                        if (a.Length != 2 || !System.IO.File.Exists(a[1])) continue;
+                        string cur = "";
+                        try { cur = (a[0] == "all" || a[0] == "span") ? (string)Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallPaper", null) : w.GetWallpaper(a[0]); } catch { }
+                        if (string.Equals(System.IO.Path.GetFullPath(cur ?? "x"), a[1], StringComparison.OrdinalIgnoreCase)) continue;
+                        // Windows span/all'da kayıt defterine kopya yazabilir: dosya adı aynıysa yeniden uygulama
+                        if (System.IO.Path.GetFileName(cur ?? "") == System.IO.Path.GetFileName(a[1])) continue;
+                        SetRaw(a[1], a[0]); fixedOne = true;
+                    }
+                    if (fixedOne) fixes++;
+                }
+                catch { }
+            }
+        }) { IsBackground = true };
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+    }
+
+    // mode: "all" | "span" | monitör kimliği
+    public static void Apply(string path, string mode)
+    {
+        path = System.IO.Path.GetFullPath(path);
+        SetRaw(path, mode);
+        SaveState(path, mode);
         // ii switchwall.sh gibi terminal renklerini yeni duvar kağıdından üret (varsa)
         try
         {
@@ -4008,6 +4065,7 @@ static class Program
         dwindle.HookNewWindows();
         LaunchQueue.Start(new Slider(new Glaze())); // kendi bağlantısı: animasyonu beklemesin
         NightLight.StartKeeper();
+        Wallpaper.StartKeeper();
         Toasts.Start();
         // Windows'a verilen callback'lerin sahibi nesneler canlı kalmalı: aksi halde çöp toplayıcı
         // onları siler ve Windows silinmiş fonksiyonu çağırınca helper sessizce çöker.
