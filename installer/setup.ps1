@@ -91,6 +91,12 @@ if (-not $wv2 -or -not $wv2.pv -or $wv2.pv -eq '0.0.0.0') {
     $b = Get-File 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' 'MicrosoftEdgeWebview2Setup.exe'
     Start-Process $b -ArgumentList '/silent', '/install' -Wait
 }
+# GlazeWM / Zebar (Rust, MSVC) need the Visual C++ 2015-2022 runtime, which a clean Windows may not have.
+if (-not (Test-Path "$env:WINDIR\System32\vcruntime140_1.dll")) {
+    Step 'Installing Microsoft Visual C++ runtime'
+    $vc = Get-File 'https://aka.ms/vs/17/release/vc_redist.x64.exe' 'vc_redist.x64.exe'
+    Start-Process $vc -ArgumentList '/install', '/quiet', '/norestart' -Wait
+}
 
 # ---------------------------------------------------------------- stop running parts
 Step 'Stopping running components'

@@ -22,6 +22,16 @@ end-4 illogical-impulse Hyprland masaüstü, Windows için — tek komutla.
 > [!NOTE]
 > Forked from / built on **[GlazeWM](https://github.com/glzr-io/glazewm)**, **[Zebar](https://github.com/glzr-io/zebar)** and **[end-4's illogical-impulse (dots-hyprland)](https://github.com/end-4/dots-hyprland)**. All three are GPL-3.0; so is this project. See [Credits](#credits--teşekkürler).
 
+## ⚡ Quick install · Hızlı kurulum
+
+Open **PowerShell** and paste · **PowerShell**'i aç ve yapıştır:
+
+```powershell
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+```
+
+One admin prompt; everything else downloads and installs silently. · Tek yönetici onayı; gerisi kendiliğinden, sessizce iner ve kurulur.
+
 ---
 
 ## English
@@ -58,7 +68,7 @@ Recreating ii on Windows means fixing things nobody warns you about:
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-Windows asks for permission **once**. The installer downloads pinned, tested versions of GlazeWM, Zebar, WezTerm, the Nerd Font, fish (MSYS2), starship, eza, tacky-borders and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
+Windows asks for permission **once**. The installer silently downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza, tacky-borders and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
 
 | Option (set before running) | Effect |
 |---|---|
@@ -116,6 +126,15 @@ $env:LL_SOURCE = "$PWD\dist\LogicalLunge-$(Get-Content VERSION)"; .\install.ps1
 ```
 
 Needs the Windows 10 SDK (for `media-art.exe`), Python 3.12 (packaged helpers are built with PyInstaller — the target PC needs no Python) and Node.js (translations).
+
+The GlazeWM and Zebar forks (branch `logical-lunge`: Hyprland dwindle layout, no tray icons, unused providers removed) are built too when they are checked out next to this repo:
+
+```powershell
+git clone -b logical-lunge https://github.com/KaanAlper/glazewm ..\logical-lunge-forks\glazewm
+git clone -b logical-lunge https://github.com/KaanAlper/zebar   ..\logical-lunge-forks\zebar
+```
+
+This needs Rust (nightly for Zebar) and pnpm.
 
 ---
 
