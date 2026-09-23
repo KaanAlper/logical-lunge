@@ -64,6 +64,14 @@ function Set-Reg([string]$path, [string]$name, $value, [string]$type = 'DWord') 
     Set-ItemProperty -Path $path -Name $name -Value $value -Type $type
 }
 function Mark-Installed([string]$what) { if ($backup.installed -notcontains $what) { $backup.installed += $what; Save-Backup } }
+# PATH: only our own entries are added (and later removed) - never restore the whole value
+function Add-UserPath([string]$dir) {
+    $cur = (Get-ItemProperty "$HKU\Environment" -Name Path -ErrorAction SilentlyContinue).Path
+    if ($cur -and ($cur -split ';') -contains $dir) { return }
+    $new = ((@($cur -split ';' | Where-Object { $_ }) + $dir) -join ';')
+    Set-ItemProperty "$HKU\Environment" -Name Path -Value $new -Type ExpandString
+    Mark-Installed ("path:" + $dir)
+}
 
 Log "Logical Lunge installer - $(Get-Date)"
 Log "user: $UserName ($UserSid)  profile: $UserProfile"
@@ -109,9 +117,7 @@ if (-not (Test-Path $zbExe)) {
 }
 if (-not (Test-Path $zbExe)) { throw 'Zebar could not be installed.' }
 # GlazeWM's shell-exec cannot run quoted paths with spaces: make "zebar" resolvable through PATH
-$userPath = (Get-ItemProperty "$HKU\Environment" -Name Path -ErrorAction SilentlyContinue).Path
-$zbDir = Split-Path $zbExe
-if (-not $userPath -or ($userPath -split ';') -notcontains $zbDir) { Set-Reg "$HKU\Environment" 'Path' ((@($userPath -split ';' | Where-Object { $_ }) + $zbDir) -join ';') 'ExpandString' }
+Add-UserPath (Split-Path $zbExe)
 
 # ---------------------------------------------------------------- files
 Step 'Copying Logical Lunge files'
@@ -205,8 +211,7 @@ if (-not $NoTerminal) {
     Expand-Archive $sz $bin -Force
     $ez = Gh-Asset 'eza-community/eza' $EZA_VER 'eza\.exe_x86_64-pc-windows-gnu\.zip$'
     Expand-Archive $ez $bin -Force
-    $up = (Get-ItemProperty "$HKU\Environment" -Name Path -ErrorAction SilentlyContinue).Path
-    if (-not $up -or ($up -split ';') -notcontains $bin) { Set-Reg "$HKU\Environment" 'Path' ((@($up -split ';' | Where-Object { $_ }) + $bin) -join ';') 'ExpandString' }
+    Add-UserPath $bin
     foreach ($pair in @(@('config\fish\config.fish', '.config\fish\config.fish'), @('config\starship.toml', '.config\starship.toml'))) {
         $dst = Join-Path $UserProfile $pair[1]
         New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null

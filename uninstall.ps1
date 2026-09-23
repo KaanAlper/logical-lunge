@@ -54,6 +54,12 @@ public static class LLTB { [DllImport("user32.dll")] public static extern IntPtr
 foreach ($c in 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd') { $h = [LLTB]::FindWindow($c, $null); if ($h -ne [IntPtr]::Zero) { [LLTB]::ShowWindow($h, 5) | Out-Null } }
 
 $installed = if ($backup) { @($backup.installed) } else { @() }
+# remove only the PATH entries the installer added
+$added = @($installed | Where-Object { $_ -like 'path:*' } | ForEach-Object { $_.Substring(5) })
+if ($added.Count) {
+    $cur = (Get-ItemProperty "$HKU\Environment" -Name Path -ErrorAction SilentlyContinue).Path
+    if ($cur) { Set-ItemProperty "$HKU\Environment" -Name Path -Value (($cur -split ';' | Where-Object { $_ -and $added -notcontains $_ }) -join ';') -Type ExpandString }
+}
 function Uninstall-Msi([string]$display) {
     foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
         Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {

@@ -30,7 +30,9 @@ if (-not $src) {
     Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -OutFile $zip
     $sha = $rel.assets | Where-Object { $_.name -eq "$($asset.name).sha256" } | Select-Object -First 1
     if ($sha) {
-        $expected = ((Invoke-WebRequest -UseBasicParsing $sha.browser_download_url).Content -replace '[^0-9a-fA-F].*$', '').Trim()
+        $raw = (Invoke-WebRequest -UseBasicParsing $sha.browser_download_url).Content
+        if ($raw -is [byte[]]) { $raw = [Text.Encoding]::ASCII.GetString($raw) }
+        $expected = ($raw -split '\s+')[0].Trim().ToUpper()
         if ($expected -and $expected -ne (Get-FileHash $zip -Algorithm SHA256).Hash) { Write-Host 'Checksum mismatch, aborting.' -ForegroundColor Red; return }
     }
     Expand-Archive $zip $work -Force
