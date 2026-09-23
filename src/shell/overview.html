@@ -333,6 +333,29 @@
         };
         const hide = () => { setOpen(false); win.hide().catch(() => {}); };
 
+        // Helper pencereyi Win32 ile gizleyip gösterir (Super / Super+V): bu, sayfaya blur/focus olayı göndermez ve
+        // 'open' eski kalır. Görünürlüğü kısa aralıkla izle: gizlendiyse kapalı say, helper gösterdiyse (bizim
+        // show() çağrımız dışında) taze açılış gibi işle ve helper'ın mod bayrağını oku.
+        const openRef = useRef(false); openRef.current = open;
+        const showRef = useRef(null); showRef.current = show;
+        useEffect(() => {
+          let was = false;
+          const t = setInterval(async () => {
+            try {
+              const v = await win.isVisible();
+              if (v && !was) {
+                if (!openRef.current) showRef.current();
+                else zebar.shellExec(HELPER, ['--overview-mode']).then(r => {
+                  const m = (r.stdout || '').trim();
+                  if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
+                }).catch(() => {});
+              } else if (!v && was && openRef.current) setOpen(false);
+              was = v;
+            } catch {}
+          }, 40);
+          return () => clearInterval(t);
+        }, []);
+
         // Açılışta gizli başla; Super (ll-helper) ya da bar olayı açar
         useEffect(() => { win.hide().catch(() => {}); }, []);
 
@@ -340,7 +363,16 @@
           const un = listen('ll:overview-toggle', () => (document.hasFocus() && open ? hide() : show()));
           // Bar'da herhangi bir yere tıklanınca kapan (bar penceresi odak almadığı için blur gelmiyordu)
           const unBar = listen('ll:bar-click', () => { if (open) hide(); });
-          const onFocus = () => { if (!open) show(); else inputRef.current?.focus(); };
+          const onFocus = () => {
+            if (!open) { show(); return; }
+            inputRef.current?.focus();
+            // Helper pencereyi kendisi gizleyip yeniden gösterdiyse (Super / Super+V ile kapatma) blur gelmez ve
+            // 'open' eski kalır: helper'ın bıraktığı mod bayrağına göre taze açılmış gibi davran.
+            zebar.shellExec(HELPER, ['--overview-mode']).then(r => {
+              const m = (r.stdout || '').trim();
+              if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
+            }).catch(() => {});
+          };
           const onBlur = () => hide();
           window.addEventListener('focus', onFocus);
           window.addEventListener('blur', onBlur);

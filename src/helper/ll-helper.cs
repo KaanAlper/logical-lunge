@@ -2421,22 +2421,37 @@ class Keys2
 
     void Launch(string path) { LaunchQueue.Enqueue(path); }
 
+    // Overview'u önce saydam göster; widget helper'ın bıraktığı mod bayrağını okuyup arayüzü kurunca (bayrak silinir)
+    // görünür yap. Aksi halde önce düz arama, sonra ";" pano modu görünüyordu.
+    public static void ShowOverviewInMode(IntPtr h, string mode)
+    {
+        string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge");
+        string flag = System.IO.Path.Combine(d, "overview-mode.txt");
+        try { System.IO.Directory.CreateDirectory(d); System.IO.File.WriteAllText(flag, mode); } catch { }
+        int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
+        Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex | 0x00080000); // WS_EX_LAYERED
+        Native.SetLayeredWindowAttributes(h, 0, 0, 0x2);              // tamamen saydam
+        Native.ShowWindow(h, 5);
+        Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
+        Native.SetForegroundWindow(h);
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 800 && System.IO.File.Exists(flag)) Thread.Sleep(6);
+            Thread.Sleep(70); // widget'ın çizimi tamamlaması
+            Native.SetLayeredWindowAttributes(h, 0, 255, 0x2);
+            int e2 = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
+            Native.SetWindowLong(h, Native.GWL_EXSTYLE, e2 & ~0x00080000);
+        });
+    }
+
     // Super+V: overview'u pano modunda (";" öneki) aç; açıkken tekrar basınca kapat
     static void ToggleClipboard()
     {
         IntPtr h = Native.FindWindow(null, "ll-overview");
         if (h == IntPtr.Zero) return;
         if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { Native.ShowWindow(h, 0); return; }
-        try
-        {
-            string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge");
-            System.IO.Directory.CreateDirectory(d);
-            System.IO.File.WriteAllText(System.IO.Path.Combine(d, "overview-mode.txt"), ";");
-        }
-        catch { }
-        Native.ShowWindow(h, 5);
-        Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
-        Native.SetForegroundWindow(h);
+        ShowOverviewInMode(h, ";");
     }
 
     static void ToggleOverview()
@@ -2444,10 +2459,8 @@ class Keys2
         IntPtr h = Native.FindWindow(null, "ll-overview");
         if (h == IntPtr.Zero) return;
         if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { Native.ShowWindow(h, 0); return; }
-        Native.ShowWindow(h, 5);
-        // Önplana almak için "son giriş bizden" olsun (SetForegroundWindow kısıtı)
-        Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
-        Native.SetForegroundWindow(h);
+        // Mod bayrağı: "s" = düz arama (pano modunun bayrağı ";"); widget taze açılmış gibi davransın
+        ShowOverviewInMode(h, "s");
     }
 }
 
@@ -4181,6 +4194,13 @@ static class Program
         {
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write(Binds.ListJson()); so.Flush();
+            return;
+        }
+        // ll-helper.exe --overview-show clip|plain: overview'u ilgili modda aç (test / betik için; Super / Super+V aynısını yapar)
+        if (args.Length == 2 && args[0] == "--overview-show")
+        {
+            IntPtr ovh = Native.FindWindow(null, "ll-overview");
+            if (ovh != IntPtr.Zero) { Keys2.ShowOverviewInMode(ovh, args[1] == "clip" ? ";" : "s"); Thread.Sleep(1500); }
             return;
         }
         // Pano geçmişi ve overview modu: --clip-list | --clip-set <id> | --clip-del <id> | --clip-clear | --overview-mode
