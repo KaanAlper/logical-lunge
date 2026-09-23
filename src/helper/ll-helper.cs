@@ -3517,25 +3517,57 @@ static class Splash
         return FindWindow(null, "Zebar - logical-lunge / bar") != IntPtr.Zero;
     }
 
+    // Kilitli olabilir (Superpaper gibi araçlar dosyayı yeniden yazarken) -> paylaşımlı aç; olmazsa son iyi kopya.
+    static string CachePath { get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\splash-wall.jpg"); } }
+    static bool SpanStyle()
+    {
+        string st = (string)Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallpaperStyle", null);
+        return st == "22";
+    }
+
     static Image Wallpaper()
     {
         foreach (var f in new[] {
             (string)Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallPaper", null),
+            CachePath,
             System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Windows\Themes\TranscodedWallpaper") })
         {
-            try { if (!string.IsNullOrEmpty(f) && System.IO.File.Exists(f)) using (var s = System.IO.File.OpenRead(f)) return Image.FromStream(new System.IO.MemoryStream(ReadAll(s))); }
+            try
+            {
+                if (string.IsNullOrEmpty(f) || !System.IO.File.Exists(f)) continue;
+                using (var s = new System.IO.FileStream(f, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+                    return Image.FromStream(new System.IO.MemoryStream(ReadAll(s)));
+            }
             catch { }
         }
         return null;
+    }
+
+    // Açılışta duvar kağıdı okunamazsa kullanılacak kopya: masaüstü hazırken güncel tutulur.
+    public static void SaveCache()
+    {
+        try
+        {
+            string f = (string)Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallPaper", null);
+            if (string.IsNullOrEmpty(f) || !System.IO.File.Exists(f)) return;
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(CachePath));
+            using (var s = new System.IO.FileStream(f, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+            using (var d = System.IO.File.Create(CachePath + ".tmp")) s.CopyTo(d);
+            System.IO.File.Copy(CachePath + ".tmp", CachePath, true);
+            System.IO.File.Delete(CachePath + ".tmp");
+            // Superpaper "span" resmi tüm masaüstüne yayılır: hangi ekranda ne çizileceğini de saklamak için stil bayrağı
+        }
+        catch { }
     }
     static byte[] ReadAll(System.IO.Stream s) { var m = new System.IO.MemoryStream(); s.CopyTo(m); return m.ToArray(); }
 
     class Cover : Form
     {
         readonly Image img;
-        public Cover(Rectangle b, Image img)
+        readonly Rectangle virt; // span resmi bu dikdörtgene yayılır (boşsa her ekran kendi resmini doldurur)
+        public Cover(Rectangle b, Image img, Rectangle virt)
         {
-            this.img = img;
+            this.img = img; this.virt = virt;
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
             StartPosition = FormStartPosition.Manual; Bounds = b;
             BackColor = Color.FromArgb(20, 19, 24);
@@ -3549,11 +3581,15 @@ static class Splash
         protected override void OnPaint(PaintEventArgs e)
         {
             if (img == null) return;
-            // "Doldur" yerleşimi: en boy oranını koruyup ekranı kapla, taşanı ortadan kırp
-            double k = Math.Max((double)Width / img.Width, (double)Height / img.Height);
-            int w = (int)Math.Ceiling(img.Width * k), h = (int)Math.Ceiling(img.Height * k);
             e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-            e.Graphics.DrawImage(img, (Width - w) / 2, (Height - h) / 2, w, h);
+            // "Doldur" yerleşimi: en boy oranını koruyup alanı kapla, taşanı ortadan kırp. Span'da alan tüm
+            // masaüstüdür ve her ekran kendi dilimini gösterir (Windows'un "Yay" yerleşimi).
+            Rectangle area = virt.IsEmpty ? new Rectangle(0, 0, Width, Height) : virt;
+            double k = Math.Max((double)area.Width / img.Width, (double)area.Height / img.Height);
+            int w = (int)Math.Ceiling(img.Width * k), h = (int)Math.Ceiling(img.Height * k);
+            int x = area.X + (area.Width - w) / 2 - Left, y = area.Y + (area.Height - h) / 2 - Top;
+            if (virt.IsEmpty) { x = (Width - w) / 2; y = (Height - h) / 2; }
+            e.Graphics.DrawImage(img, x, y, w, h);
         }
     }
 
@@ -3565,7 +3601,8 @@ static class Splash
             if (!created) return;
             var img = Wallpaper();
             var covers = new List<Cover>();
-            foreach (var s in Screen.AllScreens) { var f = new Cover(s.Bounds, img); f.Show(); covers.Add(f); }
+            var virt = SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
+            foreach (var s in Screen.AllScreens) { var f = new Cover(s.Bounds, img, virt); f.Show(); covers.Add(f); }
 
             var start = Environment.TickCount;
             int readyAt = -1;
@@ -3579,6 +3616,7 @@ static class Splash
                 bool done = (readyAt >= 0 && now - readyAt > 1500) || now - start > 30000;
                 if (!done) return;
                 timer.Stop();
+                ThreadPool.QueueUserWorkItem(_ => SaveCache());
                 var fade = new System.Windows.Forms.Timer { Interval = 15 };
                 int fs = Environment.TickCount;
                 fade.Tick += (o2, e2) =>
