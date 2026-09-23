@@ -2293,6 +2293,14 @@ class Keys2
             }
         }
         if (isUp && held.Remove(vk)) return (IntPtr)1;
+        // Masaüstünü göster / tüm pencereleri küçült kısayolları (Win+D, Win+M, Win+Home, Win+,) pencere yöneticisinin
+        // düzenini bozar (küçültülen pencereler yerleşimden düşer): hiç iletilmez.
+        if (winDown && isDown && (vk == 0x44 || vk == 0x4D || vk == 0x24 || vk == 0xBC))
+        {
+            held.Add(vk);
+            swallowedWithWin = true;
+            return (IntPtr)1;
+        }
         // Bizim işlemediğimiz Win+tuş: Win'i şimdi enjekte et, tuşu da arkasından yeniden gönder
         // (kancadan enjekte edilen olay mevcut olaydan SONRA işlenir; sıra bozulmasın diye bunu yutuyoruz).
         if (winDown && isDown && !(vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || (vk >= 0xA0 && vk <= 0xA5)))
