@@ -4882,6 +4882,13 @@ static class Program
     }
 
     [STAThread]
+    static bool Running(string name)
+    {
+        var ps = Process.GetProcessesByName(name);
+        foreach (var p in ps) p.Dispose();
+        return ps.Length > 0;
+    }
+
     static void Main(string[] args)
     {
         // ll-helper.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
@@ -5320,6 +5327,32 @@ static class Program
             }
         }) { IsBackground = true, Priority = ThreadPriority.Lowest };
         prioThread.Start();
+
+        // Güvenlik ağı: GlazeWM'in başlattığı Zebar gelmezse (ör. yeni kurulumda "shell-exec zebar" PATH'te bulunamaz)
+        // masaüstü barsız kalmasın. Yalnızca açılıştan sonraki ilk dakika ve bir kez: kullanıcı Zebar'ı sonradan bilerek
+        // kapatırsa geri açılmaz.
+        new Thread(() =>
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                Thread.Sleep(10000);
+                if (Running("zebar")) return;
+                if (!Running("glazewm")) continue;
+                string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                foreach (var exe in new[] {
+                    System.IO.Path.Combine(home, @".glzr\logical-lunge\bin\zebar.exe"),
+                    System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"glzr.io\Zebar\zebar.exe") })
+                {
+                    if (!System.IO.File.Exists(exe)) continue;
+                    // ShellExecute: helper'ın tutamaçları (GlazeWM IPC bağlantısı vb.) Zebar'a miras kalmasın
+                    try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = home }); Slider.Log("zebar çalışmıyordu, başlatıldı: " + exe); }
+                    catch (Exception ex) { Slider.Log("zebar başlatılamadı: " + ex.Message); }
+                    return;
+                }
+                Slider.Log("zebar çalışmıyor ve bulunamadı");
+                return;
+            }
+        }) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
 
         Application.Run(ui);
         GC.KeepAlive(mutex);

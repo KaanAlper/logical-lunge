@@ -158,11 +158,19 @@ $zsettings = [ordered]@{ '$schema' = "https://github.com/glzr-io/zebar/raw/$ZEBA
         foreach ($w in 'bar', 'overview', 'sidebar-right', 'toast', 'osk', 'update', 'session') { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
 $zs = Join-Path $ZB 'settings.json'
 if ((Test-Path $zs) -and -not (Test-Path "$zs.before-ll")) { Copy-Item $zs "$zs.before-ll" }
-$zsettings | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $zs
+# No BOM: Zebar parses settings.json with serde_json, which rejects the BOM that Set-Content -Encoding UTF8 writes
+# in Windows PowerShell 5.1 (Zebar then fails at startup and there is no bar).
+[IO.File]::WriteAllText($zs, ($zsettings | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
 # GlazeWM config (the user's own config is kept as a backup)
 $gc = Join-Path $GW 'config.yaml'
 if ((Test-Path $gc) -and -not (Test-Path "$gc.before-ll")) { Copy-Item $gc "$gc.before-ll" }
 Copy-Item (Join-Path $Source 'config\glazewm\config.yaml') $gc -Force
+# Start Zebar by its full path: Task Scheduler may not see the folder this installer just added to PATH until the
+# user signs out and in again, so "shell-exec zebar" would not be found. shell-exec resolves unquoted paths with spaces.
+$zbCmd = $zbExe
+if ($zbExe.StartsWith($UserProfile + '\', [StringComparison]::OrdinalIgnoreCase)) { $zbCmd = '%USERPROFILE%' + $zbExe.Substring($UserProfile.Length) }
+$gcText = [IO.File]::ReadAllText($gc)
+[IO.File]::WriteAllText($gc, $gcText.Replace("'shell-exec zebar'", "'shell-exec $zbCmd'"), (New-Object Text.UTF8Encoding $false))
 # tacky-borders (rounded purple focus border)
 $tb = Join-Path $UserProfile '.config\tacky-borders'
 New-Item -ItemType Directory -Force $tb | Out-Null

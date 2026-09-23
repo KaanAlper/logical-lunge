@@ -8,8 +8,8 @@ $ProgressPreference = 'SilentlyContinue'
 $dir = Split-Path $Zip
 $status = Join-Path $dir 'status.json'
 function Set-State($state, $err) {
-    ([ordered]@{ state = $state; version = ''; bytes = 0; total = 0; error = [string]$err } | ConvertTo-Json -Compress) |
-        Set-Content -Path $status -Encoding UTF8
+    $j = [ordered]@{ state = $state; version = ''; bytes = 0; total = 0; error = [string]$err } | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($status, $j, (New-Object Text.UTF8Encoding $false)) # BOM'suz
 }
 $splash = $null
 try {

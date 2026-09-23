@@ -54,7 +54,7 @@ switch ($Action) {
         if ($Index -lt 0 -or $Index -ge $entries.Count) { '{"ok":false,"error":"index"}'; exit }
         if (-not (Test-Path $orig)) {
             # Özgün kısayolları bir kez sakla (sıfırlama için)
-            ConvertTo-Json -InputObject @($entries | ForEach-Object { , @($_.bindings) }) -Depth 3 -Compress | Set-Content -Encoding UTF8 $orig
+            [IO.File]::WriteAllText($orig, (ConvertTo-Json -InputObject @($entries | ForEach-Object { , @($_.bindings) }) -Depth 3 -Compress), (New-Object Text.UTF8Encoding $false))
         }
         $e = $entries[$Index]
         $b = @($e.bindings)
