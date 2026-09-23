@@ -345,6 +345,27 @@ class Slider
 
     // GlazeWM pencereleri SetWindowPos ile (kısmen eşzamansız) taşır: dikdörtgenler iki ölçüm arka arkaya aynı
     // kalana kadar bekle (en fazla ~150 ms), sonra bitiş konumlarını oku.
+    // Yeni pencere GlazeWM'in verdiği yere gerçekten oturana kadar bekle (görünen çerçeve, gölge kenarları hariç).
+    // Yoksa belirme animasyonu pencerenin açıldığı yerde (ekran ortası) oynar ve pencere sonra zıplar.
+    public static void WaitPlaced(long h, Native.RECT target, int maxMs)
+    {
+        var hw = new IntPtr(h);
+        var sw = Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < maxMs)
+        {
+            Native.RECT fr;
+            if (Native.DwmGetWindowAttribute(hw, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out fr, Marshal.SizeOf(typeof(Native.RECT))) != 0 && !Native.GetWindowRect(hw, out fr)) return;
+            if (Math.Abs(fr.Left - target.Left) <= 12 && Math.Abs(fr.Top - target.Top) <= 12 &&
+                Math.Abs(fr.Right - target.Right) <= 12 && Math.Abs(fr.Bottom - target.Bottom) <= 12)
+            {
+                if (sw.ElapsedMilliseconds > 20) Log("yeni pencere yerine oturdu: " + sw.ElapsedMilliseconds + "ms");
+                return;
+            }
+            Thread.Sleep(5);
+        }
+        Log("yeni pencere yerine oturmadı (" + maxMs + "ms)");
+    }
+
     public static void WaitSettled(IEnumerable<long> handles)
     {
         var last = new Dictionary<long, Native.RECT>();
@@ -365,7 +386,39 @@ class Slider
         }
     }
 
-    public class Frozen { public int Ox, Oy; public readonly List<Thumb> All = new List<Thumb>(); public readonly Dictionary<long, Thumb> Win = new Dictionary<long, Thumb>(); }
+    // Önizlemeyi esnetmeden çiz: kaynak hedeften büyükse (pencere küçülüyor) kırp, küçükse (pencere arkada henüz
+    // büyümedi) ger ki kenarda saydam boşluk açılmasın. DWM kaynağı pencerenin görünmez gölge kenarlarını da
+    // içerir; hedef bu kenarlar düşülerek görünen çerçeveye çizilir, içerik sağa/sola kaymaz.
+    static void Place1to1(Thumb t, Native.RECT dest)
+    {
+        Native.SIZE src;
+        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) != 0 || src.cx <= 0 || src.cy <= 0)
+        {
+            var p0 = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = dest };
+            Native.DwmUpdateThumbnailProperties(t.Id, ref p0);
+            return;
+        }
+        int bL = 0, bT = 0, bR = 0, bB = 0;
+        Native.RECT wr, fr;
+        if (Native.GetWindowRect(t.Src, out wr) && src.cx == wr.Right - wr.Left && src.cy == wr.Bottom - wr.Top &&
+            Native.DwmGetWindowAttribute(t.Src, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out fr, Marshal.SizeOf(typeof(Native.RECT))) == 0)
+        {
+            bL = Math.Max(0, fr.Left - wr.Left); bT = Math.Max(0, fr.Top - wr.Top);
+            bR = Math.Max(0, wr.Right - fr.Right); bB = Math.Max(0, wr.Bottom - fr.Bottom);
+        }
+        var vis = new Native.RECT { Left = dest.Left + bL, Top = dest.Top + bT, Right = dest.Right - bR, Bottom = dest.Bottom - bB };
+        int vw = Math.Max(1, vis.Right - vis.Left), vh = Math.Max(1, vis.Bottom - vis.Top);
+        int cw = Math.Max(1, src.cx - bL - bR), ch = Math.Max(1, src.cy - bT - bB);
+        var pr = new Native.DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_RECTSOURCE,
+            rcDestination = vis,
+            rcSource = new Native.RECT { Left = bL, Top = bT, Right = bL + Math.Min(vw, cw), Bottom = bT + Math.Min(vh, ch) }
+        };
+        Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
+    }
+
+    public class Frozen { public int Ox, Oy; public Rectangle Mon; public readonly List<Thumb> All = new List<Thumb>(); public readonly Dictionary<long, Thumb> Win = new Dictionary<long, Thumb>(); }
 
     // Dondur: katmanı aç, pencereleri şu anki görünür yerlerinde (ya da verilen eski ekran dikdörtgenlerinde)
     // canlı görüntüleriyle göster. Arkasında GlazeWM ne yaparsa yapsın kullanıcı zıplama görmez. UI thread'inde.
@@ -373,7 +426,7 @@ class Slider
     {
         Interrupt = false;
         int ox = mon.X, oy = mon.Y + BAR_H;
-        var f = new Frozen { Ox = ox, Oy = oy };
+        var f = new Frozen { Ox = ox, Oy = oy, Mon = mon };
         overlay.Bounds = new Rectangle(mon.X, oy, mon.Width, mon.Height - BAR_H);
         Native.RECT wsrc;
         IntPtr wall = WallpaperSource(out wsrc);
@@ -392,9 +445,12 @@ class Slider
             Native.RECT old;
             if (startScreen != null && startScreen.TryGetValue(h, out old)) t.Dest = Shift(old, ox, oy);
             else t.Dest = VisualDest(hw, t.Id, ox, oy);
-            var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = t.Dest };
-            if (h == hidden) { pr.dwFlags |= Native.DWM_TNP_OPACITY; pr.opacity = 0; } // yeni pencere: Finish'te %80'den belirir
-            Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
+            if (h == hidden)
+            {
+                var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_OPACITY, rcDestination = t.Dest, opacity = 0 };
+                Native.DwmUpdateThumbnailProperties(t.Id, ref pr); // yeni pencere: Finish'te %80'den belirir
+            }
+            else Place1to1(t, t.Dest);
             f.All.Add(t); f.Win[h] = t;
         }
         Animating = true;
@@ -446,9 +502,15 @@ class Slider
             double e = Bezier(0.05, 0.7, 0.1, 1, p); // Hyprland emphasizedDecel
             foreach (var a in anims)
             {
-                var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = Lerp(a.Value.Key, a.Value.Value, e) };
-                if (a.Key == pop) { pr.dwFlags |= Native.DWM_TNP_OPACITY; pr.opacity = (byte)Math.Min(255, (int)(255 * Math.Min(1.0, p * 2.5))); }
-                Native.DwmUpdateThumbnailProperties(a.Key.Id, ref pr);
+                var r = Lerp(a.Value.Key, a.Value.Value, e);
+                if (a.Key == pop)
+                {
+                    // Hyprland windowsIn "popin 80%": ölçekli büyüyerek ve belirerek
+                    var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_OPACITY, rcDestination = r };
+                    pr.opacity = (byte)Math.Min(255, (int)(255 * Math.Min(1.0, p * 2.5)));
+                    Native.DwmUpdateThumbnailProperties(a.Key.Id, ref pr);
+                }
+                else Place1to1(a.Key, r);
             }
             Native.DwmFlush();
             if (p >= 1.0) break;
@@ -932,48 +994,61 @@ class Slider
             int dur0 = Adaptive(ref lastSlideStart, DURATION_MS);
             Animating = true;
 
+            // Taşı+takip et: GlazeWM komutu bittiği an (genelde kaymanın ilk ~50 ms'i) hedef workspace'teki pencereler
+            // ve taşınan pencere yeni yerlerine doğru kaymayla AYNI ANDA ve esnemeden ilerler; ayrı bir "yerleşme"
+            // adımı yok (Hyprland'de de pencere kayarken boyutlanır). Hedef her karede canlı okunur: GlazeWM pencereyi
+            // eşzamansız taşıdığı için ilk okuma eski yer olabilir.
+            var from = new Dictionary<Thumb, Native.RECT>();
+            if (moveFollow) { foreach (var t in newThumbs) from[t] = t.Dest; if (carried != null) from[carried] = carried.Dest; }
+            Stopwatch swR = null;
+            int durR = 0;
             var sw0 = Stopwatch.StartNew();
             while (!Interrupt)
             {
                 double p = Math.Min(1.0, sw0.ElapsedMilliseconds / (double)dur0);
                 double e = Bezier(0.1, 1, 0, 1, p);
                 int shift = (int)Math.Round(e * (mw + GAP));
+                if (moveFollow && swR == null && task.IsCompleted)
+                {
+                    swR = Stopwatch.StartNew();
+                    durR = Math.Max(MIN_MS, (int)(dur0 - sw0.ElapsedMilliseconds));
+                }
+                double pR = swR == null ? 0 : Math.Min(1.0, swR.ElapsedMilliseconds / (double)durR);
+                double eR = Bezier(0.05, 0.7, 0.1, 1, pR);
                 foreach (var t in oldThumbs) Move(t, -fdir * shift);
-                foreach (var t in newThumbs) Move(t, fdir * (mw + GAP) - fdir * shift);
+                foreach (var t in newThumbs)
+                {
+                    int dx = fdir * (mw + GAP) - fdir * shift;
+                    if (!moveFollow) { Move(t, dx); continue; }
+                    var r = swR == null ? from[t] : Lerp(from[t], VisualDest(t.Src, t.Id, ox, oy), eR);
+                    r.Left += dx; r.Right += dx;
+                    Place1to1(t, r);
+                }
+                if (moveFollow && carried != null)
+                    Place1to1(carried, swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR));
                 Native.DwmFlush();
-                if (p >= 1.0) break;
+                if (p >= 1.0 && (!moveFollow || pR >= 1.0)) break;
+                if (p >= 1.0 && swR == null && sw0.ElapsedMilliseconds > dur0 + 1500) break; // komut takıldı
             }
             long animEnd = clock.ElapsedMilliseconds;
-            task.Wait(1500); // gerçek pencereler yerindeyken overlay'i kaldır
-            if (moveFollow && !Interrupt)
+            // Katmanı GlazeWM'in yanıtını değil GERÇEK durumu bekleyerek kaldır: eski workspace'in pencereleri gizlenip
+            // (cloak) yenininkiler göründüğü an. GlazeWM bazen pencereleri gösterdikten ~250 ms sonra yanıt veriyordu
+            // ve hızlı basışta her geçiş bunu bekliyordu. Yanıt arkada gelmeye devam eder.
+            Func<IntPtr, bool> cloaked = hw => { int cv; return Native.DwmGetWindowAttribute(hw, Native.DWMWA_CLOAKED, out cv, 4) == 0 && cv != 0; };
+            var waitSw = Stopwatch.StartNew();
+            bool viaState = false;
+            while (!task.IsCompleted && waitSw.ElapsedMilliseconds < 1500)
             {
-                // Yeni workspace'e bir pencere eklendi: oradaki pencereler ve taşınan pencere yeni yerlerine kaysın
-                var settle = new List<Thumb>(newThumbs);
-                if (carried != null) settle.Add(carried);
-                var hsSettle = new List<long>();
-                foreach (var t in settle) hsSettle.Add(t.Src.ToInt64());
-                WaitSettled(hsSettle);
-                var anims2 = new List<KeyValuePair<Thumb, KeyValuePair<Native.RECT, Native.RECT>>>();
-                foreach (var t in settle)
-                    anims2.Add(new KeyValuePair<Thumb, KeyValuePair<Native.RECT, Native.RECT>>(t, new KeyValuePair<Native.RECT, Native.RECT>(t.Dest, VisualDest(t.Src, t.Id, ox, oy))));
-                var sw2 = Stopwatch.StartNew();
-                while (!Interrupt)
-                {
-                    double p2 = Math.Min(1.0, sw2.ElapsedMilliseconds / 220.0);
-                    double e2 = Bezier(0.05, 0.7, 0.1, 1, p2);
-                    foreach (var a in anims2)
-                    {
-                        var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = Lerp(a.Value.Key, a.Value.Value, e2) };
-                        Native.DwmUpdateThumbnailProperties(a.Key.Id, ref pr);
-                    }
-                    Native.DwmFlush();
-                    if (p2 >= 1.0) break;
-                }
+                bool done = oldThumbs.Count + newThumbs.Count > 0;
+                foreach (var t in oldThumbs) if (!cloaked(t.Src)) { done = false; break; }
+                if (done) foreach (var t in newThumbs) if (cloaked(t.Src)) { done = false; break; }
+                if (done) { viaState = true; break; }
+                Thread.Sleep(4);
             }
             overlay.Hide();
             foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
             Animating = false;
-            Log("fast done " + clock.ElapsedMilliseconds + "ms (animasyon " + dur0 + "ms, bitti " + animEnd + "ms, komut " + (task.IsCompleted ? "bitti" : "sürüyor") + ")");
+            Log("fast done " + clock.ElapsedMilliseconds + "ms (animasyon " + dur0 + "ms, bitti " + animEnd + "ms, " + (viaState ? "pencereler hazır" : "komut " + (task.IsCompleted ? "bitti" : "sürüyor")) + ")");
             return;
         }
 
@@ -1049,7 +1124,6 @@ class Dwindle
 {
     readonly Glaze glaze;
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
-    string lastKey;
 
     public Dwindle(Glaze g) { glaze = g; }
 
@@ -1065,7 +1139,6 @@ class Dwindle
     public Dwindle(Glaze g, Control ui, Slider slider) : this(g)
     {
         this.ui = ui; this.slider = slider;
-        Main = this;
         // Klavyeyle yeniden boyutlandırma vb. için hafızayı düzenli tazele
         var t = new Thread(() => { while (true) { Thread.Sleep(300); try { RefreshCache(); } catch { } } }) { IsBackground = true };
         t.Start();
@@ -1114,12 +1187,100 @@ class Dwindle
         lock (cacheLock) { rects = r; monOf = m; monRects = mr; visual = v; }
     }
 
+    // ---- Yeni pencere: Windows onu önce kendi varsayılan yerinde (ortada) gösterir, GlazeWM birkaç on ms sonra
+    // yerleştirir. Hyprland pencereyi son yerini alana kadar hiç göstermez: burada da pencere görünür olduğu an
+    // (EVENT_OBJECT_SHOW) ekranı mevcut pencerelerle donduruyoruz; ortadaki pencere katmanın altında kalır,
+    // GlazeWM yer açınca son yerinde %80'den büyüyüp belirir. Yönetilmezse (açılış ekranı vb.) 0.9 sn'de kalkar.
+    Native.WinEventDelegate showCb;
+    readonly object pendLock = new object();
+    Slider.Frozen pendFrozen;
+    long pendHandle;
+    int pendAt;
+    static readonly HashSet<string> noFreezeProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "zebar", "ll-helper", "tacky-borders", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost",
+          "LockApp", "TextInputHost", "ApplicationFrameHost", "msedgewebview2", "ll-songrec", "ll-termcolors" };
+
+    public void HookNewWindows()
+    {
+        if (ui == null) return;
+        ui.BeginInvoke((Action)(() =>
+        {
+            showCb = OnWindowShown;
+            Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, showCb, 0, 0, 0x0002 | 0x0000); // OUTOFCONTEXT
+        }));
+    }
+
+    void OnWindowShown(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        try
+        {
+            if (idObject != 0 || hwnd == IntPtr.Zero) return;
+            if (Native.GetAncestor(hwnd, 2) != hwnd || !Native.IsWindowVisible(hwnd)) return;
+            long h = hwnd.ToInt64();
+            if (Slider.Animating) return;
+            lock (cacheLock) if (rects.ContainsKey(h)) return;               // zaten yönetilen pencere (workspace dönüşü vb.)
+            lock (pendLock) if (pendFrozen != null) return;
+            int style = Native.GetWindowLong(hwnd, Native.GWL_STYLE), ex = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
+            // Yalnızca döşenecek türden uygulama pencereleri (AutoFloat'ın yüzdürmeyeceği)
+            if ((style & Native.WS_CAPTION) != Native.WS_CAPTION || (style & 0x00040000) == 0) return;
+            if ((ex & Native.WS_EX_TOOLWINDOW) != 0 || (ex & Native.WS_EX_NOACTIVATE) != 0) return;
+            if (Native.GetWindow(hwnd, 4) != IntPtr.Zero) return; // sahibi olan (diyalog)
+            uint pid; Native.GetWindowThreadProcessId(hwnd, out pid);
+            string proc;
+            try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { return; }
+            if (noFreezeProcs.Contains(proc)) return;
+
+            // Yeni pencere farenin olduğu monitördeki odaktaki workspace'e gelir (LaunchQueue fare altını odaklar)
+            var cur = Cursor.Position;
+            string mid = null; Rectangle mon = Rectangle.Empty;
+            Dictionary<long, Native.RECT> vis; Dictionary<long, string> mo;
+            lock (cacheLock)
+            {
+                foreach (var kv in monRects) if (kv.Value.Contains(cur)) { mid = kv.Key; mon = kv.Value; }
+                vis = visual; mo = monOf;
+            }
+            if (mid == null) return;
+            var hs = new List<long>();
+            foreach (var kv in mo) if (kv.Value == mid) hs.Add(kv.Key);
+            var start = new Dictionary<long, Native.RECT>();
+            foreach (var x in hs) { Native.RECT r; if (vis.TryGetValue(x, out r)) start[x] = r; }
+
+            var f = slider.Freeze(mon, hs, start, 0);   // UI thread'indeyiz
+            lock (pendLock) { pendFrozen = f; pendHandle = h; pendAt = Environment.TickCount; }
+            Slider.Log("yeni pencere dondu: " + proc);
+
+            var timer = new System.Windows.Forms.Timer { Interval = 900 };
+            timer.Tick += (s, e) =>
+            {
+                timer.Stop(); timer.Dispose();
+                Slider.Frozen left = null;
+                lock (pendLock) { if (pendFrozen == f) { left = f; pendFrozen = null; } }
+                if (left != null)
+                {
+                    List<long> now; lock (cacheLock) now = new List<long>(rects.Keys);
+                    slider.Finish(left, now, 0, 120); // yönetilmedi: katmanı yumuşakça kaldır
+                }
+            };
+            timer.Start();
+        }
+        catch (Exception ex2) { Slider.Log("show hook: " + ex2.Message); }
+    }
+
+    Slider.Frozen TakePending(long h)
+    {
+        lock (pendLock)
+        {
+            if (pendFrozen == null || pendHandle != h || Environment.TickCount - pendAt > 2000) return null;
+            var f = pendFrozen; pendFrozen = null; return f;
+        }
+    }
+
     // Pencere açıldı/kapandı. GlazeWM yerleşimi zaten değiştirdi; katmanı hemen, pencerelerin GÖRÜLDÜKLERİ eski
     // yerlerinden (önbellek) açıp arkada fareye göre yerleştirmeyi de yapıyoruz, sonra hepsi gerçek yerine kayar.
     // (Eskiden: önce zıplama, 60 ms sonra katman, sonra fareye göre ikinci zıplama ve 400 ms sonra üçüncüsü.)
     void AnimateChange(long anchorHandle, bool opened, Dictionary<string, object> win)
     {
-        if (ui == null) { if (opened && win != null) PlaceByMouse(win); return; }
+        if (ui == null) return;
         Dictionary<long, Native.RECT> beforeVis; Dictionary<long, string> beforeMon;
         lock (cacheLock) { beforeVis = visual; beforeMon = monOf; }
 
@@ -1129,7 +1290,6 @@ class Dwindle
         Rectangle mon;
         if (!(opened ? afterMon : beforeMon).TryGetValue(anchorHandle, out mid) || !mr.TryGetValue(mid, out mon))
         {
-            if (opened && win != null) PlaceByMouse(win);
             RefreshCache();
             return;
         }
@@ -1139,42 +1299,43 @@ class Dwindle
         foreach (var h in hs) { Native.RECT r; if (beforeVis.TryGetValue(h, out r)) start[h] = r; }
         long pop = opened ? anchorHandle : 0;
 
-        Slider.Frozen f = null;
-        slider.Interrupt = true;
-        try { f = (Slider.Frozen)ui.Invoke((Func<Slider.Frozen>)(() => slider.Freeze(mon, hs, start, pop))); }
-        catch (Exception ex) { Slider.Log("freeze: " + ex.Message); }
+        Slider.Frozen f = opened ? TakePending(anchorHandle) : null;
+        if (f != null && f.Mon != mon)
+        {
+            // Pencere başka monitöre geldi: o katmanı hemen kaldır, bu monitörde yeniden dondur
+            var wrong = f; f = null;
+            try { ui.Invoke((Action)(() => slider.Finish(wrong, new List<long>(), 0, 1))); } catch { }
+        }
+        if (f == null)
+        {
+            slider.Interrupt = true;
+            try { f = (Slider.Frozen)ui.Invoke((Func<Slider.Frozen>)(() => slider.Freeze(mon, hs, start, pop))); }
+            catch (Exception ex) { Slider.Log("freeze: " + ex.Message); }
+        }
 
-        if (opened && win != null) PlaceByMouse(win);   // katmanın arkasında: kullanıcı ikinci zıplamayı görmez
 
         Snapshot(out after, out afterMon, out mr);
         var end = new List<long>();
         foreach (var kv in afterMon) if (kv.Value == mid) end.Add(kv.Key);
+        Native.RECT target;
+        if (opened && after.TryGetValue(anchorHandle, out target)) Slider.WaitPlaced(anchorHandle, target, 500);
         Slider.WaitSettled(end);
         var v = Visual(after.Keys);
         lock (cacheLock) { rects = after; monOf = afterMon; monRects = mr; visual = v; }
         Slider.Log("anim: " + start.Count + "->" + end.Count + " pencere" + (opened ? " +popin" : ""));
+        if (opened && end.Contains(anchorHandle))
+        {
+            Native.RECT nr;
+            IntPtr fg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
+            if (fg.ToInt64() == anchorHandle && Native.GetWindowRect(new IntPtr(anchorHandle), out nr))
+                Cursor.Position = new Point((nr.Left + nr.Right) / 2, (nr.Top + nr.Bottom) / 2);
+        }
         if (f != null)
             ui.BeginInvoke((Action)(() =>
             {
                 try { slider.Finish(f, end, pop, Slider.MoveMs); } catch (Exception ex) { Slider.Log("anim: " + ex.Message); }
             }));
     }
-    // ---- Hyprland dwindle force_split = 0: yeni pencere, bölünen pencerenin FARENİN OLDUĞU
-    // yarısına yerleşir (sol/sağ ya da üst/alt). GlazeWM hep sağa/alta koyuyor; yeni pencere
-    // gelince fare sol/üst yarıdaysa onu o tarafa taşıyoruz.
-    struct Rect { public string Id; public int X, Y, W, H; }
-    Rect curRect, prevRect;
-
-    void TrackRect(Dictionary<string, object> win)
-    {
-        object st;
-        var state = win.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
-        if (state != null && J.Str(state, "type") != "tiling") return;
-        var r = new Rect { Id = J.Str(win, "id"), X = J.Int(win, "x"), Y = J.Int(win, "y"), W = J.Int(win, "width"), H = J.Int(win, "height") };
-        if (r.Id != curRect.Id) prevRect = curRect;
-        curRect = r;
-    }
-
     // Uygulamaya özel kural yerine GENEL karar (Hyprland da sabit boyutlu pencereleri ve
     // diyalogları kendiliğinden yüzdürür):
     //   - tüm monitörü kaplayan çerçevesiz pencere (oyun)          -> tam ekran
@@ -1209,31 +1370,6 @@ class Dwindle
         glaze.Command("--id " + id + " " + cmd);
         Slider.Log("auto " + cmd + ": " + J.Str(win, "processName") + " | " + J.Str(win, "title"));
         return true;
-    }
-
-    void PlaceByMouse(Dictionary<string, object> win)
-    {
-        // Firefox/Zen gibi uygulamalar açılırken art arda yeniden boyutlanınca eski boyutta çizili
-        // kalıp komşu pencerenin üstüne taşabiliyor: kısa süre sonra GlazeWM hepsini yeniden yerleştirsin.
-        if (System.Text.RegularExpressions.Regex.IsMatch(J.Str(win, "processName"), "^(firefox|zen|librewolf|floorp|waterfox|mullvadbrowser|tor)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-            ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(400); try { glaze.Command("wm-redraw"); } catch { } });
-        object st;
-        var state = win.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
-        if (state != null && J.Str(state, "type") != "tiling") return;
-        string newId = J.Str(win, "id");
-        // Bölünen pencere: yeni pencereden önce odakta olan
-        Rect b = curRect.Id == newId ? prevRect : curRect;
-        if (string.IsNullOrEmpty(b.Id) || b.W <= 0 || b.H <= 0) return;
-
-        var p = Cursor.Position;
-        if (p.X < b.X || p.X > b.X + b.W || p.Y < b.Y || p.Y > b.Y + b.H) return; // fare o pencerede değil
-        bool horizontal = b.W >= b.H; // dwindle: uzun kenardan böl
-        string dir = null;
-        if (horizontal && p.X < b.X + b.W / 2) dir = "left";
-        if (!horizontal && p.Y < b.Y + b.H / 2) dir = "up";
-        if (dir == null) return; // sağ/alt yarı: GlazeWM zaten oraya koydu
-        glaze.Command("--id " + newId + " move --direction " + dir);
-        Slider.Log("force_split: yeni pencere " + dir + " tarafına");
     }
 
     // ---- Odak geçmişi (Hyprland gibi): odaklı pencere kapanınca aynı workspace'te en son
@@ -1349,82 +1485,16 @@ class Dwindle
         if (data.TryGetValue("focusedContainer", out fc)) win = fc as Dictionary<string, object>;
         else if (data.TryGetValue("managedWindow", out fc)) win = fc as Dictionary<string, object>;
         if (win == null || J.Str(win, "type") != "window") return;
-        if (J.Str(data, "eventType") == "focus_changed") { OnFocused(J.Str(win, "id")); TrackRect(win); }
+        if (J.Str(data, "eventType") == "focus_changed") { OnFocused(J.Str(win, "id")); }
         if (J.Str(data, "eventType") == "window_managed")
         {
             if (AutoFloat(win)) { LaunchQueue.Managed.Set(); return; }
             LaunchQueue.Managed.Set(); // sıradaki açma devam etsin
             object nh;
             if (win.TryGetValue("handle", out nh) && nh != null) AnimateChange(Convert.ToInt64(nh), true, win);
-            else PlaceByMouse(win);
         }
-
-        object st;
-        var state = win.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
-        if (state != null && J.Str(state, "type") != "tiling") return;
-
-        int w = J.Int(win, "width"), h = J.Int(win, "height");
-        if (w <= 0 || h <= 0) return;
-        string dir = w >= h ? "horizontal" : "vertical";
-        string key = J.Str(win, "id") + ":" + dir + ":" + w + "x" + h;
-        if (key == lastKey) return;
-        // Hemen gönderme: workspace geçişi / pencere taşıma sırasında her odak değişiminde GlazeWM ağacı
-        // yeniden kuruyor ve asıl komut onu bekliyordu (hızlı basışta lag). Odak 250 ms sakin kalınca gönder;
-        // animasyon sürüyorsa bitmesini bekle. Yeni pencere açılırken odak zaten sakindir.
-        lock (dirLock) { pendingKey = key; pendingDir = dir; pendingSize = w + "x" + h; }
-        if (dirTimer == null) dirTimer = new System.Threading.Timer(_ => FlushDirection(), null, 250, Timeout.Infinite);
-        else dirTimer.Change(250, Timeout.Infinite);
     }
 
-    readonly object dirLock = new object();
-    string pendingKey, pendingDir, pendingSize;
-    System.Threading.Timer dirTimer;
-
-    // Uygulama açmadan hemen önce (LaunchQueue): odaktaki pencerenin bölme yönünü bekletmeden ayarla, yeni pencere
-    // doğru yönde (uzun kenardan) bölünsün. Ertelenmiş yön komutu henüz gitmemiş olabilir.
-    public static Dwindle Main;
-    public void EnsureDirectionNow()
-    {
-        try
-        {
-            foreach (var m in glaze.Monitors())
-                foreach (Dictionary<string, object> ws in J.Children(m))
-                {
-                    if (!J.Bool(ws, "hasFocus")) continue;
-                    var wins = new List<Dictionary<string, object>>();
-                    J.WindowNodes(ws, wins);
-                    foreach (var w in wins)
-                    {
-                        if (!J.Bool(w, "hasFocus")) continue;
-                        object st; var state = w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
-                        if (state != null && J.Str(state, "type") != "tiling") return;
-                        int ww = J.Int(w, "width"), wh = J.Int(w, "height");
-                        if (ww <= 0 || wh <= 0) return;
-                        string dir = ww >= wh ? "horizontal" : "vertical";
-                        string key = J.Str(w, "id") + ":" + dir + ":" + ww + "x" + wh;
-                        lock (dirLock) pendingKey = null;
-                        if (key == lastKey) return;
-                        lastKey = key;
-                        glaze.Command("set-tiling-direction " + dir);
-                        Slider.Log("dwindle (açmadan önce) " + dir + " " + ww + "x" + wh);
-                        return;
-                    }
-                }
-        }
-        catch (Exception ex) { Slider.Log("dwindle now: " + ex.Message); }
-    }
-
-    void FlushDirection()
-    {
-        if (Slider.Animating) { dirTimer.Change(120, Timeout.Infinite); return; }
-        string key, dir, size;
-        lock (dirLock) { key = pendingKey; dir = pendingDir; size = pendingSize; pendingKey = null; }
-        if (key == null || key == lastKey) return;
-        lastKey = key;
-        var sw = Stopwatch.StartNew();
-        glaze.Command("set-tiling-direction " + dir);
-        Slider.Log("dwindle " + dir + " " + size + " " + sw.ElapsedMilliseconds + "ms");
-    }
 }
 
 // ---------------- Fareyle odak (Hyprland input.follow_mouse = 1) ----------------
@@ -3471,7 +3541,6 @@ static class LaunchQueue
             foreach (var path in queue.GetConsumingEnumerable())
             {
                 try { slider.FocusUnderCursor(); } catch { }
-                try { if (Dwindle.Main != null) Dwindle.Main.EnsureDirectionNow(); } catch { }
                 Managed.Reset();
                 try
                 {
@@ -3824,7 +3893,9 @@ static class Program
         var glaze = new Glaze();
         var slider = new Slider(glaze);
         Slider.Ui = ui;
-        new Dwindle(new Glaze(), ui, slider).Start(); // kendi IPC bağlantısıyla: slide'ı beklemesin
+        var dwindle = new Dwindle(new Glaze(), ui, slider);
+        dwindle.Start(); // kendi IPC bağlantısıyla: slide'ı beklemesin
+        dwindle.HookNewWindows();
         LaunchQueue.Start(new Slider(new Glaze())); // kendi bağlantısı: animasyonu beklemesin
         NightLight.StartKeeper();
         Toasts.Start();

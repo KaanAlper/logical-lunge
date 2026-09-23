@@ -30,7 +30,7 @@ end-4 illogical-impulse Hyprland masaüstü, Windows için — tek komutla.
 
 A complete Windows desktop that looks and behaves like the **illogical-impulse** (`ii`) Quickshell setup on Hyprland — the bar, the right sidebar, the Super-key overview, the animations and the keybinds — not a theme, a working shell:
 
-- **Tiling** with dwindle "golden ratio" splits that open on the half under your mouse, like Hyprland `force_split = 0`.
+- **Tiling** with Hyprland's dwindle layout ported into our GlazeWM fork: a new window splits the window under the mouse along its longer side and opens on the half the mouse is over (`force_split = 0`); `movewindow` splits the neighbouring window the same way. New windows never flash at the screen centre — they appear only once in place.
 - **ii bar**: workspaces with app icons, resources (RAM / swap / CPU / **CPU & GPU temperature**), media with album art and seeking, tray with drag-to-pin, clock, battery, scroll-to-change brightness (left edge) and volume (right edge) with an OSD.
 - **ii right sidebar**: Android-style quick toggles (Wi-Fi, Ethernet, Bluetooth, keep-awake, mic, audio, night light with schedule + intensity, dark mode, screenshot, on-screen keyboard, do-not-disturb) with slide-down cards, notifications, calendar with month/year picker, to-do and pomodoro timer.
 - **Shortcuts editor** and **wallpaper picker** built into the sidebar (per-monitor or one image spanning all monitors — Superpaper-style *superscreen*).
