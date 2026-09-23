@@ -386,10 +386,10 @@ class Slider
         }
     }
 
-    // Önizlemeyi esnetmeden çiz: kaynak hedeften büyükse (pencere küçülüyor) kırp, küçükse (pencere arkada henüz
-    // büyümedi) ger ki kenarda saydam boşluk açılmasın. DWM kaynağı pencerenin görünmez gölge kenarlarını da
-    // içerir; hedef bu kenarlar düşülerek görünen çerçeveye çizilir, içerik sağa/sola kaymaz.
-    static void Place1to1(Thumb t, Native.RECT dest)
+    // Önizlemeyi hedef kutuya yerleştir (Hyprland da animasyonda pencereyi ölçekler). DWM kaynağı pencerenin
+    // görünmez gölge kenarlarını da içerir: yalnızca görünen çerçeve (kenar çizgileri dahil) görünen hedefe
+    // ölçeklenir. Böylece ne içerik sağa/sola kayar ne de kenarda saydam boşluk / kesik kenar çizgisi olur.
+    static void PlaceVisible(Thumb t, Native.RECT dest)
     {
         Native.SIZE src;
         if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) != 0 || src.cx <= 0 || src.cy <= 0)
@@ -406,14 +406,11 @@ class Slider
             bL = Math.Max(0, fr.Left - wr.Left); bT = Math.Max(0, fr.Top - wr.Top);
             bR = Math.Max(0, wr.Right - fr.Right); bB = Math.Max(0, wr.Bottom - fr.Bottom);
         }
-        var vis = new Native.RECT { Left = dest.Left + bL, Top = dest.Top + bT, Right = dest.Right - bR, Bottom = dest.Bottom - bB };
-        int vw = Math.Max(1, vis.Right - vis.Left), vh = Math.Max(1, vis.Bottom - vis.Top);
-        int cw = Math.Max(1, src.cx - bL - bR), ch = Math.Max(1, src.cy - bT - bB);
         var pr = new Native.DWM_THUMBNAIL_PROPERTIES
         {
             dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_RECTSOURCE,
-            rcDestination = vis,
-            rcSource = new Native.RECT { Left = bL, Top = bT, Right = bL + Math.Min(vw, cw), Bottom = bT + Math.Min(vh, ch) }
+            rcDestination = new Native.RECT { Left = dest.Left + bL, Top = dest.Top + bT, Right = dest.Right - bR, Bottom = dest.Bottom - bB },
+            rcSource = new Native.RECT { Left = bL, Top = bT, Right = Math.Max(bL + 1, src.cx - bR), Bottom = Math.Max(bT + 1, src.cy - bB) }
         };
         Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
     }
@@ -450,7 +447,7 @@ class Slider
                 var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_OPACITY, rcDestination = t.Dest, opacity = 0 };
                 Native.DwmUpdateThumbnailProperties(t.Id, ref pr); // yeni pencere: Finish'te %80'den belirir
             }
-            else Place1to1(t, t.Dest);
+            else PlaceVisible(t, t.Dest);
             f.All.Add(t); f.Win[h] = t;
         }
         Animating = true;
@@ -510,7 +507,7 @@ class Slider
                     pr.opacity = (byte)Math.Min(255, (int)(255 * Math.Min(1.0, p * 2.5)));
                     Native.DwmUpdateThumbnailProperties(a.Key.Id, ref pr);
                 }
-                else Place1to1(a.Key, r);
+                else PlaceVisible(a.Key, r);
             }
             Native.DwmFlush();
             if (p >= 1.0) break;
@@ -790,13 +787,7 @@ class Slider
         }
 
         string id = J.Str(cur, "id");
-        string axis = dir == "left" || dir == "right" ? "horizontal" : "vertical";
-        if (best == null)
-        {
-            // Komşu yoksa yalnızca bölme yönü farklıysa bir şey olur; olmayacaksa katman açma
-            var par0 = ParentOf(ws, id);
-            if (par0 == null || wins.Count < 2 || J.Str(par0, "tilingDirection") == axis) return;
-        }
+        if (wins.Count < 2) { glaze.Command("move --direction " + dir); return; } // tek pencere: yalnızca monitör değiştirebilir
         // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), GlazeWM arkada yerleştirsin
         var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
         var hs = new List<long>(Rects(wins).Keys);
@@ -806,29 +797,9 @@ class Slider
             Interrupt = true;
             try { frozen = (Frozen)Ui.Invoke((Func<Frozen>)(() => Freeze(monRect, hs, null))); } catch (Exception ex) { Log("freeze: " + ex.Message); }
         }
-        if (best != null)
-        {
-            // O yönde komşu var: GlazeWM workspace içinde kalır
-            glaze.Command("move --direction " + dir);
-        }
-        else
-        {
-            // Hyprland dwindle movewindow: o yönde pencere yoksa bölme yönü değişir. Üst/alt iki pencerede
-            // Super+Shift+Sol -> yan yana (odaktaki solda); yan yanada Super+Shift+Yukarı -> üst üste.
-            glaze.Command("set-tiling-direction " + axis);
-            // Yeni eksende istenen kenara kadar kaydır (ör. alttaki pencere sola gitmek istiyorsa)
-            for (int i = 0; i < 6; i++)
-            {
-                Thread.Sleep(15);
-                Dictionary<string, object> m2, ws2, cur2; List<Dictionary<string, object>> w2;
-                if (!Current(out m2, out ws2, out w2, out cur2) || J.Str(cur2, "id") != id) break;
-                var par2 = ParentOf(ws2, id);
-                var sib = new List<Dictionary<string, object>>();
-                if (par2 != null) foreach (var w in w2) if (ParentOf(par2, J.Str(w, "id")) == par2 && J.Str(w, "id") != id) sib.Add(w);
-                if (Neighbor(sib, cur2, dir) == null) break;
-                glaze.Command("move --direction " + dir);
-            }
-        }
+        // GlazeWM (fork) Hyprland dwindle movewindow yapar: o yönde pencere varsa onu uzun kenarından böler; yoksa
+        // bölme yönü değişir (yan yana iki pencerede Super+Shift+Yukarı -> odaktaki üstte tam genişlik).
+        glaze.Command("move --direction " + dir);
 
         Dictionary<string, object> mA, wsA, curA; List<Dictionary<string, object>> winsA;
         bool ok = Current(out mA, out wsA, out winsA, out curA);
@@ -1022,10 +993,10 @@ class Slider
                     if (!moveFollow) { Move(t, dx); continue; }
                     var r = swR == null ? from[t] : Lerp(from[t], VisualDest(t.Src, t.Id, ox, oy), eR);
                     r.Left += dx; r.Right += dx;
-                    Place1to1(t, r);
+                    PlaceVisible(t, r);
                 }
                 if (moveFollow && carried != null)
-                    Place1to1(carried, swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR));
+                    PlaceVisible(carried, swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR));
                 Native.DwmFlush();
                 if (p >= 1.0 && (!moveFollow || pR >= 1.0)) break;
                 if (p >= 1.0 && swR == null && sw0.ElapsedMilliseconds > dur0 + 1500) break; // komut takıldı
