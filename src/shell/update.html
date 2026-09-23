@@ -1,0 +1,377 @@
+﻿<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+(function () {
+  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
+// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
+// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      apply();
+      return next;
+    }
+  };
+})();
+    </script>
+    <!-- Güncelleme kartı: sağ üstte kayarak gelir. (toast.html ile aynı pencere düzeni) -- ii modules/ii/notificationPopup karşılığı: sağ üstte, bar'ın altında kayarak gelen kartlar.
+         Pencere odak çalmaz: hep açık ama boşken fare tıklamalarını geçirir. -->
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block');
+      :root {
+        --m3primary: #d0bcff; --m3onPrimary: #381e72;
+        --m3primaryContainer: #4f378b; --m3onPrimaryContainer: #eaddff;
+        --m3secondaryContainer: #4a4458; --m3onSecondaryContainer: #e8def8;
+        --m3error: #ffb4ab; --m3errorContainer: #93000a; --m3onErrorContainer: #ffdad6;
+        --m3onSurface: #e6e0e9; --m3onSurfaceVariant: #cac4d0; --m3outline: #938f99;
+        --colLayer0: #141218; --colLayer0Border: #2c2a31; --colLayer2: #2b2930;
+        --emphDecel: cubic-bezier(0.05, 0.7, 0.1, 1);
+        --emphAccel: cubic-bezier(0.3, 0, 0.8, 0.15);
+      }
+      /* ---- Açık tema (ii: appearance dark mode kapalı) — Material You açık, mor tohum.
+         Tema düğmesi yalnızca bizim kabuğu değiştirir (Windows'a dokunmaz): tercih localStorage 'll.theme'da, <html data-theme> ile uygulanır. ---- */
+      :root[data-theme="light"] {
+          --m3primary: #6750a4;
+          --m3onPrimary: #ffffff;
+          --m3primaryContainer: #eaddff;
+          --m3onPrimaryContainer: #21005d;
+          --m3secondaryContainer: #e8def8;
+          --m3onSecondaryContainer: #1d192b;
+          --m3onSurface: #1d1b20;
+          --m3onSurfaceVariant: #49454f;
+          --m3outline: #79747e;
+          --m3outlineVariant: #cac4d0;
+          --m3error: #b3261e;
+          --m3errorContainer: #f9dedc;
+          --m3onErrorContainer: #410e0b;
+          --colLayer0: #fef7ff;
+          --colLayer0Border: #e6e0e9;
+          --colLayer1: #f3edf7;
+          --colLayer1Hover: #e6e0e9;
+          --colLayer2: #ece6f0;
+          --colLayer2Hover: #e0dae4;
+          --colBackgroundSurfaceContainer: #f3edf7;
+          --colSurfaceContainerHigh: #ece6f0;
+          --colOnLayer0: #1d1b20;
+          --colOnLayer1: #1d1b20;
+          --colSubtext: #79747e;
+          --colOnLayer1Inactive: #9e98a3;
+          --occupied: rgba(232 222 248 / 90%);
+        }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: transparent; overflow: hidden; user-select: none; }
+      body {
+        font-family: 'Google Sans Flex', 'Rubik', 'Segoe UI Variable Text', sans-serif;
+        font-variation-settings: 'wght' 450; color: var(--m3onSurface);
+        -webkit-font-smoothing: antialiased;
+      }
+      .icon { font-family: 'Material Symbols Rounded'; line-height: 1; font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+      #stack { padding: 10px; }
+      .card {
+        position: relative; overflow: hidden;
+        display: flex; gap: 14px; align-items: flex-start;
+        padding: 14px 16px 14px 14px;
+        border-radius: 20px;
+        background: var(--colLayer0);
+        border: 1px solid var(--colLayer0Border);
+        box-shadow: 0 6px 24px rgba(0 0 0 / 45%);
+        transform-origin: top right;
+        animation: cardIn 420ms var(--emphDecel) both;
+      }
+      .card.out { animation: cardOut 260ms var(--emphAccel) both; }
+      @keyframes cardIn { from { opacity: 0; transform: translateX(36px) scale(0.94); } to { opacity: 1; transform: none; } }
+      @keyframes cardOut { to { opacity: 0; transform: translateX(28px) scale(0.96); } }
+      .swap { animation: swapIn 320ms var(--emphDecel) both; }
+      @keyframes swapIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+      .badge {
+        position: relative; flex: none; width: 52px; height: 52px; border-radius: 16px;
+        display: grid; place-items: center;
+        background: var(--m3primaryContainer); color: var(--m3onPrimaryContainer);
+        transition: background 300ms, color 300ms, border-radius 400ms var(--emphDecel);
+      }
+      .badge .icon { font-size: 28px; }
+      .state-uptodate .badge, .state-ready .badge { background: #2e5d3a; color: #c7f0d0; border-radius: 26px; }
+      :root[data-theme="light"] .state-uptodate .badge, :root[data-theme="light"] .state-ready .badge { background: #c7f0d0; color: #0b3d1a; }
+      .state-error .badge { background: var(--m3errorContainer); color: var(--m3onErrorContainer); }
+      .state-checking .badge .icon { animation: spin 1s linear infinite; }
+      .state-available .badge .icon { animation: bob 1.6s ease-in-out infinite; }
+      .state-downloading .badge .icon { animation: bob 1.1s ease-in-out infinite; }
+      .state-installing .badge .icon { animation: pulse 1.2s ease-in-out infinite; }
+      .state-uptodate .badge .icon, .state-ready .badge .icon { animation: pop 520ms var(--emphDecel) both; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @keyframes bob { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(3px); } }
+      @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.18); opacity: 0.7; } }
+      @keyframes pop { 0% { transform: scale(0.3) rotate(-25deg); opacity: 0; } 60% { transform: scale(1.18) rotate(6deg); } 100% { transform: none; opacity: 1; } }
+      /* minik kıvılcımlar (güncel / hazır) */
+      .spark { position: absolute; width: 6px; height: 6px; border-radius: 50%; background: var(--m3primary); opacity: 0; pointer-events: none; }
+      .state-uptodate .spark, .state-ready .spark { animation: spark 900ms var(--emphDecel) both; }
+      .spark:nth-child(2) { --dx: -26px; --dy: -22px; animation-delay: 60ms !important; }
+      .spark:nth-child(3) { --dx: 30px; --dy: -14px; animation-delay: 140ms !important; background: #8fe3a4; }
+      .spark:nth-child(4) { --dx: 22px; --dy: 28px; animation-delay: 100ms !important; }
+      .spark:nth-child(5) { --dx: -24px; --dy: 24px; animation-delay: 180ms !important; background: #8fe3a4; }
+      @keyframes spark { 0% { opacity: 1; transform: translate(0, 0) scale(1); } 100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(0.2); } }
+
+      .txt { flex: 1; min-width: 0; }
+      .head { display: flex; align-items: baseline; gap: 8px; }
+      .title { font-size: 15px; font-variation-settings: 'wght' 600; }
+      .ver { font-size: 12px; color: var(--m3onSurfaceVariant); font-family: 'Rubik', sans-serif; }
+      .body { margin-top: 3px; font-size: 13px; color: var(--m3onSurfaceVariant); line-height: 1.35; white-space: pre-line; }
+      .body .notes { display: block; margin-top: 6px; max-height: 5.4em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); }
+
+      .prog { margin-top: 10px; }
+      .bar { position: relative; height: 8px; border-radius: 999px; background: var(--m3secondaryContainer); overflow: hidden; }
+      .bar i { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; background: var(--m3primary); transition: width 260ms linear; }
+      .bar i::after { content: ''; position: absolute; inset: 0; background: linear-gradient(100deg, transparent 20%, rgba(255 255 255 / 45%) 50%, transparent 80%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; }
+      .bar.indet i { width: 38%; transition: none; animation: slide 1.15s var(--emphDecel) infinite; }
+      @keyframes shimmer { from { background-position: 200% 0; } to { background-position: -100% 0; } }
+      @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(270%); } }
+      .meta { display: flex; justify-content: space-between; margin-top: 5px; font-size: 12px; color: var(--m3outline); font-variant-numeric: tabular-nums; }
+
+      .acts { display: flex; gap: 8px; margin-top: 12px; }
+      .acts button {
+        border: 0; padding: 8px 18px; border-radius: 999px; cursor: pointer; font: inherit; font-size: 13px;
+        background: var(--m3secondaryContainer); color: var(--m3onSecondaryContainer);
+        transition: border-radius 200ms var(--emphDecel), filter 150ms, transform 120ms;
+      }
+      .acts button.pri { background: var(--m3primary); color: var(--m3onPrimary); }
+      .acts button:hover { filter: brightness(1.1); border-radius: 12px; }
+      .acts button:active { transform: scale(0.96); }
+    </style>
+  </head>
+  <body>
+    <div id="stack"></div>
+    <script type="module">
+      import * as zebar from 'https://esm.sh/zebar@3';
+      import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import { LogicalSize } from 'https://esm.sh/@tauri-apps/api@2/dpi';
+
+      const win = zebar.currentWidget().tauriWindow;
+      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
+      const W = 420, RECHECK_MS = 6 * 3600 * 1000;
+      const stack = document.getElementById('stack');
+      const helper = args => zebar.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
+      const json = s => { try { return JSON.parse(s); } catch { return null; } };
+      const load = k => { try { return localStorage.getItem(k); } catch { return null; } };
+      const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+      const mb = n => (n / 1048576).toFixed(n >= 10485760 ? 0 : 1);
+
+      let card = null, busy = false, closeTimer = null, info = null;
+
+      async function fit() {
+        const h = card ? stack.getBoundingClientRect().height : 1;
+        try {
+          await win.setSize(new LogicalSize(W, Math.max(1, Math.ceil(h))));
+          await win.setIgnoreCursorEvents(!card);
+        } catch (e) { console.error(e); }
+      }
+      fit();
+
+      function close() {
+        clearTimeout(closeTimer);
+        if (!card) return;
+        const el = card; card = null;
+        el.classList.add('out');
+        el.addEventListener('animationend', () => { el.remove(); fit(); }, { once: true });
+      }
+
+      // state: checking | uptodate | available | downloading | ready | installing | error
+      function render(state, d = {}) {
+        clearTimeout(closeTimer);
+        const meta = {
+          checking: { icon: 'sync', title: 'Güncellemeler denetleniyor…' },
+          uptodate: { icon: 'check_circle', title: 'Güncelsin' },
+          available: { icon: 'system_update_alt', title: 'Yeni sürüm var' },
+          downloading: { icon: 'downloading', title: 'İndiriliyor…' },
+          ready: { icon: 'task_alt', title: 'Güncelleme hazır' },
+          installing: { icon: 'rocket_launch', title: 'Kuruluyor…' },
+          error: { icon: 'error', title: 'Güncelleme yapılamadı' },
+        }[state];
+        const first = !card;
+        if (first) {
+          card = document.createElement('div');
+          stack.appendChild(card);
+        }
+        card.className = `card state-${state}${first ? '' : ''}`;
+        const ver = d.latest && d.latest !== d.current ? `v${d.latest}` : (d.current ? `v${d.current}` : '');
+        let body = '';
+        if (state === 'uptodate') body = `Logical Lunge v${d.current} · en son sürüm`;
+        if (state === 'available') body = `v${d.current} → v${d.latest}${d.size ? ` · ${mb(d.size)} MB` : ''}` + (d.notes ? `\n<span class="notes">${esc(d.notes)}</span>` : '');
+        if (state === 'ready') body = `v${d.latest} indirildi. Kurulum masaüstünü kısa süre yeniden başlatır.`;
+        if (state === 'installing') body = 'Windows izin isteyebilir. Masaüstü birazdan yeniden başlayacak.';
+        if (state === 'error') body = esc(d.error || '');
+        const prog = state === 'downloading' || state === 'installing'
+          ? `<div class="prog"><div class="bar ${state === 'installing' ? 'indet' : ''}"><i></i></div>${state === 'downloading' ? '<div class="meta"><span class="pct">0%</span><span class="sz"></span></div>' : ''}</div>` : '';
+        const acts = {
+          available: [['pri', 'Güncelle', () => download()], ['', 'Daha sonra', () => { save('ll.update.dismissed', info?.tag || ''); close(); }]],
+          ready: [['pri', 'Şimdi kur', () => install()], ['', 'Daha sonra', () => { save('ll.update.dismissed', info?.tag || ''); close(); }]],
+          error: [...(info?.available ? [['pri', 'Yeniden dene', () => check(true)]] : []), ['', 'Tamam', () => close()]],
+        }[state] || [];
+        card.innerHTML = `
+          <div class="badge"><span class="icon">${meta.icon}</span><i class="spark"></i><i class="spark"></i><i class="spark"></i><i class="spark"></i></div>
+          <div class="txt swap">
+            <div class="head"><span class="title">${meta.title}</span><span class="ver">${ver}</span></div>
+            ${body ? `<div class="body">${body}</div>` : ''}
+            ${prog}
+            ${acts.length ? `<div class="acts">${acts.map((a, i) => `<button class="${a[0]}" data-i="${i}">${a[1]}</button>`).join('')}</div>` : ''}
+          </div>`;
+        card.querySelectorAll('.acts button').forEach(b => b.addEventListener('click', () => acts[+b.dataset.i][2]()));
+        requestAnimationFrame(fit);
+        if (state === 'uptodate') closeTimer = setTimeout(close, 3600);
+      }
+      function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]); }
+
+      function setProgress(p) {
+        const bar = card?.querySelector('.bar i');
+        if (!bar || !p.total) return;
+        const pct = Math.min(100, Math.floor((p.bytes / p.total) * 100));
+        bar.style.width = pct + '%';
+        card.querySelector('.pct').textContent = pct + '%';
+        card.querySelector('.sz').textContent = `${mb(p.bytes)} / ${mb(p.total)} MB`;
+      }
+
+      async function check(manual) {
+        if (busy) { if (manual && !card) render('downloading', info || {}); return; }
+        busy = true;
+        try {
+          if (manual) render('checking');
+          const r = json(await helper(['--update-check']));
+          if (!r) throw new Error('Yanıt alınamadı');
+          info = r;
+          if (r.error) { if (manual) render('error', { error: r.error }); else close(); return; }
+          if (!r.available) { if (manual) render('uptodate', r); else close(); return; }
+          if (!manual && load('ll.update.dismissed') === r.tag) return;
+          // Daha önce indirilmişse indirme adımını atla: doğrudan "Şimdi kur"
+          render(r.downloaded ? 'ready' : 'available', r);
+        } catch (e) {
+          if (manual) render('error', { error: String(e?.message ?? e) }); else close();
+        } finally { busy = false; }
+      }
+
+      async function download() {
+        busy = true;
+        render('downloading', info);
+        const poll = setInterval(async () => {
+          const s = json(await helper(['--update-status']).catch(() => ''));
+          if (s && s.state === 'downloading') setProgress(s);
+        }, 300);
+        try {
+          const s = json(await helper(['--update-download']));
+          clearInterval(poll);
+          if (s?.state === 'ready') { setProgress({ bytes: 1, total: 1 }); await new Promise(r => setTimeout(r, 350)); render('ready', info); }
+          else render('error', { error: s?.error || 'İndirme tamamlanamadı' });
+        } catch (e) { clearInterval(poll); render('error', { error: String(e?.message ?? e) }); }
+        finally { busy = false; }
+      }
+
+      async function install() {
+        busy = true;
+        render('installing', info);
+        try {
+          const s = json(await helper(['--update-install']));
+          if (s?.state === 'error') { render('error', { error: s.error }); busy = false; return; }
+        } catch (e) { render('error', { error: String(e?.message ?? e) }); busy = false; return; }
+        // Kurulum betiği durumu yazar; UAC reddedilirse ya da kurulum hata verirse buradan görürüz.
+        // Başarılıysa masaüstü yeniden başlar ve bu widget kapanır.
+        const poll = setInterval(async () => {
+          const s = json(await helper(['--update-status']).catch(() => ''));
+          if (s?.state === 'error') { clearInterval(poll); busy = false; render('error', { error: s.error }); }
+        }, 1000);
+      }
+
+      // Sağ paneldeki düğme
+      listen('ll:update-check', () => check(true));
+      // Arka planda: açılıştan ~1 dk sonra ve 6 saatte bir
+      setTimeout(() => check(false), 60000);
+      setInterval(() => check(false), RECHECK_MS);
+    </script>
+  </body>
+</html>

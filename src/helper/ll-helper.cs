@@ -2214,6 +2214,12 @@ class Keys2
         bool isDown = msg == Native.WM_KEYDOWN || msg == Native.WM_SYSKEYDOWN;
         bool isUp = msg == Native.WM_KEYUP || msg == Native.WM_SYSKEYUP;
         int vk = (int)k.vkCode;
+        // Alt+Tab pencere değiştirici (Switcher): Windows'un kendisi hiç açılmaz
+        bool altHeld = Down(VK_MENU) || (k.flags & 0x20) != 0; // LLKHF_ALTDOWN
+        if (Switcher.Active || (isDown && vk == 0x09 && altHeld && !winDown))
+        {
+            if (Switcher.HandleKey(vk, isDown, isUp, Down(VK_SHIFT), altHeld, Down(VK_CONTROL) || winDown)) return (IntPtr)1;
+        }
 
         // Gerçek Win tuşu Windows'a HİÇ iletilmez: Windows tek başına bir Win basışı görmediği için Başlat
         // menüsü (ve görev çubuğundaki logo) hiçbir tuş sırasıyla açılamaz. Bizim işlemediğimiz bir kombinasyon
@@ -3526,6 +3532,615 @@ static class ClipHistory
     }
 }
 
+// ---------------- Güncelleme (sağ panel > güncelle düğmesi + update widget'ı) ----------------
+// --update-check    -> {"current","latest","tag","available","downloaded","size","notes","error"}
+// --update-download -> sürümü indirir (ilerleme: update\status.json), sağlamasını (SHA-256) doğrular
+// --update-status   -> update\status.json (idle | downloading | ready | installing | error)
+// --update-install  -> indirilen paketi kurar (UAC bir kez sorulur); kurulum bitince masaüstü kendiliğinden açılır
+static class Updater
+{
+    const string Repo = "KaanAlper/logical-lunge";
+    static readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+
+    static string Home { get { return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); } }
+    static string Dir
+    {
+        get
+        {
+            string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\update");
+            System.IO.Directory.CreateDirectory(d);
+            return d;
+        }
+    }
+    static string StatusPath { get { return System.IO.Path.Combine(Dir, "status.json"); } }
+
+    static string Installed()
+    {
+        try { string f = System.IO.Path.Combine(Home, @".glzr\logical-lunge\VERSION"); if (System.IO.File.Exists(f)) return System.IO.File.ReadAllText(f).Trim(); } catch { }
+        try
+        {
+            var v = Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\LogicalLunge", "DisplayVersion", null) as string;
+            if (!string.IsNullOrEmpty(v)) return v.Trim();
+        }
+        catch { }
+        return "0.0.0";
+    }
+
+    static Version Ver(string s)
+    {
+        Version v;
+        if (s == null) return new Version(0, 0, 0);
+        s = s.Trim().TrimStart('v', 'V');
+        int i = s.IndexOfAny(new[] { '-', '+', ' ' });
+        if (i > 0) s = s.Substring(0, i);
+        return Version.TryParse(s, out v) ? v : new Version(0, 0, 0);
+    }
+
+    class Rel { public string Tag, ZipName, ZipUrl, ShaUrl, Notes; public long Size; }
+
+    static System.Net.WebClient Client()
+    {
+        System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072; // TLS 1.2
+        var c = new System.Net.WebClient();
+        c.Headers[System.Net.HttpRequestHeader.UserAgent] = "LogicalLunge-Updater/1.0";
+        c.Headers[System.Net.HttpRequestHeader.Accept] = "application/vnd.github+json";
+        c.Encoding = Encoding.UTF8;
+        return c;
+    }
+
+    // Yayınlanmış en son sürüm; henüz sürüm yoksa (404) null ve err = "none"
+    static Rel Latest(out string err)
+    {
+        err = null;
+        try
+        {
+            // LL_UPDATE_API: sınama için başka bir sürüm adresi (varsayılan GitHub)
+            string api = Environment.GetEnvironmentVariable("LL_UPDATE_API");
+            string body = Client().DownloadString(string.IsNullOrEmpty(api) ? "https://api.github.com/repos/" + Repo + "/releases/latest" : api);
+            var r = json.DeserializeObject(body) as Dictionary<string, object>;
+            var rel = new Rel { Tag = Convert.ToString(r["tag_name"]), Notes = r.ContainsKey("body") ? Convert.ToString(r["body"]) : "" };
+            var assets = r["assets"] as System.Collections.IEnumerable;
+            foreach (Dictionary<string, object> a in assets)
+            {
+                string n = Convert.ToString(a["name"]), u = Convert.ToString(a["browser_download_url"]);
+                if (n.StartsWith("LogicalLunge-") && n.EndsWith(".zip")) { rel.ZipName = n; rel.ZipUrl = u; rel.Size = Convert.ToInt64(a["size"]); }
+                else if (n.EndsWith(".zip.sha256")) rel.ShaUrl = u;
+            }
+            if (rel.ZipUrl == null) { err = "none"; return null; }
+            return rel;
+        }
+        catch (System.Net.WebException ex)
+        {
+            var resp = ex.Response as System.Net.HttpWebResponse;
+            err = resp != null && resp.StatusCode == System.Net.HttpStatusCode.NotFound ? "none" : ex.Message;
+            return null;
+        }
+        catch (Exception ex) { err = ex.Message; return null; }
+    }
+
+    static string ZipPath(Rel r) { return System.IO.Path.Combine(Dir, r.ZipName); }
+    static bool IsReady(Rel r) { return System.IO.File.Exists(ZipPath(r)) && System.IO.File.Exists(ZipPath(r) + ".ok"); }
+
+    static string Clean(string notes)
+    {
+        if (string.IsNullOrEmpty(notes)) return "";
+        var sb = new StringBuilder();
+        foreach (var line in notes.Replace("\r", "").Split('\n'))
+        {
+            string l = line.Trim().TrimStart('#', '*', '-', '>', ' ').Replace("**", "").Replace("`", "");
+            if (l.Length == 0) continue;
+            if (sb.Length > 0) sb.Append('\n');
+            sb.Append(l);
+            if (sb.Length > 400) break;
+        }
+        return sb.ToString();
+    }
+
+    public static string Check()
+    {
+        string cur = Installed(), err;
+        var r = Latest(out err);
+        var d = new Dictionary<string, object> { { "current", cur } };
+        if (r == null)
+        {
+            d["latest"] = cur; d["available"] = false; d["downloaded"] = false; d["error"] = err == "none" ? "" : err;
+            return json.Serialize(d);
+        }
+        bool avail = Ver(r.Tag) > Ver(cur);
+        d["latest"] = r.Tag.TrimStart('v', 'V'); d["tag"] = r.Tag; d["available"] = avail;
+        d["downloaded"] = avail && IsReady(r); d["size"] = r.Size; d["notes"] = Clean(r.Notes); d["error"] = "";
+        return json.Serialize(d);
+    }
+
+    static void SetStatus(string state, string version, long bytes, long total, string error)
+    {
+        var d = new Dictionary<string, object> { { "state", state }, { "version", version ?? "" }, { "bytes", bytes }, { "total", total }, { "error", error ?? "" } };
+        string txt = json.Serialize(d);
+        for (int i = 0; i < 5; i++)
+        {
+            try { System.IO.File.WriteAllText(StatusPath, txt, new UTF8Encoding(false)); return; }
+            catch { Thread.Sleep(20); }
+        }
+    }
+
+    public static string Status()
+    {
+        try
+        {
+            if (System.IO.File.Exists(StatusPath))
+                using (var s = new System.IO.FileStream(StatusPath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+                using (var rd = new System.IO.StreamReader(s, Encoding.UTF8)) return rd.ReadToEnd();
+        }
+        catch { }
+        return "{\"state\":\"idle\"}";
+    }
+
+    public static string Download()
+    {
+        string err;
+        var r = Latest(out err);
+        if (r == null || Ver(r.Tag) <= Ver(Installed())) { SetStatus("idle", "", 0, 0, err == "none" ? "" : err); return Status(); }
+        string ver = r.Tag.TrimStart('v', 'V'), zip = ZipPath(r), part = zip + ".part";
+        if (IsReady(r)) { SetStatus("ready", ver, r.Size, r.Size, ""); return Status(); }
+        try
+        {
+            foreach (var f in System.IO.Directory.GetFiles(Dir, "LogicalLunge-*")) { try { System.IO.File.Delete(f); } catch { } }
+            System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072;
+            var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(r.ZipUrl);
+            req.UserAgent = "LogicalLunge-Updater/1.0";
+            req.AllowAutoRedirect = true;
+            long got = 0, total = r.Size;
+            SetStatus("downloading", ver, 0, total, "");
+            using (var resp = req.GetResponse())
+            {
+                if (resp.ContentLength > 0) total = resp.ContentLength;
+                using (var s = resp.GetResponseStream())
+                using (var f = new System.IO.FileStream(part, System.IO.FileMode.Create))
+                {
+                    var buf = new byte[81920];
+                    int n;
+                    var sw = Stopwatch.StartNew();
+                    long lastWrite = 0;
+                    while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                    {
+                        f.Write(buf, 0, n); got += n;
+                        if (sw.ElapsedMilliseconds - lastWrite > 150) { lastWrite = sw.ElapsedMilliseconds; SetStatus("downloading", ver, got, total, ""); }
+                    }
+                }
+            }
+            if (r.ShaUrl != null)
+            {
+                string raw = Client().DownloadString(r.ShaUrl);
+                var parts = raw.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                string expected = parts.Length > 0 ? parts[0].ToUpperInvariant() : "";
+                string actual;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var fs = System.IO.File.OpenRead(part)) actual = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "");
+                if (expected.Length > 0 && expected != actual) { try { System.IO.File.Delete(part); } catch { } throw new Exception("Sağlama toplamı uyuşmuyor, indirme geçersiz."); }
+            }
+            System.IO.File.Move(part, zip);
+            System.IO.File.WriteAllText(zip + ".ok", r.Tag);
+            SetStatus("ready", ver, total, total, "");
+        }
+        catch (Exception ex) { SetStatus("error", ver, 0, 0, ex.GetBaseException().Message); }
+        return Status();
+    }
+
+    public static string Install()
+    {
+        try
+        {
+            string zip = null;
+            foreach (var f in System.IO.Directory.GetFiles(Dir, "LogicalLunge-*.zip"))
+                if (System.IO.File.Exists(f + ".ok") && (zip == null || System.IO.File.GetLastWriteTime(f) > System.IO.File.GetLastWriteTime(zip))) zip = f;
+            if (zip == null) throw new Exception("İndirilmiş güncelleme bulunamadı.");
+            string script = System.IO.Path.Combine(Home, @".glzr\logical-lunge\scripts\update-install.ps1");
+            if (!System.IO.File.Exists(script)) throw new Exception("update-install.ps1 bulunamadı.");
+            // Kurulum betik klasörünü değiştirir: kendi kopyasından çalıştır
+            string copy = System.IO.Path.Combine(Dir, "update-install.ps1");
+            System.IO.File.Copy(script, copy, true);
+            SetStatus("installing", System.IO.Path.GetFileNameWithoutExtension(zip).Replace("LogicalLunge-", ""), 0, 0, "");
+            Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + copy + "\" -Zip \"" + zip + "\"")
+                { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
+        }
+        catch (Exception ex) { SetStatus("error", "", 0, 0, ex.GetBaseException().Message); }
+        return Status();
+    }
+}
+
+// ---------------- Alt+Tab pencere değiştirici ----------------
+// Super arama menüsü ve workspace önizlemesi gibi ii görünümünde: koyu yuvarlak panel, canlı DWM önizlemeli kartlar,
+// seçili kart mor vurgulu. Tüm workspace'lerdeki pencereler (GlazeWM) son kullanıma göre sıralı; Alt basılı tutulup
+// Tab ile ilerlenir (Shift+Tab geri, ok tuşları, Enter, Esc iptal, fare ile tık), Alt bırakılınca seçilen pencere açılır.
+// Arayüz ll-helper içinde çizilir (WebView yok): yük altında bile anında açılır.
+class Switcher : Form
+{
+    public static volatile bool Active;
+    static bool demo; // sınama: Alt basılı tutulmaz
+    static Switcher inst;
+    static Control ui;
+    static readonly List<long> fgOrder = new List<long>(); // en yeni önde (Windows'un ön plan değişimlerinden)
+    static Native.WinEventDelegate fgCb;
+    const int VK_MENU = 0x12, VK_TAB = 0x09;
+    const byte VK_DUMMY = 0xE8;
+
+    class Card
+    {
+        public string Id, Title, Proc, Ws; public IntPtr H; public IntPtr Thumb; public Rectangle R, ThumbR; public Image Icon; public bool Min, OtherWs;
+    }
+
+    readonly List<Card> cards = new List<Card>();
+    int sel;
+    RectangleF hi, hiTarget;
+    readonly Glaze glaze = new Glaze();
+    readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer { Interval = 15 };
+    readonly System.Windows.Forms.Timer altWatch = new System.Windows.Forms.Timer { Interval = 40 };
+    int animStart, fadeStart;
+    bool committed;
+    string curWs;
+    static readonly Dictionary<string, Image> iconCache = new Dictionary<string, Image>();
+
+    const int CW = 232, CH = 170, GAP = 12, PAD = 20, TH_W = 212, TH_H = 118, RADIUS = 24;
+    static readonly Color Surface = Color.FromArgb(20, 18, 24), Border = Color.FromArgb(58, 56, 66),
+        SelFill = Color.FromArgb(79, 55, 139), SelBorder = Color.FromArgb(208, 188, 255), TxtColor = Color.FromArgb(230, 224, 233),
+        SubColor = Color.FromArgb(202, 196, 208), CardFill = Color.FromArgb(34, 32, 40);
+    readonly Font titleFont = new Font("Segoe UI", 9.5f, FontStyle.Regular), badgeFont = new Font("Segoe UI", 8.5f, FontStyle.Bold);
+
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("gdi32.dll")] static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int hh);
+
+    Switcher()
+    {
+        FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
+        BackColor = Surface; DoubleBuffered = true; Opacity = 0; Text = "ll-switcher";
+        anim.Tick += (o, e) => Tick();
+        altWatch.Tick += (o, e) =>
+        {
+            // Alt bırakıldı ama kanca olayını kaçırdıysa yine de seçimi uygula
+            if (!demo && Active && (Native.GetAsyncKeyState(VK_MENU) & 0x8000) == 0) CommitCurrent();
+        };
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get { var p = base.CreateParams; p.ExStyle |= 0x80 | 0x08000000 | 0x8; return p; } // TOOLWINDOW | NOACTIVATE | TOPMOST
+    }
+
+    // ---- kurulum: UI thread'inde bir kez ----
+    public static void Init(Control uiCtl)
+    {
+        ui = uiCtl;
+        ui.BeginInvoke((Action)(() =>
+        {
+            inst = new Switcher();
+            inst.CreateControl(); var h = inst.Handle;
+            fgCb = OnForeground;
+            Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, fgCb, 0, 0, 0x0002);
+            IntPtr cur = Native.GetAncestor(Native.GetForegroundWindow(), 2);
+            if (cur != IntPtr.Zero) fgOrder.Add(cur.ToInt64());
+        }));
+    }
+
+    static void OnForeground(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    {
+        try
+        {
+            IntPtr root = Native.GetAncestor(hwnd, 2);
+            if (root == IntPtr.Zero || (inst != null && root == inst.Handle)) return;
+            long k = root.ToInt64();
+            fgOrder.Remove(k); fgOrder.Insert(0, k);
+            if (fgOrder.Count > 200) fgOrder.RemoveRange(200, fgOrder.Count - 200);
+        }
+        catch { }
+    }
+
+    // ---- kanca (Keys2.Hook, kendi thread'inde) ----
+    // true: tuş yutulur. Yalnızca bayrak ve kuyruk işi yapar; ağır iş UI thread'inde.
+    public static bool HandleKey(int vk, bool isDown, bool isUp, bool shift, bool altDown, bool winOrCtrl)
+    {
+        if (inst == null) return false;
+        if (!Active)
+        {
+            if (isDown && vk == VK_TAB && altDown && !winOrCtrl)
+            {
+                Active = true;
+                bool rev = shift;
+                ui.BeginInvoke((Action)(() => inst.Open(rev)));
+                return true;
+            }
+            return false;
+        }
+        // Alt bırakıldı: seçimi uygula (Alt olayı sisteme geçer; sahte tuş menü çubuğunu etkinleştirmesin diye araya girer)
+        if (isUp && (vk == VK_MENU || vk == 0xA4 || vk == 0xA5))
+        {
+            Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
+            ui.BeginInvoke((Action)(() => inst.CommitCurrent()));
+            return false;
+        }
+        // Alt basılı değilken menü açık kalmış olamaz (kaçırılan bırakma olayı): kilitlenme olmasın, tuşu geçir
+        if (!altDown && !demo) { Active = false; ui.BeginInvoke((Action)(() => inst.CloseOnly())); return false; }
+        if (isDown)
+        {
+            if (vk == VK_TAB) { bool rev = shift; ui.BeginInvoke((Action)(() => inst.Move(rev ? -1 : 1, 0))); return true; }
+            if (vk == 0x27) { ui.BeginInvoke((Action)(() => inst.Move(1, 0))); return true; }   // sağ
+            if (vk == 0x25) { ui.BeginInvoke((Action)(() => inst.Move(-1, 0))); return true; }  // sol
+            if (vk == 0x28) { ui.BeginInvoke((Action)(() => inst.Move(0, 1))); return true; }   // aşağı
+            if (vk == 0x26) { ui.BeginInvoke((Action)(() => inst.Move(0, -1))); return true; }  // yukarı
+            if (vk == 0x0D) { ui.BeginInvoke((Action)(() => inst.CommitCurrent())); return true; }
+            if (vk == 0x1B) { ui.BeginInvoke((Action)(() => inst.CloseOnly())); return true; }
+            return true; // menü açıkken diğer tuşlar uygulamaya gitmesin
+        }
+        return isUp && (vk == VK_TAB || vk == 0x27 || vk == 0x25 || vk == 0x28 || vk == 0x26 || vk == 0x0D || vk == 0x1B);
+    }
+
+    // ---- pencere listesi ----
+    List<Card> Collect()
+    {
+        var list = new List<Card>();
+        try
+        {
+            foreach (var m in glaze.Monitors())
+                foreach (Dictionary<string, object> ws in J.Children(m))
+                {
+                    string wsName = J.Str(ws, "name");
+                    bool shown = J.Bool(ws, "isDisplayed");
+                    if (J.Bool(ws, "hasFocus")) curWs = wsName;
+                    var wins = new List<Dictionary<string, object>>();
+                    J.WindowNodes(ws, wins);
+                    foreach (var w in wins)
+                    {
+                        object hv; if (!w.TryGetValue("handle", out hv) || hv == null) continue;
+                        var h = new IntPtr(Convert.ToInt64(hv));
+                        if (!Native.IsWindow(h)) continue;
+                        var c = new Card { Id = J.Str(w, "id"), H = h, Title = J.Str(w, "title"), Proc = J.Str(w, "processName"), Ws = wsName, OtherWs = !shown };
+                        c.Min = IsIconic(h);
+                        if (string.IsNullOrEmpty(c.Title)) c.Title = c.Proc;
+                        list.Add(c);
+                    }
+                }
+        }
+        catch (Exception ex) { Slider.Log("switcher list: " + ex.Message); }
+        // son kullanılan önde (Windows'un Alt+Tab sırası)
+        list.Sort((a, b) =>
+        {
+            int ia = fgOrder.IndexOf(a.H.ToInt64()), ib = fgOrder.IndexOf(b.H.ToInt64());
+            if (ia < 0) ia = int.MaxValue; if (ib < 0) ib = int.MaxValue;
+            return ia.CompareTo(ib);
+        });
+        return list;
+    }
+
+    static Image IconFor(IntPtr h)
+    {
+        try
+        {
+            uint pid; Native.GetWindowThreadProcessId(h, out pid);
+            string path = Process.GetProcessById((int)pid).MainModule.FileName;
+            Image img;
+            if (iconCache.TryGetValue(path, out img)) return img;
+            using (var ic = Icon.ExtractAssociatedIcon(path)) img = new Bitmap(ic.ToBitmap(), new Size(22, 22));
+            iconCache[path] = img;
+            return img;
+        }
+        catch { return null; }
+    }
+
+    // ---- açma / kapama (UI thread) ----
+    void Open(bool reverse)
+    {
+        try
+        {
+            committed = false;
+            Release();
+            cards.Clear();
+            cards.AddRange(Collect());
+            Slider.Log("switcher: " + cards.Count + " pencere");
+            if (cards.Count == 0) { Active = false; return; }
+            foreach (var c in cards) c.Icon = IconFor(c.H);
+            sel = cards.Count > 1 ? (reverse ? cards.Count - 1 : 1) : 0;
+
+            var mon = Screen.FromPoint(Cursor.Position).Bounds;
+            int perRow = Math.Max(1, Math.Min(cards.Count, (int)((mon.Width * 0.9 - 2 * PAD + GAP) / (CW + GAP))));
+            int rows = (cards.Count + perRow - 1) / perRow;
+            int w = perRow * (CW + GAP) - GAP + 2 * PAD, h = rows * (CH + GAP) - GAP + 2 * PAD;
+            Bounds = new Rectangle(mon.X + (mon.Width - w) / 2, mon.Y + (mon.Height - h) / 2, w, h);
+            var rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, RADIUS * 2, RADIUS * 2);
+            Native.SetWindowRgn(Handle, rgn, false);
+            for (int i = 0; i < cards.Count; i++)
+            {
+                int cx = PAD + (i % perRow) * (CW + GAP), cy = PAD + (i / perRow) * (CH + GAP);
+                cards[i].R = new Rectangle(cx, cy, CW, CH);
+            }
+            Show();
+            Native.SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010);
+            foreach (var c in cards) RegisterThumb(c);
+            hi = hiTarget = drawHi = Inflate(cards[sel].R);
+            fadeStart = animStart = Environment.TickCount;
+            Opacity = 0;
+            anim.Start(); altWatch.Start();
+            Invalidate();
+        }
+        catch (Exception ex) { Slider.Log("switcher open: " + ex.Message); Active = false; }
+    }
+
+    static RectangleF Inflate(Rectangle r) { return new RectangleF(r.X - 3, r.Y - 3, r.Width + 6, r.Height + 6); }
+
+    void RegisterThumb(Card c)
+    {
+        var thumbArea = new Rectangle(c.R.X + (CW - TH_W) / 2, c.R.Y + 12, TH_W, TH_H);
+        c.ThumbR = thumbArea;
+        if (c.Min) return; // küçültülmüş pencerenin yüzeyi yok: büyük simge çizilir
+        IntPtr id;
+        if (Native.DwmRegisterThumbnail(Handle, c.H, out id) != 0) return;
+        Native.SIZE src;
+        if (Native.DwmQueryThumbnailSourceSize(id, out src) != 0 || src.cx <= 0 || src.cy <= 0) { Native.DwmUnregisterThumbnail(id); return; }
+        double k = Math.Min((double)TH_W / src.cx, (double)TH_H / src.cy);
+        int tw = Math.Max(1, (int)(src.cx * k)), th = Math.Max(1, (int)(src.cy * k));
+        var d = new Native.RECT { Left = thumbArea.X + (TH_W - tw) / 2, Top = thumbArea.Y + (TH_H - th) / 2 };
+        d.Right = d.Left + tw; d.Bottom = d.Top + th;
+        var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_VISIBLE | Native.DWM_TNP_OPACITY, rcDestination = d, opacity = 255, fVisible = true };
+        Native.DwmUpdateThumbnailProperties(id, ref pr);
+        c.Thumb = id;
+    }
+
+    void Release()
+    {
+        foreach (var c in cards) if (c.Thumb != IntPtr.Zero) { Native.DwmUnregisterThumbnail(c.Thumb); c.Thumb = IntPtr.Zero; }
+    }
+
+    void Move(int dx, int dy)
+    {
+        if (!Visible || cards.Count == 0) return;
+        int perRow = Math.Max(1, (ClientSize.Width - 2 * PAD + GAP) / (CW + GAP));
+        int n = cards.Count;
+        if (dy != 0) { int t = sel + dy * perRow; if (t >= 0 && t < n) sel = t; }
+        else sel = ((sel + dx) % n + n) % n;
+        hi = (Environment.TickCount - animStart < 170) ? drawHi : hiTarget;
+        hiTarget = Inflate(cards[sel].R);
+        animStart = Environment.TickCount;
+        Invalidate();
+    }
+
+    void Tick()
+    {
+        int now = Environment.TickCount;
+        double f = Math.Min(1.0, (now - fadeStart) / 140.0);
+        if (!committed) Opacity = 0.97 * (1 - Math.Pow(1 - f, 3));
+        double t = Math.Min(1.0, (now - animStart) / 170.0), e = 1 - Math.Pow(1 - t, 3);
+        var cur = new RectangleF(hi.X + (hiTarget.X - hi.X) * (float)e, hi.Y + (hiTarget.Y - hi.Y) * (float)e, hi.Width + (hiTarget.Width - hi.Width) * (float)e, hi.Height + (hiTarget.Height - hi.Height) * (float)e);
+        if (t >= 1.0) hi = hiTarget; else drawHi = cur;
+        if (t < 1.0) Invalidate();
+    }
+    RectangleF drawHi;
+
+    public void CloseOnly()
+    {
+        committed = true; Active = false;
+        anim.Stop(); altWatch.Stop();
+        Release();
+        Hide();
+        Opacity = 0;
+    }
+
+    void CommitCurrent()
+    {
+        if (committed) return;
+        var target = sel >= 0 && sel < cards.Count ? cards[sel] : null;
+        string ws = curWs;
+        CloseOnly();
+        if (target == null) return;
+        Activate(target, ws);
+    }
+
+    void Activate(Card c, string fromWs)
+    {
+        try
+        {
+            if (c.Min) Native.ShowWindow(c.H, 9); // SW_RESTORE
+            if (c.Ws != null && c.Ws != fromWs && !string.IsNullOrEmpty(c.Ws))
+            {
+                // başka workspace: önce animasyonlu geçiş, sonra pencereyi odakla
+                var k = Slider.Ui;
+                glaze.Command("focus --workspace " + c.Ws);
+                ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(120); try { glaze.Command("focus --container-id " + c.Id); } catch { } });
+            }
+            else glaze.Command("focus --container-id " + c.Id);
+        }
+        catch (Exception ex) { Slider.Log("switcher activate: " + ex.Message); }
+    }
+
+    // ---- çizim ----
+    static GraphicsPathHelper RoundPath(RectangleF r, float rad) { return new GraphicsPathHelper(r, rad); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+        g.Clear(Surface);
+        using (var bp = new Pen(Border, 1.5f)) g.DrawPath(bp, RoundPath(new RectangleF(0.75f, 0.75f, Width - 2f, Height - 2f), RADIUS).Path);
+        var hl = (Environment.TickCount - animStart < 170) ? drawHi : hiTarget;
+        if (hl.Width > 0 && cards.Count > 0)
+        {
+            using (var b = new SolidBrush(SelFill)) g.FillPath(b, RoundPath(hl, 18).Path);
+            using (var p = new Pen(SelBorder, 2f)) g.DrawPath(p, RoundPath(hl, 18).Path);
+        }
+        for (int i = 0; i < cards.Count; i++)
+        {
+            var c = cards[i];
+            var inner = new RectangleF(c.R.X, c.R.Y, c.R.Width, c.R.Height);
+            if (i != sel) using (var b = new SolidBrush(CardFill)) g.FillPath(b, RoundPath(inner, 16).Path);
+            // önizleme yuvası
+            var slot = new RectangleF(c.ThumbR.X, c.ThumbR.Y, c.ThumbR.Width, c.ThumbR.Height);
+            using (var b = new SolidBrush(Color.FromArgb(24, 22, 28))) g.FillPath(b, RoundPath(slot, 10).Path);
+            if (c.Min || c.Thumb == IntPtr.Zero)
+            {
+                if (c.Icon != null) g.DrawImage(c.Icon, slot.X + slot.Width / 2 - 20, slot.Y + slot.Height / 2 - 20, 40, 40);
+            }
+            // başlık satırı: simge + ad
+            int ty = c.R.Y + 12 + TH_H + 10;
+            int tx = c.R.X + 14;
+            if (c.Icon != null) { g.DrawImage(c.Icon, tx, ty, 20, 20); tx += 26; }
+            var rect = new RectangleF(tx, ty, c.R.Right - 12 - tx, 22);
+            using (var sf = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap, LineAlignment = StringAlignment.Center })
+            using (var br = new SolidBrush(i == sel ? Color.White : TxtColor)) g.DrawString(c.Title, titleFont, br, rect, sf);
+            // başka workspace'teki pencere: köşede numara rozeti
+            if (c.OtherWs && !string.IsNullOrEmpty(c.Ws))
+            {
+                var bd = new RectangleF(c.R.Right - 36, c.R.Y + 16, 24, 24);
+                using (var b = new SolidBrush(Color.FromArgb(208, 188, 255))) g.FillEllipse(b, bd);
+                using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                using (var br = new SolidBrush(Color.FromArgb(56, 30, 114))) g.DrawString(c.Ws, badgeFont, br, bd, sf);
+            }
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        for (int i = 0; i < cards.Count; i++)
+            if (cards[i].R.Contains(e.Location) && i != sel) { sel = i; hi = (Environment.TickCount - animStart < 170) ? drawHi : hiTarget; hiTarget = Inflate(cards[i].R); animStart = Environment.TickCount; Invalidate(); break; }
+    }
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        for (int i = 0; i < cards.Count; i++)
+            if (cards[i].R.Contains(e.Location)) { sel = i; CommitCurrent(); return; }
+    }
+
+    // sınama: --switcher-demo
+    public static void Demo()
+    {
+        var f = new Form { ShowInTaskbar = false, WindowState = FormWindowState.Minimized, FormBorderStyle = FormBorderStyle.None, Opacity = 0 };
+        f.Load += (s, e) => f.Hide();
+        var h = f.Handle;
+        demo = true;
+        Init(f);
+        var t = new System.Windows.Forms.Timer { Interval = 300 };
+        t.Tick += (s, e) => { t.Stop(); Active = true; inst.Open(false); };
+        t.Start();
+        var end = new System.Windows.Forms.Timer { Interval = 6000 };
+        end.Tick += (s, e) => { inst.CloseOnly(); Application.ExitThread(); };
+        end.Start();
+        Application.Run(f);
+    }
+}
+
+// Yuvarlak köşeli dikdörtgen yolu (Graphics.FillPath için)
+class GraphicsPathHelper
+{
+    public System.Drawing.Drawing2D.GraphicsPath Path = new System.Drawing.Drawing2D.GraphicsPath();
+    public GraphicsPathHelper(RectangleF r, float rad)
+    {
+        float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
+        Path.AddArc(r.X, r.Y, d, d, 180, 90);
+        Path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        Path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        Path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        Path.CloseFigure();
+    }
+}
+
 // ---------------- Duvar kağıdı (sağ panel > Duvar kağıtları) ----------------
 // Windows'un IDesktopWallpaper API'si: monitör başına ayrı resim ya da tüm masaüstüne yayılan tek resim
 // (Superpaper'ın "span" modu). Hazır öneriler Wallhaven'ın herkese açık API'sinden, yalnızca SFW.
@@ -3989,10 +4604,28 @@ static class Splash
         using (var m = new Mutex(true, "ll-splash", out created))
         {
             if (!created) return;
+            // Güncelleme sırasında (LL_SPLASH_WAIT_RESTART=1): örtü yumuşakça belirir, önce mevcut masaüstünün kapanmasını,
+            // sonra yenisinin hazır olmasını bekler (en fazla 150 sn).
+            bool restartMode = Environment.GetEnvironmentVariable("LL_SPLASH_WAIT_RESTART") == "1";
+            bool sawDown = !restartMode;
+            int maxMs = restartMode ? 150000 : 30000;
             var img = Wallpaper();
             var covers = new List<Cover>();
             var virt = SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
             foreach (var s in Screen.AllScreens) { var f = new Cover(s.Bounds, img, virt); f.Show(); covers.Add(f); }
+            if (restartMode)
+            {
+                foreach (var f in covers) f.Opacity = 0;
+                var fin = new System.Windows.Forms.Timer { Interval = 15 };
+                int fis = Environment.TickCount;
+                fin.Tick += (o3, e3) =>
+                {
+                    double t3 = Math.Min(1, (Environment.TickCount - fis) / 450.0);
+                    foreach (var f in covers) f.Opacity = 1 - Math.Pow(1 - t3, 3);
+                    if (t3 >= 1) fin.Stop();
+                };
+                fin.Start();
+            }
 
             var start = Environment.TickCount;
             int readyAt = -1;
@@ -4001,9 +4634,10 @@ static class Splash
             {
                 int now = Environment.TickCount;
                 foreach (var f in covers) Native.SetWindowPos(f.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // en üstte kal
-                if (readyAt < 0 && Ready()) readyAt = now;
+                if (!sawDown) { if (!Ready()) sawDown = true; }
+                else if (readyAt < 0 && Ready()) readyAt = now;
                 // Hazır olduktan sonra pencerelerin yerleşip bar'ın çizilmesi için kısa bir süre; en fazla 30 sn bekle
-                bool done = (readyAt >= 0 && now - readyAt > 1500) || now - start > 30000;
+                bool done = (readyAt >= 0 && now - readyAt > 1500) || now - start > maxMs;
                 if (!done) return;
                 timer.Stop();
                 ThreadPool.QueueUserWorkItem(_ => SaveCache());
@@ -4196,6 +4830,30 @@ static class Program
             so.Write(Binds.ListJson()); so.Flush();
             return;
         }
+        // Güncelleme: --update-check | --update-download | --update-status | --update-install
+        if (args.Length == 1 && args[0].StartsWith("--update-"))
+        {
+            string ut;
+            try
+            {
+                switch (args[0])
+                {
+                    case "--update-check": ut = Updater.Check(); break;
+                    case "--update-download": ut = Updater.Download(); break;
+                    case "--update-status": ut = Updater.Status(); break;
+                    case "--update-install": ut = Updater.Install(); break;
+                    default: ut = "{\"error\":\"unknown\"}"; break;
+                }
+            }
+            catch (Exception ex) { ut = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "error", ex.GetBaseException().Message } }); }
+            var uo = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            uo.Write(ut); uo.Flush();
+            return;
+        }
+        // ll-helper.exe --switcher-demo: Alt+Tab menüsünü 6 sn göster (sınama; kısayolsuz)
+        if (args.Length == 1 && args[0] == "--switcher-demo") { Switcher.Demo(); return; }
+        // ll-helper.exe --log <metin>: widget'ların hata ayıklama günlüğü (%TEMP%\ll-helper.log)
+        if (args.Length == 2 && args[0] == "--log") { Slider.Log("widget: " + args[1]); return; }
         // ll-helper.exe --overview-show clip|plain: overview'u ilgili modda aç (test / betik için; Super / Super+V aynısını yapar)
         if (args.Length == 2 && args[0] == "--overview-show")
         {
@@ -4440,6 +5098,7 @@ static class Program
         dwindle.HookNewWindows();
         LaunchQueue.Start(new Slider(new Glaze())); // kendi bağlantısı: animasyonu beklemesin
         NightLight.StartKeeper();
+        Switcher.Init(ui);
         ClipHistory.StartListener();
         Wallpaper.StartKeeper();
         Toasts.Start();

@@ -472,9 +472,6 @@
 
       let setEditModeGlobal = () => {};
       function SystemButtonRow({ host, onPage }) {
-        const [session, setSession] = useState(false);
-        const [edit, setEdit] = useState(false);
-        useEffect(() => { setEditModeGlobal(edit); }, [edit]);
         return (
           <>
             <div className="sysrow">
@@ -483,24 +480,23 @@
                 <span>Çalışma süresi {host ? formatUptime(host.uptime) : '…'}</span>
               </div>
               <div className="btngroup">
+                <button className="qbtn" title="Güncellemeleri denetle" onClick={() => { emit('ll:update-check').catch(() => {}); emit('ll:sidebar-right-toggle').catch(() => {}); }}>
+                  <Icon name="system_update_alt" />
+                </button>
                 <button className="qbtn" title="Duvar kağıtları" onClick={() => onPage('walls')}>
                   <Icon name="wallpaper" />
                 </button>
                 <button className="qbtn" title="Kısayollar" onClick={() => onPage('keys')}>
                   <Icon name="keyboard" />
                 </button>
-                <button className={`qbtn ${edit ? 'on' : ''}`} title="Hızlı ayarları düzenle (tık: ekle/kaldır, sağ tık: boyut, tekerlek: sıra)" onClick={() => setEdit(e => !e)}>
-                  <Icon name="edit" />
-                </button>
                 <button className="qbtn" title="Ayarlar klasörü" onClick={() => zebar.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.glzr\\logical-lunge'])}>
                   <Icon name="settings" />
                 </button>
-                <button className={`qbtn ${session ? 'on' : ''}`} title="Oturum" onClick={() => setSession(s => !s)}>
+                <button className="qbtn" title="Oturum" onClick={() => { emit('ll:session-toggle').catch(() => {}); emit('ll:sidebar-right-toggle').catch(() => {}); }}>
                   <Icon name="power_settings_new" />
                 </button>
               </div>
             </div>
-            {session && <SessionRow />}
           </>
         );
       }
@@ -755,6 +751,11 @@
             {renderRows(visible)}
             {edit && <div className="qsep" />}
             {edit && renderRows(unused)}
+            <div className="qedit-row">
+              <button className={`qbtn ${edit ? 'on' : ''}`} title="Hızlı ayarları düzenle (tık: ekle/kaldır, sağ tık: boyut, tekerlek: sıra)" onClick={() => setEdit(e => !e)}>
+                <Icon name={edit ? 'check' : 'edit'} />
+              </button>
+            </div>
             {card && (
               <div key={card.type} className={`qcard ${card.closing ? 'closing' : ''}`} style={{ top: card.top }}>
                 {card.type === 'wifi' && <WifiMenu radioOn={wifiOn} />}

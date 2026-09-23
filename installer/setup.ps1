@@ -52,6 +52,7 @@ function Gh-Asset([string]$repo, [string]$tag, [string]$pattern) {
 $backupFile = Join-Path $STATE 'install-backup.json'
 $backup = @{ registry = @(); installed = @(); version = (Get-Content (Join-Path $Source 'VERSION') -ErrorAction SilentlyContinue) }
 if (Test-Path $backupFile) { $backup = Get-Content $backupFile -Raw | ConvertFrom-Json | ForEach-Object { @{ registry = @($_.registry); installed = @($_.installed); version = $_.version } } }
+$backup.version = (Get-Content (Join-Path $Source 'VERSION') -ErrorAction SilentlyContinue)  # an update must not keep the old version number
 function Save-Backup { $backup | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 $backupFile }
 function Set-Reg([string]$path, [string]$name, $value, [string]$type = 'DWord') {
     if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
@@ -141,6 +142,8 @@ Add-UserPath (Split-Path $zbExe)
 # ---------------------------------------------------------------- files
 Step 'Copying Logical Lunge files'
 Copy-Item (Join-Path $Source 'logical-lunge\*') $LL -Recurse -Force
+# installed version (the update button compares it with the latest release)
+Copy-Item (Join-Path $Source 'VERSION') (Join-Path $LL 'VERSION') -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force (Join-Path $ZB 'logical-lunge') | Out-Null
 Copy-Item (Join-Path $Source 'shell\*') (Join-Path $ZB 'logical-lunge') -Recurse -Force
 # placeholders -> this user's profile path
@@ -152,7 +155,7 @@ Get-ChildItem (Join-Path $ZB 'logical-lunge') -File -Include *.html, *.json, *.c
 }
 # Zebar: start only our widgets
 $zsettings = [ordered]@{ '$schema' = "https://github.com/glzr-io/zebar/raw/$ZEBAR_VER/resources/settings-schema.json"; startupConfigs = @(
-        foreach ($w in 'bar', 'overview', 'sidebar-right', 'toast', 'osk') { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
+        foreach ($w in 'bar', 'overview', 'sidebar-right', 'toast', 'osk', 'update', 'session') { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
 $zs = Join-Path $ZB 'settings.json'
 if ((Test-Path $zs) -and -not (Test-Path "$zs.before-ll")) { Copy-Item $zs "$zs.before-ll" }
 $zsettings | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $zs

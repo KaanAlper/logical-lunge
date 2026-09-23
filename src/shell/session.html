@@ -1,0 +1,248 @@
+﻿<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+(function () {
+  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
+// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
+// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      apply();
+      return next;
+    }
+  };
+})();
+    </script>
+    <!-- ii modules/ii/notificationPopup karşılığı: sağ üstte, bar'ın altında kayarak gelen kartlar.
+         Pencere odak çalmaz: hep açık ama boşken fare tıklamalarını geçirir. -->
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block');
+      :root {
+        --m3primary: #d0bcff; --m3onPrimary: #381e72;
+        --m3primaryContainer: #4f378b; --m3onPrimaryContainer: #eaddff;
+        --m3secondaryContainer: #4a4458; --m3onSecondaryContainer: #e8def8;
+        --m3error: #ffb4ab; --m3errorContainer: #93000a; --m3onErrorContainer: #ffdad6;
+        --m3onSurface: #e6e0e9; --m3onSurfaceVariant: #cac4d0; --m3outline: #938f99;
+        --colLayer0: #141218; --colLayer0Border: #2c2a31; --colLayer2: #2b2930;
+        --emphDecel: cubic-bezier(0.05, 0.7, 0.1, 1);
+        --emphAccel: cubic-bezier(0.3, 0, 0.8, 0.15);
+      }
+      /* ---- Açık tema (ii: appearance dark mode kapalı) — Material You açık, mor tohum.
+         Tema düğmesi yalnızca bizim kabuğu değiştirir (Windows'a dokunmaz): tercih localStorage 'll.theme'da, <html data-theme> ile uygulanır. ---- */
+      :root[data-theme="light"] {
+          --m3primary: #6750a4;
+          --m3onPrimary: #ffffff;
+          --m3primaryContainer: #eaddff;
+          --m3onPrimaryContainer: #21005d;
+          --m3secondaryContainer: #e8def8;
+          --m3onSecondaryContainer: #1d192b;
+          --m3onSurface: #1d1b20;
+          --m3onSurfaceVariant: #49454f;
+          --m3outline: #79747e;
+          --m3outlineVariant: #cac4d0;
+          --m3error: #b3261e;
+          --m3errorContainer: #f9dedc;
+          --m3onErrorContainer: #410e0b;
+          --colLayer0: #fef7ff;
+          --colLayer0Border: #e6e0e9;
+          --colLayer1: #f3edf7;
+          --colLayer1Hover: #e6e0e9;
+          --colLayer2: #ece6f0;
+          --colLayer2Hover: #e0dae4;
+          --colBackgroundSurfaceContainer: #f3edf7;
+          --colSurfaceContainerHigh: #ece6f0;
+          --colOnLayer0: #1d1b20;
+          --colOnLayer1: #1d1b20;
+          --colSubtext: #79747e;
+          --colOnLayer1Inactive: #9e98a3;
+          --occupied: rgba(232 222 248 / 90%);
+        }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: transparent; overflow: hidden; user-select: none; }
+      body {
+        font-family: 'Google Sans Flex', 'Rubik', 'Segoe UI Variable Text', sans-serif;
+        font-variation-settings: 'wght' 450; color: var(--m3onSurface);
+        -webkit-font-smoothing: antialiased;
+      }
+      .icon { font-family: 'Material Symbols Rounded'; line-height: 1; font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+
+      html, body { height: 100%; }
+      /* ii sessionScreen: ekranı karartan gölge + ortada büyük düğmeler */
+      #scrim {
+        position: fixed; inset: 0;
+        background: radial-gradient(ellipse at center, rgba(8 6 12 / 62%) 0%, rgba(4 3 8 / 82%) 100%);
+        opacity: 0; transition: opacity 240ms var(--emphDecel);
+      }
+      #scrim.on { opacity: 1; }
+      #stage { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; }
+      #row {
+        display: flex; gap: 16px; padding: 22px; border-radius: 34px; pointer-events: auto;
+        background: var(--colLayer0); border: 1px solid var(--colLayer0Border);
+        box-shadow: 0 30px 90px rgba(0 0 0 / 65%), 0 6px 18px rgba(0 0 0 / 45%);
+        transform: translateY(24px) scale(0.94); opacity: 0;
+        transition: transform 380ms var(--emphDecel), opacity 240ms var(--emphDecel);
+      }
+      #row.on { transform: none; opacity: 1; }
+      .sbtn {
+        position: relative; width: 116px; height: 116px; border: 0; border-radius: 30px; cursor: pointer;
+        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+        background: var(--m3secondaryContainer); color: var(--m3onSecondaryContainer); font: inherit; font-size: 14px;
+        transition: border-radius 260ms var(--emphDecel), background 160ms, transform 160ms var(--emphDecel);
+      }
+      .sbtn .icon { font-size: 34px; }
+      .sbtn:hover, .sbtn.sel { background: var(--m3primary); color: var(--m3onPrimary); border-radius: 44px; transform: translateY(-4px); }
+      .sbtn.danger:hover, .sbtn.danger.sel { background: var(--m3error); color: #690005; }
+      .sbtn kbd {
+        position: absolute; top: 8px; right: 10px; font: inherit; font-size: 11px; opacity: 0.6;
+        border: 1px solid currentColor; border-radius: 6px; padding: 0 5px; line-height: 16px;
+      }
+      #hint { position: fixed; bottom: 34px; left: 0; right: 0; text-align: center; color: rgba(255 255 255 / 55%); font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <div id="scrim"></div>
+    <div id="stage"><div id="row"></div></div>
+    <div id="hint">Esc ile kapat</div>
+    <script type="module">
+      import * as zebar from 'https://esm.sh/zebar@3';
+      import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+
+      const win = zebar.currentWidget().tauriWindow;
+      win.setTitle('ll-session').catch(() => {});
+      const run = (prog, args) => zebar.shellSpawn(prog, args).catch(e => console.error(prog, e));
+      // ii sessionScreen: kilitle, uyku, oturumu kapat, yeniden başlat, kapat, ürün yazılımı (UEFI/BIOS) ayarları
+      const ITEMS = [
+        { key: 'l', icon: 'lock', label: 'Kilitle', act: () => run('rundll32', ['user32.dll,LockWorkStation']) },
+        { key: 'u', icon: 'dark_mode', label: 'Uyku', act: () => run('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0']) },
+        { key: 'o', icon: 'logout', label: 'Çıkış', act: () => run('shutdown', ['/l']) },
+        { key: 'r', icon: 'restart_alt', label: 'Yeniden başlat', act: () => run('shutdown', ['/r', '/t', '0']) },
+        { key: 'f', icon: 'developer_board', label: 'UEFI / BIOS', act: () => run('shutdown', ['/r', '/fw', '/t', '0']) },
+        { key: 's', icon: 'power_settings_new', label: 'Kapat', danger: true, act: () => run('shutdown', ['/s', '/t', '0']) },
+      ];
+      const row = document.getElementById('row'), scrim = document.getElementById('scrim');
+      let sel = 0, open = false;
+      row.innerHTML = ITEMS.map((it, i) => `<button class="sbtn ${it.danger ? 'danger' : ''}" data-i="${i}"><kbd>${it.key.toUpperCase()}</kbd><span class="icon">${it.icon}</span><span>${it.label}</span></button>`).join('');
+      const btns = [...row.querySelectorAll('.sbtn')];
+      const mark = () => btns.forEach((b, i) => b.classList.toggle('sel', i === sel));
+      btns.forEach((b, i) => {
+        b.addEventListener('mouseenter', () => { sel = i; mark(); });
+        b.addEventListener('click', () => { hide(); ITEMS[i].act(); });
+      });
+
+      async function show() {
+        if (open) return;
+        open = true; sel = 0; mark();
+        try { await win.show(); await win.setFocus(); } catch {}
+        requestAnimationFrame(() => { scrim.classList.add('on'); row.classList.add('on'); });
+      }
+      function hide() {
+        if (!open) return;
+        open = false;
+        scrim.classList.remove('on'); row.classList.remove('on');
+        setTimeout(() => { if (!open) win.hide().catch(() => {}); }, 260);
+      }
+      win.hide().catch(() => {});
+      listen('ll:session-toggle', () => (open ? hide() : show()));
+      window.addEventListener('blur', () => hide());
+      scrim.addEventListener('mousedown', hide);
+      document.getElementById('stage').addEventListener('mousedown', e => { if (e.target.id === 'stage') hide(); });
+      window.addEventListener('keydown', e => {
+        if (!open) return;
+        const k = e.key.toLowerCase();
+        if (k === 'escape') { e.preventDefault(); hide(); }
+        else if (k === 'arrowright' || k === 'tab') { e.preventDefault(); sel = (sel + 1) % ITEMS.length; mark(); }
+        else if (k === 'arrowleft') { e.preventDefault(); sel = (sel + ITEMS.length - 1) % ITEMS.length; mark(); }
+        else if (k === 'enter' || k === ' ') { e.preventDefault(); const it = ITEMS[sel]; hide(); it.act(); }
+        else { const i = ITEMS.findIndex(x => x.key === k); if (i >= 0) { e.preventDefault(); hide(); ITEMS[i].act(); } }
+      });
+    </script>
+  </body>
+</html>

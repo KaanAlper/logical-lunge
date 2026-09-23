@@ -553,3 +553,6 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
   box-shadow: 0 0 0 3px var(--colLayer2, #2b2930);
 }
 .au-val { width: 28px; text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--m3onSurfaceVariant); }
+
+/* hızlı ayarları düzenle düğmesi: ii'de olduğu gibi kutucukların sağ altında */
+.qedit-row { display: flex; justify-content: flex-end; margin-top: -2px; }

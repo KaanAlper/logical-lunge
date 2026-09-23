@@ -46,6 +46,11 @@ A complete Windows desktop that looks and behaves like the **illogical-impulse**
 - **Shortcuts editor** and **wallpaper picker** built into the sidebar (per-monitor or one image spanning all monitors — Superpaper-style *superscreen*).
 - **Super overview**: fuzzy app search (localized names + icons), calculator (`sqrt(9)`, `5!`, `2^10`, `50%`), `/actions`, `$shell`, `?web`, **Google Lens** region search, **music recognition** (Shazam), workspace previews.
 - **Screenshot tool** (Print): select a region, then annotate — pen, circle, rectangle, colors — copy or save as.
+- **Ctrl+Print**: the whole monitor under the mouse, copied to the clipboard and saved to `Pictures\Screenshots` without asking.
+- **Clipboard history** (Super+V, ii's cliphist): text and images, searchable, opens in the Super search box with the `;` prefix.
+- **Alt+Tab switcher**: live window previews across all workspaces, most recently used first, drawn by the helper so it opens instantly under load.
+- **Session screen** (power button in the sidebar): dimmed screen with lock / sleep / sign out / restart / **UEFI-BIOS** / shut down.
+- **Updates**: the sidebar's update button checks GitHub releases, shows a card with a progress bar, then *Install now* / *Later*. A downloaded update is remembered; installing asks for permission once and restarts the desktop.
 - **Animations**: smooth workspace slides, window open / close / move animations (Hyprland `emphasizedDecel` curves), popups that slide in and out.
 - **Terminal**: WezTerm configured exactly like ii's kitty (JetBrains Mono Nerd Font, beam cursor, ii's wallpaper-generated Material You colors) running **fish** with **starship**.
 - **Boot straight into the desktop**: a wallpaper splash covers Windows until the shell is ready; the Windows taskbar and Start menu never show (Super is owned by the shell *only while it runs*).
