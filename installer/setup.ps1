@@ -97,6 +97,17 @@ foreach ($n in 'glazewm', 'zebar', 'll-helper', 'tacky-borders', 'll-temps') { G
 Start-Sleep -Milliseconds 800
 
 # ---------------------------------------------------------------- GlazeWM + Zebar
+# The package normally carries our own GlazeWM/Zebar builds (logical-lunge\bin); upstream MSIs are the fallback.
+$bundled = Test-Path (Join-Path $Source 'logical-lunge\bin\glazewm.exe')
+if ($bundled) {
+    Step 'Using the bundled GlazeWM and Zebar (Logical Lunge builds)'
+    New-Item -ItemType Directory -Force (Join-Path $LL 'bin') | Out-Null
+    Copy-Item (Join-Path $Source 'logical-lunge\bin\*') (Join-Path $LL 'bin') -Force
+    $gwExe = Join-Path $LL 'bin\glazewm.exe'
+    $zbExe = Join-Path $LL 'bin\zebar.exe'
+    Add-UserPath (Join-Path $LL 'bin')
+}
+else {
 Step "Installing GlazeWM $GLAZEWM_VER"
 $gwExe = Join-Path $env:ProgramFiles 'glzr.io\GlazeWM\glazewm.exe'
 if (-not (Test-Path $gwExe)) {
@@ -118,6 +129,7 @@ if (-not (Test-Path $zbExe)) {
 if (-not (Test-Path $zbExe)) { throw 'Zebar could not be installed.' }
 # GlazeWM's shell-exec cannot run quoted paths with spaces: make "zebar" resolvable through PATH
 Add-UserPath (Split-Path $zbExe)
+}
 
 # ---------------------------------------------------------------- files
 Step 'Copying Logical Lunge files'

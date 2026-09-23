@@ -89,7 +89,7 @@ foreach ($f in "$ZB\settings.json", "$UserProfile\.glzr\glazewm\config.yaml", "$
     if (Test-Path "$f.before-ll") { Move-Item "$f.before-ll" $f -Force }   # your pre-install version comes back
 }
 Remove-Item (Join-Path $ZB 'logical-lunge') -Recurse -Force -ErrorAction SilentlyContinue
-foreach ($d in 'helper', 'tools', 'scripts') { Remove-Item (Join-Path $LL $d) -Recurse -Force -ErrorAction SilentlyContinue }
+foreach ($d in 'bin', 'helper', 'tools', 'scripts') { Remove-Item (Join-Path $LL $d) -Recurse -Force -ErrorAction SilentlyContinue }
 Remove-Item $bf -Force -ErrorAction SilentlyContinue
 
 Log '==> Restarting Explorer'

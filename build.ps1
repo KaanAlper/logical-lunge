@@ -1,7 +1,7 @@
 ﻿# Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
 # Build machine needs: Windows 10/11 x64 (.NET Framework 4.8 csc is built in), Windows 10 SDK
 # (for media-art.exe), Python 3.12 (for the packaged helpers) and Node.js (translations).
-param([switch]$SkipPython)
+param([switch]$SkipPython, [string]$Forks = (Join-Path $PSScriptRoot '..\logical-lunge-forks'))
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -48,6 +48,29 @@ if (-not $SkipPython) {
         --add-data "$tc\generate_colors_material.py;." --add-data "$tc\scheme-base.json;." --collect-all materialyoucolor --hidden-import PIL.Image "$tc\wezterm-colors.py" } 'll-termcolors'
     Native { & "$venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --console --name ll-songrec --distpath "$ll\tools\songrec" --workpath "$cache\pyi-sr" --specpath $cache `
         --collect-all shazamio --collect-all shazamio_core --collect-all pyaudiowpatch "$root\src\tools\songrec\recognize.py" } 'll-songrec'
+}
+
+# Our GlazeWM / Zebar forks (tray icons, unused providers removed). When they are not checked out next to
+# the repo the package falls back to the pinned upstream releases, which setup.ps1 downloads.
+if (Test-Path "$Forks\glazewm\Cargo.toml") {
+    if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) { $env:Path = "$env:USERPROFILE\scoop\apps\rustup\current\.cargo\bin;$env:USERPROFILE\.cargo\bin;$env:Path" }
+    Step 'GlazeWM fork (glazewm, glazewm-watcher, glazewm-cli)'
+    New-Item -ItemType Directory -Force "$ll\bin" | Out-Null
+    Push-Location "$Forks\glazewm"
+    $env:VERSION_NUMBER = ((Get-Content "$root\VERSION").Trim() -replace '[^0-9.]', '')
+    Native { cargo build --release -p wm -p wm-cli -p wm-watcher } 'glazewm'
+    Copy-Item target\release\glazewm.exe, target\release\glazewm-watcher.exe, target\release\glazewm-cli.exe "$ll\bin\"
+    Pop-Location
+}
+if (Test-Path "$Forks\zebar\Cargo.toml") {
+    Step 'Zebar fork'
+    Push-Location "$Forks\zebar"
+    Native { npx --yes pnpm@9.4.0 install --frozen-lockfile } 'pnpm install'
+    Native { npx --yes pnpm@9.4.0 --filter zebar build } 'zebar client'
+    Native { npx --yes pnpm@9.4.0 --filter settings-ui build } 'settings-ui'
+    Native { cargo build --release -p zebar } 'zebar'
+    Copy-Item target\release\zebar.exe "$ll\bin\"
+    Pop-Location
 }
 
 Step 'Shell (Zebar widget pack) + translations'

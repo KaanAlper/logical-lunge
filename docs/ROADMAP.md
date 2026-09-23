@@ -28,9 +28,12 @@ under the hood it still runs three programs that talk to each other:
 
 1. **Done — single installer.** `install.ps1` → one UAC prompt, pinned upstream versions, every Windows
    setting backed up, clean uninstaller, no Python needed on the target (PyInstaller-packed helpers).
-2. **Forks.** `glazewm` and `zebar` forks under this organisation with the removals above; GitHub Actions
-   (windows-latest) builds them and attaches them to our releases, so the installer stops downloading
-   upstream MSIs.
+2. **Forks — in progress.** Local forks (branch `logical-lunge`, next to this repo in `..\logical-lunge-forks`):
+   - GlazeWM: tray icon and its tray-only dependencies removed (`tray-icon`, `image`, `auto-launch`) — 8.0 → 6.2 MB.
+   - Zebar: tray icon / widget-manager entry point removed; `disk`, `ip`, `keyboard`, `komorebi`, `weather` providers and the`n     `komorebi-util` crate removed.
+   - `build.ps1` builds them and ships them in `logical-lunge\bin`; `setup.ps1` uses them instead of the upstream MSIs.
+   - Still to do: remove the marketplace installer / `publish` CLI / settings-ui from Zebar, publish the forks on GitHub,
+     build them in GitHub Actions.
 3. **One executable.** A Rust host (`logical-lunge.exe`) that:
    - runs GlazeWM's WM loop in-process (its `wm` crate as a library on a dedicated thread with its own
      Win32 message pump),
