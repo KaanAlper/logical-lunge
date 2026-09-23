@@ -3,3 +3,25 @@
 src/shell/i18n.json
 *.part
 __pycache__/
+
+# build / editor / OS leftovers (safe for `git add .`)
+*.log
+*.tmp
+*.bak
+*.bak-*
+*.old
+*.old*.exe
+ll-helper*.exe
+*.pyc
+*.pyo
+.vs/
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+desktop.ini
+node_modules/
+*.zip
+*.zip.sha256
+*.zip.ok

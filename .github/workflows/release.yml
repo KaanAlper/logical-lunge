@@ -1,0 +1,101 @@
+name: Release
+
+# Manual only: Actions -> Release -> Run workflow.
+# Builds dist\LogicalLunge-<version>.zip (+ .sha256) from this repo and the two forks
+# (KaanAlper/glazewm and KaanAlper/zebar, branch "logical-lunge"), bumps the version
+# automatically and publishes it as the latest GitHub release (what install.ps1 and the
+# in-app updater download).
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Release notes (optional, added above the generated changelog)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build & publish
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout Logical Lunge
+        uses: actions/checkout@v4
+
+      - name: Checkout GlazeWM fork
+        uses: actions/checkout@v4
+        with:
+          repository: KaanAlper/glazewm
+          ref: logical-lunge
+          path: forks/glazewm
+
+      - name: Checkout Zebar fork
+        uses: actions/checkout@v4
+        with:
+          repository: KaanAlper/zebar
+          ref: logical-lunge
+          path: forks/zebar
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            forks/glazewm
+            forks/zebar
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # VERSION in the repo is the base (major.minor). The patch number follows the latest release:
+      # no release yet -> VERSION as is; otherwise latest patch + 1 (or .0 when major.minor was raised).
+      - name: Compute version
+        id: v
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $base = (Get-Content VERSION).Trim()
+          $bp = $base -split '\.'
+          $latest = gh release list --limit 1 --exclude-drafts --json tagName --jq '.[0].tagName' 2>$null
+          if ($latest -match '^v(\d+)\.(\d+)\.(\d+)$') {
+              $lm = [int]$Matches[1]; $ln = [int]$Matches[2]; $lp = [int]$Matches[3]
+              if (($lm -gt [int]$bp[0]) -or ($lm -eq [int]$bp[0] -and $ln -ge [int]$bp[1])) { $ver = "$lm.$ln.$($lp + 1)" }
+              else { $ver = "$($bp[0]).$($bp[1]).0" }
+          } else { $ver = $base }
+          Set-Content -Path VERSION -Value $ver -NoNewline -Encoding ascii
+          "ver=$ver" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $ver (latest release: $latest)"
+
+      - name: Build package
+        shell: pwsh
+        run: ./build.ps1 -Forks "$env:GITHUB_WORKSPACE\forks"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.v.outputs.ver }}
+          name: Logical Lunge v${{ steps.v.outputs.ver }}
+          body: ${{ inputs.notes }}
+          files: |
+            dist/LogicalLunge-${{ steps.v.outputs.ver }}.zip
+            dist/LogicalLunge-${{ steps.v.outputs.ver }}.zip.sha256
+          generate_release_notes: true
+          draft: false
+          make_latest: "true"
