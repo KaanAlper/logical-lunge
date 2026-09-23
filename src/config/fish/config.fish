@@ -1,30 +1,36 @@
 # end-4 dots-hyprland .config/fish/config.fish (Windows / MSYS2 uyarlaması)
+# Hızlı açılış: login shell değil (MSYS2'nin msys2.fish'i hostname/cygpath çalıştırıyordu, ~130 ms) ve
+# starship'in başlatma betiği önbellekten okunur (~140 ms). PATH'i burada kendimiz kuruyoruz.
 if status is-interactive
     # No greeting
     set fish_greeting
 
-    # PATH'i sadeleştir (yalnızca fish içinde; Windows PATH'i değişmez). fish yazarken her tuşta komutun
-    # var olup olmadığını TÜM PATH klasörlerinde arıyor; MSYS2 üzerinden her klasör pahalı. 73 girişte
-    # arama başına ~13 ms'ydi ve yazarken takılma yapıyordu. Tekrarları, klasör olmayanları (...\agy.exe)
-    # ve terminalde komut vermeyen program klasörlerini at.
-    set -l skip 'oculus-runtime|/Intel/Shared Libraries|PhysX|NvDLISR|Nsight Compute|Windows Performance Toolkit|Calibre2|MATLAB/[^/]+/runtime|glzr.io/Zebar|anaconda3/Library/usr/bin|/usr/bin/(site|vendor)_perl|Common Files/Oracle/Java/javapath|libnvvp|Pulsar/resources$'
-    set -l clean
+    # PATH: MSYS2 araçları + Windows PATH'i (tekrarlar, klasör olmayan girişler ve terminalde komut
+    # vermeyen program klasörleri atılır; fish her tuşta komutu tüm PATH'te arıyor, MSYS2'de bu pahalı)
+    set -l skip 'oculus-runtime|/Intel/Shared Libraries|PhysX|NvDLISR|Nsight Compute|Windows Performance Toolkit|Calibre2|MATLAB/[^/]+/runtime|glzr.io/Zebar|anaconda3/Library/usr/bin|_perl$|Common Files/Oracle/Java/javapath|libnvvp|Pulsar/resources$|\.exe$'
+    set -l clean /c/Users/$USER/scoop/shims /c/Users/$USER/.glzr/logical-lunge/tools/bin /c/Users/$USER/scoop/apps/starship/current /ucrt64/bin /usr/local/bin /usr/bin
     for p in $PATH
         contains -- $p $clean; and continue
         string match -rq -- $skip $p; and continue
-        test -d "$p"; and set -a clean $p
+        set -a clean $p
     end
     set -gx PATH $clean
-    # Windows araçları (scoop, git, python...) MSYS2 araçlarından önce gelsin
-    fish_add_path --move --path /c/Users/$USER/scoop/shims /c/Users/$USER/scoop/apps/starship/current
 
-    # Use starship
+    # Use starship (başlatma betiği önbellekte; starship güncellenince yenilenir)
     function starship_transient_prompt_func
         starship module character
     end
     if test "$TERM" != "linux"
-        starship init fish | source
-        enable_transience
+        set -l bin (command -s starship)
+        if test -n "$bin"
+            set -l cache ~/.cache/fish/starship-init.fish
+            if not test -f $cache; or test $bin -nt $cache
+                mkdir -p ~/.cache/fish
+                $bin init fish --print-full-init >$cache
+            end
+            source $cache
+            enable_transience
+        end
     end
 
     # Aliases

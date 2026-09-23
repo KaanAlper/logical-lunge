@@ -2,12 +2,18 @@
 -- Eski ayar: ~/.wezterm.lua.bak-20260923
 local wezterm = require 'wezterm'
 local act = wezterm.action
-local config = wezterm.config_builder()
+-- config_builder() her atamayı Rust'ta doğruluyor: ~220 ms, açılışta ayar iki kez yüklendiği için ~440 ms. Düz tablo.
+local config = {}
 
 -- ---- Performans (eski sürümdeki taşırken donma / tane tane yapıştırma için) ----
 -- Acrylic + şeffaflık Windows 10'da DWM bulanıklığı yüzünden pencere taşırken donduruyordu: opak, GPU'da çiz.
-config.front_end = 'WebGpu'
-config.webgpu_power_preference = 'HighPerformance'
+-- Açılış hızı (ölçüldü): WebGpu gölgelendiricileri her açılışta ~600 ms derleniyor -> OpenGL (0.55 s'e iniyor).
+config.front_end = 'OpenGL'
+-- Sistemdeki ~860 fontu taramak 1.6 s sürüyordu: yalnız kendi font klasörümüz (+ WezTerm'in gömülü emoji/simge fontları)
+config.font_locator = 'ConfigDirsOnly'
+config.font_dirs = { wezterm.home_dir .. '/.config/wezterm/fonts' }
+-- Son pencere kapanınca süreç arka planda kalsın: sonraki Super+Enter yeni süreç değil, anında yeni pencere
+config.quit_when_all_windows_are_closed = false
 config.max_fps = 144
 config.animation_fps = 60
 config.window_background_opacity = 1.0
@@ -16,11 +22,7 @@ config.enable_scroll_bar = false
 config.scrollback_lines = 10000
 
 -- ---- kitty.conf: Font ----
-config.font = wezterm.font_with_fallback({
-  'JetBrainsMono Nerd Font',
-  'JetBrains Mono',
-  'Cascadia Code',
-})
+config.font = wezterm.font('JetBrainsMono Nerd Font') -- yedekler: WezTerm'in gömülü emoji / simge fontları
 config.font_size = 11.0
 
 -- ---- kitty.conf: Cursor (beam) ----
@@ -45,7 +47,7 @@ config.tab_bar_at_bottom = true
 config.adjust_window_size_when_changing_font_size = false
 
 -- ---- kitty.conf: Use fish shell (MSYS2) ----
-config.default_prog = { 'C:\\msys64\\usr\\bin\\fish.exe', '-l' }
+config.default_prog = { 'C:\\msys64\\usr\\bin\\fish.exe' } -- login değil: MSYS2 msys2.fish ~130 ms; PATH config.fish'te
 config.set_environment_variables = {
   MSYS2_PATH_TYPE = 'inherit', -- Windows PATH'i (git, python, scoop...) fish'te de olsun
   MSYSTEM = 'UCRT64',
@@ -53,20 +55,41 @@ config.set_environment_variables = {
 }
 config.default_cwd = wezterm.home_dir
 config.launch_menu = {
-  { label = 'fish', args = { 'C:\\msys64\\usr\\bin\\fish.exe', '-l' } },
+  { label = 'fish', args = { 'C:\\msys64\\usr\\bin\\fish.exe' } },
   { label = 'PowerShell', args = { 'powershell.exe', '-NoLogo' } },
   { label = 'cmd', args = { 'cmd.exe' } },
 }
 
 -- ---- Renkler: ii kitty-theme.conf (duvar kağıdından Material You, starship indeksleri dahil) ----
 -- tools\termcolors\wezterm-colors.py ~/.config/wezterm/ll-colors.lua'yı üretir; dosya değişince WezTerm anında yeniler.
-local colors_file = wezterm.home_dir .. '/.config/wezterm/ll-colors.lua'
-local ok, generated = pcall(dofile, colors_file)
-if ok and type(generated) == 'table' then
-  config.colors = generated
-  wezterm.add_to_config_reload_watch_list(colors_file)
+-- Tema seçimi: fish'te `themecolor` (ok tuşları + Enter). "ii" = duvar kağıdından üretilen renkler, başka her ad
+-- WezTerm'in yerleşik temalarından biri. Dosya değişince açık terminaller anında yeni temaya geçer.
+local theme_file = wezterm.home_dir .. '/.config/wezterm/ll-theme'
+local theme = 'ii'
+local tf = io.open(theme_file, 'r')
+if tf then
+  local line = tf:read('*l') or ''
+  tf:close()
+  line = line:gsub('^[%s"\']+', ''):gsub('[%s"\']+$', '')
+  if line ~= '' then theme = line end
 else
-  config.colors = { foreground = '#e6e0e9', background = '#141218', cursor_bg = '#e6e0e9', cursor_border = '#e6e0e9' }
+  local nf = io.open(theme_file, 'w')
+  if nf then nf:write('ii\n'); nf:close() end
+end
+wezterm.add_to_config_reload_watch_list(theme_file)
+
+local colors_file = wezterm.home_dir .. '/.config/wezterm/ll-colors.lua'
+-- Tema tablosunu (1113 tema, ~70 ms) kurmadan adı doğrudan ver; themecolor yalnız geçerli adlar yazar
+if theme ~= 'ii' then
+  config.color_scheme = theme
+else
+  local ok, generated = pcall(dofile, colors_file)
+  if ok and type(generated) == 'table' then
+    config.colors = generated
+    wezterm.add_to_config_reload_watch_list(colors_file)
+  else
+    config.colors = { foreground = '#e6e0e9', background = '#141218', cursor_bg = '#e6e0e9', cursor_border = '#e6e0e9' }
+  end
 end
 -- ---- kitty.conf: kısayollar ----
 config.keys = {
@@ -102,4 +125,29 @@ config.keys = {
   { key = 'L', mods = 'CTRL|SHIFT', action = act.ShowLauncherArgs { flags = 'LAUNCH_MENU_ITEMS' } },
 }
 
+-- ---- Anında yeni pencere (Linux'taki kitty hızı) ----
+-- Arka planda bekleyen WezTerm süreci her 40 ms'de ll-spawn dosyasına bakar; helper Super+Enter'da yeni süreç
+-- başlatmak yerine bu dosyayı yazar ve pencere mevcut süreçte anında açılır (soğuk açılış ~0.6 s yerine).
+-- Birden fazla süreç varsa isteği dosyayı atomik olarak yeniden adlandıran alır (çift pencere olmaz).
+-- Ayar her yüklendiğinde yeni bir yoklayıcı kurulur; eskiler de yaşadıkça çalışır (penceresiz süreçte yeni yüklemenin
+-- zamanlayıcısı hemen başlamayabiliyor). İsteği yalnızca dosyayı yeniden adlandırabilen alır: çift pencere olmaz.
+if wezterm.gui then
+  local req = wezterm.home_dir .. '/.config/wezterm/ll-spawn'
+  local claim = req .. '.' .. tostring(wezterm.procinfo.pid())
+  local function poll()
+    if os.rename(req, claim) then
+      local f = io.open(claim, 'r')
+      local cwd = f and f:read('*l') or ''
+      if f then f:close() end
+      os.remove(claim)
+      local ok, err = pcall(wezterm.mux.spawn_window, { cwd = (cwd ~= '' and cwd) or wezterm.home_dir })
+      if not ok then wezterm.log_error('ll-spawn: ' .. tostring(err)) end
+    end
+    wezterm.time.call_after(0.04, poll)
+  end
+  wezterm.time.call_after(0.04, poll)
+end
+
+-- Oturum açılışında helper süreci önceden başlatıp ilk penceresini kapatır (açılış perdesinin altında): ilk
+-- Super+Enter da anında açılır.
 return config

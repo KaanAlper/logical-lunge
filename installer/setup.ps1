@@ -22,6 +22,7 @@ $PAWNIO_VER = '2.2.0'
 $NERDFONT_VER = 'v3.5.1'
 $STARSHIP_VER = 'v1.26.0'
 $EZA_VER = 'v0.23.5'
+$FZF_VER = 'v0.58.0'
 
 $LL = Join-Path $UserProfile '.glzr\logical-lunge'
 $ZB = Join-Path $UserProfile '.glzr\zebar'
@@ -199,6 +200,9 @@ if (-not $NoTerminal) {
     $fz = Gh-Asset 'ryanoasis/nerd-fonts' $NERDFONT_VER '^JetBrainsMono\.zip$'
     $tmp = Join-Path $DL 'font'; Expand-Archive $fz $tmp -Force
     $fontsKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
+    # WezTerm yalnız kendi font klasörüne bakar (sistemdeki yüzlerce fontu taramak açılışı 1.6 s yavaşlatıyordu)
+    $wfonts = Join-Path $UserProfile '.config\wezterm\fonts'; New-Item -ItemType Directory -Force $wfonts | Out-Null
+    Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | Copy-Item -Destination $wfonts -Force
     Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | ForEach-Object {
         $dst = Join-Path $env:WINDIR "Fonts\$($_.Name)"
         if (-not (Test-Path $dst)) { Copy-Item $_.FullName $dst; Set-ItemProperty $fontsKey "$($_.BaseName) (TrueType)" $_.Name }
@@ -224,6 +228,10 @@ if (-not $NoTerminal) {
     $ez = Gh-Asset 'eza-community/eza' $EZA_VER 'eza\.exe_x86_64-pc-windows-gnu\.zip$'
     Expand-Archive $ez $bin -Force
     Add-UserPath $bin
+    $fz = Gh-Asset 'junegunn/fzf' $FZF_VER 'fzf-.*-windows_amd64\.zip$'   # themecolor seçicisi
+    Expand-Archive $fz $bin -Force
+    New-Item -ItemType Directory -Force (Join-Path $UserProfile '.config\fish\functions') | Out-Null
+    Copy-Item (Join-Path $Source 'config\fish\functions\*.fish') (Join-Path $UserProfile '.config\fish\functions') -Force
     foreach ($pair in @(@('config\fish\config.fish', '.config\fish\config.fish'), @('config\starship.toml', '.config\starship.toml'))) {
         $dst = Join-Path $UserProfile $pair[1]
         New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
