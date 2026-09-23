@@ -166,10 +166,14 @@
       const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
       const ART = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\media-art.exe';
       const TEMPS = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\tools\\lhm\\ll-temps.exe';
+      // Önce çalışan helper'a yerel HTTP ile (anında; her tıklamada yeni süreç başlatmak ~100-300 ms sürüyordu),
+      // olmazsa helper süreciyle, o da olmazsa doğrudan GlazeWM komutuyla.
       function slide(target, run) {
-        zebar.shellSpawn(HELPER, ['--slide', target]).catch(() => {
-          run(target === 'next' ? 'focus --next-workspace' : target === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${target}`);
-        });
+        fetch(`http://127.0.0.1:6131/cmd?a=ws-${encodeURIComponent(target)}`, { cache: 'no-store' })
+          .then(r => { if (r.status !== 204) throw new Error(String(r.status)); })
+          .catch(() => zebar.shellSpawn(HELPER, ['--slide', target]).catch(() => {
+            run(target === 'next' ? 'focus --next-workspace' : target === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${target}`);
+          }));
       }
       // PowerShell her zaman ll-helper üzerinden: hiç konsol penceresi açılmaz
       const psFile = (file, args = []) => zebar.shellExec(HELPER, ['--ps', `${LL}\\${file}`, ...args]);

@@ -72,6 +72,7 @@ static class Native
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc fn, IntPtr l);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
@@ -2199,7 +2200,9 @@ static class Toasts
                 req.Append(Encoding.ASCII.GetString(buf, 0, n));
             }
             string cors = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Allow-Headers: *\r\n";
-            if (req.ToString().StartsWith("OPTIONS"))
+            string reqs = req.ToString();
+            if (reqs.StartsWith("GET /cmd?") || reqs.StartsWith("GET /overview-mode")) { Command(s, reqs); c.Close(); return; }
+            if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
                 s.Write(ok, 0, ok.Length); c.Close(); return;
@@ -2209,6 +2212,39 @@ static class Toasts
             lock (clients) clients.Add(s);
         }
         catch { try { c.Close(); } catch { } }
+    }
+
+    // Bar ve overview'dan anında komut (her tıklamada yeni helper süreci başlatmak ~100-300 ms sürüyordu).
+    // Yalnızca Zebar widget'larının kökeninden (yerel varlık sunucusu) ve yalnızca zararsız komutlar: başka bir sitenin
+    // tarayıcıdan bu kanalı kullanması mümkün değil (tarayıcı Origin'i gönderir).
+    const string ZEBAR_ORIGIN = "http://127.0.0.1:6124";
+    static void Command(System.Net.Sockets.NetworkStream s, string req)
+    {
+        string origin = null;
+        foreach (var line in req.Split(new[] { "\r\n" }, StringSplitOptions.None))
+            if (line.StartsWith("Origin:", StringComparison.OrdinalIgnoreCase)) origin = line.Substring(7).Trim();
+        string status = "403 Forbidden", body = "";
+        if (origin == null || origin == ZEBAR_ORIGIN)
+        {
+            string target = req.Substring(4, Math.Max(0, req.IndexOf(' ', 4) - 4)); // "/cmd?a=ws-3"
+            if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; }
+            else
+            {
+                int q = target.IndexOf("a=");
+                string act = q < 0 ? "" : Uri.UnescapeDataString(target.Substring(q + 2).Split('&')[0]);
+                if (System.Text.RegularExpressions.Regex.IsMatch(act, @"^ws-(\d{1,2}|next|prev)$") && Keys2.Instance != null)
+                {
+                    Keys2.Instance.Dispatch(act);
+                    status = "204 No Content";
+                }
+                else status = "400 Bad Request";
+            }
+        }
+        var bytes = Encoding.UTF8.GetBytes(body);
+        var head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nAccess-Control-Allow-Origin: " + ZEBAR_ORIGIN + "\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + bytes.Length + "\r\nConnection: close\r\n\r\n");
+        s.Write(head, 0, head.Length);
+        if (bytes.Length > 0) s.Write(bytes, 0, bytes.Length);
+        s.Flush();
     }
 
     static void Write(string text)
@@ -2618,7 +2654,11 @@ class Keys2
     bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected;
     int winVk = VK_LWIN, lastWinEvent;
 
-    public Keys2(Control ui, Slider slider) { this.ui = ui; this.slider = slider; }
+    public static Keys2 Instance;
+    public Keys2(Control ui, Slider slider) { this.ui = ui; this.slider = slider; Instance = this; }
+    // Bar'dan (yerel HTTP) gelen workspace komutu: klavyedeki kısayolla aynı yol
+    public bool Dispatch(string act) { return RunAction(act); }
+    static int lastMoveAction = Environment.TickCount - 100000;
 
     // Test kanalı (yalnızca LL_TEST=1 ortam değişkeniyle başlatılınca açılır): \\.\pipe\ll-helper-test'e yazılan her
     // satır (ws-3, move-left, ws-move-next ...) klavyenin çağırdığı RunAction'a gider. Kanca enjekte tuşları bilerek yok
@@ -2826,6 +2866,7 @@ class Keys2
         // Pencere hareketi / odak / workspace kısayolları overview'u (arama, pano) kapatır
         if (act.StartsWith("move-") || act.StartsWith("focus-") || act.StartsWith("ws-"))
         {
+            lastMoveAction = Environment.TickCount;
             IntPtr ov = Native.FindWindow(null, "ll-overview");
             if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) Native.ShowWindow(ov, 0);
         }
@@ -2932,8 +2973,49 @@ class Keys2
 
     // Overview'u önce saydam göster; widget helper'ın bıraktığı mod bayrağını okuyup arayüzü kurunca (bayrak silinir)
     // görünür yap. Aksi halde önce düz arama, sonra ";" pano modu görünüyordu.
+    // Overview modu bayrağı: bir kez okunur ve silinir ("" ya da ";" = pano)
+    public static string TakeOverviewMode()
+    {
+        string f = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\overview-mode.txt");
+        string m = "";
+        if (System.IO.File.Exists(f)) { try { m = System.IO.File.ReadAllText(f).Trim(); System.IO.File.Delete(f); } catch { } }
+        return m;
+    }
+
+    // Overview (Super / Super+V) kapanınca odak boşta kalıyordu (elle tıklamak gerekiyordu): açılmadan önceki pencereye
+    // geri ver. Kapanırken başka bir pencere odak aldıysa (overview'dan uygulama açıldı, başka yere tıklandı) ya da bir
+    // workspace / taşıma kısayoluyla kapandıysa (odağı GlazeWM yönetir) dokunma.
+    static int overviewGen;
+    static bool ShellLike(IntPtr w)
+    {
+        if (w == IntPtr.Zero) return true;
+        var c = new StringBuilder(64); Native.GetClassName(w, c, 64);
+        var t = new StringBuilder(128); Native.GetWindowText(w, t, 128);
+        string cs = c.ToString(), ts = t.ToString();
+        return cs == "Progman" || cs == "WorkerW" || cs == "Shell_TrayWnd" || ts.StartsWith("Zebar") || ts.StartsWith("ll-");
+    }
+    static void RestoreFocusAfterOverview(IntPtr ov, IntPtr prev, int gen)
+    {
+        var sw = Stopwatch.StartNew();
+        while (!Native.IsWindowVisible(ov) && sw.ElapsedMilliseconds < 1500) Thread.Sleep(15);
+        while (Native.IsWindowVisible(ov)) { if (gen != overviewGen || sw.Elapsed.TotalMinutes > 30) return; Thread.Sleep(15); }
+        if (gen != overviewGen) return;
+        Thread.Sleep(60); // yeni açılan pencere / GlazeWM odağı alsın
+        if (gen != overviewGen || Environment.TickCount - lastMoveAction < 700) return;
+        IntPtr fg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
+        if (fg != ov && !ShellLike(fg)) return;
+        int cl;
+        if (!Native.IsWindow(prev) || !Native.IsWindowVisible(prev) || Native.IsIconic(prev)) return;
+        if (Native.DwmGetWindowAttribute(prev, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0) return; // başka workspace'te
+        Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
+        Native.SetForegroundWindow(prev);
+    }
+
     public static void ShowOverviewInMode(IntPtr h, string mode)
     {
+        IntPtr prevFg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
+        int gen = Interlocked.Increment(ref overviewGen);
+        if (prevFg != h && !ShellLike(prevFg)) ThreadPool.QueueUserWorkItem(_ => RestoreFocusAfterOverview(h, prevFg, gen));
         string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge");
         string flag = System.IO.Path.Combine(d, "overview-mode.txt");
         try { System.IO.Directory.CreateDirectory(d); System.IO.File.WriteAllText(flag, mode); } catch { }
@@ -3448,7 +3530,31 @@ static class SnipTool
             DoubleBuffered = true; Cursor = Cursors.Cross;
         }
         protected override CreateParams CreateParams { get { var p = base.CreateParams; p.ExStyle |= 0x80; return p; } }
-        protected override void OnShown(EventArgs e) { base.OnShown(e); Activate(); }
+        // Odak başka bir uygulamadayken Windows yeni sürecin öne gelmesini engelliyor: form odaktaki pencerenin (ve PiP gibi
+        // hep üstte duran pencerelerin) altında kalıyor, o pencere karartılmıyor ve tıklanana kadar alıntı başlamıyordu.
+        // Odak kilidini aş (atanmamış tuş) ve kapanana kadar kendini en üstte tut.
+        System.Windows.Forms.Timer keepTop;
+        int focusTries;
+        void TakeForeground()
+        {
+            Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero);
+            Native.SetForegroundWindow(Handle);
+            Activate();
+        }
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            Native.SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002); // TOPMOST, en üste
+            TakeForeground();
+            keepTop = new System.Windows.Forms.Timer { Interval = 30 };
+            keepTop.Tick += (o, ev) =>
+            {
+                Native.SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // TOPMOST, NOSIZE|NOMOVE|NOACTIVATE
+                if (Native.GetForegroundWindow() != Handle && focusTries++ < 10) TakeForeground();
+            };
+            keepTop.Start();
+        }
+        protected override void OnFormClosed(FormClosedEventArgs e) { if (keepTop != null) keepTop.Stop(); base.OnFormClosed(e); }
 
         Rectangle Dragged()
         {
@@ -3809,19 +3915,76 @@ static class SnipTool
         }
         string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Screenshots");
         System.IO.Directory.CreateDirectory(dir);
-        using (var dlg = new SaveFileDialog
+        string name = "Screenshot_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".png";
+        // Kaydetme penceresi ayrı thread'de: kabuk eklentisi vb. yüzünden hiç açılamazsa (bir kez oldu: süreç sonsuza dek
+        // bekledi ve yeni alıntıları kilitledi) 3 sn sonra doğrudan Screenshots klasörüne kaydedip klasörü göster.
+        string chosen = null; bool done = false;
+        var dt = new Thread(() =>
         {
-            Title = Tr ? "Ekran alıntısını kaydet" : "Save screenshot",
-            InitialDirectory = dir,
-            FileName = "Screenshot_" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss") + ".png",
-            Filter = "PNG (*.png)|*.png|JPEG (*.jpg)|*.jpg",
-            AddExtension = true,
-        })
+            try
+            {
+                using (var dlg = new SaveFileDialog
+                {
+                    Title = Tr ? "Ekran alıntısını kaydet" : "Save screenshot",
+                    InitialDirectory = dir, FileName = name,
+                    Filter = "PNG (*.png)|*.png|JPEG (*.jpg)|*.jpg", AddExtension = true,
+                })
+                    if (dlg.ShowDialog() == DialogResult.OK) chosen = dlg.FileName;
+            }
+            catch { }
+            done = true;
+        }) { IsBackground = true };
+        dt.SetApartmentState(ApartmentState.STA);
+        dt.Start();
+        var sw = Stopwatch.StartNew();
+        while (!done && sw.ElapsedMilliseconds < 3000 && !HasVisibleDialog()) Thread.Sleep(50);
+        if (!done && !HasVisibleDialog())
         {
-            if (dlg.ShowDialog() != DialogResult.OK) return;
-            var fmt = dlg.FileName.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ? System.Drawing.Imaging.ImageFormat.Jpeg : System.Drawing.Imaging.ImageFormat.Png;
-            outBmp.Save(dlg.FileName, fmt);
+            string path = System.IO.Path.Combine(dir, name);
+            outBmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            try { Process.Start("explorer.exe", "/select,\"" + path + "\""); } catch { }
+            return; // takılı thread arka planda; süreç kapanır
         }
+        dt.Join();
+        if (chosen == null) return;
+        var fmt = chosen.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ? System.Drawing.Imaging.ImageFormat.Jpeg : System.Drawing.Imaging.ImageFormat.Png;
+        outBmp.Save(chosen, fmt);
+    }
+
+    static bool HasVisibleDialog()
+    {
+        uint me = (uint)Process.GetCurrentProcess().Id; bool found = false;
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
+        {
+            uint pid; Native.GetWindowThreadProcessId(h, out pid);
+            if (pid == me && Native.IsWindowVisible(h)) { found = true; return false; }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    public static string PidFile { get { return System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-snip.pid"); } }
+
+    // Önceki alıntı süreci hâlâ çalışıyor ama hiç görünür penceresi yoksa takılıdır: kapat
+    public static bool KillStale()
+    {
+        try
+        {
+            int pid = int.Parse(System.IO.File.ReadAllText(PidFile).Trim());
+            var pr = Process.GetProcessById(pid);
+            if (!pr.ProcessName.Equals("ll-helper", StringComparison.OrdinalIgnoreCase)) return false;
+            bool visible = false;
+            Native.EnumWindows(delegate (IntPtr h, IntPtr l)
+            {
+                uint wp; Native.GetWindowThreadProcessId(h, out wp);
+                if (wp == (uint)pid && Native.IsWindowVisible(h)) { visible = true; return false; }
+                return true;
+            }, IntPtr.Zero);
+            if (visible) return false;
+            pr.Kill(); pr.WaitForExit(1500);
+            return true;
+        }
+        catch { return false; }
     }
 }
 
@@ -3905,9 +4068,13 @@ static class ClipHistory
         }
     }
 
+    // Dinleyiciye güçlü referans şart: NativeWindow yalnızca zayıf referansla izlenir; referanssız kalınca ilk çöp
+    // toplamada silinir ve pano değişiklikleri artık işlenmez (Super+V geçmişi bir süre sonra hiç kayıt almıyordu).
+    static Listener listener;
+
     public static void StartListener()
     {
-        var t = new Thread(() => { new Listener(); Application.Run(); });
+        var t = new Thread(() => { listener = new Listener(); Application.Run(); });
         t.SetApartmentState(ApartmentState.STA);
         t.IsBackground = true;
         t.Start();
@@ -5385,10 +5552,7 @@ static class Program
                     case "--clip-clear": ct = ClipHistory.Clear(); break;
                     case "--overview-mode":
                     {
-                        // Bir kez okunur ve silinir: "" ya da ";" (pano)
-                        string f = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\overview-mode.txt");
-                        ct = "";
-                        if (System.IO.File.Exists(f)) { try { ct = System.IO.File.ReadAllText(f).Trim(); System.IO.File.Delete(f); } catch { } }
+                        ct = Keys2.TakeOverviewMode(); // bir kez okunur ve silinir: "" ya da ";" (pano)
                         break;
                     }
                     default: ct = "{\"error\":\"unknown\"}"; break;
@@ -5412,7 +5576,19 @@ static class Program
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             int wait; // --snip 350: paneller kapansın diye önce bekle
             if (args.Length == 2 && int.TryParse(args[1], out wait)) Thread.Sleep(Math.Min(2000, wait));
-            bool fresh; using (var sm = new Mutex(true, "ll-snip", out fresh)) { if (fresh) SnipTool.Run(); }
+            bool fresh;
+            var sm = new Mutex(true, "ll-snip", out fresh);
+            // Önceki alıntı süreci penceresiz takılı kaldıysa (ör. kaydetme penceresi hiç açılamadı) yenileri sonsuza dek
+            // engellenmesin: onu kapatıp kilidi devral
+            if (!fresh && SnipTool.KillStale())
+            {
+                try { fresh = sm.WaitOne(1500); } catch (AbandonedMutexException) { fresh = true; }
+            }
+            if (fresh)
+            {
+                try { System.IO.File.WriteAllText(SnipTool.PidFile, Process.GetCurrentProcess().Id.ToString()); } catch { }
+                SnipTool.Run();
+            }
             return;
         }
         // ll-helper.exe --open <https://... | spotify:...>: bağlantıyı varsayılan uygulamada aç. explorer.exe'ye
@@ -5583,6 +5759,15 @@ static class Program
         // Tek seferlik: ll-helper.exe --slide next|prev|<workspace>  (bar tıklamaları ve test için)
         if (args.Length == 2 && args[0] == "--slide")
         {
+            // Çalışan helper varsa işi ona devret (katman ve kenarlıkları hazır, animasyon hemen başlar)
+            try
+            {
+                string act = args[1] == "next" ? "ws-next" : args[1] == "prev" ? "ws-prev" : "ws-" + args[1];
+                var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:6131/cmd?a=" + Uri.EscapeDataString(act));
+                rq.Timeout = 400; rq.Proxy = null;
+                using (var rs = (System.Net.HttpWebResponse)rq.GetResponse()) if ((int)rs.StatusCode == 204) return;
+            }
+            catch { }
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             var g = new Glaze();
             var sl = new Slider(g);

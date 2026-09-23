@@ -324,11 +324,21 @@
         const songRunning = useSongRec();
         useEffect(() => { loadApps(); }, []);
 
+        // Açılış modu (Super+V -> ";"): helper'ın bıraktığı tek seferlik bayrak. Önce yerel HTTP ile (anında), olmazsa
+        // helper süreciyle. Mod, pencere görünmeden ÖNCE uygulanır: yoksa önce düz arama görünüp sonra ";" geliyordu.
+        const readMode = async () => {
+          try { const r = await fetch('http://127.0.0.1:6131/overview-mode', { cache: 'no-store' }); if (r.ok) return (await r.text()).trim(); } catch {}
+          try { const r = await zebar.shellExec(HELPER, ['--overview-mode']); return (r.stdout || '').trim(); } catch {}
+          return '';
+        };
+        // Odak olayı ve görünürlük yoklaması aynı açılışı iki kez tetikleyebiliyor; ikincisi bayrağı boş bulup ";"yi siliyordu
+        const lastShow = useRef(0);
         const show = async () => {
-          setQuery(''); setSel(0); setOpen(true); setEnterKey(k => k + 1);
+          if (Date.now() - lastShow.current < 400) return;
+          lastShow.current = Date.now();
+          const m = await readMode();
+          setQuery(m === ';' ? ';' : ''); setSel(0); setOpen(true); setEnterKey(k => k + 1);
           try { await win.show(); await win.setFocus(); } catch {}
-          // Super+V pano modunda açtıysa helper bir bayrak bırakır (tek seferlik)
-          try { const r = await zebar.shellExec(HELPER, ['--overview-mode']); if ((r.stdout || '').trim() === ';') setQuery(';'); } catch {}
           setTimeout(() => inputRef.current?.focus(), 30);
         };
         const hide = () => { setOpen(false); win.hide().catch(() => {}); };
@@ -345,10 +355,9 @@
               const v = await win.isVisible();
               if (v && !was) {
                 if (!openRef.current) showRef.current();
-                else zebar.shellExec(HELPER, ['--overview-mode']).then(r => {
-                  const m = (r.stdout || '').trim();
+                else readMode().then(m => {
                   if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
-                }).catch(() => {});
+                });
               } else if (!v && was && openRef.current) setOpen(false);
               was = v;
             } catch {}
@@ -368,10 +377,9 @@
             inputRef.current?.focus();
             // Helper pencereyi kendisi gizleyip yeniden gösterdiyse (Super / Super+V ile kapatma) blur gelmez ve
             // 'open' eski kalır: helper'ın bıraktığı mod bayrağına göre taze açılmış gibi davran.
-            zebar.shellExec(HELPER, ['--overview-mode']).then(r => {
-              const m = (r.stdout || '').trim();
+            readMode().then(m => {
               if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
-            }).catch(() => {});
+            });
           };
           const onBlur = () => hide();
           window.addEventListener('focus', onFocus);
