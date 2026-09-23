@@ -875,12 +875,14 @@ class Slider
         string id = J.Str(cur, "id");
         if (best == null)
         {
-            // O yönde komşu yok: yalnızca bölme yönü farklıysa bir şey olur (yan yanadayken yukarı -> üstte tam
-            // genişlik). Tek pencere ya da zaten o eksende kenardaysa hiçbir şey yapma; GlazeWM o durumda pencereyi
-            // diğer monitörün workspace'ine atıyordu.
+            // O yönde komşu yok: GlazeWM (fork) düzeni çevirir. Örn. üstte tam genişlik + altta iki yarı, sağ alttaki
+            // sağa -> solda üst üste iki parça, bu pencere sağda boydan. Tek durum hariç: pencere doğrudan
+            // workspace'in elemanıysa ve workspace zaten o eksendeyse GlazeWM pencereyi diğer monitörün
+            // workspace'ine atıyordu; orada hiçbir şey yapma. Tek pencerede de.
             var par0 = ParentOf(ws, J.Str(cur, "id"));
             string axis = dir == "left" || dir == "right" ? "horizontal" : "vertical";
-            if (par0 == null || wins.Count < 2 || J.Str(par0, "tilingDirection") == axis) return;
+            if (par0 == null || wins.Count < 2) return;
+            if (J.Str(par0, "type") == "workspace" && J.Str(par0, "tilingDirection") == axis) return;
         }
         // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), GlazeWM arkada yerleştirsin
         var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
