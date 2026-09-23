@@ -53,6 +53,7 @@ static class Native
     [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventDelegate fn, uint pid, uint tid, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll", SetLastError = true)] public static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
+    [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
     [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr o);
     [DllImport("user32.dll")] public static extern int GetWindowRgnBox(IntPtr h, out RECT r);
@@ -232,9 +233,85 @@ class Overlay : Form
     }
 }
 
+// Animasyon katmanı gerçek pencereleri örttüğü için tacky-borders'ın mor kenarlığı animasyon boyunca görünmüyordu.
+// Odaklı pencerenin kenarlığını katmanın üstünde, pencereyle birlikte biz çiziyoruz (tacky-borders ayarından:
+// active_color, border_width, border_radius).
+class Ring : Form
+{
+    [DllImport("gdi32.dll")] static extern int CombineRgn(IntPtr dest, IntPtr a, IntPtr b, int mode);
+    readonly int bw = 2, radius = 14;
+    int lastW = -1, lastH = -1;
+    bool shown;
+
+    public Ring()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        Text = "ll-ring";
+        var color = Color.FromArgb(0xb6, 0x9d, 0xf8);
+        double alpha = 0.8;
+        try
+        {
+            string cfg = System.IO.File.ReadAllText(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".config\tacky-borders\config.yaml"));
+            var m = System.Text.RegularExpressions.Regex.Match(cfg, @"active_color:\s*""?#([0-9a-fA-F]{6})([0-9a-fA-F]{2})?");
+            if (m.Success)
+            {
+                int rgb = Convert.ToInt32(m.Groups[1].Value, 16);
+                color = Color.FromArgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255);
+                if (m.Groups[2].Success) alpha = Convert.ToInt32(m.Groups[2].Value, 16) / 255.0;
+            }
+            m = System.Text.RegularExpressions.Regex.Match(cfg, @"border_width:\s*(\d+)");
+            if (m.Success) bw = Math.Max(1, int.Parse(m.Groups[1].Value));
+            m = System.Text.RegularExpressions.Regex.Match(cfg, @"border_radius:\s*(\d+)");
+            if (m.Success) radius = int.Parse(m.Groups[1].Value);
+        }
+        catch { }
+        BackColor = color;
+        Opacity = alpha;
+    }
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= Native.WS_EX_TOOLWINDOW | Native.WS_EX_NOACTIVATE | Native.WS_EX_TOPMOST | 0x20; // WS_EX_TRANSPARENT
+            return cp;
+        }
+    }
+
+    // r: pencerenin görünen çerçevesi, ekran koordinatlarında. Halka çerçeve kenarının üstüne ortalanır.
+    public void Place(Native.RECT r)
+    {
+        int x = r.Left - bw / 2, y = r.Top - bw / 2;
+        int w = r.Right - r.Left + bw, h = r.Bottom - r.Top + bw;
+        if (w <= 2 * bw || h <= 2 * bw) return;
+        if (w != lastW || h != lastH)
+        {
+            IntPtr outer = Native.CreateRoundRectRgn(0, 0, w + 1, h + 1, 2 * radius, 2 * radius);
+            IntPtr inner = Native.CreateRoundRectRgn(bw, bw, w - bw + 1, h - bw + 1, 2 * Math.Max(0, radius - bw), 2 * Math.Max(0, radius - bw));
+            CombineRgn(outer, outer, inner, 4); // RGN_DIFF
+            Native.DeleteObject(inner);
+            Native.SetWindowRgn(Handle, outer, false); // bölgenin sahibi artık pencere
+            lastW = w; lastH = h;
+        }
+        Native.SetWindowPos(Handle, new IntPtr(-1), x, y, w, h, 0x0010 | 0x0040); // TOPMOST, NOACTIVATE | SHOWWINDOW
+        shown = true;
+    }
+
+    public void HideRing()
+    {
+        if (!shown) return;
+        Native.ShowWindow(Handle, 0);
+        shown = false;
+    }
+}
+
 class Slider
 {
-    const int BAR_H = 40;              // ii baseBarHeight — bar sabit kalır, altı kayar
+    const int BAR_H = 40;             // ii baseBarHeight — bar sabit kalır, altı kayar
     const int DURATION_MS = 520;       // Hyprland workspaces speed 7 (~700ms), menu_decel kuyruğu kısaltıldı
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
     const int MAX_WS = 30;             // GlazeWM config'deki workspace sayısı (next/prev sarması için)
@@ -256,7 +333,15 @@ class Slider
         return since > 0 && since < full ? (int)Math.Max(MIN_MS, since) : full;
     }
 
-    public Slider(Glaze g) { glaze = g; overlay.CreateControl(); var h = overlay.Handle; }
+    readonly Ring ring = new Ring();
+    public Slider(Glaze g) { glaze = g; overlay.CreateControl(); var h = overlay.Handle; ring.CreateControl(); var rh = ring.Handle; }
+
+    static Native.RECT Unshift(Native.RECT r, int ox, int oy)
+    {
+        return new Native.RECT { Left = r.Left + ox, Top = r.Top + oy, Right = r.Right + ox, Bottom = r.Bottom + oy };
+    }
+
+    static IntPtr FocusedTop() { return Native.GetAncestor(Native.GetForegroundWindow(), 2); }
 
     // Hyprland bezier "menu_decel" = (0.1, 1), (0, 1)
     static double Bezier(double x1, double y1, double x2, double y2, double t)
@@ -326,21 +411,39 @@ class Slider
     // Pencerenin ekranda görünen hali (DWM kaynağının tamamı) hangi dikdörtgene çizilmeli: kaynak boyutu
     // pencere, çerçeve ya da bölge kutusuyla eşleşir. Animasyonun başı ve sonu hep buradan hesaplanır ki
     // katman kalkınca pencere "oturmasın".
+    // Tüm animasyon dikdörtgenleri pencerenin GÖRÜNEN çerçevesidir (gölge kenarları hariç; GlazeWM de yerleşimi
+    // bununla yapar). Başlangıç ve bitiş aynı türden olunca pencereler arası boşluk animasyon boyunca sabit kalır.
+    public static Native.RECT FrameRect(IntPtr h)
+    {
+        Native.RECT fr;
+        if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out fr, Marshal.SizeOf(typeof(Native.RECT))) != 0)
+            Native.GetWindowRect(h, out fr);
+        return fr;
+    }
+
     static Native.RECT VisualDest(IntPtr h, IntPtr thumb, int ox, int oy)
     {
-        Native.RECT wr, fr, box;
+        return Shift(FrameRect(h), ox, oy);
+    }
+
+    // DWM kaynağının içinde görünen çerçevenin yeri. Kaynak pencereye göre değişir: pencerenin tamamı (gölge
+    // dahil), yalnızca çerçeve ya da SetWindowRgn bölgesinin kutusu (yuvarlatılmış pencereler).
+    static Native.RECT FrameInSource(IntPtr h, Native.SIZE src)
+    {
+        Native.RECT wr, box;
         Native.GetWindowRect(h, out wr);
-        if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out fr, Marshal.SizeOf(typeof(Native.RECT))) != 0) fr = wr;
-        bool hasRgn = Native.GetWindowRgnBox(h, out box) != 0;
-        Native.SIZE src;
-        if (thumb == IntPtr.Zero || Native.DwmQueryThumbnailSourceSize(thumb, out src) != 0) { src.cx = wr.Right - wr.Left; src.cy = wr.Bottom - wr.Top; }
+        var fr = FrameRect(h);
         int ww = wr.Right - wr.Left, wh = wr.Bottom - wr.Top, fw = fr.Right - fr.Left, fh = fr.Bottom - fr.Top;
-        int left, top;
-        if (src.cx == ww && src.cy == wh) { left = wr.Left; top = wr.Top; }
-        else if (src.cx == fw && src.cy == fh) { left = fr.Left; top = fr.Top; }
-        else if (hasRgn && src.cx == box.Right - box.Left && src.cy == box.Bottom - box.Top) { left = wr.Left + box.Left; top = wr.Top + box.Top; }
-        else { left = wr.Left; top = wr.Top; }
-        return new Native.RECT { Left = left - ox, Top = top - oy, Right = left - ox + src.cx, Bottom = top - oy + src.cy };
+        int sx, sy;
+        if (src.cx == ww && src.cy == wh) { sx = wr.Left; sy = wr.Top; }
+        else if (src.cx == fw && src.cy == fh) { sx = fr.Left; sy = fr.Top; }
+        else if (Native.GetWindowRgnBox(h, out box) != 0 && src.cx == box.Right - box.Left && src.cy == box.Bottom - box.Top) { sx = wr.Left + box.Left; sy = wr.Top + box.Top; }
+        else return new Native.RECT { Left = 0, Top = 0, Right = src.cx, Bottom = src.cy };
+        return new Native.RECT
+        {
+            Left = Math.Max(0, fr.Left - sx), Top = Math.Max(0, fr.Top - sy),
+            Right = Math.Min(src.cx, fr.Right - sx), Bottom = Math.Min(src.cy, fr.Bottom - sy)
+        };
     }
 
     // GlazeWM pencereleri SetWindowPos ile (kısmen eşzamansız) taşır: dikdörtgenler iki ölçüm arka arkaya aynı
@@ -386,32 +489,17 @@ class Slider
         }
     }
 
-    // Önizlemeyi hedef kutuya yerleştir (Hyprland da animasyonda pencereyi ölçekler). DWM kaynağı pencerenin
-    // görünmez gölge kenarlarını da içerir: yalnızca görünen çerçeve (kenar çizgileri dahil) görünen hedefe
-    // ölçeklenir. Böylece ne içerik sağa/sola kayar ne de kenarda saydam boşluk / kesik kenar çizgisi olur.
+    // Önizlemeyi yerleştir: hedef, pencerenin görünen çerçevesi; kaynak da çerçevenin DWM kaynağındaki yeri. Boyut
+    // değişirken Hyprland gibi ölçeklenir; kenar çizgileri korunur, gölge kenarı yüzünden kayma/boşluk olmaz.
     static void PlaceVisible(Thumb t, Native.RECT dest)
     {
         Native.SIZE src;
-        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) != 0 || src.cx <= 0 || src.cy <= 0)
+        var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = dest };
+        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) == 0 && src.cx > 0 && src.cy > 0)
         {
-            var p0 = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = dest };
-            Native.DwmUpdateThumbnailProperties(t.Id, ref p0);
-            return;
+            pr.dwFlags |= Native.DWM_TNP_RECTSOURCE;
+            pr.rcSource = FrameInSource(t.Src, src);
         }
-        int bL = 0, bT = 0, bR = 0, bB = 0;
-        Native.RECT wr, fr;
-        if (Native.GetWindowRect(t.Src, out wr) && src.cx == wr.Right - wr.Left && src.cy == wr.Bottom - wr.Top &&
-            Native.DwmGetWindowAttribute(t.Src, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out fr, Marshal.SizeOf(typeof(Native.RECT))) == 0)
-        {
-            bL = Math.Max(0, fr.Left - wr.Left); bT = Math.Max(0, fr.Top - wr.Top);
-            bR = Math.Max(0, wr.Right - fr.Right); bB = Math.Max(0, wr.Bottom - fr.Bottom);
-        }
-        var pr = new Native.DWM_THUMBNAIL_PROPERTIES
-        {
-            dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_RECTSOURCE,
-            rcDestination = new Native.RECT { Left = dest.Left + bL, Top = dest.Top + bT, Right = dest.Right - bR, Bottom = dest.Bottom - bB },
-            rcSource = new Native.RECT { Left = bL, Top = bT, Right = Math.Max(bL + 1, src.cx - bR), Bottom = Math.Max(bT + 1, src.cy - bB) }
-        };
         Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
     }
 
@@ -454,6 +542,8 @@ class Slider
         overlay.Show();
         RaisePinned();
         overlay.Refresh();
+        Thumb focusedT; // kenarlık katmanın üstünde
+        if (f.Win.TryGetValue(FocusedTop().ToInt64(), out focusedT)) ring.Place(Unshift(focusedT.Dest, ox, oy));
         Native.DwmFlush();
         return f;
     }
@@ -492,6 +582,7 @@ class Slider
                 Native.DwmUpdateThumbnailProperties(kv.Value.Id, ref hide);
             }
 
+        IntPtr focusedH = FocusedTop();
         var sw = Stopwatch.StartNew();
         while (!Interrupt)
         {
@@ -500,6 +591,7 @@ class Slider
             foreach (var a in anims)
             {
                 var r = Lerp(a.Value.Key, a.Value.Value, e);
+                if (a.Key.Src == focusedH) ring.Place(Unshift(r, f.Ox, f.Oy));
                 if (a.Key == pop)
                 {
                     // Hyprland windowsIn "popin 80%": ölçekli büyüyerek ve belirerek
@@ -512,44 +604,24 @@ class Slider
             Native.DwmFlush();
             if (p >= 1.0) break;
         }
-        overlay.Hide();
+        overlay.Hide(); ring.HideRing();
         foreach (var t in f.All) Native.DwmUnregisterThumbnail(t.Id);
         Animating = false;
     }
 
     Thumb RegisterWindow(IntPtr h, int ox, int oy)
     {
-        Native.RECT wr, fr, box;
-        if (!Native.GetWindowRect(h, out wr)) return null;
-        if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out fr, Marshal.SizeOf(typeof(Native.RECT))) != 0) fr = wr;
-        bool hasRgn = Native.GetWindowRgnBox(h, out box) != 0;
-
-        var t = Register(h, new Native.RECT { Left = wr.Left - ox, Top = wr.Top - oy, Right = wr.Right - ox, Bottom = wr.Bottom - oy }, null);
+        if (!Native.IsWindow(h)) return null;
+        var t = Register(h, Shift(FrameRect(h), ox, oy), null);
         if (t == null) return null;
-        Native.SIZE src;
-        if (Native.DwmQueryThumbnailSourceSize(t.Id, out src) != 0) return t;
-
-        int ww = wr.Right - wr.Left, wh = wr.Bottom - wr.Top;
-        int fw = fr.Right - fr.Left, fh = fr.Bottom - fr.Top;
-        int left, top;
-        if (src.cx == ww && src.cy == wh) { left = wr.Left; top = wr.Top; }
-        else if (src.cx == fw && src.cy == fh) { left = fr.Left; top = fr.Top; }
-        else if (hasRgn && src.cx == box.Right - box.Left && src.cy == box.Bottom - box.Top) { left = wr.Left + box.Left; top = wr.Top + box.Top; }
-        else { left = wr.Left; top = wr.Top; }
-        Log(string.Format("thumb src={0}x{1} win={2}x{3} frame={4}x{5} rgn={6}", src.cx, src.cy, ww, wh, fw, fh,
-            hasRgn ? (box.Right - box.Left) + "x" + (box.Bottom - box.Top) : "-"));
-
-        t.Dest = new Native.RECT { Left = left - ox, Top = top - oy, Right = left - ox + src.cx, Bottom = top - oy + src.cy };
-        var p = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = t.Dest };
-        Native.DwmUpdateThumbnailProperties(t.Id, ref p);
+        PlaceVisible(t, t.Dest);
         return t;
     }
 
     static void Move(Thumb t, int dx)
     {
         var r = t.Dest; r.Left += dx; r.Right += dx;
-        var p = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION, rcDestination = r };
-        Native.DwmUpdateThumbnailProperties(t.Id, ref p);
+        PlaceVisible(t, r);
     }
 
     static Dictionary<string, object> FocusedMonitor(List<Dictionary<string, object>> mons, out Dictionary<string, object> ws)
@@ -654,7 +726,7 @@ class Slider
             if (p >= 1.0) break;
         }
 
-        overlay.Hide();
+        overlay.Hide(); ring.HideRing();
         foreach (var t in all) Native.DwmUnregisterThumbnail(t.Id);
         Animating = false;
     }
@@ -787,7 +859,15 @@ class Slider
         }
 
         string id = J.Str(cur, "id");
-        if (wins.Count < 2) { glaze.Command("move --direction " + dir); return; } // tek pencere: yalnızca monitör değiştirebilir
+        if (best == null)
+        {
+            // O yönde komşu yok: yalnızca bölme yönü farklıysa bir şey olur (yan yanadayken yukarı -> üstte tam
+            // genişlik). Tek pencere ya da zaten o eksende kenardaysa hiçbir şey yapma; GlazeWM o durumda pencereyi
+            // diğer monitörün workspace'ine atıyordu.
+            var par0 = ParentOf(ws, J.Str(cur, "id"));
+            string axis = dir == "left" || dir == "right" ? "horizontal" : "vertical";
+            if (par0 == null || wins.Count < 2 || J.Str(par0, "tilingDirection") == axis) return;
+        }
         // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), GlazeWM arkada yerleştirsin
         var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
         var hs = new List<long>(Rects(wins).Keys);
@@ -996,7 +1076,11 @@ class Slider
                     PlaceVisible(t, r);
                 }
                 if (moveFollow && carried != null)
-                    PlaceVisible(carried, swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR));
+                {
+                    var rc = swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR);
+                    PlaceVisible(carried, rc);
+                    ring.Place(Unshift(rc, ox, oy));
+                }
                 Native.DwmFlush();
                 if (p >= 1.0 && (!moveFollow || pR >= 1.0)) break;
                 if (p >= 1.0 && swR == null && sw0.ElapsedMilliseconds > dur0 + 1500) break; // komut takıldı
@@ -1016,7 +1100,7 @@ class Slider
                 if (done) { viaState = true; break; }
                 Thread.Sleep(4);
             }
-            overlay.Hide();
+            overlay.Hide(); ring.HideRing();
             foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
             Animating = false;
             Log("fast done " + clock.ElapsedMilliseconds + "ms (animasyon " + dur0 + "ms, bitti " + animEnd + "ms, " + (viaState ? "pencereler hazır" : "komut " + (task.IsCompleted ? "bitti" : "sürüyor")) + ")");
@@ -1080,7 +1164,7 @@ class Slider
             }
         }
 
-        overlay.Hide();
+        overlay.Hide(); ring.HideRing();
         foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
         Log("done " + clock.ElapsedMilliseconds + "ms new=" + newThumbs.Count);
     }
@@ -1146,7 +1230,7 @@ class Dwindle
     static Dictionary<long, Native.RECT> Visual(IEnumerable<long> handles)
     {
         var v = new Dictionary<long, Native.RECT>();
-        foreach (var h in handles) { Native.RECT r; if (Native.GetWindowRect(new IntPtr(h), out r)) v[h] = r; }
+        foreach (var h in handles) { var hw = new IntPtr(h); if (Native.IsWindow(hw)) v[h] = Slider.FrameRect(hw); }
         return v;
     }
 
