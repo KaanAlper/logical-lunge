@@ -2132,26 +2132,6 @@ class Keys2
     Native.LowLevelKeyboardProc proc;
     bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected;
     int winVk = VK_LWIN, lastWinEvent;
-    int lastKeyEvent = Environment.TickCount; // Win basılıyken görülen son tuş olayı
-    const int STALE_WIN_MS = 3000;
-
-    // Win "basılı" görünüyor ama 3 sn'dir hiçbir tuş olayı yok: bırakma olayını kaçırmışız (güvenli masaüstü /
-    // UAC, kancanın yük altında Windows tarafından sökülmesi, kilit ekranı). Tutulan tek başına Win'de otomatik
-    // tekrar zaten sürekli olay üretir, bu yüzden gerçek bir basılı tutuşu bozmaz. Yapışık bırakılırsa sonraki her
-    // tuş Win+tuş sayılırdı.
-    void ResetStuckWin(bool force)
-    {
-        if (!winDown) return;
-        if (!force && Environment.TickCount - lastKeyEvent < STALE_WIN_MS) return;
-        winDown = false; otherKeyWhileWin = false; swallowedWithWin = false; modifierWhileWin = false;
-        held.Clear();
-        if (winInjected)
-        {
-            winInjected = false;
-            Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, UIntPtr.Zero); // enjekte ettiğimiz Win basılı kalmasın
-        }
-        Slider.Log("keys: yapışık Win durumu temizlendi");
-    }
 
     public Keys2(Control ui, Slider slider) { this.ui = ui; this.slider = slider; }
 
@@ -2165,8 +2145,7 @@ class Keys2
 
     public void Reinstall()
     {
-        // Tuş basılıyken değiştirme (durum karışmasın); ama Win yapışık kaldıysa önce temizle
-        ResetStuckWin(false);
+        // Tuş basılıyken değiştirme (durum karışmasın)
         if (winDown) return;
         IntPtr fresh = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
         if (fresh == IntPtr.Zero) return;
@@ -2220,8 +2199,6 @@ class Keys2
         bool isDown = msg == Native.WM_KEYDOWN || msg == Native.WM_SYSKEYDOWN;
         bool isUp = msg == Native.WM_KEYUP || msg == Native.WM_SYSKEYUP;
         int vk = (int)k.vkCode;
-        ResetStuckWin(false);
-        lastKeyEvent = Environment.TickCount;
 
         // Gerçek Win tuşu Windows'a HİÇ iletilmez: Windows tek başına bir Win basışı görmediği için Başlat
         // menüsü (ve görev çubuğundaki logo) hiçbir tuş sırasıyla açılamaz. Bizim işlemediğimiz bir kombinasyon
@@ -2780,7 +2757,17 @@ static class RegionSearch
             else { a = null; Invalidate(); }
         }
         protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Escape) Close(); }
-        protected override void OnShown(EventArgs e) { base.OnShown(e); Activate(); }
+        System.Windows.Forms.Timer keepTop;
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e); Activate();
+            // Ekran alıntısı HER ŞEYİN üstünde kalmalı: odak değişince pencereler (ve Zebar penceresi) kendini
+            // en üst katmana alıp donmuş görüntünün üstüne çıkabiliyordu. Kapanana kadar sık sık yeniden en üste al.
+            keepTop = new System.Windows.Forms.Timer { Interval = 30 };
+            keepTop.Tick += (o, ev) => Native.SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // TOPMOST, NOSIZE|NOMOVE|NOACTIVATE
+            keepTop.Start();
+        }
+        protected override void OnFormClosed(FormClosedEventArgs e) { if (keepTop != null) keepTop.Stop(); base.OnFormClosed(e); }
     }
 
     // Varsayılan tarayıcının açma komutu (http ilişkilendirmesi)
