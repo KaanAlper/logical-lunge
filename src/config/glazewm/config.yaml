@@ -30,7 +30,7 @@ general:
     trigger: 'monitor_focus'
 
   hide_method: 'cloak'
-  show_all_in_taskbar: false
+  show_all_in_taskbar: true
 
 # Hyprland: gaps_in = 4 (her iki tarafa) -> 8px, gaps_out = 5, üstte bar (40px) + 5
 gaps:
