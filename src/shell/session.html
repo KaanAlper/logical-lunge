@@ -180,10 +180,6 @@
       .sbtn .icon { font-size: 34px; }
       .sbtn:hover, .sbtn.sel { background: var(--m3primary); color: var(--m3onPrimary); border-radius: 44px; transform: translateY(-4px); }
       .sbtn.danger:hover, .sbtn.danger.sel { background: var(--m3error); color: #690005; }
-      .sbtn kbd {
-        position: absolute; top: 8px; right: 10px; font: inherit; font-size: 11px; opacity: 0.6;
-        border: 1px solid currentColor; border-radius: 6px; padding: 0 5px; line-height: 16px;
-      }
       #hint { position: fixed; bottom: 34px; left: 0; right: 0; text-align: center; color: rgba(255 255 255 / 55%); font-size: 13px; }
     </style>
   </head>
@@ -214,7 +210,7 @@
       try { Promise.resolve(win.currentMonitor()).then(m => { primary = !!m && m.position.x === 0 && m.position.y === 0; }).catch(() => {}); } catch {}
       const hideAll = () => { hide(); emit('ll:session-hide').catch(() => {}); };
       let sel = 0, open = false;
-      row.innerHTML = ITEMS.map((it, i) => `<button class="sbtn ${it.danger ? 'danger' : ''}" data-i="${i}"><kbd>${it.key.toUpperCase()}</kbd><span class="icon">${it.icon}</span><span>${it.label}</span></button>`).join('');
+      row.innerHTML = ITEMS.map((it, i) => `<button class="sbtn ${it.danger ? 'danger' : ''}" data-i="${i}"><span class="icon">${it.icon}</span><span>${it.label}</span></button>`).join('');
       const btns = [...row.querySelectorAll('.sbtn')];
       const mark = () => btns.forEach((b, i) => b.classList.toggle('sel', i === sel));
       btns.forEach((b, i) => {
