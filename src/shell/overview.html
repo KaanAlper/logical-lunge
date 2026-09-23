@@ -124,7 +124,7 @@
       const providers = zebar.createProviderGroup({ glazewm: { type: 'glazewm' } });
 
       // ii Config.options.search.prefix
-      const PREFIX = { action: '/', app: '>', math: '=', shell: '$', web: '?' };
+      const PREFIX = { action: '/', app: '>', math: '=', shell: '$', web: '?', clip: ';' };
       const SEARCH_ENGINE = 'https://www.google.com/search?q=';
       const LL = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts';
 
@@ -306,6 +306,14 @@
         const [sel, setSel] = useState(0);
         const [apps, setApps] = useState([]);
         const [gwm, setGwm] = useState(providers.outputMap.glazewm);
+        // ii "overviewClipboardToggle" / cliphist: ";" öneki pano geçmişini listeler (Super+V)
+        const [clips, setClips] = useState([]);
+        const clipMode = query.startsWith(PREFIX.clip);
+        const loadClips = async () => {
+          try { const r = await zebar.shellExec(HELPER, ['--clip-list']); setClips(JSON.parse((r.stdout || '').trim() || '[]')); }
+          catch { setClips([]); }
+        };
+        useEffect(() => { if (open && clipMode) loadClips(); }, [open, clipMode]);
         const inputRef = useRef(null);
         const resultsRef = useRef(null);
 
@@ -319,6 +327,8 @@
         const show = async () => {
           setQuery(''); setSel(0); setOpen(true); setEnterKey(k => k + 1);
           try { await win.show(); await win.setFocus(); } catch {}
+          // Super+V pano modunda açtıysa helper bir bayrak bırakır (tek seferlik)
+          try { const r = await zebar.shellExec(HELPER, ['--overview-mode']); if ((r.stdout || '').trim() === ';') setQuery(';'); } catch {}
           setTimeout(() => inputRef.current?.focus(), 30);
         };
         const hide = () => { setOpen(false); win.hide().catch(() => {}); };
@@ -344,6 +354,25 @@
           const out = [];
           const push = r => out.push(r);
 
+          if (q.startsWith(PREFIX.clip)) {
+            const term = q.slice(1).trim();
+            const fmt = s => { const d = new Date(s * 1000); return d.toLocaleTimeString(window.LL_LOCALE, { hour: '2-digit', minute: '2-digit' }); };
+            const list = clips.filter(c => c.kind === 'image' ? !term : !term || fuzzyScore(c.text, term) >= 0);
+            if (!list.length) push({ key: 'cbnone', type: 'Pano', name: term ? 'Eşleşen kayıt yok' : 'Pano geçmişi boş', material: 'content_paste', verb: '', stay: true, exec: () => {} });
+            list.slice(0, 40).forEach(c => {
+              const first = (c.text || '').split('\n').map(x => x.trim()).find(x => x) || '';
+              push({
+                key: 'cb' + c.id, clipId: c.id, type: 'Pano', sub: [c.kind === 'text' && c.lines > 1 ? `${c.lines} satır` : '', fmt(c.time)].filter(Boolean).join(' · '),
+                name: c.kind === 'image' ? 'Görüntü' : first.slice(0, 140), img: c.kind === 'image' ? c.thumb : undefined, material: 'content_paste',
+                mono: c.kind === 'text' && /[{};=<>]/.test(first), verb: 'Kopyala',
+                exec: async () => {
+                  try { await zebar.shellExec(HELPER, ['--clip-set', c.id]); toast({ kind: 'ok', title: 'Panoya kopyalandı', body: c.kind === 'image' ? 'Görüntü' : first.slice(0, 80), icon: 'content_paste' }); }
+                  catch (e) { toast({ kind: 'error', title: 'Kopyalanamadı', body: String(e?.message ?? e), icon: 'error' }); }
+                },
+              });
+            });
+            return out;
+          }
           if (q.startsWith(PREFIX.action)) {
             const a = q.slice(1).toLowerCase();
             ACTIONS.filter(x => x.name.startsWith(a.split(' ')[0]))
@@ -398,7 +427,7 @@
               exec: () => runScript('url', SEARCH_ENGINE + encodeURIComponent(term)) });
           }
           return out;
-        }, [query, apps, gwm]);
+        }, [query, apps, gwm, clips]);
 
         useEffect(() => { setSel(0); }, [query]);
         useEffect(() => {
@@ -412,13 +441,18 @@
           else if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => Math.min(results.length - 1, s + 1)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
           else if (e.key === 'Enter') { e.preventDefault(); exec(results[sel]); }
+          else if (e.key === 'Delete' && results[sel]?.clipId) {
+            e.preventDefault();
+            const id = results[sel].clipId;
+            zebar.shellExec(HELPER, ['--clip-del', id]).then(loadClips).catch(() => {});
+          }
           else if (e.key === 'Tab') { e.preventDefault(); if (results[0]) setQuery(results[sel]?.name ?? results[0].name); }
         };
 
         const prefixType = query.startsWith(PREFIX.action) ? 'action' : query.startsWith(PREFIX.app) ? 'app'
           : query.startsWith(PREFIX.math) ? 'math' : query.startsWith(PREFIX.shell) ? 'shell'
-          : query.startsWith(PREFIX.web) ? 'web' : 'default';
-        const prefixIcon = { action: 'settings_suggest', app: 'apps', math: 'calculate', shell: 'terminal', web: 'travel_explore', default: 'search' }[prefixType];
+          : query.startsWith(PREFIX.web) ? 'web' : query.startsWith(PREFIX.clip) ? 'clip' : 'default';
+        const prefixIcon = { action: 'settings_suggest', app: 'apps', math: 'calculate', shell: 'terminal', web: 'travel_explore', clip: 'content_paste', default: 'search' }[prefixType];
 
         // ii: searchWidthCollapsed 210, searchWidth 360 (+ kenar boşlukları ve butonlar)
         const width = (query ? 360 : 210) + 10 + 6 + 40 + 6 + 40 + 40 + 4;
@@ -478,8 +512,8 @@
 
       // MaterialShape: prefix türüne göre şekil (Cookie7Sided, Clover4Leaf, PixelCircle...)
       function Shape({ type }) {
-        const n = { default: 7, app: 4, math: 4, shell: 12, web: 10, action: 2 }[type] ?? 7;
-        const depth = { default: 0.12, app: 0.22, math: 0.2, shell: 0.04, web: 0.1, action: 0 }[type] ?? 0.1;
+        const n = { default: 7, app: 4, math: 4, shell: 12, web: 10, action: 2, clip: 6 }[type] ?? 7;
+        const depth = { default: 0.12, app: 0.22, math: 0.2, shell: 0.04, web: 0.1, action: 0, clip: 0.16 }[type] ?? 0.1;
         const rot = type === 'math' ? 45 : 0;
         const pts = [];
         for (let i = 0; i <= 360; i += 3) {

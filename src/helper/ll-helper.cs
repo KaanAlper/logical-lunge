@@ -54,6 +54,8 @@ static class Native
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll", SetLastError = true)] public static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
     [DllImport("user32.dll")] public static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+    [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr rgn, uint flags);
     [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr o);
     [DllImport("user32.dll")] public static extern int GetWindowRgnBox(IntPtr h, out RECT r);
@@ -1788,6 +1790,12 @@ class DialogCatcher
             try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { return; }
             if (!owners.Contains(proc)) return;
 
+            // Kutu ekrana çizilmeden önce tamamen saydam yap: yoksa Windows'un hata kutusu bir an görünüp sonra bizim
+            // bildirimimiz geliyordu. Soru soran kutuysa aşağıda geri görünür yapılır.
+            int ex0 = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
+            Native.SetWindowLong(hwnd, Native.GWL_EXSTYLE, ex0 | 0x00080000); // WS_EX_LAYERED
+            Native.SetLayeredWindowAttributes(hwnd, 0, 0, 0x2); // LWA_ALPHA, tamamen saydam
+
             var texts = new List<string>(); var buttons = new List<IntPtr>();
             Native.EnumChildWindows(hwnd, delegate (IntPtr ch, IntPtr l)
             {
@@ -1798,7 +1806,14 @@ class DialogCatcher
                 else if ((cn == "Static" || cn == "DirectUIHWND") && tx.Length > 0) texts.Add(tx);
                 return true;
             }, IntPtr.Zero);
-            if (buttons.Count != 1 || texts.Count == 0) return; // soru soran kutuya dokunma
+            if (buttons.Count != 1 || texts.Count == 0)
+            {
+                // soru soran kutuya dokunma: eski haline döndür
+                Native.SetLayeredWindowAttributes(hwnd, 0, 255, 0x2);
+                Native.SetWindowLong(hwnd, Native.GWL_EXSTYLE, ex0);
+                Native.RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400); // INVALIDATE|UPDATENOW|ALLCHILDREN|FRAME
+                return;
+            }
 
             var title = new StringBuilder(256); Native.GetWindowText(hwnd, title, 256);
             Native.PostMessage(buttons[0], 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
@@ -1944,7 +1959,7 @@ static class Binds
         { "ws-6", "Super+6" }, { "ws-7", "Super+7" }, { "ws-8", "Super+8" }, { "ws-9", "Super+9" }, { "ws-10", "Super+0" },
         { "terminal", "Super+Enter" }, { "terminal-alt", "Super+T" },
         { "browser", "Super+W" }, { "files", "Super+E" }, { "code", "Super+C" }, { "editor", "Super+X" },
-        { "close", "Alt+F4" }, { "screenshot", "Print" }, { "screenshot-screen", "Ctrl+Print" },
+        { "close", "Alt+F4" }, { "screenshot", "Print" }, { "screenshot-screen", "Ctrl+Print" }, { "clipboard", "Super+V" },
     };
 
     static readonly object gate = new object();
@@ -2299,6 +2314,13 @@ class Keys2
     // Kısayol eylemleri. false: işlenmedi (tuş normal yoluna devam eder)
     bool RunAction(string act)
     {
+        // Pencere hareketi / odak / workspace kısayolları overview'u (arama, pano) kapatır
+        if (act.StartsWith("move-") || act.StartsWith("focus-") || act.StartsWith("ws-"))
+        {
+            IntPtr ov = Native.FindWindow(null, "ll-overview");
+            if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) Native.ShowWindow(ov, 0);
+        }
+        if (act == "clipboard") { ui.BeginInvoke((Action)ToggleClipboard); return true; }
         string[] dirs = { "left", "right", "up", "down" };
         foreach (var d0 in dirs)
         {
@@ -2398,6 +2420,24 @@ class Keys2
     }
 
     void Launch(string path) { LaunchQueue.Enqueue(path); }
+
+    // Super+V: overview'u pano modunda (";" öneki) aç; açıkken tekrar basınca kapat
+    static void ToggleClipboard()
+    {
+        IntPtr h = Native.FindWindow(null, "ll-overview");
+        if (h == IntPtr.Zero) return;
+        if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { Native.ShowWindow(h, 0); return; }
+        try
+        {
+            string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge");
+            System.IO.Directory.CreateDirectory(d);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(d, "overview-mode.txt"), ";");
+        }
+        catch { }
+        Native.ShowWindow(h, 5);
+        Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
+        Native.SetForegroundWindow(h);
+    }
 
     static void ToggleOverview()
     {
@@ -3263,6 +3303,216 @@ static class SnipTool
     }
 }
 
+// ---------------- Pano geçmişi (Super+V: ii "overviewClipboardToggle" / cliphist) ----------------
+// Çalışan helper panoyu dinler (WM_CLIPBOARDUPDATE); metinler ve görüntüler %LOCALAPPDATA%\logical-lunge\clipboard'a
+// yazılır (en çok 100 kayıt). Overview'da ";" öneki bu listeyi gösterir. Parola yöneticileri gibi geçmişe eklenmesini
+// istemeyen uygulamalar (ExcludeClipboardContentFromMonitorProcessing / CanIncludeInClipboardHistory) atlanır.
+//   --clip-list        -> [{"id","kind":"text|image","text","lines","thumb","time"}]  (en yeni önce)
+//   --clip-set <id>    -> kaydı panoya koyar
+//   --clip-del <id> | --clip-clear
+static class ClipHistory
+{
+    const int MAX = 100, MAX_TEXT = 200000;
+    static readonly object gate = new object();
+    static readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+
+    static string Dir
+    {
+        get
+        {
+            string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\clipboard");
+            System.IO.Directory.CreateDirectory(d);
+            return d;
+        }
+    }
+    static string DbPath { get { return System.IO.Path.Combine(Dir, "history.json"); } }
+
+    class Item { public long id; public string kind, text, file; public long time; }
+
+    static List<Item> Load()
+    {
+        var l = new List<Item>();
+        try
+        {
+            if (!System.IO.File.Exists(DbPath)) return l;
+            var arr = json.DeserializeObject(System.IO.File.ReadAllText(DbPath, Encoding.UTF8)) as System.Collections.IEnumerable;
+            if (arr == null) return l;
+            foreach (Dictionary<string, object> d in arr)
+                l.Add(new Item
+                {
+                    id = Convert.ToInt64(d["id"]), kind = Convert.ToString(d["kind"]), time = Convert.ToInt64(d["time"]),
+                    text = d.ContainsKey("text") ? Convert.ToString(d["text"]) : null, file = d.ContainsKey("file") ? Convert.ToString(d["file"]) : null
+                });
+        }
+        catch { }
+        return l;
+    }
+
+    static void Save(List<Item> l)
+    {
+        try
+        {
+            var rows = new List<Dictionary<string, object>>();
+            foreach (var i in l) rows.Add(new Dictionary<string, object> { { "id", i.id }, { "kind", i.kind }, { "text", i.text }, { "file", i.file }, { "time", i.time } });
+            string tmp = DbPath + ".tmp";
+            System.IO.File.WriteAllText(tmp, json.Serialize(rows), new UTF8Encoding(false));
+            if (System.IO.File.Exists(DbPath)) System.IO.File.Delete(DbPath);
+            System.IO.File.Move(tmp, DbPath);
+        }
+        catch { }
+    }
+
+    static void DropFile(Item i)
+    {
+        if (i != null && i.file != null) { try { System.IO.File.Delete(System.IO.Path.Combine(Dir, i.file)); } catch { } }
+    }
+
+    // ---- dinleyici (ana helper) ----
+    class Listener : NativeWindow
+    {
+        [DllImport("user32.dll", SetLastError = true)] static extern bool AddClipboardFormatListener(IntPtr h);
+        public Listener()
+        {
+            CreateHandle(new CreateParams { Parent = new IntPtr(-3) }); // HWND_MESSAGE
+            AddClipboardFormatListener(Handle);
+        }
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x031D) { try { Changed(); } catch (Exception ex) { Slider.Log("clip: " + ex.Message); } }
+            base.WndProc(ref m);
+        }
+    }
+
+    public static void StartListener()
+    {
+        var t = new Thread(() => { new Listener(); Application.Run(); });
+        t.SetApartmentState(ApartmentState.STA);
+        t.IsBackground = true;
+        t.Start();
+    }
+
+    static T Retry<T>(Func<T> f, T fallback)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            try { return f(); }
+            catch { Thread.Sleep(40); }
+        }
+        return fallback;
+    }
+
+    static void Changed()
+    {
+        if (Retry(() => Clipboard.ContainsData("ExcludeClipboardContentFromMonitorProcessing"), false)) return;
+        if (Retry(() => Clipboard.ContainsData("CanIncludeInClipboardHistory") && false, false)) return;
+        string text = Retry(() => Clipboard.ContainsText() ? Clipboard.GetText() : null, (string)null);
+        if (!string.IsNullOrEmpty(text) && text.Trim().Length > 0)
+        {
+            if (text.Length > MAX_TEXT) text = text.Substring(0, MAX_TEXT);
+            lock (gate)
+            {
+                var l = Load();
+                var same = l.FindAll(x => x.kind == "text" && x.text == text);
+                foreach (var s in same) l.Remove(s);
+                l.Insert(0, new Item { id = DateTime.UtcNow.Ticks, kind = "text", text = text, time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+                Trim(l);
+                Save(l);
+            }
+            return;
+        }
+        Image img = Retry(() => Clipboard.ContainsImage() ? Clipboard.GetImage() : null, (Image)null);
+        if (img == null) return;
+        using (img)
+        {
+            byte[] png;
+            using (var ms = new System.IO.MemoryStream()) { img.Save(ms, System.Drawing.Imaging.ImageFormat.Png); png = ms.ToArray(); }
+            string hash;
+            using (var sha = System.Security.Cryptography.SHA1.Create()) hash = BitConverter.ToString(sha.ComputeHash(png)).Replace("-", "").Substring(0, 16);
+            string file = "img-" + hash + ".png";
+            lock (gate)
+            {
+                var l = Load();
+                var same = l.FindAll(x => x.kind == "image" && x.file == file);
+                foreach (var s in same) l.Remove(s);
+                if (!System.IO.File.Exists(System.IO.Path.Combine(Dir, file))) System.IO.File.WriteAllBytes(System.IO.Path.Combine(Dir, file), png);
+                l.Insert(0, new Item { id = DateTime.UtcNow.Ticks, kind = "image", file = file, time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+                Trim(l);
+                Save(l);
+            }
+        }
+    }
+
+    static void Trim(List<Item> l)
+    {
+        while (l.Count > MAX) { var last = l[l.Count - 1]; l.RemoveAt(l.Count - 1); DropFile(last); }
+    }
+
+    // ---- CLI ----
+    static string Thumb(string file)
+    {
+        try
+        {
+            using (var src = Image.FromFile(System.IO.Path.Combine(Dir, file)))
+            {
+                int h = 56, w = Math.Max(1, (int)((double)src.Width * h / src.Height));
+                if (w > 160) { w = 160; h = Math.Max(1, (int)((double)src.Height * w / src.Width)); }
+                using (var bmp = new Bitmap(w, h))
+                {
+                    using (var g = Graphics.FromImage(bmp)) { g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic; g.DrawImage(src, 0, 0, w, h); }
+                    using (var ms = new System.IO.MemoryStream()) { bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png); return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray()); }
+                }
+            }
+        }
+        catch { return ""; }
+    }
+
+    public static string List()
+    {
+        List<Item> l;
+        lock (gate) l = Load();
+        var rows = new List<Dictionary<string, object>>();
+        foreach (var i in l)
+        {
+            string text = i.text ?? "";
+            int lines = text.Length == 0 ? 0 : text.Split('\n').Length;
+            string preview = text.Length > 300 ? text.Substring(0, 300) : text;
+            rows.Add(new Dictionary<string, object>
+            {
+                { "id", i.id.ToString() }, { "kind", i.kind }, { "text", preview }, { "lines", lines },
+                { "thumb", i.kind == "image" && rows.Count < 30 ? Thumb(i.file) : "" }, { "time", i.time }
+            });
+        }
+        return json.Serialize(rows);
+    }
+
+    public static string Set(string id)
+    {
+        Item it;
+        lock (gate) it = Load().Find(x => x.id.ToString() == id);
+        if (it == null) return "{\"ok\":false}";
+        if (it.kind == "text") Clipboard.SetDataObject(it.text, true, 8, 40);
+        else using (var img = Image.FromFile(System.IO.Path.Combine(Dir, it.file))) Clipboard.SetDataObject(new Bitmap(img), true, 8, 40);
+        return "{\"ok\":true}";
+    }
+
+    public static string Delete(string id)
+    {
+        lock (gate)
+        {
+            var l = Load();
+            var it = l.Find(x => x.id.ToString() == id);
+            if (it != null) { l.Remove(it); DropFile(it); Save(l); }
+        }
+        return "{\"ok\":true}";
+    }
+
+    public static string Clear()
+    {
+        lock (gate) { foreach (var i in Load()) DropFile(i); Save(new List<Item>()); }
+        return "{\"ok\":true}";
+    }
+}
+
 // ---------------- Duvar kağıdı (sağ panel > Duvar kağıtları) ----------------
 // Windows'un IDesktopWallpaper API'si: monitör başına ayrı resim ya da tüm masaüstüne yayılan tek resim
 // (Superpaper'ın "span" modu). Hazır öneriler Wallhaven'ın herkese açık API'sinden, yalnızca SFW.
@@ -3933,6 +4183,34 @@ static class Program
             so.Write(Binds.ListJson()); so.Flush();
             return;
         }
+        // Pano geçmişi ve overview modu: --clip-list | --clip-set <id> | --clip-del <id> | --clip-clear | --overview-mode
+        if (args.Length >= 1 && (args[0].StartsWith("--clip-") || args[0] == "--overview-mode"))
+        {
+            string ct;
+            try
+            {
+                switch (args[0])
+                {
+                    case "--clip-list": ct = ClipHistory.List(); break;
+                    case "--clip-set": ct = ClipHistory.Set(args[1]); break;
+                    case "--clip-del": ct = ClipHistory.Delete(args[1]); break;
+                    case "--clip-clear": ct = ClipHistory.Clear(); break;
+                    case "--overview-mode":
+                    {
+                        // Bir kez okunur ve silinir: "" ya da ";" (pano)
+                        string f = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\overview-mode.txt");
+                        ct = "";
+                        if (System.IO.File.Exists(f)) { try { ct = System.IO.File.ReadAllText(f).Trim(); System.IO.File.Delete(f); } catch { } }
+                        break;
+                    }
+                    default: ct = "{\"error\":\"unknown\"}"; break;
+                }
+            }
+            catch (Exception ex) { ct = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "error", ex.GetBaseException().Message } }); }
+            var co = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            co.Write(ct); co.Flush();
+            return;
+        }
         // ll-helper.exe --snip-screen: farenin olduğu monitörün tamamı, sormadan panoya + dosyaya
         if (args.Length == 1 && args[0] == "--snip-screen")
         {
@@ -4142,6 +4420,7 @@ static class Program
         dwindle.HookNewWindows();
         LaunchQueue.Start(new Slider(new Glaze())); // kendi bağlantısı: animasyonu beklemesin
         NightLight.StartKeeper();
+        ClipHistory.StartListener();
         Wallpaper.StartKeeper();
         Toasts.Start();
         // Windows'a verilen callback'lerin sahibi nesneler canlı kalmalı: aksi halde çöp toplayıcı
