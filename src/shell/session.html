@@ -213,7 +213,9 @@
       let primary = true;   // izlenemezse (API yoksa) her pencere birincil sayılır
       try { Promise.resolve(win.currentMonitor()).then(m => { primary = !!m && m.position.x === 0 && m.position.y === 0; }).catch(() => {}); } catch {}
       const hideAll = () => { hide(); emit('ll:session-hide').catch(() => {}); };
-      let sel = 0, open = false;
+      // Hata ayıklama için helper günlüğüne (%TEMP%\ll-helper.log)
+      const log = m => fetch('http://127.0.0.1:6131/log?m=' + encodeURIComponent('session: ' + m), { method: 'POST' }).catch(() => {});
+      let sel = 0, open = false, shownAt = 0;
       row.innerHTML = ITEMS.map((it, i) => `<button class="sbtn ${it.danger ? 'danger' : ''}" data-i="${i}"><span class="icon">${it.icon}</span><span>${it.label}</span></button>`).join('');
       const btns = [...row.querySelectorAll('.sbtn')];
       const mark = () => btns.forEach((b, i) => b.classList.toggle('sel', i === sel));
@@ -222,11 +224,16 @@
         b.addEventListener('click', () => { hideAll(); ITEMS[i].act(); });
       });
 
+      // Karartma ve düğmeler: requestAnimationFrame az önce gizli olan pencerede bekletilebiliyor (pencere açık ama
+      // içi boş kalıyordu); zamanlayıcı yedek olarak da çalışır.
+      const reveal = () => { if (open) { scrim.classList.add('on'); row.classList.add('on'); } };
       async function show() {
         if (open) return;
-        open = true; sel = 0; mark();
-        try { await win.show(); if (primary) await win.setFocus(); } catch {}
-        requestAnimationFrame(() => { scrim.classList.add('on'); row.classList.add('on'); });
+        open = true; sel = 0; mark(); shownAt = Date.now();
+        try { await win.show(); if (primary) await win.setFocus(); } catch (e) { log('show hata ' + e); }
+        requestAnimationFrame(reveal);
+        setTimeout(reveal, 40);
+        log('açıldı' + (primary ? ' (birincil)' : ''));
       }
       function hide() {
         if (!open) return;
@@ -240,7 +247,9 @@
       [800, 2000, 4500, 9000, 16000].forEach(ms => setTimeout(() => { if (!open) win.hide().catch(() => {}); }, ms));
       listen('ll:session-toggle', () => (open ? hideAll() : show()));
       listen('ll:session-hide', () => hide());
-      window.addEventListener('blur', () => { if (primary) hideAll(); });
+      // Açılırken sağ panel kapanıyor ve Windows odağı bir an başka yere verebiliyor: ilk yarım saniyedeki odak kaybı
+      // menüyü kapatmasın (yoksa açılır açılmaz kapanıyordu).
+      window.addEventListener('blur', () => { if (primary && open && Date.now() - shownAt > 500) { log('odak kaybı: kapandı'); hideAll(); } });
       scrim.addEventListener('mousedown', hideAll);
       document.getElementById('stage').addEventListener('mousedown', e => { if (e.target.id === 'stage') hideAll(); });
       window.addEventListener('keydown', e => {

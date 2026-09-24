@@ -495,7 +495,7 @@
                 <button className="qbtn" title="Ayarlar klasörü" onClick={() => zebar.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.glzr\\logical-lunge'])}>
                   <Icon name="settings" />
                 </button>
-                <button className="qbtn" title="Oturum" onClick={() => { emit('ll:session-toggle').catch(() => {}); emit('ll:sidebar-right-toggle').catch(() => {}); }}>
+                <button className="qbtn" title="Oturum" onClick={() => { emit('ll:sidebar-right-toggle').catch(() => {}); setTimeout(() => emit('ll:session-toggle').catch(() => {}), 150); }}>
                   <Icon name="power_settings_new" />
                 </button>
               </div>
