@@ -4499,15 +4499,19 @@ static class SnipTool
         }) { IsBackground = true };
         dt.SetApartmentState(ApartmentState.STA);
         dt.Start();
+        // Kutunun ilk açılışı (her alıntı yeni bir süreç) kabuk eklentileri ve sürücüler yüzünden birkaç saniye sürebiliyor:
+        // 3 sn'lik sınırda kutu hiç görünmeden doğrudan kaydediliyordu. Yedek yol yalnızca kutu gerçekten açılamazsa.
         var sw = Stopwatch.StartNew();
-        while (!done && sw.ElapsedMilliseconds < 3000 && !HasVisibleDialog()) Thread.Sleep(50);
+        while (!done && sw.ElapsedMilliseconds < 20000 && !HasVisibleDialog()) Thread.Sleep(50);
         if (!done && !HasVisibleDialog())
         {
             string path = System.IO.Path.Combine(dir, name);
             outBmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            Slider.Log("kaydetme kutusu 20 sn'de açılmadı; doğrudan kaydedildi: " + path);
             try { Process.Start("explorer.exe", "/select,\"" + path + "\""); } catch { }
             return; // takılı thread arka planda; süreç kapanır
         }
+        Slider.Log("kaydetme kutusu " + sw.ElapsedMilliseconds + " ms'de açıldı");
         dt.Join();
         if (chosen == null) return;
         var fmt = chosen.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ? System.Drawing.Imaging.ImageFormat.Jpeg : System.Drawing.Imaging.ImageFormat.Png;
