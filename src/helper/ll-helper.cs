@@ -78,8 +78,23 @@ static class Native
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
-    [DllImport("dwmapi.dll")] public static extern int DwmRegisterThumbnail(IntPtr dest, IntPtr src, out IntPtr thumb);
-    [DllImport("dwmapi.dll")] public static extern int DwmUnregisterThumbnail(IntPtr thumb);
+    [DllImport("dwmapi.dll", EntryPoint = "DwmRegisterThumbnail")] static extern int DwmRegisterThumbnail0(IntPtr dest, IntPtr src, out IntPtr thumb);
+    [DllImport("dwmapi.dll", EntryPoint = "DwmUnregisterThumbnail")] static extern int DwmUnregisterThumbnail0(IntPtr thumb);
+    // DWM'de şu an kayıtlı önizleme sayısı: animasyon log'una yazılır. Kullandıkça artıyorsa bir yerde silinmiyor
+    // demektir (DWM her karede hepsini taşır ve geçişler giderek yavaşlar).
+    public static int LiveThumbs;
+    public static int DwmRegisterThumbnail(IntPtr dest, IntPtr src, out IntPtr thumb)
+    {
+        int hr = DwmRegisterThumbnail0(dest, src, out thumb);
+        if (hr == 0) Interlocked.Increment(ref LiveThumbs);
+        return hr;
+    }
+    public static int DwmUnregisterThumbnail(IntPtr thumb)
+    {
+        int hr = DwmUnregisterThumbnail0(thumb);
+        if (hr == 0) Interlocked.Decrement(ref LiveThumbs);
+        return hr;
+    }
     [DllImport("dwmapi.dll")] public static extern int DwmUpdateThumbnailProperties(IntPtr thumb, ref DWM_THUMBNAIL_PROPERTIES p);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
     [StructLayout(LayoutKind.Sequential)] public struct SIZE { public int cx, cy; }
@@ -496,7 +511,9 @@ class Slider
         lock (overlays) if (!overlays.TryGetValue(r, out o)) o = spare;
         overlay = o;
         o.Prepare(r);
+        ovW = r.Width; ovH = r.Height;
     }
+    int ovW, ovH, culledCount;
     public volatile bool Interrupt;
     // Animasyon sürerken başka işler (dwindle yön komutu) GlazeWM'i meşgul etmesin
     public static volatile bool Animating;
@@ -695,7 +712,7 @@ class Slider
         return 3 * (1 - u) * (1 - u) * u * y1 + 3 * (1 - u) * u * u * y2 + u * u * u;
     }
 
-    public class Thumb { public IntPtr Id; public Native.RECT Dest; public IntPtr Src; public int Cx, Cy; public Native.RECT Ins; public bool IsWin; public Native.RECT FrameIns; public IntPtr[] RingA, RingI; public bool RingActive; public RingLayer Layer; }
+    public class Thumb { public IntPtr Id; public Native.RECT Dest; public IntPtr Src; public int Cx, Cy; public Native.RECT Ins; public bool IsWin; public Native.RECT FrameIns; public IntPtr[] RingA, RingI; public bool RingActive; public RingLayer Layer; public bool Culled; }
 
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
@@ -1100,7 +1117,7 @@ class Slider
         }
         var sb = new StringBuilder();
         foreach (var a in items) if (a.Resizes && a.T != pop) sb.Append(" | içerik " + a.Cx0 + "x" + a.Cy0 + "->" + a.T.Cx + "x" + a.T.Cy + (a.SrcAt >= 0 ? " @" + a.SrcAt + "ms" : " (değişmedi)"));
-        Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + items.Count + " pencere" + sb + " " + fs.Report());
+        Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + items.Count + " pencere" + sb + " " + fs.Report() + " önizleme=" + Native.LiveThumbs);
         overlay.Conceal();
         RingsClear();
         PinsClear();
@@ -1132,9 +1149,34 @@ class Slider
     Native.RECT Move(Thumb t, int dx)
     {
         var r = t.Dest; r.Left += dx; r.Right += dx;
-        PlaceVisible(t, r, false);
-        RingPlace(t, r, 255);
+        PlaceSliding(t, r, false);
         return r;
+    }
+
+    // Oyunlardaki gibi görünmeyeni çizme: katmanın tamamen dışına kaymış pencerenin önizlemesi ve 8 parçalık kenarlık
+    // halkası gizlenir ve her karede güncellenmez (kaydırmada pencerelerin yarısı her an ekran dışında; DWM onları da
+    // işliyordu). Görüş alanına girince yeniden gösterilir. Halka çerçevenin biraz dışına taştığı için pay bırakılır.
+    void PlaceSliding(Thumb t, Native.RECT r, bool query)
+    {
+        const int PAD = 32;
+        bool outside = r.Right <= -PAD || r.Left >= ovW + PAD || r.Bottom <= -PAD || r.Top >= ovH + PAD;
+        if (outside && ovW > 0)
+        {
+            if (t.Culled) return;
+            t.Culled = true; culledCount++;
+            var hide = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_VISIBLE, fVisible = false };
+            Native.DwmUpdateThumbnailProperties(t.Id, ref hide);
+            HideRingSet(t.RingA); HideRingSet(t.RingI);
+            return;
+        }
+        if (t.Culled)
+        {
+            t.Culled = false;
+            var show = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_VISIBLE, fVisible = true };
+            Native.DwmUpdateThumbnailProperties(t.Id, ref show);
+        }
+        PlaceVisible(t, r, query);
+        RingPlace(t, r, 255);
     }
 
     static Dictionary<string, object> FocusedMonitor(List<Dictionary<string, object>> mons, out Dictionary<string, object> ws)
@@ -1557,6 +1599,7 @@ class Slider
             };
             var sw0 = Stopwatch.StartNew();
             var fs = new FrameStats();
+            culledCount = 0;
             while (!Interrupt)
             {
                 fs.Begin();
@@ -1583,8 +1626,7 @@ class Slider
                     if (!moveFollow) { Move(t, dx); continue; }
                     var r = swR == null ? from[t] : Lerp(from[t], VisualDest(t.Src, t.Id, ox, oy), eR);
                     r.Left += dx; r.Right += dx;
-                    PlaceVisible(t, r, swR != null);
-                    RingPlace(t, r, 255);
+                    PlaceSliding(t, r, swR != null);
                 }
                 if (moveFollow && carried != null)
                 {
@@ -1599,7 +1641,7 @@ class Slider
                 if (p >= 1.0 && swR == null && sw0.ElapsedMilliseconds > dur0 + 1500) break; // komut takıldı
             }
             long animEnd = clock.ElapsedMilliseconds;
-            Log("slide" + (moveFollow ? "+taşı" : "") + ": " + mfFrames + " kare, en uzun kare " + mfMax + " ms, komut bitti " + cmdDoneAt + " ms, pencere yer değiştirdi " + movedAt + " ms " + fs.Report());
+            Log("slide" + (moveFollow ? "+taşı" : "") + ": " + mfFrames + " kare, en uzun kare " + mfMax + " ms, komut bitti " + cmdDoneAt + " ms, pencere yer değiştirdi " + movedAt + " ms " + fs.Report() + " önizleme=" + Native.LiveThumbs + " gizlenen=" + culledCount);
             // Katmanı GlazeWM'in yanıtını değil GERÇEK durumu bekleyerek kaldır: eski workspace'in pencereleri gizlenip
             // (cloak) yenininkiler göründüğü an. GlazeWM bazen pencereleri gösterdikten ~250 ms sonra yanıt veriyordu
             // ve hızlı basışta her geçiş bunu bekliyordu. Yanıt arkada gelmeye devam eder.
