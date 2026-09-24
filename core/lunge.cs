@@ -468,7 +468,7 @@ class FrameStats
     // karışık aralıklar (7-14-7-14 ms) göze takılma olarak görünür.
     readonly double period = RefreshPeriodMs();
     int onTime, miss1, miss2;
-    static double RefreshPeriodMs()
+    public static double RefreshPeriodMs()
     {
         try
         {
@@ -505,6 +505,7 @@ class FrameStats
             GC.CollectionCount(0) - gc0, GC.CollectionCount(1) - gc1, GC.CollectionCount(2) - gc2);
         sb.AppendFormat("; aralık {0:0.0} ms: zamanında {1} / 1 kaçık {2} / 2+ kaçık {3}", period, onTime, miss1, miss2);
         sb.Append("]");
+        PerfGuard.Record(onTime, miss1 + miss2);
         return sb.ToString();
     }
 }
@@ -6248,6 +6249,174 @@ static class ShellState
     }
 }
 
+// ---------------- Kara kutu (performans bekçisi) ----------------
+// "Sistem hiç kasmamalı": masaüstü yavaşladığında (DWM kareleri geç birleştiriyor ya da kaydırma / taşıma animasyonları
+// kare kaçırıyor) o anki durumu log'a yazar: en çok işlemci ve GPU kullanan süreçler, bizim parçaların ve DWM'in
+// kaynakları, ekran koruyucusu / kilitten ne zaman dönüldüğü. Bir sonraki kasmada nedeni tahminle değil kayıtla bulmak
+// için. Beş dakikada en fazla bir kayıt; tam ekran oyun, sunum ve kilit ekranında ölçmez.
+static class PerfGuard
+{
+    [DllImport("shell32.dll")] static extern int SHQueryUserNotificationState(out int state);
+    [DllImport("user32.dll")] static extern uint GetGuiResources(IntPtr process, uint flags);
+
+    static readonly object gate = new object();
+    static readonly Queue<double> recent = new Queue<double>(); // son animasyonlarda zamanında çizilen karelerin oranı
+    static int lastDump = Environment.TickCount - 600000;
+    static int lastAway = -1;   // ekran koruyucusu / kilit ekranının en son görüldüğü an
+    static int slowProbes;
+
+    public static void Start()
+    {
+        new Thread(Loop) { IsBackground = true, Name = "perf-guard", Priority = ThreadPriority.BelowNormal }.Start();
+    }
+
+    // Her animasyonun sonunda (FrameStats.Report)
+    public static void Record(int onTime, int missed)
+    {
+        int total = onTime + missed;
+        if (total < 10) return; // kısa / yarıda kesilen animasyonlar yanıltır
+        double avg = 0;
+        lock (gate)
+        {
+            recent.Enqueue(onTime / (double)total);
+            while (recent.Count > 5) recent.Dequeue();
+            if (recent.Count < 5) return;
+            foreach (var r in recent) avg += r;
+            avg /= 5;
+        }
+        if (avg < 0.7)
+            ThreadPool.QueueUserWorkItem(_ => Dump("animasyonlar kare kaçırıyor (son 5'te zamanında %" + Math.Round(avg * 100) + ")"));
+    }
+
+    // Tam ekran oyun / sunum / kilit ekranı: DWM ölçümü anlamsız
+    static bool Quiet()
+    {
+        if (!FocusGuard.OnDefaultDesktop()) { lastAway = Environment.TickCount; return true; }
+        int st;
+        return SHQueryUserNotificationState(out st) == 0 && (st == 2 || st == 3 || st == 4); // BUSY, D3D_FULL_SCREEN, PRESENTATION_MODE
+    }
+
+    static void Loop()
+    {
+        Thread.Sleep(60000);
+        while (true)
+        {
+            Thread.Sleep(20000);
+            try
+            {
+                if (Quiet()) { slowProbes = 0; continue; }
+                // DWM'in 8 kareyi ne kadar sürede birleştirdiği (~60 ms'lik iş)
+                var sw = Stopwatch.StartNew();
+                Native.DwmFlush();
+                double start = sw.Elapsed.TotalMilliseconds;
+                for (int i = 0; i < 8; i++) Native.DwmFlush();
+                double avg = (sw.Elapsed.TotalMilliseconds - start) / 8, period = FrameStats.RefreshPeriodMs();
+                if (avg <= period * 1.6) { slowProbes = 0; continue; }
+                if (++slowProbes >= 2) Dump(string.Format("DWM yavaş: kare aralığı {0:0.0} ms (olması gereken {1:0.0} ms)", avg, period));
+            }
+            catch (Exception ex) { Slider.Log("kara kutu: " + ex.GetBaseException().Message); Thread.Sleep(60000); }
+        }
+    }
+
+    // ll-helper.exe --black-box: kasma anında elle kayıt (bekleme süresine takılmaz)
+    public static void DumpNow(string why) { lock (gate) lastDump = Environment.TickCount - 600000; Dump(why); }
+
+    static void Dump(string why)
+    {
+        lock (gate)
+        {
+            if (Environment.TickCount - lastDump < 300000) return;
+            lastDump = Environment.TickCount;
+        }
+        try
+        {
+            var sb = new StringBuilder("KARA KUTU: " + why);
+            sb.Append("\n  işlemci (tek çekirdek %, 1,5 sn): ").Append(CpuTop());
+            sb.Append("\n  gpu 3D (%): ").Append(GpuTop());
+            sb.Append("\n  parçalar: ").Append(Parts());
+            sb.Append("\n  ekran koruyucusu / kilitten dönüş: ")
+              .Append(lastAway < 0 ? "yok (helper açıkken)" : Math.Round((Environment.TickCount - lastAway) / 60000.0, 1) + " dk önce");
+            Slider.Log(sb.ToString());
+        }
+        catch (Exception ex) { Slider.Log("kara kutu: " + ex.GetBaseException().Message); }
+    }
+
+    static string CpuTop()
+    {
+        var before = new Dictionary<int, double>();
+        foreach (var p in Process.GetProcesses()) { try { before[p.Id] = p.TotalProcessorTime.TotalMilliseconds; } catch { } p.Dispose(); }
+        var sw = Stopwatch.StartNew();
+        Thread.Sleep(1500);
+        var list = new List<KeyValuePair<string, double>>();
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                double b;
+                if (before.TryGetValue(p.Id, out b))
+                    list.Add(new KeyValuePair<string, double>(p.ProcessName + "#" + p.Id, (p.TotalProcessorTime.TotalMilliseconds - b) / sw.Elapsed.TotalMilliseconds * 100));
+            }
+            catch { }
+            p.Dispose();
+        }
+        list.Sort((a, b) => b.Value.CompareTo(a.Value));
+        var sb = new StringBuilder();
+        for (int i = 0; i < Math.Min(8, list.Count); i++) sb.AppendFormat("{0} {1:0} · ", list[i].Key, list[i].Value);
+        return sb.ToString().TrimEnd(' ', '·');
+    }
+
+    // Süreç başına GPU 3D motor kullanımı (Windows'un "GPU Engine" sayaçları, 1 sn'lik örnek)
+    static string GpuTop()
+    {
+        var cat = new PerformanceCounterCategory("GPU Engine");
+        var counters = new List<KeyValuePair<int, PerformanceCounter>>();
+        foreach (var inst in cat.GetInstanceNames())
+        {
+            if (!inst.Contains("engtype_3D")) continue;
+            var m = System.Text.RegularExpressions.Regex.Match(inst, @"pid_(\d+)_");
+            if (!m.Success) continue;
+            var c = new PerformanceCounter("GPU Engine", "Utilization Percentage", inst, true);
+            try { c.NextValue(); counters.Add(new KeyValuePair<int, PerformanceCounter>(int.Parse(m.Groups[1].Value), c)); } catch { c.Dispose(); }
+        }
+        Thread.Sleep(1000);
+        var byPid = new Dictionary<int, double>();
+        foreach (var kv in counters)
+        {
+            try { double v = kv.Value.NextValue(); double o; byPid.TryGetValue(kv.Key, out o); byPid[kv.Key] = o + v; } catch { }
+            kv.Value.Dispose();
+        }
+        var list = new List<KeyValuePair<int, double>>(byPid);
+        list.Sort((a, b) => b.Value.CompareTo(a.Value));
+        var sb = new StringBuilder();
+        foreach (var kv in list)
+        {
+            if (kv.Value < 1 || sb.Length > 300) break;
+            string name = "?";
+            try { using (var p = Process.GetProcessById(kv.Key)) name = p.ProcessName; } catch { }
+            sb.AppendFormat("{0}#{1} {2:0} · ", name, kv.Key, kv.Value);
+        }
+        return sb.Length > 0 ? sb.ToString().TrimEnd(' ', '·') : "hepsi %1'in altında";
+    }
+
+    static string Parts()
+    {
+        var sb = new StringBuilder();
+        foreach (var name in new[] { "glazewm", "zebar", "ll-helper", "dwm" })
+            foreach (var p in Process.GetProcessesByName(name))
+            {
+                try
+                {
+                    sb.AppendFormat("{0}#{1} özel {2} MB, handle {3}", name, p.Id, p.PrivateMemorySize64 / 1048576, p.HandleCount);
+                    if (name != "dwm") sb.AppendFormat(", GDI {0}, USER {1}", GetGuiResources(p.Handle, 0), GetGuiResources(p.Handle, 1));
+                    sb.Append(" · ");
+                }
+                catch { }
+                p.Dispose();
+            }
+        return sb.ToString().TrimEnd(' ', '·');
+    }
+}
+
 // ---------------- Odak bekçisi ----------------
 // Hyprland'de odak hiç boşta kalmaz. Windows'ta ise odaktaki pencere kapanınca ya da ekran alıntısı, bir iletişim kutusu,
 // bildirim kapanınca ön plan masaüstüne, bar'a, gizli (başka workspace'teki) bir pencereye ya da hiçbir şeye düşebiliyordu:
@@ -6786,6 +6955,8 @@ static class Program
             uo.Write(ut); uo.Flush();
             return;
         }
+        // ll-helper.exe --black-box: o anki performans durumunu (işlemci / GPU / parçalar) log'a yaz
+        if (args.Length == 1 && args[0] == "--black-box") { PerfGuard.DumpNow("elle istendi"); return; }
         // ll-helper.exe --switcher-demo: Alt+Tab menüsünü 6 sn göster (sınama; kısayolsuz)
         if (args.Length == 1 && args[0] == "--switcher-demo") { Switcher.Demo(); return; }
         // ll-helper.exe --log <metin>: widget'ların hata ayıklama günlüğü (%TEMP%\ll-helper.log)
@@ -7195,6 +7366,7 @@ static class Program
         ZebarWatchdog.Start();
         WmWatchdog.Start();
         FocusGuard.Start();
+        PerfGuard.Start();
         SelfHeal.WatchUi(ui);
 
         Application.Run(ui);

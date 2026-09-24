@@ -111,7 +111,7 @@ async fn start_wm(
     if !dispatcher.has_ax_permission(true) {
       anyhow::bail!(
         "Accessibility permissions are not granted. In System Preferences, \
-         go to Privacy & Security > Accessibility and enable GlazeWM."
+         go to Privacy & Security > Accessibility and enable Logical Lunge."
       );
     }
   }
@@ -295,14 +295,13 @@ async fn start_wm(
 
 /// Initialize logging with the specified verbosity level.
 ///
-/// Error logs are saved to `~/.glzr/glazewm/errors.log`.
+/// Warnings and errors are saved to Logical Lunge's common log folder
+/// (`%LOCALAPPDATA%/LogicalLunge/logs/tiling.log`), next to the other
+/// parts' logs.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
-  let error_log_dir = home::home_dir()
-    .context("Unable to get home directory.")?
-    .join(".glzr/glazewm/");
+  let log_dir = logs_dir()?;
 
-  let error_writer =
-    tracing_appender::rolling::never(error_log_dir, "errors.log");
+  let file_writer = tracing_appender::rolling::never(log_dir, "tiling.log");
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -311,19 +310,30 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_writer(std::io::stdout.with_max_level(verbosity.level())),
     )
     .with(
-      // Output to error log file.
+      // Output to the log file, without terminal colors.
       fmt::Layer::new()
-        .with_writer(error_writer.with_max_level(Level::ERROR)),
+        .with_ansi(false)
+        .with_writer(file_writer.with_max_level(Level::WARN)),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;
 
   tracing::info!(
-    "Starting WM with log level {:?}.",
+    "Starting tiling with log level {:?}.",
     verbosity.level().to_string()
   );
 
   Ok(())
+}
+
+/// Logical Lunge's common log folder: `%LOCALAPPDATA%/LogicalLunge/logs`.
+fn logs_dir() -> anyhow::Result<PathBuf> {
+  let local_app_data = env::var_os("LOCALAPPDATA")
+    .map(PathBuf::from)
+    .or_else(|| home::home_dir().map(|home| home.join("AppData/Local")))
+    .context("Unable to get the local app data directory.")?;
+
+  Ok(local_app_data.join("LogicalLunge/logs"))
 }
 
 /// Launches watcher binary (Windows-only). This is a separate process that
@@ -338,7 +348,7 @@ fn start_watcher_process() -> anyhow::Result<tokio::process::Child, Error>
   let watcher_path = env::current_exe()?
     .parent()
     .context("Failed to resolve path to the watcher process.")?
-    .join("glazewm-watcher");
+    .join("lunge-tiling-watcher");
 
   Command::new(&watcher_path)
     .spawn()

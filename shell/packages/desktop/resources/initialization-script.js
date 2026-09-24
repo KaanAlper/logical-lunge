@@ -32,7 +32,7 @@ setInterval(
   () => {
     console.clear();
     console.info(
-      '%c[Zebar]%c Console is cleared every 15 minutes to prevent memory buildup from logged data.',
+      '%c[shell]%c Console is cleared every 15 minutes to prevent memory buildup from logged data.',
       'color: #4ade80',
       'color: inherit',
     );
@@ -43,16 +43,17 @@ setInterval(
 if (window.location.host === '127.0.0.1:6124') {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker
-      .register('/__zebar/sw.js', { scope: '/' })
+      .register('/__shell/sw.js', { scope: '/' })
       .then(sw => {
         console.info(
-          '%c[Zebar]%c Service Worker registered.',
+          '%c[shell]%c Service Worker registered.',
           'color: #4ade80',
           'color: inherit',
         );
 
         const message = {
           type: 'SET_CONFIG',
+          // The widgets' client library still reads this name (see widget_factory.rs).
           config: window.__ZEBAR_STATE.config.caching,
         };
 
@@ -62,7 +63,7 @@ if (window.location.host === '127.0.0.1:6124') {
       })
       .catch(err =>
         console.error(
-          '%c[Zebar]%c Service Worker failed to register:',
+          '%c[shell]%c Service Worker failed to register:',
           'color: #4ade80',
           'color: inherit',
           err,
@@ -72,7 +73,7 @@ if (window.location.host === '127.0.0.1:6124') {
 
   document.addEventListener('DOMContentLoaded', () => {
     addFavicon();
-    loadCss('/__zebar/normalize.css');
+    loadCss('/__shell/normalize.css');
   });
 }
 
@@ -81,7 +82,7 @@ if (window.location.host === '127.0.0.1:6124') {
  */
 function loadCss(path) {
   const link = document.createElement('link');
-  link.setAttribute('data-zebar', '');
+  link.setAttribute('data-shell', '');
   link.rel = 'stylesheet';
   link.type = 'text/css';
   link.href = path;
@@ -94,7 +95,7 @@ function loadCss(path) {
 function addFavicon() {
   if (!document.querySelector('link[rel="icon"]')) {
     const link = document.createElement('link');
-    link.setAttribute('data-zebar', '');
+    link.setAttribute('data-shell', '');
     link.rel = 'icon';
     link.href = 'data:;';
     insertIntoHead(link);
@@ -104,7 +105,7 @@ function addFavicon() {
 /**
  * Inserts the element before any other resource tags in the head element.
  * Ensures that user-defined stylesheets or favicons are prioritized over
- * Zebar's defaults.
+ * the shell's defaults.
  */
 function insertIntoHead(element) {
   const resources = document.head.querySelectorAll('link, script, style');

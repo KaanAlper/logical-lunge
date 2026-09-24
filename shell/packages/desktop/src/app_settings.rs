@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 use tokio::sync::Mutex;
 
-use crate::{
-  common::{read_and_parse_json, PathExt},
-  config_migration::apply_config_migrations,
-};
+use crate::common::{read_and_parse_json, PathExt};
 
 pub const VERSION_NUMBER: &str = env!("VERSION_NUMBER");
 
@@ -58,21 +55,18 @@ impl AppSettings {
     app_handle: &AppHandle,
     config_dir: PathBuf,
   ) -> anyhow::Result<Self> {
+    // Logical Lunge: widget browser data (e.g. `localStorage`) lives with
+    // the app's other data, in `%LOCALAPPDATA%/LogicalLunge/webview`.
     let webview_cache_dir = app_handle
       .path()
-      .resolve("zebar/webview-cache", BaseDirectory::Data)
+      .resolve("LogicalLunge/webview", BaseDirectory::LocalData)
       .context("Unable to resolve app data directory.")?;
-
-    let migration_file = app_handle
-      .path()
-      .resolve("zebar/.migrations.json", BaseDirectory::Data)
-      .context("Unable to resolve config migration file.")?;
 
     for dir in [&config_dir, &webview_cache_dir] {
       fs::create_dir_all(dir)?;
     }
 
-    let settings = Self::read_settings_or_init(&config_dir, &migration_file);
+    let settings = Self::read_settings_or_init(&config_dir);
 
     Ok(Self {
       config_dir: config_dir.canonicalize_pretty()?,
@@ -86,17 +80,8 @@ impl AppSettings {
   /// Logical Lunge: never fails. A settings file that can't be read or
   /// parsed (e.g. edited by hand) is left untouched and the shell's
   /// default widgets start instead; otherwise the bar would never come
-  /// back and the watchdog would restart Zebar in a loop.
-  fn read_settings_or_init(
-    config_dir: &Path,
-    migration_file: &Path,
-  ) -> AppSettingsValue {
-    // Apply any pending config migrations before reading the settings
-    // file.
-    if let Err(err) = apply_config_migrations(config_dir, migration_file) {
-      tracing::warn!("Failed to apply config migrations: {:?}", err);
-    }
-
+  /// back and the watchdog would restart the shell in a loop.
+  fn read_settings_or_init(config_dir: &Path) -> AppSettingsValue {
     let settings_path = config_dir.join("settings.json");
 
     // If the file does not exist, initialize a default.

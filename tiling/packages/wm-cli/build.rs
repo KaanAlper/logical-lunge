@@ -9,9 +9,9 @@ fn main() {
   // Set language to English (US).
   res.set_language(0x0409);
 
-  res.set("OriginalFilename", "glazewm.exe");
-  res.set("ProductName", "GlazeWM CLI");
-  res.set("FileDescription", "GlazeWM CLI");
+  res.set("OriginalFilename", "lunge-tiling-cli.exe");
+  res.set("ProductName", "Logical Lunge");
+  res.set("FileDescription", "Logical Lunge Tiling CLI");
 
   let version_number = std::env::var("VERSION_NUMBER").unwrap_or_else(|_| "0.0.0".to_string());
   let version_parts = version_number

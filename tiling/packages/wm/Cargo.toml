@@ -1,14 +1,14 @@
 [package]
 name = "wm"
 version = "0.0.0"
-description = "GlazeWM is a tiling window manager for Windows inspired by i3 and Polybar."
-repository = "https://github.com/glzr-io/glazewm"
+description = "Logical Lunge tiling: the window layout of the Logical Lunge desktop."
+repository = "https://github.com/KaanAlper/logical-lunge"
 license = "GPL-3"
 edition = "2021"
-default-run = "glazewm"
+default-run = "lunge-tiling"
 
 [[bin]]
-name = "glazewm"
+name = "lunge-tiling"
 path = "src/main.rs"
 
 [features]

@@ -45,7 +45,7 @@ fn build_asset_server() -> rocket::Rocket<rocket::Build> {
 
 /// Logical Lunge: identifies the process serving the port (see
 /// `setup_asset_server`).
-#[get("/__zebar/instance")]
+#[get("/__shell/instance")]
 fn instance() -> String {
   std::process::id().to_string()
 }
@@ -53,7 +53,7 @@ fn instance() -> String {
 /// Whether this process's asset server answers on the port.
 ///
 /// A connection alone isn't enough: during a restart the port can still be
-/// served by the previous Zebar, which doesn't know this instance's widget
+/// served by the previous shell, which doesn't know this instance's widget
 /// tokens (widgets then showed an error page and the bar stayed empty).
 async fn is_own_server_up() -> bool {
   use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -64,7 +64,7 @@ async fn is_own_server_up() -> bool {
     return false;
   };
 
-  let request = "GET /__zebar/instance HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+  let request = "GET /__shell/instance HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
   if stream.write_all(request.as_bytes()).await.is_err() {
     return false;
   }
@@ -86,8 +86,8 @@ async fn is_own_server_up() -> bool {
 
 pub async fn setup_asset_server() -> anyhow::Result<()> {
   // Launch in the background and keep retrying if the port can't be bound
-  // (e.g. it is still held by a previous Zebar instance that is shutting
-  // down). Previously a failed bind was only logged and Zebar ran without
+  // (e.g. it is still held by a previous shell instance that is shutting
+  // down). Previously a failed bind was only logged and the shell ran without
   // an asset server, so every widget showed a "connection refused" page.
   task::spawn(async move {
     let mut attempt: u32 = 0;
@@ -134,7 +134,7 @@ pub async fn create_init_url(
   );
 
   let url = tauri::Url::parse_with_params(
-    &format!("http://127.0.0.1:{}/__zebar/init", ASSET_SERVER_PORT),
+    &format!("http://127.0.0.1:{}/__shell/init", ASSET_SERVER_PORT),
     &[("token", &token), ("redirect", &redirect)],
   )?;
 
@@ -179,7 +179,7 @@ async fn upsert_or_get_token(
   }
 }
 
-#[get("/__zebar/init?<token>&<redirect>")]
+#[get("/__shell/init?<token>&<redirect>")]
 pub fn init(
   token: String,
   redirect: String,
@@ -187,7 +187,7 @@ pub fn init(
 ) -> Redirect {
   // Create a http-only cookie with the widget's token.
   cookies.add(
-    Cookie::build(("ZEBAR_TOKEN", token))
+    Cookie::build(("SHELL_TOKEN", token))
       .http_only(true)
       .same_site(SameSite::Strict)
       .path("/"),
@@ -196,7 +196,7 @@ pub fn init(
   Redirect::to(redirect)
 }
 
-#[get("/__zebar/sw.js")]
+#[get("/__shell/sw.js")]
 pub fn sw_js() -> SwResponse {
   SwResponse(include_str!("../resources/sw.js"))
 }
@@ -215,7 +215,7 @@ impl<'r> Responder<'r, 'static> for SwResponse {
   }
 }
 
-#[get("/__zebar/normalize.css")]
+#[get("/__shell/normalize.css")]
 pub fn normalize_css() -> (ContentType, &'static str) {
   (ContentType::CSS, include_str!("../resources/normalize.css"))
 }
@@ -268,7 +268,7 @@ impl<'r> FromRequest<'r> for ServerToken {
   async fn from_request(
     request: &'r Request<'_>,
   ) -> Outcome<Self, Self::Error> {
-    let token = request.cookies().get("ZEBAR_TOKEN");
+    let token = request.cookies().get("SHELL_TOKEN");
 
     match token {
       Some(token) => {

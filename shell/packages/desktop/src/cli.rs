@@ -25,28 +25,28 @@ impl Cli {
 pub enum CliCommand {
   /// Opens a widget by its name and chosen placement.
   ///
-  /// Starts Zebar if it is not already running.
+  /// Starts the shell if it is not already running.
   StartWidget(StartWidgetArgs),
 
   /// Opens a widget by its name and a preset name.
   ///
-  /// Starts Zebar if it is not already running.
+  /// Starts the shell if it is not already running.
   StartWidgetPreset(StartWidgetPresetArgs),
 
   /// Opens all widgets that are set to launch on startup.
   ///
-  /// Starts Zebar if it is not already running.
+  /// Starts the shell if it is not already running.
   Startup(StartupArgs),
 
   /// Retrieves and outputs a specific part of the state.
   ///
-  /// Requires an already running instance of Zebar.
+  /// Requires an already running shell.
   #[clap(subcommand)]
   Query(QueryArgs),
 
-  /// Used when Zebar is launched with no arguments.
+  /// Used when the shell is launched with no arguments.
   ///
-  /// If Zebar is already running, this command will no-op, otherwise it
+  /// If the shell is already running, this command will no-op, otherwise it
   /// will behave as `CliCommand::Startup`.
   #[clap(hide = true)]
   Empty,
@@ -113,9 +113,9 @@ pub struct StartWidgetPresetArgs {
 
 #[derive(Args, Clone, Debug, PartialEq)]
 pub struct StartupArgs {
-  /// Absolute or relative path to the Zebar config directory.
+  /// Absolute or relative path to the shell's UI directory.
   ///
-  /// The default path is `%userprofile%/.glzr/zebar/`
+  /// The default path is the `ui` folder next to the executable
   #[clap(long, value_hint = clap::ValueHint::FilePath)]
   pub config_dir: Option<PathBuf>,
 

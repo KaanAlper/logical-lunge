@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
       // Main executable is either in the current directory (when running
       // debug/release builds) or in the parent directory when packaged.
       let main_path =
-        [exe_dir.join("glazewm.exe"), exe_dir.join("../glazewm.exe")]
+        [exe_dir.join("lunge-tiling.exe"), exe_dir.join("../lunge-tiling.exe")]
           .into_iter()
           .find(|path| path.exists() && *path != exe_path)
           .and_then(|path| path.to_str().map(ToString::to_string))

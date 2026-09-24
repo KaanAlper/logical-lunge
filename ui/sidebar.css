@@ -298,6 +298,18 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .nsummary { flex: none; max-width: 55%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variation-settings: 'wght' 550; }
 .ntext { flex: 1; min-width: 0; color: var(--m3onSurfaceVariant); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ntext.full { white-space: pre-wrap; }
+/* Tek tek kapatma: grup ve bildirim ×'i üzerine gelince; sürükleme / kaydırma metin seçmesin, dikey kaydırma bozulmasın */
+.ngroup { user-select: none; touch-action: pan-y; }
+.nclose, .nitem-close {
+  flex: none; display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+  border-radius: 999px; opacity: 0; color: var(--m3onSurfaceVariant); transition: opacity 150ms, background 150ms;
+}
+.nclose { margin-left: 2px; }
+.ngroup:hover .nclose, .nitem:hover .nitem-close { opacity: 1; }
+.nclose:hover, .nitem-close:hover { background: var(--colLayer3); }
+.nclose .icon, .nitem-close .icon { font-size: 16px; }
+.nitem { transition: opacity 200ms, transform 200ms var(--emphAccel); }
+.nitem.gone { opacity: 0; transform: translateX(40px); }
 
 /* ButtonGroup + NotificationStatusButton */
 .statusrow { display: flex; gap: 5px; flex: none; }

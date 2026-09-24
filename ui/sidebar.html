@@ -1071,16 +1071,70 @@
         );
       }
 
-      // ii NotificationGroup.qml: ikon + (uygulama adı, zaman, sayaç) + son 2 bildirim; genişletince hepsi
+      // ii NotificationGroup.qml: ikon + (uygulama adı, zaman, sayaç) + son 2 bildirim; genişletince hepsi.
+      // Kapatma: başlıktaki × (grup), genişletince her bildirimdeki × (yalnız o), sağa sürükleme ya da touchpad'de iki
+      // parmakla sağa kaydırma (bildirim parmağı izler; yeterince giderse kayarak kapanır, gitmezse yerine yaylanır), orta tık.
+      const SWIPE_DISMISS = 0.33; // grubun genişliğinin bu kadarı kaydırılınca kapanır
       function NotificationGroup({ group, onDismiss, leaving, delay }) {
         const [expanded, setExpanded] = useState(false);
         const [gone, setGone] = useState(false);
-        const count = group.items.length;
+        const [goneItems, setGoneItems] = useState([]);
+        const [dx, setDx] = useState(0);
+        const [dragging, setDragging] = useState(false);
+        const ref = useRef(null);
+        const drag = useRef(null);
+        const wheel = useRef({ dx: 0, t: null });
+        const count = group.items.length - goneItems.length;
         const multiple = count > 1;
-        const shown = expanded ? group.items : group.items.slice(0, 2);
+        const shown = expanded ? group.items : group.items.filter(n => !goneItems.includes(n.id)).slice(0, 2);
         const kill = () => { setGone(true); setTimeout(() => onDismiss(group.items.map(n => n.id)), 250); };
+        const killOne = id => {
+          if (count <= 1) return kill();
+          setGoneItems(g => [...g, id]);
+          setTimeout(() => onDismiss([id]), 220);
+        };
+        const width = () => ref.current?.offsetWidth || 400;
+        const release = x => { setDragging(false); if (x > width() * SWIPE_DISMISS) kill(); else setDx(0); };
+        // Fare / dokunmatik / touchpad tıklayıp sürükleme: yatay hareket başlayınca sürükleme sayılır (dikey liste kaydırması
+        // ve düğme tıklamaları bozulmaz)
+        const onPointerDown = e => {
+          if (e.button !== 0 || e.target.closest('button')) return;
+          drag.current = { x: e.clientX, y: e.clientY, active: false };
+          e.currentTarget.setPointerCapture(e.pointerId);
+        };
+        const onPointerMove = e => {
+          const d = drag.current;
+          if (!d) return;
+          const mx = e.clientX - d.x, my = e.clientY - d.y;
+          if (!d.active) {
+            if (Math.abs(mx) < 6 || Math.abs(my) > Math.abs(mx)) return;
+            d.active = true; setDragging(true);
+          }
+          setDx(Math.max(0, mx));
+        };
+        const onPointerUp = e => {
+          const d = drag.current;
+          drag.current = null;
+          if (d?.active) release(Math.max(0, e.clientX - d.x));
+        };
+        // Touchpad iki parmak yatay kaydırma: parmak sağa gidince Windows deltaX < 0 verir; bildirim parmakla birlikte gider
+        const onWheel = e => {
+          if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+          const w = wheel.current;
+          w.dx = Math.max(0, w.dx - e.deltaX);
+          setDragging(true); setDx(w.dx);
+          clearTimeout(w.t);
+          w.t = setTimeout(() => { const x = w.dx; w.dx = 0; release(x); }, 140);
+        };
+        const style = {
+          ...(leaving ? { transitionDelay: `${delay}ms` } : {}),
+          ...(dx && !gone ? { transform: `translateX(${dx}px)`, opacity: Math.max(0.2, 1 - dx / width()) } : {}),
+          ...(dragging ? { transition: 'none' } : {}),
+        };
         return (
-          <div className={`ngroup ${gone || leaving ? 'gone' : ''}`} style={leaving ? { transitionDelay: `${delay}ms` } : undefined}
+          <div ref={ref} className={`ngroup ${gone || leaving ? 'gone' : ''}`} style={style}
+               onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+               onWheel={onWheel}
                onContextMenu={e => { e.preventDefault(); setExpanded(v => !v); }}
                onAuxClick={e => { if (e.button === 1) kill(); }}>
             <div className="napp">{group.icon ? <img src={group.icon} alt="" /> : <Icon name="chat" />}</div>
@@ -1091,11 +1145,16 @@
                 <button className="nexpand" onClick={() => setExpanded(v => !v)} title="Sağ tık da genişletir">
                   {count}<Icon name={expanded ? 'expand_less' : 'expand_more'} />
                 </button>
+                <button className="nclose" onClick={kill} title="Bildirimi kapat"><Icon name="close" /></button>
               </div>
               {shown.map((n, i) => (
-                <div key={n.id} className="nitem" style={!expanded && i === 1 && count > 2 ? { opacity: 0.5 } : undefined}>
+                <div key={n.id} className={`nitem ${goneItems.includes(n.id) ? 'gone' : ''}`}
+                     style={!expanded && i === 1 && count > 2 ? { opacity: 0.5 } : undefined}>
                   {(multiple || !expanded) && <span className="nsummary">{n.title}</span>}
                   <span className={`ntext ${expanded ? 'full' : ''}`}>{n.body}</span>
+                  {expanded && multiple && (
+                    <button className="nitem-close" onClick={() => killOne(n.id)} title="Bildirimi kapat"><Icon name="close" /></button>
+                  )}
                 </div>
               ))}
             </div>

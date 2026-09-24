@@ -71,6 +71,7 @@ const ROWS = [
   ['Kuruluyor…', 'Installing…', 'Wird installiert…', 'Installation…', 'Instalando…', 'Installazione…', 'Instalando…', 'Установка…', 'Встановлення…', 'Instalowanie…', 'インストール中…', '正在安装…', '설치 중…', 'جارٍ التثبيت…'],
   ['Güncelleme yapılamadı', 'Update failed', 'Update fehlgeschlagen', 'Échec de la mise à jour', 'Error al actualizar', 'Aggiornamento non riuscito', 'Falha na atualização', 'Не удалось обновить', 'Не вдалося оновити', 'Aktualizacja nie powiodła się', 'アップデートに失敗しました', '更新失败', '업데이트 실패', 'فشل التحديث'],
   ['Güncelle', 'Update', 'Aktualisieren', 'Mettre à jour', 'Actualizar', 'Aggiorna', 'Atualizar', 'Обновить', 'Оновити', 'Aktualizuj', 'アップデート', '更新', '업데이트', 'تحديث'],
+  ['Bildirimi kapat', 'Dismiss', 'Schließen', 'Ignorer', 'Descartar', 'Ignora', 'Dispensar', 'Закрыть', 'Закрити', 'Odrzuć', '閉じる', '关闭', '닫기', 'تجاهل'],
   ['Tümünü göster', 'Show all', 'Alles anzeigen', 'Tout afficher', 'Mostrar todo', 'Mostra tutto', 'Mostrar tudo', 'Показать всё', 'Показати все', 'Pokaż wszystko', 'すべて表示', '显示全部', '모두 보기', 'عرض الكل'],
   ['Daha az göster', 'Show less', 'Weniger anzeigen', 'Afficher moins', 'Mostrar menos', 'Mostra meno', 'Mostrar menos', 'Показать меньше', 'Показати менше', 'Pokaż mniej', '表示を減らす', '收起', '간략히 보기', 'عرض أقل'],
   ['Daha sonra', 'Later', 'Später', 'Plus tard', 'Más tarde', 'Più tardi', 'Mais tarde', 'Позже', 'Пізніше', 'Później', '後で', '稍后', '나중에', 'لاحقًا'],

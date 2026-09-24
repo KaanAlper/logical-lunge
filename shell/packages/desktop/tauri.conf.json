@@ -3,9 +3,9 @@
   "build": {
     "frontendDist": "./frontend"
   },
-  "productName": "Zebar",
+  "productName": "Logical Lunge Shell",
   "version": "0.0.0",
-  "identifier": "com.glzr.zebar",
+  "identifier": "com.logicallunge.shell",
   "bundle": {
     "active": true,
     "icon": [
@@ -15,9 +15,9 @@
       "resources/icons/icon.icns",
       "resources/icons/icon.ico"
     ],
-    "shortDescription": "Zebar",
+    "shortDescription": "Logical Lunge Shell",
     "category": "Utility",
-    "publisher": "Glzr Software Pte. Ltd.",
+    "publisher": "Logical Lunge",
     "resources": ["resources/*", "../../resources/**/*"],
     "targets": ["deb", "appimage", "msi", "dmg"],
     "windows": {

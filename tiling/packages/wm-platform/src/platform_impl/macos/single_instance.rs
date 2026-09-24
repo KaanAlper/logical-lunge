@@ -51,7 +51,7 @@ impl SingleInstance {
   }
 
   /// Returns the path to the lock file:
-  /// `~/Library/Application Support/glazewm/.lock`.
+  /// `~/Library/Application Support/LogicalLunge/.lock`.
   fn lock_file_path() -> crate::Result<PathBuf> {
     let home = home::home_dir().ok_or_else(|| {
       crate::Error::Platform(
@@ -59,6 +59,6 @@ impl SingleInstance {
       )
     })?;
 
-    Ok(home.join("Library/Application Support/glazewm/.lock"))
+    Ok(home.join("Library/Application Support/LogicalLunge/.lock"))
   }
 }

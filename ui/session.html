@@ -215,7 +215,7 @@
       const hideAll = () => { hide(); emit('ll:session-hide').catch(() => {}); };
       // Hata ayıklama için helper günlüğüne (%TEMP%\ll-helper.log)
       const log = m => fetch('http://127.0.0.1:6131/log?m=' + encodeURIComponent('session: ' + m), { method: 'POST' }).catch(() => {});
-      let sel = 0, open = false, shownAt = 0;
+      let sel = 0, open = false, shownAt = 0, focusedAt = 0;
       row.innerHTML = ITEMS.map((it, i) => `<button class="sbtn ${it.danger ? 'danger' : ''}" data-i="${i}"><span class="icon">${it.icon}</span><span>${it.label}</span></button>`).join('');
       const btns = [...row.querySelectorAll('.sbtn')];
       const mark = () => btns.forEach((b, i) => b.classList.toggle('sel', i === sel));
@@ -229,7 +229,7 @@
       const reveal = () => { if (open) { scrim.classList.add('on'); row.classList.add('on'); } };
       async function show() {
         if (open) return;
-        open = true; sel = 0; mark(); shownAt = Date.now();
+        open = true; sel = 0; mark(); shownAt = Date.now(); focusedAt = 0;
         try { await win.show(); if (primary) await win.setFocus(); } catch (e) { log('show hata ' + e); }
         requestAnimationFrame(reveal);
         setTimeout(reveal, 40);
@@ -247,9 +247,11 @@
       [800, 2000, 4500, 9000, 16000].forEach(ms => setTimeout(() => { if (!open) win.hide().catch(() => {}); }, ms));
       listen('ll:session-toggle', () => (open ? hideAll() : show()));
       listen('ll:session-hide', () => hide());
-      // Açılırken sağ panel kapanıyor ve Windows odağı bir an başka yere verebiliyor: ilk yarım saniyedeki odak kaybı
-      // menüyü kapatmasın (yoksa açılır açılmaz kapanıyordu).
-      window.addEventListener('blur', () => { if (primary && open && Date.now() - shownAt > 500) { log('odak kaybı: kapandı'); hideAll(); } });
+      // Açılırken sağ panel kapanıyor ve Windows odağı bir an başka yere verebiliyor. Odak kaybı yalnızca menü odağı
+      // gerçekten aldıktan 300 ms sonra sayılır: süre açılıştan sayılınca sistem yavaşken odak olayları geç geliyor ve
+      // menü açılır açılmaz kapanıyordu. Odak hiç gelmezse Esc / boş alana tıklama kapatır.
+      window.addEventListener('focus', () => { if (open) focusedAt = Date.now(); });
+      window.addEventListener('blur', () => { if (primary && open && focusedAt && Date.now() - focusedAt > 300) { log('odak kaybı: kapandı'); hideAll(); } });
       scrim.addEventListener('mousedown', hideAll);
       document.getElementById('stage').addEventListener('mousedown', e => { if (e.target.id === 'stage') hideAll(); });
       window.addEventListener('keydown', e => {

@@ -662,7 +662,7 @@ impl WmState {
   /// terminate without sending window destroy events, leaving invalid
   /// windows in WM state.
   ///
-  /// See: <https://github.com/glzr-io/glazewm/issues/1219>
+  /// See upstream issue #1219.
   pub fn cleanup_invalid_windows(&mut self) -> anyhow::Result<()> {
     let invalid_windows = self
       .windows()

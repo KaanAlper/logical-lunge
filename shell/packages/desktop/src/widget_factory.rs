@@ -34,7 +34,7 @@ use crate::{
   },
 };
 
-/// Manages the creation of Zebar widgets.
+/// Manages the creation of shell widgets.
 #[derive(Debug)]
 pub struct WidgetFactory {
   /// Handle to the Tauri application.
@@ -316,7 +316,7 @@ impl WidgetFactory {
         widget_id.clone(),
         webview_url,
       )
-      .title(format!("Zebar - {} / {}", widget_pack.id, widget_name))
+      .title(format!("Logical Lunge · {widget_name}"))
       .focused(widget_config.focused)
       .skip_taskbar(!widget_config.shown_in_taskbar)
       .visible_on_all_workspaces(true)
@@ -350,7 +350,7 @@ impl WidgetFactory {
 
       // On Windows, we need to set the position twice to account for
       // different monitor scale factors. Using the logical position/size
-      // positions the window incorrectly (see: https://github.com/glzr-io/zebar/issues/273).
+      // positions the window incorrectly (see upstream issue #273).
       #[cfg(windows)]
       {
         let _ = window.set_size(size);
@@ -598,6 +598,8 @@ impl WidgetFactory {
     state: &WidgetState,
   ) -> anyhow::Result<String> {
     let state_script =
+      // The widgets' client library reads the state under this name; it
+      // changes together with the client (bundled with the app).
       format!("window.__ZEBAR_STATE={};", serde_json::to_string(state)?);
 
     let sw_script = include_str!("../resources/initialization-script.js");

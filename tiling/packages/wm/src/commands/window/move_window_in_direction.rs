@@ -308,7 +308,7 @@ fn window_in_direction(
 }
 
 
-/// GlazeWM's original tiling move, used when there's no window in the
+/// The upstream tiling move, used when there's no window in the
 /// given direction (e.g. two side-by-side windows where one is moved up
 /// becomes the full-width top half).
 fn move_tiling_window_fallback(
@@ -363,7 +363,7 @@ fn move_tiling_window_fallback(
   // Logical Lunge: there's no window in the given direction, so the window
   // is at the workspace's edge on that side. Like Hyprland's dwindle
   // `movetoroot`, it takes that half of the workspace and the rest of the
-  // layout keeps its shape in the other half. GlazeWM inserted it into the
+  // layout keeps its shape in the other half. Upstream inserted it into the
   // nearest ancestor with the move's axis instead, which added a column
   // (e.g. a 2x2 grid became three columns).
   let workspace = window_to_move.workspace().context("No workspace.")?;

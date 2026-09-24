@@ -34,7 +34,7 @@ thread_local! {
   ///
   /// This message is sent using `PostMessageW` and handled in
   /// [`EventLoop::window_proc`].
-  static WM_DISPATCH_CALLBACK: u32 = unsafe { RegisterWindowMessageW(w!("GlazeWM:Dispatch")) };
+  static WM_DISPATCH_CALLBACK: u32 = unsafe { RegisterWindowMessageW(w!("LogicalLunge:Dispatch")) };
 
   /// Registered callbacks that pre-process messages in the event loop's
   /// window procedure.

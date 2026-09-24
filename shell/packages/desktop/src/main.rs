@@ -35,7 +35,6 @@ mod asset_server;
 mod cli;
 mod commands;
 mod common;
-mod config_migration;
 mod monitor_state;
 mod providers;
 mod shell_state;
@@ -47,7 +46,7 @@ extern crate rocket;
 
 /// Main entry point for the application.
 ///
-/// Conditionally starts Zebar or runs a CLI command based on the given
+/// Conditionally starts the shell or runs a CLI command based on the given
 /// subcommand.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -73,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
             _ => {
               let start_res = start_app(app, cli).await;
 
-              // If unable to start Zebar, the error is fatal and a message
+              // If unable to start the shell, the error is fatal and a message
               // dialog is shown.
               if let Err(err) = &start_res {
                 // TODO: Show error dialog.
@@ -143,20 +142,21 @@ fn output_query(app: &tauri::App, args: QueryArgs) -> anyhow::Result<()> {
   }
 }
 
-/// Starts Zebar - either with a specific widget or all widgets.
+/// Starts the shell - either with a specific widget or all widgets.
 async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
   let config_dir = match cli.command() {
     CliCommand::Startup(args) => args.config_dir,
     _ => None,
   }
   .unwrap_or(
-    app
-      .path()
-      .resolve(".glzr/zebar", BaseDirectory::Home)
-      .context("Unable to get home directory.")?,
+    // Logical Lunge: the UI ships with the app, in `ui` next to the exe.
+    env::current_exe()?
+      .parent()
+      .context("Unable to get the executable's directory.")?
+      .join("ui"),
   );
 
-  setup_logging(&cli, &config_dir)?;
+  setup_logging(&cli, app.handle())?;
 
   // Initialize `AppSettings` in Tauri state.
   let app_settings = Arc::new(AppSettings::new(app.handle(), config_dir)?);
@@ -345,15 +345,20 @@ async fn open_widgets_by_cli_command(
 
 /// Initialize logging with the verbosity level specified in the CLI args.
 ///
-/// Error logs are saved to `~/.glzr/zebar/errors.log`.
-fn setup_logging(cli: &Cli, config_dir: &Path) -> anyhow::Result<()> {
+/// Warnings and errors are saved to `%LOCALAPPDATA%/LogicalLunge/logs/shell.log`.
+fn setup_logging(cli: &Cli, app: &AppHandle) -> anyhow::Result<()> {
   let log_level = match cli.command() {
     CliCommand::Startup(args) => args.verbosity.level(),
     _ => Level::INFO,
   };
 
-  let error_writer =
-    tracing_appender::rolling::never(config_dir, "errors.log");
+  // Logical Lunge's common log folder, next to the other parts' logs.
+  let log_dir = app
+    .path()
+    .resolve("LogicalLunge/logs", BaseDirectory::LocalData)
+    .context("Unable to resolve the log directory.")?;
+
+  let file_writer = tracing_appender::rolling::never(log_dir, "shell.log");
 
   let subscriber = tracing_subscriber::registry()
     .with(
@@ -362,9 +367,10 @@ fn setup_logging(cli: &Cli, config_dir: &Path) -> anyhow::Result<()> {
         .with_writer(std::io::stdout.with_max_level(log_level)),
     )
     .with(
-      // Output to error log file.
+      // Output to the log file, without terminal colors.
       fmt::Layer::new()
-        .with_writer(error_writer.with_max_level(Level::ERROR)),
+        .with_ansi(false)
+        .with_writer(file_writer.with_max_level(Level::WARN)),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;

@@ -314,7 +314,7 @@ impl NativeWindow {
       //   window.
       //
       // Because of these caveats, this method is not exposed as a public
-      // API. It's also the reason why the GlazeWM feature of bringing all
+      // API. It's also the reason why the feature of bringing all
       // tiling/floating windows to the front on focus change is not
       // implemented for macOS.
       let result =

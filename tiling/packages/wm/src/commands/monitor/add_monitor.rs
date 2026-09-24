@@ -89,7 +89,7 @@ pub fn move_bounded_workspaces_to_new_monitor(
 }
 
 // TODO: Move to its own file once `swap-workspace` PR is merged.
-// Ref: https://github.com/glzr-io/glazewm/pull/980.
+// Ref: upstream pull request #980.
 pub fn move_workspace_to_monitor(
   workspace: &Workspace,
   target_monitor: &Monitor,
