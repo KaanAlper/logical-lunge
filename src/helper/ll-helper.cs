@@ -977,7 +977,7 @@ class Slider
         foreach (var h in handles)
         {
             var hw = new IntPtr(h);
-            if (!Native.IsWindowVisible(hw)) continue;
+            if (!Native.IsWindowVisible(hw) || Native.IsIconic(hw)) continue; // küçültülmüş: ekranda yok
             var t = RegisterWin(hw, new Native.RECT());
             if (t == null) continue;
             Native.RECT old;
@@ -1022,7 +1022,7 @@ class Slider
         foreach (var h in endHandles)
         {
             var hw = new IntPtr(h);
-            if (!Native.IsWindowVisible(hw)) continue;
+            if (!Native.IsWindowVisible(hw) || Native.IsIconic(hw)) continue; // küçültülmüş: ekranda yok
             keep.Add(h);
             Thumb t;
             bool isNew = !f.Win.TryGetValue(h, out t);
@@ -1118,7 +1118,10 @@ class Slider
 
     Thumb RegisterWindow(IntPtr h, int ox, int oy)
     {
-        if (!Native.IsWindow(h)) return null;
+        // Küçültülmüş pencere ekranda yok (Windows onu yine de "görünür" sayar): önizlemesi ve 8 parçalık kenarlık
+        // halkası her karede boşuna güncelleniyor, kaydı da DWM meşgulken pencere başına birkaç ms sürüyordu.
+        // Workspace'te küçültülmüş pencere biriktikçe geçiş belirgin şekilde yavaşlıyordu.
+        if (!Native.IsWindow(h) || Native.IsIconic(h)) return null;
         var t = RegisterWin(h, Shift(WinRect(h), ox, oy));
         if (t == null) return null;
         PlaceVisible(t, t.Dest);
