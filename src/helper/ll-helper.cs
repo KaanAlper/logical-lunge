@@ -2264,7 +2264,11 @@ static class Orphans
             var c = new StringBuilder(128); Native.GetClassName(h, c, 128);
             string cs = c.ToString();
             if (cs == "Windows.UI.Core.CoreWindow" || cs == "ApplicationFrameWindow") return true; // askıdaki UWP
-            if ((Native.GetWindowLong(h, Native.GWL_EXSTYLE) & Native.WS_EX_TOOLWINDOW) != 0) return true;
+            int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
+            if ((ex & Native.WS_EX_TOOLWINDOW) != 0) return true;
+            // Tıklamayı geçiren şeffaf katmanlar (ör. görev çubuğu oyunu TaskBarHero): GlazeWM bunları yönetmez; gizliyse öyle
+            // kalsın (geri getirilince görev çubuğu gizliyken efektleri ekranın üstünde yüzüyordu)
+            if ((ex & Native.WS_EX_TRANSPARENT) != 0 && (ex & 0x00080000) != 0) return true; // TRANSPARENT + LAYERED
             targets.Add(h);
             return true;
         }, IntPtr.Zero);
