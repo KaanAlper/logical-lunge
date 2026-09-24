@@ -1,8 +1,20 @@
 ﻿# Logical Lunge - uninstaller. Restores every Windows setting that the installer changed and removes
-# everything it installed. Your own configuration files are kept (GlazeWM/WezTerm/fish/starship configs,
-# shortcut and night-light settings in %LOCALAPPDATA%\logical-lunge, downloaded wallpapers).
-param([string]$UserProfile = $env:USERPROFILE, [string]$UserSid = '', [switch]$Elevated)
+# everything it installed. Configuration files that existed before the install always come back.
+# Logical Lunge's own settings and data (its GlazeWM/Zebar/WezTerm/fish/starship/tacky-borders configs,
+# clipboard history, shortcut and night-light settings, downloaded wallpapers) are kept or removed:
+#   -KeepConfig / -RemoveConfig, or a Yes/No/Cancel question when neither is given.
+param([string]$UserProfile = $env:USERPROFILE, [string]$UserSid = '', [switch]$Elevated, [switch]$KeepConfig, [switch]$RemoveConfig)
 $ErrorActionPreference = 'Continue'
+
+if (-not $KeepConfig -and -not $RemoveConfig) {
+    Add-Type -AssemblyName System.Windows.Forms
+    $tr = (Get-UICulture).Name -like 'tr*'
+    $text = if ($tr) { "Logical Lunge kaldırılacak ve Windows ayarları eski haline dönecek.`n`nLogical Lunge'ın kendi ayarları ve verileri de silinsin mi? (config dosyaları, pano geçmişi, kısayol ve gece ışığı ayarları, indirilen duvar kağıtları)`n`nEvet: hepsini sil`nHayır: ayarları sakla`nİptal: kaldırma" }
+            else { "Logical Lunge will be removed and your Windows settings restored.`n`nAlso delete Logical Lunge's own settings and data? (config files, clipboard history, shortcut and night-light settings, downloaded wallpapers)`n`nYes: delete everything`nNo: keep my settings`nCancel: don't uninstall" }
+    $answer = [System.Windows.Forms.MessageBox]::Show($text, 'Logical Lunge', 'YesNoCancel', 'Question')
+    if ($answer -eq 'Cancel') { return }
+    if ($answer -eq 'Yes') { $RemoveConfig = $true } else { $KeepConfig = $true }
+}
 
 if (-not $UserSid) { $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -10,7 +22,8 @@ if (-not $isAdmin) {
     # one UAC prompt; the elevated copy needs to know whose settings to restore
     $self = Join-Path $env:TEMP 'logical-lunge-uninstall.ps1'
     Copy-Item $PSCommandPath $self -Force
-    Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", '-UserProfile', "`"$UserProfile`"", '-UserSid', $UserSid, '-Elevated'
+    $choice = if ($RemoveConfig) { '-RemoveConfig' } else { '-KeepConfig' }
+    Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", '-UserProfile', "`"$UserProfile`"", '-UserSid', $UserSid, '-Elevated', $choice
     return
 }
 
@@ -84,13 +97,22 @@ if ($installed -contains 'fonts') {
 }
 if ($installed -contains 'msys2') { Log '==> Removing MSYS2 (fish)'; Remove-Item 'C:\msys64' -Recurse -Force -ErrorAction SilentlyContinue }
 
-Log '==> Removing program files (your configs are kept)'
+Log $(if ($RemoveConfig) { '==> Removing program files and Logical Lunge settings' } else { '==> Removing program files (your settings are kept)' })
 foreach ($f in "$ZB\settings.json", "$UserProfile\.glzr\glazewm\config.yaml", "$UserProfile\.wezterm.lua", "$UserProfile\.config\fish\config.fish", "$UserProfile\.config\starship.toml") {
-    if (Test-Path "$f.before-ll") { Move-Item "$f.before-ll" $f -Force }   # your pre-install version comes back
+    if (Test-Path "$f.before-ll") { Move-Item "$f.before-ll" $f -Force }   # your pre-install version always comes back
+    elseif ($RemoveConfig) { Remove-Item $f -Force -ErrorAction SilentlyContinue }   # ours: there was none before the install
 }
 Remove-Item (Join-Path $ZB 'logical-lunge') -Recurse -Force -ErrorAction SilentlyContinue
 foreach ($d in 'bin', 'helper', 'tools', 'scripts') { Remove-Item (Join-Path $LL $d) -Recurse -Force -ErrorAction SilentlyContinue }
 Remove-Item $bf -Force -ErrorAction SilentlyContinue
+if ($RemoveConfig) {
+    Remove-Item (Join-Path $UserProfile '.config\tacky-borders') -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $STATE -Recurse -Force -ErrorAction SilentlyContinue   # clipboard history, shortcuts, night light
+    # downloaded wallpapers: the user's Pictures folder (it may be redirected, e.g. to OneDrive)
+    $pics = (Get-ItemProperty "$HKU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -Name 'My Pictures' -ErrorAction SilentlyContinue).'My Pictures'
+    $pics = if ($pics) { $pics.Replace('%USERPROFILE%', $UserProfile) } else { Join-Path $UserProfile 'Pictures' }
+    Remove-Item (Join-Path $pics 'Wallpapers\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Log '==> Restarting Explorer'
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
@@ -98,3 +120,4 @@ Log ''
 Log 'Logical Lunge has been removed. Sign out and back in to finish.'
 Start-Sleep 3
 Remove-Item (Join-Path $LL 'uninstall.ps1') -Force -ErrorAction SilentlyContinue
+if ($RemoveConfig) { Remove-Item $LL -Recurse -Force -ErrorAction SilentlyContinue }

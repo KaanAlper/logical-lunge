@@ -326,9 +326,17 @@
 
         // Açılış modu (Super+V -> ";"): helper'ın bıraktığı tek seferlik bayrak. Önce yerel HTTP ile (anında), olmazsa
         // helper süreciyle. Mod, pencere görünmeden ÖNCE uygulanır: yoksa önce düz arama görünüp sonra ";" geliyordu.
+        // Her bekleme sınırlı: cevap gelmezse düz arama (sınırsız bekleme açılışı kilitliyordu).
+        const withTimeout = (p, ms, fallback) => Promise.race([p, new Promise(r => setTimeout(() => r(fallback), ms))]);
         const readMode = async () => {
-          try { const r = await fetch('http://127.0.0.1:6131/overview-mode', { cache: 'no-store' }); if (r.ok) return (await r.text()).trim(); } catch {}
-          try { const r = await zebar.shellExec(HELPER, ['--overview-mode']); return (r.stdout || '').trim(); } catch {}
+          try {
+            const ctl = new AbortController();
+            const t = setTimeout(() => ctl.abort(), 250);
+            const r = await fetch('http://127.0.0.1:6131/overview-mode', { cache: 'no-store', signal: ctl.signal });
+            clearTimeout(t);
+            if (r.ok) return (await r.text()).trim();
+          } catch {}
+          try { const r = await withTimeout(zebar.shellExec(HELPER, ['--overview-mode']), 600, null); if (r) return (r.stdout || '').trim(); } catch {}
           return '';
         };
         // Odak olayı ve görünürlük yoklaması aynı açılışı iki kez tetikleyebiliyor; ikincisi bayrağı boş bulup ";"yi siliyordu
@@ -336,8 +344,9 @@
         const show = async () => {
           if (Date.now() - lastShow.current < 400) return;
           lastShow.current = Date.now();
+          setSel(0); setOpen(true); setEnterKey(k => k + 1); // hemen açık say: odak olayları yeni açılış başlatmasın
           const m = await readMode();
-          setQuery(m === ';' ? ';' : ''); setSel(0); setOpen(true); setEnterKey(k => k + 1);
+          setQuery(m === ';' ? ';' : '');
           try { await win.show(); await win.setFocus(); } catch {}
           setTimeout(() => inputRef.current?.focus(), 30);
         };

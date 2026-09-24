@@ -302,7 +302,12 @@ foreach ($pair in @(@('Ethernet-On', 'enable'), @('Ethernet-Off', 'disable'))) {
     $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$eth`" $($pair[1])"
     Register-ScheduledTask -TaskPath '\LL\' -TaskName $pair[0] -Action $a -Principal $principalHigh -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1)) -Force | Out-Null
 }
-# GlazeWM must not also start from an older Run entry
+# GlazeWM must not also start from an older Run entry (backed up: the uninstaller puts it back)
+$runOld = (Get-ItemProperty "$cu\Run" -Name 'GlazeWM' -ErrorAction SilentlyContinue).GlazeWM
+if ($null -ne $runOld -and -not ($backup.registry | Where-Object { $_.path -eq "$cu\Run" -and $_.name -eq 'GlazeWM' })) {
+    $backup.registry += @{ path = "$cu\Run"; name = 'GlazeWM'; existed = $true; old = [string]$runOld; type = 'String'; binary = $false }
+    Save-Backup
+}
 Remove-ItemProperty "$cu\Run" -Name 'GlazeWM' -ErrorAction SilentlyContinue
 
 # ---------------------------------------------------------------- uninstall entry (Apps & features)

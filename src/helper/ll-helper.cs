@@ -693,6 +693,65 @@ class Slider
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
     static readonly string[] Pinned = { "Zebar - logical-lunge / osk", "Zebar - logical-lunge / sidebar-right", "Zebar - logical-lunge / toast" };
+    // PiP gibi her workspace'te sabit duran, en üstte tutulan ve GlazeWM'in yönetmediği pencereler animasyon katmanının
+    // altında kalıp geçiş boyunca kayboluyor, sonra "yapıştırılmış resim" gibi geri geliyordu. Canlı önizlemeleri kenarlık
+    // katmanının en üstüne, kendi yerlerine konur: katman açıldığı karede görünürler, geçiş boyunca sabit kalırlar.
+    readonly List<IntPtr> pinIds = new List<IntPtr>();
+    static readonly Dictionary<uint, string> pinProcs = new Dictionary<uint, string>();
+    static readonly HashSet<string> pinSkipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "ll-helper", "tacky-borders", "zebar", "glazewm", "explorer", "ShellExperienceHost", "StartMenuExperienceHost", "SearchApp", "SearchUI", "TextInputHost", "LockApp" };
+    void PinsAttach(Rectangle monArea, int ox, int oy, IEnumerable<Thumb> animated)
+    {
+        PinsClear();
+        var skip = new HashSet<IntPtr>();
+        if (animated != null) foreach (var t in animated) if (t != null) skip.Add(t.Src);
+        var found = new List<KeyValuePair<IntPtr, Native.RECT>>();
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
+        {
+            if (skip.Contains(h) || !Native.IsWindowVisible(h) || Native.IsIconic(h)) return true;
+            if ((Native.GetWindowLong(h, Native.GWL_EXSTYLE) & 0x8) == 0) return true; // WS_EX_TOPMOST
+            int cl;
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0) return true;
+            Native.RECT r; Native.GetWindowRect(h, out r);
+            if (r.Right - r.Left < 40 || r.Bottom - r.Top < 40) return true;
+            if (!monArea.IntersectsWith(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom))) return true;
+            uint pid; Native.GetWindowThreadProcessId(h, out pid);
+            string pn;
+            lock (pinProcs)
+            {
+                if (!pinProcs.TryGetValue(pid, out pn))
+                {
+                    try { pn = Process.GetProcessById((int)pid).ProcessName; } catch { pn = ""; }
+                    if (pinProcs.Count > 500) pinProcs.Clear();
+                    pinProcs[pid] = pn;
+                }
+            }
+            if (pn.Length == 0 || pinSkipProcs.Contains(pn)) return true;
+            found.Add(new KeyValuePair<IntPtr, Native.RECT>(h, r));
+            return true;
+        }, IntPtr.Zero);
+        // EnumWindows üstten alta sıralar: alttakini önce kaydet ki üstteki en üstte kalsın
+        for (int i = found.Count - 1; i >= 0; i--)
+        {
+            IntPtr id;
+            if (Native.DwmRegisterThumbnail(overlay.Rings.Hwnd, found[i].Key, out id) != 0) continue;
+            var r = found[i].Value;
+            var pr = new Native.DWM_THUMBNAIL_PROPERTIES
+            {
+                dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_VISIBLE | Native.DWM_TNP_OPACITY | Native.DWM_TNP_SOURCECLIENTAREAONLY,
+                rcDestination = new Native.RECT { Left = r.Left - ox, Top = r.Top - oy, Right = r.Right - ox, Bottom = r.Bottom - oy },
+                fVisible = true, opacity = 255, fSourceClientAreaOnly = false
+            };
+            Native.DwmUpdateThumbnailProperties(id, ref pr);
+            pinIds.Add(id);
+        }
+    }
+    void PinsClear()
+    {
+        foreach (var id in pinIds) Native.DwmUnregisterThumbnail(id);
+        pinIds.Clear();
+    }
+
     static void RaisePinned()
     {
         foreach (var title in Pinned)
@@ -928,6 +987,7 @@ class Slider
         step("kayıt");
         RingsAttach(f.Win.Values, FocusedTop()); // kenarlıklar pencerelerin üstünde; katman gizliyken kaydı ucuz
         foreach (var t in f.Win.Values) RingPlace(t, t.Dest, (byte)(t.Src.ToInt64() == hidden ? 0 : 255));
+        PinsAttach(new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy, f.Win.Values);
         step("kenar");
         Animating = true;
         overlay.Reveal();
@@ -1036,6 +1096,7 @@ class Slider
         Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + items.Count + " pencere" + sb + " " + fs.Report());
         overlay.Conceal();
         RingsClear();
+        PinsClear();
         foreach (var t in f.All) Native.DwmUnregisterThumbnail(t.Id);
         Animating = false;
     }
@@ -1302,10 +1363,24 @@ class Slider
             {
                 try { System.IO.File.Delete(path + ".old"); System.IO.File.Move(path, path + ".old"); } catch { }
             }
-            System.IO.File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.fff ") + s + Environment.NewLine);
+            // Aynı anda birden çok thread / süreç yazabiliyor (ör. iki HTTP isteği): paylaşımlı aç, kısa yeniden dene;
+            // yoksa satırlar sessizce kayboluyordu
+            var bytes = Encoding.UTF8.GetBytes(DateTime.Now.ToString("HH:mm:ss.fff ") + s + Environment.NewLine);
+            lock (logLock)
+                for (int i = 0; i < 5; i++)
+                {
+                    try
+                    {
+                        using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Append, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+                            fs.Write(bytes, 0, bytes.Length);
+                        break;
+                    }
+                    catch (System.IO.IOException) { Thread.Sleep(3); }
+                }
         }
         catch { }
     }
+    static readonly object logLock = new object();
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
@@ -1444,6 +1519,7 @@ class Slider
             foreach (var t in oldThumbs) RingPlace(t, t.Dest, 255);
             foreach (var t in newThumbs) { var r0 = t.Dest; r0.Left += fdir * (mw + GAP); r0.Right += fdir * (mw + GAP); RingPlace(t, r0, 255); }
             if (carried != null) RingPlace(carried, carried.Dest, 255);
+            PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, thumbs);
             overlay.Reveal();
             RaisePinned();
             Native.DwmFlush();
@@ -1528,7 +1604,7 @@ class Slider
                 if (done) { viaState = true; break; }
                 Thread.Sleep(4);
             }
-            overlay.Conceal(); RingsClear();
+            overlay.Conceal(); RingsClear(); PinsClear();
             foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
             Animating = false;
             Log("fast done " + clock.ElapsedMilliseconds + "ms (animasyon " + dur0 + "ms, bitti " + animEnd + "ms, " + (viaState ? "pencereler hazır" : "komut " + (task.IsCompleted ? "bitti" : "sürüyor")) + ")");
@@ -1537,6 +1613,7 @@ class Slider
 
         RingsAttach(oldThumbs, FocusedTop());
         foreach (var t in oldThumbs) RingPlace(t, t.Dest, 255);
+        PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, thumbs);
         overlay.Reveal();
         RaisePinned();
         Native.DwmFlush();
@@ -1593,7 +1670,7 @@ class Slider
             }
         }
 
-        overlay.Conceal(); RingsClear();
+        overlay.Conceal(); RingsClear(); PinsClear();
         foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
         Log("done " + clock.ElapsedMilliseconds + "ms new=" + newThumbs.Count);
     }
@@ -2157,6 +2234,99 @@ class MouseFocus
     }
 }
 
+// ---------------- Zebar nöbetçisi ----------------
+// Bar ve tüm paneller Zebar'da. Zebar hiç açılmazsa (ör. yeni kurulumda PATH) ya da açık olduğu halde widget sunucusu
+// (127.0.0.1:6124) çalışmıyorsa (port o an önceki Zebar'da kaldıysa sunucusuz açılıyor, bar "bağlantı reddedildi"
+// gösteriyordu) masaüstü yarım kalmasın: GlazeWM çalışıyorken iki ardışık kontrolde (~10 sn) sorun sürerse Zebar'ı temiz
+// biçimde (port boşalana kadar bekleyip) yeniden başlat. Art arda başarısızlıkta beklemeyi uzatır.
+static class ZebarWatchdog
+{
+    const int PORT = 6124;
+    static string lastPath;
+
+    static bool PortOpen()
+    {
+        try
+        {
+            using (var c = new System.Net.Sockets.TcpClient())
+            {
+                var ar = c.BeginConnect("127.0.0.1", PORT, null, null);
+                bool ok = ar.AsyncWaitHandle.WaitOne(700) && c.Connected;
+                try { c.EndConnect(ar); } catch { ok = false; }
+                return ok;
+            }
+        }
+        catch { return false; }
+    }
+
+    static List<Process> Zebars()
+    {
+        var l = new List<Process>(Process.GetProcessesByName("zebar"));
+        foreach (var p in l) { try { lastPath = p.MainModule.FileName; } catch { } }
+        return l;
+    }
+
+    static string ExePath()
+    {
+        if (lastPath != null && System.IO.File.Exists(lastPath)) return lastPath;
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        foreach (var exe in new[] {
+            System.IO.Path.Combine(home, @".glzr\logical-lunge\bin\zebar.exe"),
+            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"glzr.io\Zebar\zebar.exe") })
+            if (System.IO.File.Exists(exe)) return exe;
+        return null;
+    }
+
+    static bool GlazeRunning()
+    {
+        var ps = Process.GetProcessesByName("glazewm");
+        foreach (var p in ps) p.Dispose();
+        return ps.Length > 0;
+    }
+
+    static void Restart(string why)
+    {
+        string exe = ExePath();
+        if (exe == null) { Slider.Log("zebar nöbetçisi: " + why + ", zebar.exe bulunamadı"); return; }
+        foreach (var p in Zebars()) { try { p.Kill(); p.WaitForExit(3000); } catch { } finally { p.Dispose(); } }
+        // Önceki süreç portu bırakana kadar bekle (yoksa yeni Zebar da sunucusuz açılabiliyor)
+        var sw = Stopwatch.StartNew();
+        while (PortOpen() && sw.ElapsedMilliseconds < 5000) Thread.Sleep(200);
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        // ShellExecute: helper'ın tutamaçları (GlazeWM IPC bağlantısı vb.) Zebar'a miras kalmasın
+        try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = home }); Slider.Log("zebar nöbetçisi: " + why + ", yeniden başlatıldı: " + exe); }
+        catch (Exception ex) { Slider.Log("zebar nöbetçisi: başlatılamadı: " + ex.Message); }
+    }
+
+    public static void Start()
+    {
+        new Thread(() =>
+        {
+            Thread.Sleep(15000); // oturum açılışında GlazeWM Zebar'ı kendisi başlatır
+            int bad = 0, failures = 0;
+            while (true)
+            {
+                Thread.Sleep(5000);
+                try
+                {
+                    if (!GlazeRunning()) { bad = 0; continue; } // GlazeWM kapalıyken (çıkış / yeniden başlatma) karışma
+                    var zs = Zebars();
+                    bool running = zs.Count > 0;
+                    foreach (var p in zs) p.Dispose();
+                    string problem = !running ? "zebar çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : null;
+                    if (problem == null) { bad = 0; failures = 0; continue; }
+                    if (++bad < 2) continue;
+                    bad = 0;
+                    Restart(problem);
+                    failures++;
+                    if (failures >= 3) Thread.Sleep(Math.Min(300000, 30000 * failures)); // sürekli başarısızsa sık sık deneme
+                }
+                catch (Exception ex) { Slider.Log("zebar nöbetçisi: " + ex.Message); }
+            }
+        }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+    }
+}
+
 // ---------------- Bildirim kanalı (toast widget'ına) ----------------
 // Zebar toast widget'ı http://127.0.0.1:6131/events adresine EventSource ile bağlanır; helper
 // buradan bildirim gönderir (Windows hata pencereleri yerine). Yalnızca loopback dinlenir.
@@ -2201,7 +2371,7 @@ static class Toasts
             }
             string cors = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Allow-Headers: *\r\n";
             string reqs = req.ToString();
-            if (reqs.StartsWith("GET /cmd?") || reqs.StartsWith("GET /overview-mode")) { Command(s, reqs); c.Close(); return; }
+            if (reqs.StartsWith("GET /cmd?") || reqs.StartsWith("GET /overview-mode") || reqs.StartsWith("GET /log?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -2227,7 +2397,8 @@ static class Toasts
         if (origin == null || origin == ZEBAR_ORIGIN)
         {
             string target = req.Substring(4, Math.Max(0, req.IndexOf(' ', 4) - 4)); // "/cmd?a=ws-3"
-            if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; }
+            if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; Slider.Log("overview modu okundu: '" + body + "'"); }
+            else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             else
             {
                 int q = target.IndexOf("a=");
@@ -3919,17 +4090,27 @@ static class SnipTool
         // Kaydetme penceresi ayrı thread'de: kabuk eklentisi vb. yüzünden hiç açılamazsa (bir kez oldu: süreç sonsuza dek
         // bekledi ve yeni alıntıları kilitledi) 3 sn sonra doğrudan Screenshots klasörüne kaydedip klasörü göster.
         string chosen = null; bool done = false;
+        // Kutu, seçimin yapıldığı monitörde açılsın: sahipsiz kutuyu Windows hep ana monitöre koyuyordu
+        var selMon = Screen.FromRectangle(new Rectangle(sel.X + vs.X, sel.Y + vs.Y, Math.Max(1, sel.Width), Math.Max(1, sel.Height))).WorkingArea;
         var dt = new Thread(() =>
         {
             try
             {
+                using (var owner = new Form
+                {
+                    FormBorderStyle = FormBorderStyle.None, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual,
+                    Bounds = new Rectangle(selMon.X + selMon.Width / 2, selMon.Y + selMon.Height / 2, 1, 1), Opacity = 0, TopMost = true,
+                })
                 using (var dlg = new SaveFileDialog
                 {
                     Title = Tr ? "Ekran alıntısını kaydet" : "Save screenshot",
                     InitialDirectory = dir, FileName = name,
                     Filter = "PNG (*.png)|*.png|JPEG (*.jpg)|*.jpg", AddExtension = true,
                 })
-                    if (dlg.ShowDialog() == DialogResult.OK) chosen = dlg.FileName;
+                {
+                    owner.Show();
+                    if (dlg.ShowDialog(owner) == DialogResult.OK) chosen = dlg.FileName;
+                }
             }
             catch { }
             done = true;
@@ -3957,7 +4138,11 @@ static class SnipTool
         Native.EnumWindows(delegate (IntPtr h, IntPtr l)
         {
             uint pid; Native.GetWindowThreadProcessId(h, out pid);
-            if (pid == me && Native.IsWindowVisible(h)) { found = true; return false; }
+            if (pid == me && Native.IsWindowVisible(h))
+            {
+                Native.RECT r; Native.GetWindowRect(h, out r);
+                if (r.Right - r.Left > 50 && r.Bottom - r.Top > 50) { found = true; return false; } // 1x1 sahip pencere değil
+            }
             return true;
         }, IntPtr.Zero);
         return found;
@@ -3977,7 +4162,11 @@ static class SnipTool
             Native.EnumWindows(delegate (IntPtr h, IntPtr l)
             {
                 uint wp; Native.GetWindowThreadProcessId(h, out wp);
-                if (wp == (uint)pid && Native.IsWindowVisible(h)) { visible = true; return false; }
+                if (wp == (uint)pid && Native.IsWindowVisible(h))
+                {
+                    Native.RECT r; Native.GetWindowRect(h, out r);
+                    if (r.Right - r.Left > 50 && r.Bottom - r.Top > 50) { visible = true; return false; }
+                }
                 return true;
             }, IntPtr.Zero);
             if (visible) return false;
@@ -4090,44 +4279,66 @@ static class ClipHistory
         return fallback;
     }
 
+    // Tarayıcıda "Resmi kopyala": görüntünün yanında resmin bağlantısı (ya da dosya yolu) metin olarak da gelir; eskiden
+    // metin önce kaydedilip çıkıldığı için resimler geçmişe hiç girmiyordu. Metin tek satırlık bir bağlantı / yol ise
+    // görüntü öncelikli; Excel / Word gibi hem metin hem görüntü koyanlarda metin.
+    static bool LinkLike(string t)
+    {
+        t = t.Trim();
+        if (t.Length == 0) return true;
+        if (t.IndexOf('\n') >= 0) return false;
+        return t.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || t.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || t.StartsWith("data:image", StringComparison.OrdinalIgnoreCase) || t.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
+            || (t.Length > 3 && t[1] == ':' && (t[2] == '\\' || t[2] == '/'));
+    }
+
+    static byte[] ClipboardPng()
+    {
+        // Önce hazır PNG (Chrome / Firefox / Zen bunu da koyar; saydamlığı korur), yoksa DIB -> PNG
+        var obj = Retry(() => Clipboard.ContainsData("PNG") ? Clipboard.GetData("PNG") : null, (object)null);
+        var ms0 = obj as System.IO.MemoryStream;
+        if (ms0 != null && ms0.Length > 0) return ms0.ToArray();
+        Image img = Retry(() => Clipboard.ContainsImage() ? Clipboard.GetImage() : null, (Image)null);
+        if (img == null) return null;
+        using (img)
+        using (var ms = new System.IO.MemoryStream()) { img.Save(ms, System.Drawing.Imaging.ImageFormat.Png); return ms.ToArray(); }
+    }
+
+    static void AddText(string text)
+    {
+        if (text.Length > MAX_TEXT) text = text.Substring(0, MAX_TEXT);
+        lock (gate)
+        {
+            var l = Load();
+            var same = l.FindAll(x => x.kind == "text" && x.text == text);
+            foreach (var s in same) l.Remove(s);
+            l.Insert(0, new Item { id = DateTime.UtcNow.Ticks, kind = "text", text = text, time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+            Trim(l);
+            Save(l);
+        }
+    }
+
     static void Changed()
     {
         if (Retry(() => Clipboard.ContainsData("ExcludeClipboardContentFromMonitorProcessing"), false)) return;
-        if (Retry(() => Clipboard.ContainsData("CanIncludeInClipboardHistory") && false, false)) return;
         string text = Retry(() => Clipboard.ContainsText() ? Clipboard.GetText() : null, (string)null);
-        if (!string.IsNullOrEmpty(text) && text.Trim().Length > 0)
+        bool hasText = !string.IsNullOrEmpty(text) && text.Trim().Length > 0;
+        bool hasImage = Retry(() => Clipboard.ContainsImage() || Clipboard.ContainsData("PNG"), false);
+        if (hasText && (!hasImage || !LinkLike(text))) { AddText(text); return; }
+        byte[] png = hasImage ? ClipboardPng() : null;
+        if (png == null) { if (hasText) AddText(text); return; }
+        string hash;
+        using (var sha = System.Security.Cryptography.SHA1.Create()) hash = BitConverter.ToString(sha.ComputeHash(png)).Replace("-", "").Substring(0, 16);
+        string file = "img-" + hash + ".png";
+        lock (gate)
         {
-            if (text.Length > MAX_TEXT) text = text.Substring(0, MAX_TEXT);
-            lock (gate)
-            {
-                var l = Load();
-                var same = l.FindAll(x => x.kind == "text" && x.text == text);
-                foreach (var s in same) l.Remove(s);
-                l.Insert(0, new Item { id = DateTime.UtcNow.Ticks, kind = "text", text = text, time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
-                Trim(l);
-                Save(l);
-            }
-            return;
-        }
-        Image img = Retry(() => Clipboard.ContainsImage() ? Clipboard.GetImage() : null, (Image)null);
-        if (img == null) return;
-        using (img)
-        {
-            byte[] png;
-            using (var ms = new System.IO.MemoryStream()) { img.Save(ms, System.Drawing.Imaging.ImageFormat.Png); png = ms.ToArray(); }
-            string hash;
-            using (var sha = System.Security.Cryptography.SHA1.Create()) hash = BitConverter.ToString(sha.ComputeHash(png)).Replace("-", "").Substring(0, 16);
-            string file = "img-" + hash + ".png";
-            lock (gate)
-            {
-                var l = Load();
-                var same = l.FindAll(x => x.kind == "image" && x.file == file);
-                foreach (var s in same) l.Remove(s);
-                if (!System.IO.File.Exists(System.IO.Path.Combine(Dir, file))) System.IO.File.WriteAllBytes(System.IO.Path.Combine(Dir, file), png);
-                l.Insert(0, new Item { id = DateTime.UtcNow.Ticks, kind = "image", file = file, time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
-                Trim(l);
-                Save(l);
-            }
+            var l = Load();
+            var same = l.FindAll(x => x.kind == "image" && x.file == file);
+            foreach (var s in same) l.Remove(s);
+            if (!System.IO.File.Exists(System.IO.Path.Combine(Dir, file))) System.IO.File.WriteAllBytes(System.IO.Path.Combine(Dir, file), png);
+            l.Insert(0, new Item { id = DateTime.UtcNow.Ticks, kind = "image", file = file, time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
+            Trim(l);
+            Save(l);
         }
     }
 
@@ -5887,31 +6098,7 @@ static class Program
         }) { IsBackground = true, Priority = ThreadPriority.Lowest };
         prioThread.Start();
 
-        // Güvenlik ağı: GlazeWM'in başlattığı Zebar gelmezse (ör. yeni kurulumda "shell-exec zebar" PATH'te bulunamaz)
-        // masaüstü barsız kalmasın. Yalnızca açılıştan sonraki ilk dakika ve bir kez: kullanıcı Zebar'ı sonradan bilerek
-        // kapatırsa geri açılmaz.
-        new Thread(() =>
-        {
-            for (int i = 0; i < 6; i++)
-            {
-                Thread.Sleep(10000);
-                if (Running("zebar")) return;
-                if (!Running("glazewm")) continue;
-                string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                foreach (var exe in new[] {
-                    System.IO.Path.Combine(home, @".glzr\logical-lunge\bin\zebar.exe"),
-                    System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"glzr.io\Zebar\zebar.exe") })
-                {
-                    if (!System.IO.File.Exists(exe)) continue;
-                    // ShellExecute: helper'ın tutamaçları (GlazeWM IPC bağlantısı vb.) Zebar'a miras kalmasın
-                    try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = home }); Slider.Log("zebar çalışmıyordu, başlatıldı: " + exe); }
-                    catch (Exception ex) { Slider.Log("zebar başlatılamadı: " + ex.Message); }
-                    return;
-                }
-                Slider.Log("zebar çalışmıyor ve bulunamadı");
-                return;
-            }
-        }) { IsBackground = true, Priority = ThreadPriority.Lowest }.Start();
+        ZebarWatchdog.Start();
 
         Application.Run(ui);
         GC.KeepAlive(mutex);
