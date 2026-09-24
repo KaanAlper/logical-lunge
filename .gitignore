@@ -25,3 +25,7 @@ node_modules/
 *.zip
 *.zip.sha256
 *.zip.ok
+
+# Rust build output
+/tiling/target/
+/shell/target/

@@ -1,0 +1,54 @@
+[package]
+name = "zebar"
+version = "0.0.0"
+description = "Zebar is a tool for creating customizable and cross-platform taskbars, desktop widgets, and popups."
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+clap = { version = "4", features = ["derive", "env"] }
+crossbeam = "0.8"
+globset = "0.4"
+netdev = "0.33"
+regex = "1"
+rocket = { version = "0.5", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+shell-util = { path = "../../crates/shell-util" }
+starship-battery = "0.8"
+sysinfo = "0.30"
+tauri = { version = "2", features = [
+  "macos-private-api",
+  "protocol-asset",
+  "webview-data-url",
+] }
+tauri-plugin-dialog = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-shell = "2"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+systray-util = { path = "../../crates/systray-util" }
+windows-core = { workspace = true }
+windows = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cocoa = "0.25"
+
+[features]
+# This feature is used for production builds or when `devPath` points to the
+# filesystem. Do not remove!
+custom-protocol = ["tauri/custom-protocol"]

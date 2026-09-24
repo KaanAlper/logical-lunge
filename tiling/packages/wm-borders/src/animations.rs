@@ -1,0 +1,373 @@
+use serde::Deserialize;
+use std::sync::Arc;
+use std::time::{self, Duration};
+use windows::Win32::Foundation::HWND;
+use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
+use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
+
+use windows_numerics::{Matrix3x2, Vector2};
+
+use crate::anim_timer::AnimationTimer;
+use crate::colors::ColorBrush;
+use crate::config::{serde_default_bool, serde_default_i32};
+use crate::utils::cubic_bezier;
+use crate::window_border::WindowState;
+
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AnimationsConfig {
+    #[serde(default)]
+    active: Vec<AnimParamsConfig>,
+    #[serde(default)]
+    inactive: Vec<AnimParamsConfig>,
+    /// Logical Lunge: 0 (the default) follows the display's refresh rate. A fixed 60 made border
+    /// fades step visibly on a 144 Hz display.
+    #[serde(default = "serde_default_i32::<0>")]
+    fps: i32,
+    #[serde(default = "serde_default_bool::<true>")]
+    enabled: bool,
+}
+
+/// The refresh rate DWM composes at, in frames per second (60 if unknown).
+fn display_refresh_rate() -> i32 {
+    let mut info = DWM_TIMING_INFO {
+        cbSize: size_of::<DWM_TIMING_INFO>() as u32,
+        ..Default::default()
+    };
+
+    // SAFETY: `info` is a valid, correctly sized `DWM_TIMING_INFO`; a null HWND asks for the
+    // composition timing of the whole desktop.
+    match unsafe { DwmGetCompositionTimingInfo(HWND::default(), &mut info) } {
+        Ok(()) if info.rateRefresh.uiDenominator > 0 && info.rateRefresh.uiNumerator > 0 => {
+            (info.rateRefresh.uiNumerator as f32 / info.rateRefresh.uiDenominator as f32).round()
+                as i32
+        }
+        _ => 60,
+    }
+}
+
+impl AnimationsConfig {
+    pub fn to_animations(&self) -> Animations {
+        if self.enabled {
+            Animations {
+                active: self
+                    .active
+                    .iter()
+                    .map(|params_config| params_config.to_anim_params())
+                    .collect(),
+                inactive: self
+                    .inactive
+                    .iter()
+                    .map(|params_config| params_config.to_anim_params())
+                    .collect(),
+                fps: if self.fps > 0 { self.fps } else { display_refresh_rate() },
+                ..Default::default()
+            }
+        } else {
+            Animations::default()
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Animations {
+    pub active: Vec<AnimParams>,
+    pub inactive: Vec<AnimParams>,
+    pub timer: Option<AnimationTimer>,
+    pub fps: i32,
+    pub fade_progress: f32,
+    pub spiral_progress: f32,
+}
+
+impl Animations {
+    pub fn animate_spiral(
+        &mut self,
+        bounds: &D2D_RECT_F,
+        active_color: &ColorBrush,
+        inactive_color: &ColorBrush,
+        anim_elapsed: &time::Duration,
+        anim_params: &AnimParams,
+    ) {
+        let direction = if anim_params.anim_type == AnimType::ReverseSpiral {
+            -1.0
+        } else {
+            1.0
+        };
+
+        let delta_x = anim_elapsed.as_secs_f32() * 1000.0 / anim_params.duration * direction;
+        self.spiral_progress += delta_x;
+
+        if !(0.0..=1.0).contains(&self.spiral_progress) {
+            self.spiral_progress = self.spiral_progress.rem_euclid(1.0);
+        }
+
+        let y_coord = anim_params.easing_fn.as_ref()(self.spiral_progress);
+
+        // Calculate the center point of the bounds
+        let center_x = bounds.left + ((bounds.right - bounds.left) / 2.0);
+        let center_y = bounds.top + ((bounds.bottom - bounds.top) / 2.0);
+
+        let transform = Matrix3x2::rotation_around(
+            360.0 * y_coord,
+            Vector2 {
+                X: center_x,
+                Y: center_y,
+            },
+        );
+
+        active_color.set_transform(&transform);
+        inactive_color.set_transform(&transform);
+    }
+
+    pub fn animate_fade(
+        &mut self,
+        window_state: WindowState,
+        active_color: &ColorBrush,
+        inactive_color: &ColorBrush,
+        anim_elapsed: &time::Duration,
+        anim_params: &AnimParams,
+    ) -> anyhow::Result<()> {
+        let prev_active_opacity = active_color.get_opacity()?;
+        let prev_inactive_opacity = inactive_color.get_opacity()?;
+
+        // We reset 'fade_progress' if either color has 0 opacity (i.e. when the animation is not
+        // in progress). This ensures we start from the correct position in the following cases:
+        // 1. The border has just been created.
+        // 2. The fade progress hasn't updated properly, which can occur if only one of the
+        //    active/inactive animations lists contains the fade animation type.
+        // NOTE: opacities can be negative
+        if prev_active_opacity == 0.0 || prev_inactive_opacity == 0.0 {
+            self.fade_progress = match window_state {
+                WindowState::Active => 0.0,
+                WindowState::Inactive => 1.0,
+            };
+        }
+
+        // Determine which direction we should move fade_progress
+        let direction = match window_state {
+            WindowState::Active => 1.0,
+            WindowState::Inactive => -1.0,
+        };
+
+        let delta_x = anim_elapsed.as_secs_f32() * 1000.0 / anim_params.duration * direction;
+        self.fade_progress += delta_x;
+
+        // Check if the fade animation is finished
+        if !(0.0..=1.0).contains(&self.fade_progress) {
+            let final_opacity = self.fade_progress.clamp(0.0, 1.0);
+
+            active_color.set_opacity(final_opacity)?;
+            inactive_color.set_opacity(1.0 - final_opacity)?;
+
+            self.fade_progress = final_opacity;
+            return Ok(());
+        }
+
+        let y_coord = anim_params.easing_fn.as_ref()(self.fade_progress);
+
+        // Don't question it; trust the process
+        // Ok, it's mainly done this way to handle edge cases when the border has just been created
+        let active_opacity_diff = f32::min(
+            f32::abs(y_coord - prev_active_opacity),
+            f32::abs(y_coord - (1.0 - prev_inactive_opacity)),
+        ) * direction;
+
+        // Clamp opacities from the negative direction. We use MAX_NEGATIVE instead of 0.0 so we
+        // don't enter the if statement at the start of animate_fade() (jank ik)
+        const MAX_NEGATIVE: f32 = -f32::MIN_POSITIVE;
+        let new_active_opacity = f32::max(prev_active_opacity + active_opacity_diff, MAX_NEGATIVE);
+        let new_inactive_opacity =
+            f32::max(prev_inactive_opacity - active_opacity_diff, MAX_NEGATIVE);
+
+        active_color.set_opacity(new_active_opacity)?;
+        inactive_color.set_opacity(new_inactive_opacity)?;
+
+        Ok(())
+    }
+
+    pub fn get_current(&self, window_state: WindowState) -> &Vec<AnimParams> {
+        match window_state {
+            WindowState::Active => &self.active,
+            WindowState::Inactive => &self.inactive,
+        }
+    }
+
+    pub fn set_timer_if_needed(
+        &mut self,
+        border_window: HWND,
+        last_anim_time: &mut Option<time::Instant>,
+    ) {
+        if self.timer.is_none() && (!self.active.is_empty() || !self.inactive.is_empty()) {
+            let interval = Duration::from_micros(1_000_000 / self.fps.max(1) as u64);
+            self.timer = Some(AnimationTimer::new(border_window, interval));
+
+            *last_anim_time = Some(time::Instant::now());
+        }
+    }
+
+    pub fn destroy_timer(&mut self) {
+        self.timer = None;
+    }
+
+    pub fn update_fade_progress(&mut self, window_state: WindowState) {
+        self.fade_progress = match window_state {
+            WindowState::Active => 1.0,
+            WindowState::Inactive => 0.0,
+        };
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AnimParamsConfig {
+    #[serde(rename = "type")]
+    pub anim_type: AnimType,
+    pub duration: Option<f32>,
+    pub easing: Option<AnimEasing>,
+}
+
+impl AnimParamsConfig {
+    fn to_anim_params(&self) -> AnimParams {
+        let duration = self.duration.unwrap_or(match self.anim_type {
+            AnimType::Spiral | AnimType::ReverseSpiral => 1800.0,
+            AnimType::Fade => 200.0,
+        });
+
+        let easing = self.easing.unwrap_or_default();
+        let easing_function = cubic_bezier(&easing.to_points()).unwrap();
+
+        AnimParams {
+            anim_type: self.anim_type,
+            duration,
+            easing_fn: Arc::new(easing_function),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AnimParams {
+    pub anim_type: AnimType,
+    pub duration: f32,
+    pub easing_fn: Arc<dyn Fn(f32) -> f32 + Send + Sync>,
+}
+
+// We must manually implement Debug for AnimParams because Fn(f32) -> f32 doesn't implement it
+impl std::fmt::Debug for AnimParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnimParams")
+            .field("type", &self.anim_type)
+            .field("duration", &self.duration)
+            .field("easing_fn", &Arc::as_ptr(&self.easing_fn))
+            .finish()
+    }
+}
+
+pub trait AnimVec {
+    fn contains_type(&self, anim_type: AnimType) -> bool;
+}
+
+impl AnimVec for Vec<AnimParams> {
+    fn contains_type(&self, anim_type: AnimType) -> bool {
+        self.iter()
+            .any(|anim_params| anim_params.anim_type == anim_type)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub enum AnimType {
+    Spiral,
+    ReverseSpiral,
+    Fade,
+}
+
+// Thanks to 0xJWLabs for the AnimEasing enum along with its methods
+#[derive(Debug, Default, Clone, Copy, Deserialize, PartialEq)]
+pub enum AnimEasing {
+    // Linear
+    #[default]
+    Linear,
+
+    // EaseIn variants
+    EaseIn,
+    EaseInSine,
+    EaseInQuad,
+    EaseInCubic,
+    EaseInQuart,
+    EaseInQuint,
+    EaseInExpo,
+    EaseInCirc,
+    EaseInBack,
+
+    // EaseOut variants
+    EaseOut,
+    EaseOutSine,
+    EaseOutQuad,
+    EaseOutCubic,
+    EaseOutQuart,
+    EaseOutQuint,
+    EaseOutExpo,
+    EaseOutCirc,
+    EaseOutBack,
+
+    // EaseInOut variants
+    EaseInOut,
+    EaseInOutSine,
+    EaseInOutQuad,
+    EaseInOutCubic,
+    EaseInOutQuart,
+    EaseInOutQuint,
+    EaseInOutExpo,
+    EaseInOutCirc,
+    EaseInOutBack,
+
+    #[serde(untagged)]
+    CubicBezier([f32; 4]),
+}
+
+impl AnimEasing {
+    /// Converts the easing to a corresponding array of points.
+    /// Linear and named easing variants will return predefined control points,
+    /// while CubicBezier returns its own array.
+    pub fn to_points(self) -> [f32; 4] {
+        match self {
+            // Linear
+            AnimEasing::Linear => [0.0, 0.0, 1.0, 1.0],
+
+            // EaseIn variants
+            AnimEasing::EaseIn => [0.42, 0.0, 1.0, 1.0],
+            AnimEasing::EaseInSine => [0.12, 0.0, 0.39, 0.0],
+            AnimEasing::EaseInQuad => [0.11, 0.0, 0.5, 0.0],
+            AnimEasing::EaseInCubic => [0.32, 0.0, 0.67, 0.0],
+            AnimEasing::EaseInQuart => [0.5, 0.0, 0.75, 0.0],
+            AnimEasing::EaseInQuint => [0.64, 0.0, 0.78, 0.0],
+            AnimEasing::EaseInExpo => [0.7, 0.0, 0.84, 0.0],
+            AnimEasing::EaseInCirc => [0.55, 0.0, 1.0, 0.45],
+            AnimEasing::EaseInBack => [0.36, 0.0, 0.66, -0.56],
+
+            // EaseOut variants
+            AnimEasing::EaseOut => [0.0, 0.0, 0.58, 1.0],
+            AnimEasing::EaseOutSine => [0.61, 1.0, 0.88, 1.0],
+            AnimEasing::EaseOutQuad => [0.5, 1.0, 0.89, 1.0],
+            AnimEasing::EaseOutCubic => [0.33, 1.0, 0.68, 1.0],
+            AnimEasing::EaseOutQuart => [0.25, 1.0, 0.5, 1.0],
+            AnimEasing::EaseOutQuint => [0.22, 1.0, 0.36, 1.0],
+            AnimEasing::EaseOutExpo => [0.16, 1.0, 0.3, 1.0],
+            AnimEasing::EaseOutCirc => [0.0, 0.55, 0.45, 1.0],
+            AnimEasing::EaseOutBack => [0.34, 1.56, 0.64, 1.0],
+
+            // EaseInOut variants
+            AnimEasing::EaseInOut => [0.42, 0.0, 0.58, 1.0],
+            AnimEasing::EaseInOutSine => [0.37, 0.0, 0.63, 1.0],
+            AnimEasing::EaseInOutQuad => [0.45, 0.0, 0.55, 1.0],
+            AnimEasing::EaseInOutCubic => [0.65, 0.0, 0.35, 1.0],
+            AnimEasing::EaseInOutQuart => [0.76, 0.0, 0.24, 1.0],
+            AnimEasing::EaseInOutQuint => [0.83, 0.0, 0.17, 1.0],
+            AnimEasing::EaseInOutExpo => [0.87, 0.0, 0.13, 1.0],
+            AnimEasing::EaseInOutCirc => [0.85, 0.0, 0.15, 1.0],
+            AnimEasing::EaseInOutBack => [0.68, -0.6, 0.32, 1.6],
+
+            // CubicBezier variant returns its own points.
+            AnimEasing::CubicBezier(bezier) => bezier,
+        }
+    }
+}
