@@ -203,7 +203,12 @@ fn windows_to_bring_to_front(
             );
 
             is_floating_or_tiling
-              && window.state().is_same_state(&focused_descendant.state())
+              && (window.state().is_same_state(&focused_descendant.state())
+                // Logical Lunge: like Hyprland, floating windows stay
+                // above tiling ones. Focusing a tiling window used to
+                // bring only the tiling windows forward, hiding floating
+                // ones (e.g. a game launcher) behind them.
+                || floats_over_tiling(window, &focused_descendant))
           })
           .collect(),
         None => vec![],
@@ -212,6 +217,27 @@ fn windows_to_bring_to_front(
     .collect::<Vec<_>>();
 
   Ok(windows_to_bring_to_front)
+}
+
+/// Whether `window` is a floating window to keep above the tiling windows
+/// of its workspace, whose focused window is `focused_descendant`.
+fn floats_over_tiling(
+  window: &WindowContainer,
+  focused_descendant: &WindowContainer,
+) -> bool {
+  matches!(window.state(), WindowState::Floating(_))
+    && matches!(focused_descendant.state(), WindowState::Tiling)
+}
+
+/// The focused window of the workspace that `window` is on.
+fn workspace_focused_window(
+  window: &WindowContainer,
+) -> Option<WindowContainer> {
+  window
+    .workspace()?
+    .descendant_focus_order()
+    .next()
+    .and_then(|container| container.as_window_container().ok())
 }
 
 #[allow(clippy::too_many_lines)]
@@ -240,10 +266,20 @@ fn redraw_containers(
     // focused window will be updated first.
     // TODO: To reduce flicker, redraw windows that will be shown first,
     // then redraw the ones to be hidden last.
+    // Floating windows kept above tiling ones go first: windows are
+    // updated in reverse, so they're raised after the focused tiling
+    // window and end up on top of it.
     windows.sort_by_key(|window| {
-      descendant_focus_order
-        .iter()
-        .position(|order| order.id() == window.id())
+      let over_tiling = windows_to_bring_to_front.contains(window)
+        && workspace_focused_window(window)
+          .is_some_and(|focused| floats_over_tiling(window, &focused));
+
+      (
+        !over_tiling,
+        descendant_focus_order
+          .iter()
+          .position(|order| order.id() == window.id()),
+      )
     });
 
     windows
@@ -272,6 +308,15 @@ fn redraw_containers(
       }
       WindowState::Fullscreen(config) if config.shown_on_top => {
         WindowZOrder::TopMost
+      }
+      // Raised to the top, after the focused tiling window (see above).
+      WindowState::Floating(_)
+        if should_bring_to_front
+          && workspace_focused_window(window).is_some_and(|focused| {
+            floats_over_tiling(window, &focused)
+          }) =>
+      {
+        WindowZOrder::Normal
       }
       _ if should_bring_to_front => {
         let focused_descendant = workspace
@@ -542,11 +587,17 @@ fn reposition_window(
       // Logical Lunge: move (or show) the border in the same step as the
       // window, at the window's visible frame (its rect without the
       // invisible resize borders).
+      // Fullscreen windows (e.g. a browser playing a video fullscreen) get
+      // no border, like in Hyprland; a border shown while the window was
+      // tiled is hidden, otherwise it stayed at the old position.
       let has_frame = match window.state() {
         WindowState::Tiling | WindowState::Floating(_) => true,
-        WindowState::Fullscreen(fullscreen) => !fullscreen.maximized,
-        WindowState::Minimized => false,
+        WindowState::Fullscreen(_) | WindowState::Minimized => false,
       };
+
+      if is_visible && !has_frame {
+        wm_borders::hide(native_handle(window));
+      }
 
       if is_visible && has_frame {
         let frame = window

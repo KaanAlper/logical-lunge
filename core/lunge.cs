@@ -3215,7 +3215,6 @@ class Rounder
         int style = Native.GetWindowLong(h, Native.GWL_STYLE);
         int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
         if ((style & Native.WS_CHILD) != 0 || (ex & Native.WS_EX_TOOLWINDOW) != 0) return;
-        if ((style & Native.WS_CAPTION) != Native.WS_CAPTION && (style & 0x00040000) == 0) return; // başlık ya da kalın çerçeve
         if (skipProcs.Contains(ProcName(h))) return;
 
         Native.RECT wr, fr;
@@ -3228,13 +3227,21 @@ class Rounder
         var screen = Screen.FromHandle(h).Bounds;
         bool full = wp.showCmd == 3 || (fr.Left <= screen.Left && fr.Top <= screen.Top && fr.Right >= screen.Right && fr.Bottom >= screen.Bottom);
 
+        // Başlık ya da kalın çerçevesi olmayan pencere (tarayıcı video tam ekranı başlığı kaldırır) yuvarlanmaz. Önceden
+        // yuvarladıysak bölgeyi kaldır: eski (döşeme boyutundaki) bölge kalınca monitörü kaplayan tam ekran video
+        // döşeme boyutunda kırpılıyordu.
+        if (full || ((style & Native.WS_CAPTION) != Native.WS_CAPTION && (style & 0x00040000) == 0))
+        {
+            if (applied.ContainsKey(h)) { applied.Remove(h); Native.SetWindowRgn(h, IntPtr.Zero, true); }
+            return;
+        }
+
         long key = ((long)(fr.Right - fr.Left) << 32) | (uint)(fr.Bottom - fr.Top);
-        if (full) key = -1;
         long prev;
         Native.RECT box;
         bool hasRgn = Native.GetWindowRgnBox(h, out box) != 0;
         // Bazı uygulamalar (Terminal, Firefox/Zen) bölgeyi kendileri sıfırlıyor: yoksa yeniden uygula
-        if (applied.TryGetValue(h, out prev) && prev == key && (hasRgn || full)) return;
+        if (applied.TryGetValue(h, out prev) && prev == key && hasRgn) return;
         if (giveUp.Contains(h)) return;
         if (prev == key && !hasRgn)
         {
@@ -3248,8 +3255,6 @@ class Rounder
             if (hits.Count > 4) { giveUp.Add(h); Slider.Log("gave up rounding " + ProcName(h)); return; }
         }
         applied[h] = key;
-
-        if (full) { Native.SetWindowRgn(h, IntPtr.Zero, true); return; }
 
         int l = fr.Left - wr.Left, t = fr.Top - wr.Top;
         int r = l + (fr.Right - fr.Left), b = t + (fr.Bottom - fr.Top);
