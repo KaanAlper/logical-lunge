@@ -199,14 +199,14 @@
       const RESTART = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts\\restart-desktop.ps1';
       // ii sessionScreen: kilitle, uyku, oturumu kapat, yeniden başlat, kapat, ürün yazılımı (UEFI/BIOS) ayarları
       const ITEMS = [
-        { key: 'l', icon: 'lock', label: 'Kilitle', act: () => run('rundll32', ['user32.dll,LockWorkStation']) },
-        { key: 'u', icon: 'dark_mode', label: 'Uyku', act: () => run('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0']) },
+        { icon: 'lock', label: 'Kilitle', act: () => run('rundll32', ['user32.dll,LockWorkStation']) },
+        { icon: 'dark_mode', label: 'Uyku', act: () => run('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0']) },
         // Takılan / kapanan bir parça varsa masaüstünü (GlazeWM, Zebar, ll-helper) temiz baştan başlatır
-        { key: 'w', icon: 'refresh', label: 'Masaüstünü yenile', act: () => run(HELPER, ['--ps-bg', RESTART]) },
-        { key: 'o', icon: 'logout', label: 'Çıkış', act: () => run('shutdown', ['/l']) },
-        { key: 'r', icon: 'restart_alt', label: 'Yeniden başlat', act: () => run('shutdown', ['/r', '/t', '0']) },
-        { key: 'f', icon: 'developer_board', label: 'UEFI / BIOS', act: () => run('shutdown', ['/r', '/fw', '/t', '0']) },
-        { key: 's', icon: 'power_settings_new', label: 'Kapat', danger: true, act: () => run('shutdown', ['/s', '/t', '0']) },
+        { icon: 'refresh', label: 'Masaüstünü yenile', act: () => run(HELPER, ['--ps-bg', RESTART]) },
+        { icon: 'logout', label: 'Çıkış', act: () => run('shutdown', ['/l']) },
+        { icon: 'restart_alt', label: 'Yeniden başlat', act: () => run('shutdown', ['/r', '/t', '0']) },
+        { icon: 'developer_board', label: 'UEFI / BIOS', act: () => run('shutdown', ['/r', '/fw', '/t', '0']) },
+        { icon: 'power_settings_new', label: 'Kapat', danger: true, act: () => run('shutdown', ['/s', '/t', '0']) },
       ];
       const row = document.getElementById('row'), scrim = document.getElementById('scrim');
       // Her monitörde bir pencere açılır (karartma hepsinde); odak ve tuşlar yalnızca birincil monitördekinde
@@ -259,7 +259,7 @@
         else if (k === 'arrowright' || k === 'tab') { e.preventDefault(); sel = (sel + 1) % ITEMS.length; mark(); }
         else if (k === 'arrowleft') { e.preventDefault(); sel = (sel + ITEMS.length - 1) % ITEMS.length; mark(); }
         else if (k === 'enter' || k === ' ') { e.preventDefault(); const it = ITEMS[sel]; hideAll(); it.act(); }
-        else { const i = ITEMS.findIndex(x => x.key === k); if (i >= 0) { e.preventDefault(); hideAll(); ITEMS[i].act(); } }
+        // Harf kısayolu yok: yanlışlıkla basılan bir harf (S, R) bilgisayarı kapatıp yeniden başlatıyordu
       });
     </script>
   </body>
