@@ -253,8 +253,8 @@ keybindings:
     bindings: ['lwin+shift+alt+e']
 
 # Pencere kenarlıkları: GlazeWM'in kendisi çiziyor (tacky-borders'ın çizim motoru içine alındı; ayrı program,
-# tepsi simgesi ya da ayrı ayar dosyası yok). Anahtarlar tacky-borders config.yaml ile aynı. Bu bölüm silinirse
-# kenarlık çizilmez; değişiklikler config yenilenince uygulanır.
+# tepsi simgesi ya da ayrı ayar dosyası yok). Kenarlık pencereyle aynı adımda taşınır. Anahtarlar tacky-borders
+# config.yaml ile aynı. Bu bölüm silinirse kenarlık çizilmez; değişiklikler config yenilenince uygulanır.
 borders:
   render_backend: V2
   global:
@@ -289,22 +289,10 @@ borders:
           opacity: 0.35
       inactive: []
       enabled: true
-  window_rules:
-    - match: Class
-      name: "Windows.UI.Core.CoreWindow"
-      enabled: false
-    - match: Class
-      name: "XamlExplorerHostIslandWindow"
-      enabled: false
-    - match: Process
-      name: "ll-helper"
-      enabled: false
-    - match: Process
-      name: "zebar"
-      enabled: false
-    - match: Title
-      name: "Picture-in-Picture"
-      enabled: false
-    - match: Class
-      name: "Shell_TrayWnd"
-      enabled: false
+  # Kenarlık yalnızca GlazeWM'in yönettiği pencerelere çizilir (yukarıdaki 'ignore' kuralındakilere, bar'a, PiP'e,
+  # menülere çizilmez). Yönetilen bir uygulamada kenarlık istemezsen:
+  #   window_rules:
+  #     - match: Process
+  #       name: "uygulama"
+  #       enabled: false
+  window_rules: []

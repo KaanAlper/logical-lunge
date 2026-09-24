@@ -195,10 +195,14 @@
       win.setTitle('ll-session').catch(() => {});
       win.hide().catch(() => {});
       const run = (prog, args) => zebar.shellSpawn(prog, args).catch(e => console.error(prog, e));
+      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
+      const RESTART = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts\\restart-desktop.ps1';
       // ii sessionScreen: kilitle, uyku, oturumu kapat, yeniden başlat, kapat, ürün yazılımı (UEFI/BIOS) ayarları
       const ITEMS = [
         { key: 'l', icon: 'lock', label: 'Kilitle', act: () => run('rundll32', ['user32.dll,LockWorkStation']) },
         { key: 'u', icon: 'dark_mode', label: 'Uyku', act: () => run('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0']) },
+        // Takılan / kapanan bir parça varsa masaüstünü (GlazeWM, Zebar, ll-helper) temiz baştan başlatır
+        { key: 'w', icon: 'refresh', label: 'Masaüstünü yenile', act: () => run(HELPER, ['--ps-bg', RESTART]) },
         { key: 'o', icon: 'logout', label: 'Çıkış', act: () => run('shutdown', ['/l']) },
         { key: 'r', icon: 'restart_alt', label: 'Yeniden başlat', act: () => run('shutdown', ['/r', '/t', '0']) },
         { key: 'f', icon: 'developer_board', label: 'UEFI / BIOS', act: () => run('shutdown', ['/r', '/fw', '/t', '0']) },

@@ -44,10 +44,19 @@ if (-not $src -or -not (Test-Path (Join-Path $src 'installer\setup.ps1'))) { Wri
 # (cloak) and a killed / older GlazeWM left them invisible. A graceful exit brings them back (Logical Lunge's GlazeWM
 # build); anything still hidden is brought back by the helper. Returns whether GlazeWM was running.
 function Stop-LLDesktop([string]$helperExe) {
-    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Maintenance marker: ll-helper's watchdogs restart a crashed GlazeWM / Zebar / helper, but not while this is
+    # present (setup removes it when it starts the desktop again; it counts for 10 minutes at most)
+    $state = Join-Path $env:LOCALAPPDATA 'logical-lunge'
+    New-Item -ItemType Directory -Force $state | Out-Null
+    Set-Content (Join-Path $state 'maintenance') (Get-Date -Format o)
+    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
     if (-not $gw) { return $false }
     try { & $gw.Path command wm-exit 2>$null | Out-Null } catch {}
-    if (-not $gw.WaitForExit(5000)) { Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }
+    if (-not $gw.WaitForExit(5000)) {
+        # stuck: the helper first, so that it can't restart GlazeWM
+        Get-Process ll-helper -ErrorAction SilentlyContinue | Stop-Process -Force
+        Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300
+    }
     if ($helperExe -and (Test-Path $helperExe)) { try { & $helperExe --uncloak-orphans | Out-Null } catch {} }
     return $true
 }
@@ -61,6 +70,7 @@ Write-Host 'Installing (Windows will ask for permission once)...'
 $wasRunning = Stop-LLDesktop (Join-Path $src 'logical-lunge\helper\ll-helper.exe')
 try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $args2 }
 catch {
+    Remove-Item (Join-Path $env:LOCALAPPDATA 'logical-lunge\maintenance') -Force -ErrorAction SilentlyContinue
     if ($wasRunning) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue }
     Write-Host 'Installation cancelled.' -ForegroundColor Yellow; return
 }

@@ -22,10 +22,19 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 # (cloak) and a killed / older GlazeWM left them invisible. A graceful exit brings them back (Logical Lunge's GlazeWM
 # build); anything still hidden is brought back by the helper. Returns whether GlazeWM was running.
 function Stop-LLDesktop([string]$helperExe) {
-    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Select-Object -First 1
+    # Maintenance marker: ll-helper's watchdogs restart a crashed GlazeWM / Zebar / helper, but not while this is
+    # present (setup removes it when it starts the desktop again; it counts for 10 minutes at most)
+    $state = Join-Path $env:LOCALAPPDATA 'logical-lunge'
+    New-Item -ItemType Directory -Force $state | Out-Null
+    Set-Content (Join-Path $state 'maintenance') (Get-Date -Format o)
+    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
     if (-not $gw) { return $false }
     try { & $gw.Path command wm-exit 2>$null | Out-Null } catch {}
-    if (-not $gw.WaitForExit(5000)) { Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }
+    if (-not $gw.WaitForExit(5000)) {
+        # stuck: the helper first, so that it can't restart GlazeWM
+        Get-Process ll-helper -ErrorAction SilentlyContinue | Stop-Process -Force
+        Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300
+    }
     if ($helperExe -and (Test-Path $helperExe)) { try { & $helperExe --uncloak-orphans | Out-Null } catch {} }
     return $true
 }
@@ -37,7 +46,7 @@ if (-not $isAdmin) {
     Copy-Item $PSCommandPath $self -Force
     $choice = if ($RemoveConfig) { '-RemoveConfig' } else { '-KeepConfig' }
     try { Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", '-UserProfile', "`"$UserProfile`"", '-UserSid', $UserSid, '-Elevated', $choice }
-    catch { if ($wasRunning) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue } }   # UAC declined: desktop back
+    catch { Remove-Item (Join-Path $env:LOCALAPPDATA 'logical-lunge\maintenance') -Force -ErrorAction SilentlyContinue; if ($wasRunning) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue } }   # UAC declined: desktop back
     return
 }
 
@@ -53,7 +62,9 @@ $bf = Join-Path $STATE 'install-backup.json'
 if (Test-Path $bf) { $backup = Get-Content $bf -Raw | ConvertFrom-Json }
 
 Log '==> Stopping Logical Lunge'
-foreach ($n in 'glazewm', 'zebar', 'll-helper', 'tacky-borders', 'll-temps', 'll-songrec') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
+# the helper first: its watchdog would restart GlazeWM
+foreach ($n in 'll-helper', 'glazewm', 'zebar', 'tacky-borders', 'll-temps', 'll-songrec') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
+Remove-Item (Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue
 
 Log '==> Removing startup tasks'
 Get-ScheduledTask -TaskPath '\LL\' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false

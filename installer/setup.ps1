@@ -333,7 +333,24 @@ foreach ($p in $LL, (Join-Path $ZB 'logical-lunge'), $STATE) { & icacls $p /seto
 # taskbar auto-hide / DisabledHotkeys take effect after Explorer restarts (Windows restarts it by itself)
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
+# Start menu: a way back without a command line when something is stuck (while the shell's bar is down, the Win key
+# opens Windows' own Start menu)
+try {
+    $sm = Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge'
+    New-Item -ItemType Directory -Force $sm | Out-Null
+    $name = if ((Get-UICulture).Name -like 'tr*') { "Logical Lunge'u yeniden başlat" } else { 'Restart Logical Lunge' }
+    $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $sm "$name.lnk"))
+    $lnk.TargetPath = Join-Path $LL 'helper\ll-helper.exe'
+    $lnk.Arguments = "--ps-bg `"$(Join-Path $LL 'scripts\restart-desktop.ps1')`""
+    $lnk.WorkingDirectory = $LL
+    $lnk.IconLocation = "$env:WINDIR\System32\shell32.dll,238"
+    $lnk.Description = 'Restarts GlazeWM, Zebar and ll-helper cleanly'
+    $lnk.Save()
+}
+catch { Log "    could not create the Start menu shortcut: $($_.Exception.Message)" }
 Log 'Done. Starting the desktop...'
 Save-Backup
+# the watchdogs may act again (Stop-LLDesktop paused them)
+Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM'
 if (-not $NoSensors) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'Temps' -ErrorAction SilentlyContinue }

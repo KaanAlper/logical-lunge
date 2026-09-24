@@ -182,6 +182,9 @@ class Glaze
     }
 
     public void Command(string cmd) { Send("command " + cmd); }
+
+    // GlazeWM IPC'ye yanıt veriyor mu (pencere yöneticisi nöbetçisi için)
+    public bool Ping() { return Send("query monitors") != null; }
 }
 
 static class J
@@ -2373,6 +2376,7 @@ static class ZebarWatchdog
                 try
                 {
                     if (!GlazeRunning()) { bad = 0; continue; } // GlazeWM kapalıyken (çıkış / yeniden başlatma) karışma
+                    if (Maint.Quiet() || WmWatchdog.Recovering) { bad = 0; continue; }
                     var zs = Zebars();
                     bool running = zs.Count > 0;
                     foreach (var p in zs) p.Dispose();
@@ -2387,6 +2391,313 @@ static class ZebarWatchdog
                 catch (Exception ex) { Slider.Log("zebar nöbetçisi: " + ex.Message); }
             }
         }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+    }
+}
+
+// ---------------- Kendini toparlama ----------------
+// Bir OS gibi: bir parça çökerse ya da donarsa kullanıcı komut satırı, taskkill bilmeden masaüstü kendiliğinden
+// toparlanır. Nöbetçiler birbirini korur (yeni süreç yok):
+//   GlazeWM çöker / donar      -> helper (WmWatchdog) masaüstünü yeniden başlatır
+//   Zebar çöker                -> helper (ZebarWatchdog)
+//   helper çöker (yönetilen hata) ya da arayüzü donar -> helper kendini yeniden başlatır (SelfHeal)
+//   helper tamamen ölür        -> Zebar'ın bildirim kopyası (ll-helper --toast-stream) onu başlatır
+// Hepsi kasıtlı çıkışta (GlazeWM 0 koduyla kapanır, kapanırken helper'ı ve Zebar'ı da kapatır), oturum kapanırken
+// ve bakım sırasında (kurulum, güncelleme, kaldırma, "masaüstünü yenile") hiçbir şey yapmaz. Çöküş döngüsüne
+// girmesinler diye her biri 5 dakikada en fazla 3 kez dener.
+static class Maint
+{
+    public static volatile bool SessionEnding;
+    static string Dir { get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge"); } }
+
+    // Bakım işareti: kurulum / güncelleme / kaldırma / "masaüstünü yenile" bırakır. Yarım kalan bir işlem nöbetçileri
+    // sonsuza dek susturmasın diye 10 dakikadan eskisi sayılmaz.
+    public static bool Quiet()
+    {
+        if (SessionEnding) return true;
+        try
+        {
+            var fi = new System.IO.FileInfo(System.IO.Path.Combine(Dir, "maintenance"));
+            return fi.Exists && (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalMinutes < 10;
+        }
+        catch { return false; }
+    }
+
+    // Son 5 dakikadaki denemeler (süreçler arası, dosyada): sınırı aşmadıysa bu denemeyi kaydeder ve true döner.
+    public static bool Allow(string name)
+    {
+        string file = System.IO.Path.Combine(Dir, name);
+        var now = DateTime.UtcNow;
+        var recent = new List<long>();
+        try
+        {
+            foreach (var line in System.IO.File.ReadAllLines(file))
+            {
+                long t;
+                if (long.TryParse(line, out t) && (now - new DateTime(t, DateTimeKind.Utc)).TotalMinutes < 5) recent.Add(t);
+            }
+        }
+        catch { }
+        if (recent.Count >= 3) return false;
+        recent.Add(now.Ticks);
+        try
+        {
+            System.IO.Directory.CreateDirectory(Dir);
+            System.IO.File.WriteAllLines(file, recent.ConvertAll(t => t.ToString()).ToArray());
+        }
+        catch { }
+        return true;
+    }
+
+    public static string HelperExe { get { return System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ll-helper.exe"); } }
+
+    public static int RunHidden(string exe, string args, int waitMs)
+    {
+        try
+        {
+            using (var p = Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = false, CreateNoWindow = true }))
+                return p.WaitForExit(waitMs) ? p.ExitCode : -1;
+        }
+        catch { return -1; }
+    }
+
+    public static bool Running(string name)
+    {
+        var ps = Process.GetProcessesByName(name);
+        foreach (var p in ps) p.Dispose();
+        return ps.Length > 0;
+    }
+}
+
+// GlazeWM'i izler. Çıkış kodu 0 değilse (çökme, zorla kapatılma, başlatma hatası) ya da 15 sn'den uzun IPC'ye yanıt
+// vermezse masaüstünü yeniden başlatır. Kasıtlı çıkış 0 koduyla olur (ve helper'ı da kapatır). Yeniden başlatılan GlazeWM
+// açılamazsa (ör. çöken sürecin IPC portu, süreci tamamen kapanana kadar dolu kalabiliyor) port boşalınca yeniden denenir.
+static class WmWatchdog
+{
+    const int IPC_PORT = 6123;
+    static int recoveringUntil;
+    public static bool Recovering { get { return Environment.TickCount - Volatile.Read(ref recoveringUntil) < 0; } }
+
+    public static void Start()
+    {
+        new Thread(Loop) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "wm-watchdog" }.Start();
+    }
+
+    // Pencere yöneticisi: en eski glazewm süreci (glazewm.exe "command ..." gibi kısa ömürlü CLI çağrıları da aynı adla
+    // görünür; 5 sn'den genç olan sayılmaz)
+    static Process FindWm()
+    {
+        Process best = null;
+        foreach (var p in Process.GetProcessesByName("glazewm"))
+        {
+            try
+            {
+                if ((DateTime.Now - p.StartTime).TotalSeconds >= 5 && (best == null || p.StartTime < best.StartTime))
+                {
+                    if (best != null) best.Dispose();
+                    best = p;
+                    continue;
+                }
+            }
+            catch { }
+            p.Dispose();
+        }
+        return best;
+    }
+
+    static string wmPath;
+
+    static bool PortFree()
+    {
+        try
+        {
+            var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, IPC_PORT);
+            l.ExclusiveAddressUse = true;
+            l.Start();
+            l.Stop();
+            return true;
+        }
+        catch { return false; }
+    }
+
+    static void Loop()
+    {
+        Thread.Sleep(10000); // oturum açılışı / helper yeni başladı: önce her şey yerine otursun
+        var ipc = new Glaze();
+        Process wm = null;
+        bool wanted = false;  // GlazeWM çalışmalı mı: çalışırken görüldü ve kasıtlı kapanmadı
+        int missing = 0, hung = 0, tick = 0, starts = 0, nextStartAt = 0;
+        bool portNoted = false;
+        while (true)
+        {
+            Thread.Sleep(2000);
+            try
+            {
+                if (wm == null)
+                {
+                    wm = FindWm();
+                    if (wm != null)
+                    {
+                        // Tutamaç şimdi açılır: yoksa süreç kapandıktan sonra çıkış kodu okunamıyor
+                        try { var handle = wm.Handle; wmPath = wm.MainModule.FileName; } catch { }
+                        if (starts > 0)
+                        {
+                            Slider.Log("wm nöbetçisi: GlazeWM yeniden çalışıyor");
+                            // Bildirim, Zebar geri gelip bildirim kanalına bağlanınca
+                            new Thread(() =>
+                            {
+                                Thread.Sleep(9000);
+                                Toasts.Send("info", "Masaüstü toparlandı", "Pencere yöneticisi beklenmedik biçimde kapanmıştı; yeniden başlatıldı.", "restart_alt");
+                            }) { IsBackground = true }.Start();
+                        }
+                        wanted = true; hung = 0; missing = 0; starts = 0; portNoted = false;
+                        continue;
+                    }
+                    if (Maint.Quiet() || Maint.Running("glazewm")) { missing = 0; continue; } // bakım / açılıyor
+                    if (!wanted)
+                    {
+                        // Helper GlazeWM'siz başladı ya da GlazeWM'i hiç görmedi. Kasıtlı çıkış helper'ı da kapattığı için
+                        // helper yaşarken GlazeWM ~20 sn yoksa masaüstü bozuktur: GlazeWM çalışmalı.
+                        if (++missing < 10) continue;
+                        missing = 0; wanted = true; nextStartAt = Environment.TickCount;
+                    }
+                    if (Environment.TickCount - nextStartAt < 0) continue;
+                    if (!PortFree())
+                    {
+                        if (!portNoted) { portNoted = true; Slider.Log("wm nöbetçisi: IPC portu hâlâ eski süreçte; boşalınca başlatılacak"); }
+                        continue;
+                    }
+                    starts++;
+                    Slider.Log("wm nöbetçisi: GlazeWM çalışmıyor; başlatılıyor (deneme " + starts + ")");
+                    Maint.RunHidden(Maint.HelperExe, "--uncloak-orphans", 15000);
+                    StartWm();
+                    nextStartAt = Environment.TickCount + Math.Min(120000, 15000 * starts);
+                    if (starts == 3)
+                        Toasts.Send("error", "Pencere yöneticisi açılamıyor",
+                            "Denenmeye devam ediliyor. Sürerse oturum menüsünden \"Masaüstünü yenile\"yi seçin ya da oturumu kapatıp açın.", "error");
+                    continue;
+                }
+
+                if (wm.HasExited)
+                {
+                    int code = -1;
+                    try { code = wm.ExitCode; } catch { }
+                    wm.Dispose(); wm = null;
+                    if (code == 0) { wanted = false; Slider.Log("wm nöbetçisi: GlazeWM kapandı (kasıtlı, kod 0)"); continue; }
+                    Thread.Sleep(1500); // kasıtlı kapanışta helper bu arada kapatılır; oturum kapanıyorsa bayrak kalkar
+                    if (Maint.Quiet()) { wanted = false; Slider.Log("wm nöbetçisi: GlazeWM kapandı (kod " + code + "), bakım / oturum kapanışı: dokunulmadı"); continue; }
+                    if (!Recover("GlazeWM beklenmedik biçimde kapandı (kod " + code + ")")) { wanted = false; continue; }
+                    wanted = true; starts = 1; portNoted = false; nextStartAt = Environment.TickCount + 15000;
+                    continue;
+                }
+
+                // Donma: 5 sn'de bir yokla; üst üste 3 başarısız yoklama (en az 15 sn) donmuş demektir. Ardışık sayım
+                // uykudan dönüşte yanlış alarm vermez.
+                if (++tick % 3 != 0) continue;
+                if ((DateTime.Now - wm.StartTime).TotalSeconds < 30) { hung = 0; continue; }
+                if (PingWithTimeout(ipc, 8000)) { hung = 0; continue; }
+                if (++hung < 3) { Slider.Log("wm nöbetçisi: GlazeWM yanıt vermedi (" + hung + "/3)"); continue; }
+                hung = 0;
+                if (Maint.Quiet()) continue;
+                Slider.Log("wm nöbetçisi: GlazeWM 15 sn'den uzun yanıt vermedi; kapatılıyor");
+                try { wm.Kill(); wm.WaitForExit(5000); } catch { }
+                // Bir sonraki turda çıkış kodu 0 olmadığı için masaüstü yeniden başlatılır
+            }
+            catch (Exception ex) { Slider.Log("wm nöbetçisi: " + ex.Message); if (wm != null) { try { wm.Dispose(); } catch { } wm = null; } }
+        }
+    }
+
+    static bool PingWithTimeout(Glaze g, int ms)
+    {
+        var done = new ManualResetEvent(false);
+        bool ok = false;
+        ThreadPool.QueueUserWorkItem(_ => { try { ok = g.Ping(); } catch { } done.Set(); });
+        return done.WaitOne(ms) && ok;
+    }
+
+    // GlazeWM'i kurulumdaki görevinden (ayarlarıyla) başlatır; görev yoksa exe'den
+    static void StartWm()
+    {
+        if (Maint.RunHidden("schtasks.exe", "/run /tn \"\\LL\\GlazeWM\"", 10000) == 0) return;
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string exe = wmPath != null && System.IO.File.Exists(wmPath) ? wmPath : System.IO.Path.Combine(home, @".glzr\logical-lunge\bin\glazewm.exe");
+        if (!System.IO.File.Exists(exe)) exe = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"glzr.io\glazewm.exe");
+        // ShellExecute: helper'ın tutamaçları GlazeWM'e miras kalmasın
+        try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = home }); }
+        catch (Exception ex) { Slider.Log("wm nöbetçisi: GlazeWM başlatılamadı: " + ex.Message); }
+    }
+
+    // Masaüstünü temiz baştan başlatır: kalanları kapat, gizli kalmış pencereleri geri getir, GlazeWM'i başlat (o da
+    // Zebar'ı açar; helper zaten çalıştığı için yeni kopyası kendiliğinden kapanır). Çöküş döngüsünde (5 dakikada 3)
+    // vazgeçer ve false döner.
+    static bool Recover(string why)
+    {
+        if (!Maint.Allow("wm-restarts"))
+        {
+            Slider.Log("wm nöbetçisi: " + why + "; son 5 dakikada 3 kez yeniden başlatıldı, bırakıldı");
+            Toasts.Send("error", "Pencere yöneticisi tekrar tekrar kapanıyor",
+                "Otomatik olarak yeniden başlatılmadı. Oturum menüsünden \"Masaüstünü yenile\"yi seçin ya da oturumu kapatıp açın.", "error");
+            return false;
+        }
+        Volatile.Write(ref recoveringUntil, Environment.TickCount + 30000);
+        Slider.Log("wm nöbetçisi: " + why + "; masaüstü yeniden başlatılıyor");
+        foreach (var name in new[] { "zebar", "glazewm" })
+            foreach (var p in Process.GetProcessesByName(name))
+            {
+                try { p.Kill(); p.WaitForExit(3000); } catch { }
+                finally { p.Dispose(); }
+            }
+        Maint.RunHidden(Maint.HelperExe, "--uncloak-orphans", 15000);
+        if (PortFree()) StartWm();
+        else Slider.Log("wm nöbetçisi: IPC portu hâlâ eski süreçte; boşalınca başlatılacak");
+        return true;
+    }
+}
+
+// Helper'ın kendisi: yönetilen bir hata onu kapatırsa ya da arayüz thread'i 30 sn'den uzun donarsa yeni bir kopya
+// başlatılır (Super, animasyonlar, pano, bildirimler geri gelir). Yeni kopya (--respawn) eskisinin tek-kopya kilidini
+// bekler.
+static class SelfHeal
+{
+    public static volatile bool IsMain;
+    static int started, answered, posted;
+
+    public static void Respawn(string why)
+    {
+        if (!IsMain || Interlocked.Exchange(ref started, 1) == 1) return;
+        try
+        {
+            if (Maint.Quiet()) { Slider.Log("kendini toparlama atlandı (" + why + "): bakım / oturum kapanışı"); return; }
+            if (!Maint.Allow("helper-restarts")) { Slider.Log("kendini toparlama: son 5 dakikada 3 kez denendi, bırakıldı (" + why + ")"); return; }
+            Slider.Log("helper yeniden başlıyor: " + why);
+            Process.Start(new ProcessStartInfo(Maint.HelperExe, "--respawn") { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
+        }
+        catch (Exception ex) { try { Slider.Log("helper yeniden başlatılamadı: " + ex.Message); } catch { } }
+    }
+
+    // Arayüz thread'i 5 sn'de bir yoklanır; aynı yoklama 6 tur (30 sn) cevapsız kalırsa donmuş sayılır. Ardışık sayım
+    // uykudan dönüşte yanlış alarm vermez (bekleyen yoklama hemen işlenir).
+    public static void WatchUi(Control ui)
+    {
+        new Thread(() =>
+        {
+            int misses = 0;
+            while (true)
+            {
+                Thread.Sleep(5000);
+                if (Volatile.Read(ref answered) != Volatile.Read(ref posted))
+                {
+                    if (++misses < 6) continue;
+                    Respawn("arayüz 30 sn'den uzun yanıt vermedi");
+                    Thread.Sleep(1000);
+                    Process.GetCurrentProcess().Kill();
+                    return;
+                }
+                misses = 0;
+                int mine = Interlocked.Increment(ref posted);
+                try { ui.BeginInvoke((Action)(() => Volatile.Write(ref answered, mine))); }
+                catch { Volatile.Write(ref answered, mine); } // pencere kapanıyor
+            }
+        }) { IsBackground = true, Name = "ui-watchdog" }.Start();
     }
 }
 
@@ -2990,6 +3301,9 @@ class Keys2
         if (nCode < 0) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         var k = (Native.KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.KBDLLHOOKSTRUCT));
         if ((k.flags & Native.LLKHF_INJECTED) != 0) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        // Kabuk (bar) çökmüş / açılamamışsa tuşlar olduğu gibi Windows'a: Win tuşu Başlat menüsünü açar (ShellState).
+        // Basılı bir Win ya da açık değiştirici varsa önce o biter.
+        if (!ShellState.Up && !winDown && !Switcher.Active) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
         int msg = wParam.ToInt32();
         bool isDown = msg == Native.WM_KEYDOWN || msg == Native.WM_SYSKEYDOWN;
@@ -5474,22 +5788,71 @@ static class WarmTerminal
 // kapatma var (kurulum ikisini de yapıyor). Explorer onu kendisi yeniden gösterebiliyor (bir uygulama düğmesini yanıp
 // söndürünce, Explorer yeniden başlayınca...): göründüğü anda (EVENT_OBJECT_SHOW) gizlenir. Eskiden bunu hide-taskbar.ps1
 // 700 ms'lik yoklamayla yapıyordu ve görev çubuğu o arada "yanıp gidiyordu". LL kapanınca show-taskbar.ps1 geri getirir.
+// Bizim kabuk (Zebar'daki bar) ayakta mı. Bar 20 sn'den uzun yoksa (Zebar ya da GlazeWM çöktü / açılamadı) helper
+// güvenli tarafa açılır: Windows görev çubuğu ve Win tuşu (Başlat menüsü) geri gelir, kullanıcı hiçbir zaman barsız,
+// görev çubuğusuz ve Başlat'sız kalmaz. Bar dönünce ikisi yine bizim. (Kısa Zebar yeniden başlatmaları sayılmaz.)
+static class ShellState
+{
+    static volatile bool up = true;
+    static int missingSince = -1;
+    public static bool Up { get { return up; } }
+
+    // Durum değiştiyse true (TaskbarGuard'ın 2 sn'lik zamanlayıcısından)
+    public static bool Update()
+    {
+        bool bar = Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, "Zebar - logical-lunge / bar") != IntPtr.Zero;
+        if (bar)
+        {
+            missingSince = -1;
+            if (up) return false;
+            up = true;
+            Slider.Log("bar geri geldi: görev çubuğu ve Win tuşu yine kabuğun");
+            return true;
+        }
+        if (missingSince < 0) { missingSince = Environment.TickCount; return false; }
+        if (!up || Environment.TickCount - missingSince < 20000) return false;
+        up = false;
+        Slider.Log("bar 20 sn'dir yok: Windows görev çubuğu ve Başlat menüsü geri açıldı");
+        return true;
+    }
+}
+
 static class TaskbarGuard
 {
     static Native.WinEventDelegate cb;
     static System.Windows.Forms.Timer timer;
 
-    // Mesaj döngüsü olan bir thread'den çağrılır: hook ve zamanlayıcı o thread'de çalışır
-    public static void Install()
+    // Mesaj döngüsü olan bir thread'den çağrılır: hook ve zamanlayıcı o thread'de çalışır.
+    // failOpen (asıl helper): bizim bar'ımız yoksa görev çubuğu geri açılır (ShellState). Açılış perdesi her zaman gizler.
+    public static void Install(bool failOpen = false)
     {
         if (cb != null) return;
+        FailOpen = failOpen;
         cb = (hook, ev, h, idObject, idChild, thread, time) => { if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
         Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
         Sweep();
-        // Yoğunlukta kaçan olay olursa diye seyrek yedek tarama
+        // Yoğunlukta kaçan olay olursa diye seyrek yedek tarama; bar'ın durumu da burada izlenir
         timer = new System.Windows.Forms.Timer { Interval = 2000 };
-        timer.Tick += (s, e) => Sweep();
+        timer.Tick += (s, e) =>
+        {
+            if (FailOpen && ShellState.Update() && !ShellState.Up) ShowAll();
+            else Sweep();
+        };
         timer.Start();
+    }
+
+    static bool FailOpen;
+
+    // Güvenli tarafa açılma: görev çubukları ve Başlat düğmesi yeniden görünür (otomatik gizlemede kenara gelince açılır)
+    static void ShowAll()
+    {
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
+        {
+            string cs = Cls(h);
+            if (cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd" || (cs == "Button" && Cls(Native.GetWindow(h, 4)).StartsWith("Shell_")))
+                Native.ShowWindowAsync(h, 8); // SW_SHOWNA
+            return true;
+        }, IntPtr.Zero);
     }
 
     static void Sweep()
@@ -5506,6 +5869,7 @@ static class TaskbarGuard
 
     static void Hide(IntPtr h)
     {
+        if (FailOpen && !ShellState.Up) return;
         string cs = Cls(h);
         // Başlat düğmesi: görev çubuğunun sahip olduğu ayrı bir üst pencere (Button)
         if (cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd" || (cs == "Button" && Cls(Native.GetWindow(h, 4)).StartsWith("Shell_")))
@@ -5954,13 +6318,26 @@ static class Program
                 }
             }) { IsBackground = true }.Start();
             var stdout = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+            // Helper'ın koruyucusu: asıl helper (Super, animasyonlar, pano...) tamamen kapanmışsa ve ~10 sn içinde geri
+            // gelmediyse onu başlatır. GlazeWM kapalıysa (kasıtlı çıkış) ya da bakım sırasında karışmaz.
+            int refused = 0;
             while (true)
             {
                 try
                 {
+                    if (refused >= 5)
+                    {
+                        refused = 0;
+                        System.Threading.Mutex existing;
+                        bool alive = System.Threading.Mutex.TryOpenExisting("ll-helper-single", out existing);
+                        if (existing != null) existing.Dispose();
+                        if (!alive && Maint.Running("glazewm") && !Maint.Quiet() && Maint.Allow("helper-restarts"))
+                            Process.Start(new ProcessStartInfo(Maint.HelperExe) { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
+                    }
                     using (var c = new System.Net.Sockets.TcpClient("127.0.0.1", 6131))
                     using (var s = c.GetStream())
                     {
+                        refused = 0;
                         var req = Encoding.ASCII.GetBytes("GET /events HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
                         s.Write(req, 0, req.Length);
                         var reader = new System.IO.StreamReader(s, Encoding.UTF8);
@@ -5970,7 +6347,8 @@ static class Program
                     }
                 }
                 catch (System.IO.IOException) { if (!CanWrite(stdout)) return; }
-                catch (System.Net.Sockets.SocketException) { }
+                catch (System.Net.Sockets.SocketException) { refused++; }
+                catch (Exception) { }
                 if (!CanWrite(stdout)) return; // widget kapandı
                 Thread.Sleep(2000);
             }
@@ -6121,13 +6499,25 @@ static class Program
         }
 
         // Yakalanmayan her hatayı yığın iziyle log'a yaz (sessiz çökme olmasın)
-        AppDomain.CurrentDomain.UnhandledException += (s, e) => Slider.Log("CRASH: " + e.ExceptionObject);
+        AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+        {
+            Slider.Log("CRASH: " + e.ExceptionObject);
+            if (e.IsTerminating) SelfHeal.Respawn("çöktü: " + (e.ExceptionObject is Exception ? e.ExceptionObject.GetType().Name : "?"));
+        };
         Application.ThreadException += (s, e) => Slider.Log("UI HATA: " + e.Exception);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
         bool created;
         var mutex = new Mutex(true, "ll-helper-single", out created);
+        // Kendini yeniden başlatan kopya: eskisi kapanıp kilidi bırakana kadar bekle
+        if (!created && args.Length == 1 && args[0] == "--respawn")
+        {
+            try { created = mutex.WaitOne(15000); }
+            catch (AbandonedMutexException) { created = true; }
+        }
         if (!created) return;
+        SelfHeal.IsMain = true;
+        Microsoft.Win32.SystemEvents.SessionEnding += (s0, e0) => { Maint.SessionEnding = true; };
         try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { } // PER_MONITOR_AWARE_V2
 
         Application.EnableVisualStyles();
@@ -6183,7 +6573,7 @@ static class Program
         var roundThread = new Thread(() =>
         {
             Keep.Round = new Rounder(); Keep.Round.Start();
-            TaskbarGuard.Install();
+            TaskbarGuard.Install(true);
             Application.Run();
         });
         roundThread.SetApartmentState(ApartmentState.STA);
@@ -6232,6 +6622,8 @@ static class Program
         prioThread.Start();
 
         ZebarWatchdog.Start();
+        WmWatchdog.Start();
+        SelfHeal.WatchUi(ui);
 
         Application.Run(ui);
         GC.KeepAlive(mutex);
