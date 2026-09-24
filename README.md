@@ -73,7 +73,7 @@ Recreating ii on Windows means fixing things nobody warns you about:
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-Windows asks for permission **once**. The installer silently downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza, tacky-borders and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
+Windows asks for permission **once**. The installer silently downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
 
 | Option (set before running) | Effect |
 |---|---|
@@ -183,7 +183,7 @@ Windows 10 22H2 üzerinde geliştirildi ve denendi. Windows 11'i tüm bileşenle
 | [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland) (illogical-impulse) | The whole design, layouts, animations, terminal/kitty/fish/starship config, color generator | GPL-3.0 |
 | [glzr-io/glazewm](https://github.com/glzr-io/glazewm) | Tiling window manager | GPL-3.0 |
 | [glzr-io/zebar](https://github.com/glzr-io/zebar) | Widget runtime (WebView2) | GPL-3.0 |
-| [lukeyou05/tacky-borders](https://github.com/lukeyou05/tacky-borders) | Rounded focus borders | MIT |
+| [lukeyou05/tacky-borders](https://github.com/lukeyou05/tacky-borders) | Border drawing engine, embedded in our GlazeWM fork (`wm-borders`) | MIT |
 | [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) + [PawnIO](https://github.com/namazso/PawnIO.Setup) | CPU / GPU temperature | MPL-2.0 / GPL-2.0 |
 | [WezTerm](https://github.com/wezterm/wezterm) · [fish](https://fishshell.com) · [starship](https://starship.rs) · [eza](https://github.com/eza-community/eza) · [MSYS2](https://www.msys2.org) | Terminal | MIT · GPL-2.0 · ISC · EUPL-1.2 · BSD-3-Clause |
 | [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) (JetBrains Mono) | Terminal font | OFL-1.1 |

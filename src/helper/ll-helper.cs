@@ -329,7 +329,10 @@ static class TackyStyle
     {
         try
         {
-            string cfg = System.IO.File.ReadAllText(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), @".config\tacky-borders\config.yaml"));
+            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            // Kenarlıkları GlazeWM çiziyor: ayarları config.yaml'daki borders: bölümünde (eski kurulumda tacky-borders ayarı)
+            string wmCfg = System.IO.Path.Combine(home, @".glzr\glazewm\config.yaml"), tackyCfg = System.IO.Path.Combine(home, @".config\tacky-borders\config.yaml");
+            string cfg = System.IO.File.Exists(wmCfg) && System.IO.File.ReadAllText(wmCfg).Contains("borders:") ? System.IO.File.ReadAllText(wmCfg) : System.IO.File.ReadAllText(tackyCfg);
             Active = Parse(cfg, "active_color", Active);
             Inactive = Parse(cfg, "inactive_color", Inactive);
             var m = System.Text.RegularExpressions.Regex.Match(cfg, @"border_width:\s*(\d+)");
@@ -1769,7 +1772,7 @@ class Dwindle
     long pendHandle;
     int pendAt;
     static readonly HashSet<string> noFreezeProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "zebar", "ll-helper", "tacky-borders", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost",
+        { "zebar", "ll-helper", "tacky-borders", "glazewm", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost",
           "LockApp", "TextInputHost", "ApplicationFrameHost", "msedgewebview2", "ll-songrec", "ll-termcolors" };
 
     public void HookNewWindows()
@@ -2571,7 +2574,7 @@ class Rounder
     readonly HashSet<IntPtr> giveUp = new HashSet<IntPtr>();
     Native.WinEventDelegate cb;
     static readonly HashSet<string> skipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "zebar", "tacky-borders", "ll-helper", "explorer", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost", "LockApp" };
+        { "zebar", "tacky-borders", "glazewm", "ll-helper", "explorer", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost", "LockApp" };
     static readonly Dictionary<uint, string> procCache = new Dictionary<uint, string>();
 
     public void Start()

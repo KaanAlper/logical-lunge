@@ -16,7 +16,6 @@ $ProgressPreference = 'SilentlyContinue'
 # ---- pinned upstream versions (tested together) ----
 $GLAZEWM_VER = 'v3.10.1'
 $ZEBAR_VER = 'v3.3.1'
-$TACKY_VER = 'v1.6.0'
 $LHM_VER = 'v0.9.6'
 $PAWNIO_VER = '2.2.0'
 $NERDFONT_VER = 'v3.5.1'
@@ -175,15 +174,9 @@ $zbCmd = $zbExe
 if ($zbExe.StartsWith($UserProfile + '\', [StringComparison]::OrdinalIgnoreCase)) { $zbCmd = '%USERPROFILE%' + $zbExe.Substring($UserProfile.Length) }
 $gcText = [IO.File]::ReadAllText($gc)
 [IO.File]::WriteAllText($gc, $gcText.Replace("'shell-exec zebar'", "'shell-exec $zbCmd'"), (New-Object Text.UTF8Encoding $false))
-# tacky-borders (rounded purple focus border)
-$tb = Join-Path $UserProfile '.config\tacky-borders'
-New-Item -ItemType Directory -Force $tb | Out-Null
-Copy-Item (Join-Path $Source 'config\tacky-borders\config.yaml') (Join-Path $tb 'config.yaml') -Force
-
-Step "Installing tacky-borders $TACKY_VER"
-$tz = Gh-Asset 'lukeyou05/tacky-borders' $TACKY_VER 'tacky-borders-.*\.zip$'
-$tmp = Join-Path $DL 'tacky'; Expand-Archive $tz $tmp -Force
-Copy-Item (Get-ChildItem $tmp -Recurse -Filter tacky-borders.exe | Select-Object -First 1).FullName (Join-Path $LL 'tools\tacky-borders.exe') -Force
+# Window borders are drawn by our GlazeWM build itself (the `borders:` section of its config); the separate
+# tacky-borders program of older versions is removed
+Remove-Item (Join-Path $LL 'tools\tacky-borders.exe') -Force -ErrorAction SilentlyContinue
 
 Step 'Installing DDC/CI brightness tool (NirSoft ControlMyMonitor)'
 $cz = Get-File 'https://www.nirsoft.net/utils/controlmymonitor.zip' 'controlmymonitor.zip'

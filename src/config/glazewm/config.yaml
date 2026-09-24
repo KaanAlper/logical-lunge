@@ -2,20 +2,17 @@
 # Yedek: config.yaml.bak-20260922
 #
 # Win10'da GlazeWM kenarlık rengi / köşe yuvarlatma yapamıyor (Win11'e özel API).
-# Mor odak kenarlığı + yuvarlak köşeleri tacky-borders çiziyor:
-#   ~/.glzr/logical-lunge/tools/tacky-borders.exe   config: ~/.config/tacky-borders/config.yaml
+# Mor odak kenarlığını GlazeWM'in kendisi çiziyor (aşağıdaki borders: bölümü), pencere köşelerini ll-helper yuvarlıyor.
 
 general:
   startup_commands:
     - 'shell-exec zebar'
-    - 'shell-exec %USERPROFILE%\.glzr\logical-lunge\tools\tacky-borders.exe'
     # Workspace slide animasyonu, yuvarlak köşeler, tek Super -> ii overview
     - 'shell-exec %USERPROFILE%\.glzr\logical-lunge\helper\ll-helper.exe'
     # Görev çubuğu tamamen gizli; işlevini Zebar'daki ii bar'ı görüyor.
     - 'shell-exec --hide-window powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\.glzr\logical-lunge\scripts\hide-taskbar.ps1'
   shutdown_commands:
     - 'shell-exec taskkill /IM zebar.exe /F'
-    - 'shell-exec taskkill /IM tacky-borders.exe /F'
     - 'shell-exec taskkill /IM ll-helper.exe /F'
     - 'shell-exec --hide-window powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\.glzr\logical-lunge\scripts\show-taskbar.ps1'
   config_reload_commands: []
@@ -43,7 +40,7 @@ gaps:
     left: '5px'
 
 window_effects:
-  # Kenarlıkları tacky-borders çiziyor; buradakiler zaten Win10'da çalışmaz.
+  # Win10'da çalışmaz (Win11 API'si); kenarlıkları aşağıdaki borders: bölümü çiziyor.
   focused_window:
     border:
       enabled: false
@@ -119,7 +116,6 @@ window_rules:
   - commands: ['ignore']
     match:
       - window_process: { equals: 'zebar' }
-      - window_process: { equals: 'tacky-borders' }
       - window_process: { equals: 'll-helper' }
       - window_process: { equals: 'TaskBarHero' }
       - window_title: { regex: '[Pp]icture.in.[Pp]icture' }
@@ -257,3 +253,59 @@ keybindings:
   - commands: ['wm-exit']
     bindings: ['lwin+shift+alt+e']
 
+# Pencere kenarlıkları: GlazeWM'in kendisi çiziyor (tacky-borders'ın çizim motoru içine alındı; ayrı program,
+# tepsi simgesi ya da ayrı ayar dosyası yok). Anahtarlar tacky-borders config.yaml ile aynı. Bu bölüm silinirse
+# kenarlık çizilmez; değişiklikler config yenilenince uygulanır.
+borders:
+  render_backend: V2
+  global:
+    border_width: 2
+    border_offset: 0
+    # Hyprland'deki rounding; ll-helper pencere köşelerini de aynı yarıçapla yuvarlar
+    border_radius: 14
+    border_z_order: AboveWindow
+    follow_native_border: true
+    # Windows pencere animasyonları kapalı: kenarlık gecikmeden gelsin
+    initialize_delay: 0
+    unminimize_delay: 0
+    active_color: "#b69df8cc"
+    # Hyprland inactive_border: hafif görünür
+    inactive_color: "#3a3a4099"
+    animations:
+      active:
+        - type: Fade
+          duration: 180
+          easing: EaseInOutQuad
+      inactive:
+        - type: Fade
+          duration: 180
+          easing: EaseInOutQuad
+      fps: 60
+      enabled: true
+    effects:
+      active:
+        - type: Glow
+          blur: 6.0
+          spread: 0.0
+          opacity: 0.35
+      inactive: []
+      enabled: true
+  window_rules:
+    - match: Class
+      name: "Windows.UI.Core.CoreWindow"
+      enabled: false
+    - match: Class
+      name: "XamlExplorerHostIslandWindow"
+      enabled: false
+    - match: Process
+      name: "ll-helper"
+      enabled: false
+    - match: Process
+      name: "zebar"
+      enabled: false
+    - match: Title
+      name: "Picture-in-Picture"
+      enabled: false
+    - match: Class
+      name: "Shell_TrayWnd"
+      enabled: false
