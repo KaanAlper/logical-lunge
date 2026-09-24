@@ -1392,8 +1392,9 @@ class Slider
         string id = J.Str(cur, "id");
         if (best == null)
         {
-            // O yönde komşu yok: GlazeWM (fork) düzeni çevirir. Örn. üstte tam genişlik + altta iki yarı, sağ alttaki
-            // sağa -> solda üst üste iki parça, bu pencere sağda boydan. Tek durum hariç: pencere doğrudan
+            // O yönde komşu yok: GlazeWM (fork) pencereyi o kenara çıkarır; pencere ekranın o yarısını alır, geri kalan
+            // düzen öbür yarıda şeklini korur (Hyprland dwindle movetoroot). Örn. 2x2'de sağ üstteki sağa -> sağda boydan,
+            // solda [sol üst / sol alt] sütunu ile eski sağ alttaki yan yana. Tek durum hariç: pencere doğrudan
             // workspace'in elemanıysa ve workspace zaten o eksendeyse GlazeWM pencereyi diğer monitörün
             // workspace'ine atıyordu; orada hiçbir şey yapma. Tek pencerede de.
             var par0 = ParentOf(ws, J.Str(cur, "id"));
@@ -4255,6 +4256,28 @@ static class SnipTool
     static readonly Color SurfaceHover = Color.FromArgb(250, 61, 58, 68);
     static bool Tr { get { return System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr"; } }
 
+    // Alıntı süreci kapanınca Windows odağı sıradaki pencereye (çoğu zaman masaüstüne ya da bar'a) veriyordu ve klavye
+    // boşta kalıyordu: alıntıdan önce odakta olan pencereye geri ver. Bu arada başka bir pencere öne geldiyse (ör. kaydedilen
+    // dosyayı gösteren Gezgin) dokunma.
+    public static void GiveFocusBack(IntPtr prev)
+    {
+        if (prev == IntPtr.Zero || !Native.IsWindow(prev) || !Native.IsWindowVisible(prev) || Native.IsIconic(prev)) return;
+        IntPtr fg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
+        if (fg == prev) return;
+        if (fg != IntPtr.Zero)
+        {
+            uint pid; Native.GetWindowThreadProcessId(fg, out pid);
+            var cls = new StringBuilder(64); Native.GetClassName(fg, cls, 64);
+            var t = new StringBuilder(64); Native.GetWindowText(fg, t, 64);
+            string c = cls.ToString();
+            bool emptyFocus = pid == (uint)Process.GetCurrentProcess().Id || c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd"
+                || t.ToString().StartsWith("Zebar - logical-lunge / bar") || !Native.IsWindowVisible(fg);
+            if (!emptyFocus) return;
+        }
+        Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // odak kilidi
+        Native.SetForegroundWindow(prev);
+    }
+
     class SnipForm : Form
     {
         readonly Bitmap shot;
@@ -6021,6 +6044,138 @@ static class ShellState
     }
 }
 
+// ---------------- Odak bekçisi ----------------
+// Hyprland'de odak hiç boşta kalmaz. Windows'ta ise odaktaki pencere kapanınca ya da ekran alıntısı, bir iletişim kutusu,
+// bildirim kapanınca ön plan masaüstüne, bar'a, gizli (başka workspace'teki) bir pencereye ya da hiçbir şeye düşebiliyordu:
+// klavye bir yere gitmiyor, fareyle tıklamak gerekiyordu. Bu durum ~0,75 sn sürerse bekçi odağı görünen workspace'te
+// GlazeWM'in odaklı saydığı pencereye (yoksa imlecin altındakine) geri verir. Boş workspace'te, fare tuşu basılıyken, açık
+// bir sağ tık menüsünde, kilit ekranında, bakımda ve kabuk yokken (Windows görev çubuğu modu) karışmaz.
+static class FocusGuard
+{
+    [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder info, int len, out int needed);
+
+    static readonly Glaze glaze = new Glaze();
+
+    public static void Start()
+    {
+        new Thread(Loop) { IsBackground = true, Name = "focus-guard" }.Start();
+    }
+
+    static void Loop()
+    {
+        int lostSince = -1, fails = 0, waitUntil = Environment.TickCount;
+        while (true)
+        {
+            Thread.Sleep(250);
+            try
+            {
+                string why = Lost();
+                if (why == null) { lostSince = -1; fails = 0; continue; }
+                int now = Environment.TickCount;
+                if (lostSince < 0) { lostSince = now; continue; }
+                if (now - lostSince < 750 || now - waitUntil < 0) continue;
+                int r = Refocus(why);
+                if (r > 0) { lostSince = -1; fails = 0; }
+                else if (r == 0) waitUntil = now + 1500;          // boş workspace: masaüstü odağı olağan, arada bir bak
+                else if (++fails >= 3) { waitUntil = now + 15000; fails = 0; Slider.Log("odak bekçisi: odak verilemedi, 15 sn bekleniyor"); }
+                else lostSince = now;
+            }
+            catch (Exception ex) { Slider.Log("odak bekçisi: " + ex.GetBaseException().Message); Thread.Sleep(2000); }
+        }
+    }
+
+    // Kilit ekranı / ekran koruyucusu / UAC girdi masaüstündeyken ön plan sorgusu anlamsız
+    static bool OnDefaultDesktop()
+    {
+        IntPtr d = OpenInputDesktop(0, false, 0x0001); // DESKTOP_READOBJECTS
+        if (d == IntPtr.Zero) return false;
+        try
+        {
+            var sb = new StringBuilder(64); int need;
+            return GetUserObjectInformation(d, 2, sb, sb.Capacity * 2, out need) && sb.ToString() == "Default"; // UOI_NAME
+        }
+        finally { CloseDesktop(d); }
+    }
+
+    // Odak boştaysa nedeni, değilse null
+    static string Lost()
+    {
+        if (!ShellState.Up || Maint.Quiet() || !OnDefaultDesktop()) return null;
+        // Kullanıcı bir şeyle uğraşıyor: sürükleme, tıklama, açık bir menü
+        if (Native.GetAsyncKeyState(0x01) < 0 || Native.GetAsyncKeyState(0x02) < 0 || Native.GetAsyncKeyState(0x04) < 0) return null;
+        IntPtr menu = Native.FindWindow("#32768", null);
+        if (menu != IntPtr.Zero && Native.IsWindowVisible(menu)) return null;
+
+        IntPtr fg = Native.GetForegroundWindow();
+        if (fg == IntPtr.Zero) return "ön plan yok";
+        IntPtr root = Native.GetAncestor(fg, 2);
+        if (root == IntPtr.Zero) root = fg;
+        var cls = new StringBuilder(64); Native.GetClassName(root, cls, 64);
+        string c = cls.ToString();
+        if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") return "masaüstü";
+        if (!Native.IsWindowVisible(root) || Native.IsIconic(root)) return "görünmeyen pencere";
+        int cl;
+        if (Native.DwmGetWindowAttribute(root, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0) return "gizli pencere";
+        // Bar, bildirim ve güncelleme kartı klavye almaz; üzerlerine tıklanınca odak onlarda kalıyordu. Fare üstlerindeyse
+        // kullanıcı onlarla uğraşıyordur.
+        var t = new StringBuilder(128); Native.GetWindowText(root, t, 128);
+        string title = t.ToString();
+        if (title == "Zebar - logical-lunge / bar" || title == "Zebar - logical-lunge / toast" || title == "Zebar - logical-lunge / update")
+        {
+            Native.RECT r;
+            var p = Cursor.Position;
+            if (Native.GetWindowRect(root, out r) && p.X >= r.Left && p.X < r.Right && p.Y >= r.Top && p.Y < r.Bottom) return null;
+            return "bar";
+        }
+        return null;
+    }
+
+    // 1: odak verildi, 0: verilecek pencere yok (boş workspace), -1: verilemedi
+    static int Refocus(string why)
+    {
+        Dictionary<string, object> ws = null;
+        foreach (var m in glaze.Monitors())
+            foreach (Dictionary<string, object> w in J.Children(m))
+                if (J.Bool(w, "hasFocus")) ws = w;
+        if (ws == null) return 0;
+        var wins = new List<Dictionary<string, object>>();
+        J.WindowNodes(ws, wins);
+        Dictionary<string, object> focused = null, under = null, first = null;
+        var p = Cursor.Position;
+        foreach (var w in wins)
+        {
+            object hv;
+            if (!w.TryGetValue("handle", out hv) || hv == null) continue;
+            var h = new IntPtr(Convert.ToInt64(hv));
+            int cl;
+            if (!Native.IsWindowVisible(h) || Native.IsIconic(h) || (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0)) continue;
+            if (J.Bool(w, "hasFocus")) focused = w;
+            int x = J.Int(w, "x"), y = J.Int(w, "y");
+            if (under == null && p.X >= x && p.X < x + J.Int(w, "width") && p.Y >= y && p.Y < y + J.Int(w, "height")) under = w;
+            if (first == null) first = w;
+        }
+        var pick = focused ?? under ?? first;
+        if (pick == null) return 0;
+        var hw = new IntPtr(Convert.ToInt64(pick["handle"]));
+        // Önce GlazeWM üzerinden (durumu da güncel kalsın); o pencereyi zaten odaklı sayıyorsa ön plana getirmeyebilir
+        glaze.Command("focus --container-id " + J.Str(pick, "id"));
+        Thread.Sleep(150);
+        if (Lost() != null)
+        {
+            Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // odak kilidi
+            Native.SetForegroundWindow(hw);
+            Thread.Sleep(100);
+        }
+        bool ok = Lost() == null;
+        string name = "?";
+        try { uint pid; Native.GetWindowThreadProcessId(hw, out pid); using (var pr = Process.GetProcessById((int)pid)) name = pr.ProcessName; } catch { }
+        Slider.Log("odak boştaydı (" + why + "): " + name + (ok ? " odaklandı" : " odaklanamadı"));
+        return ok ? 1 : -1;
+    }
+}
+
 static class TaskbarGuard
 {
     static Native.WinEventDelegate cb;
@@ -6493,7 +6648,9 @@ static class Program
             if (fresh)
             {
                 try { System.IO.File.WriteAllText(SnipTool.PidFile, Process.GetCurrentProcess().Id.ToString()); } catch { }
+                IntPtr prevFg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
                 SnipTool.Run();
+                SnipTool.GiveFocusBack(prevFg);
             }
             return;
         }
@@ -6833,6 +6990,7 @@ static class Program
 
         ZebarWatchdog.Start();
         WmWatchdog.Start();
+        FocusGuard.Start();
         SelfHeal.WatchUi(ui);
 
         Application.Run(ui);
