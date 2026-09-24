@@ -279,7 +279,8 @@ borders:
         - type: Fade
           duration: 180
           easing: EaseInOutQuad
-      fps: 60
+      # 0 = ekranın yenileme hızı (144 Hz ekranda 144 kare)
+      fps: 0
       enabled: true
     effects:
       active:
