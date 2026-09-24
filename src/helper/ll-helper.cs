@@ -663,7 +663,15 @@ class Slider
     void RingsAttach(IEnumerable<Thumb> ts, IntPtr focused)
     {
         RingsClear();
+        if (TestNoRings()) return;
         foreach (var t in ts) if (t != null && t.IsWin) RingAdd(t, t.Src == focused);
+    }
+    // Yalnızca ölçüm için (A/B): %LOCALAPPDATA%\logical-lunge\test-no-rings varken animasyonlarda kenarlık halkası yok.
+    // Kaydırma takılmasının halkaların (pencere başına 8 önizleme) mı pencere önizlemelerinin mi olduğunu ayırmak için.
+    static bool TestNoRings()
+    {
+        try { return System.IO.File.Exists(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\test-no-rings")); }
+        catch { return false; }
     }
     // Odak değişti: etkin/pasif takımı değiştir (eskisi gizlenir, yenisi bir sonraki RingPlace'te yerleşir)
     void RingsFocus(IntPtr focused)
@@ -3966,7 +3974,16 @@ static class NightLight
         var d = Settings(); d[key] = value;
         var lines = new List<string>(); foreach (var kv in d) lines.Add(kv.Key + "=" + kv.Value);
         System.IO.File.WriteAllLines(StateFile, lines.ToArray());
-        Apply(Active);
+        // Ana helper çalışıyorsa dosyadaki değişikliği görüp yumuşak geçişle uygular (burada anında uygulamak "bam" diye
+        // değiştiriyordu); yoksa hemen uygula.
+        if (!MainRunning()) Apply(Active);
+    }
+    static bool MainRunning()
+    {
+        Mutex m;
+        if (!Mutex.TryOpenExisting("ll-helper-single", out m)) return false;
+        m.Dispose();
+        return true;
     }
     static int Minutes(string hhmm, int def)
     {
@@ -4032,51 +4049,147 @@ static class NightLight
         var d = Gammas(); d[dev] = Math.Max(0, Math.Min(100, v));
         var lines = new List<string>(); foreach (var kv in d) if (kv.Value < 100) lines.Add(kv.Key + "=" + kv.Value);
         System.IO.File.WriteAllLines(GammaFile, lines.ToArray());
-        return Apply(Active);
+        return MainRunning() || Apply(Active);
     }
     public static bool AnyActive() { if (Active) return true; foreach (var v in Gammas().Values) if (v < 100) return true; return false; }
+
+    [DllImport("gdi32.dll")] static extern bool GetDeviceGammaRamp(IntPtr dc, ushort[] ramp);
+
+    // Ekranın hedef rampası: gece ışığı rengi x yazılımsal karartma
+    static ushort[] TargetRamp(string dev, bool on, Dictionary<string, int> gammas, int lv)
+    {
+        int g; if (!gammas.TryGetValue(dev, out g)) g = 100;
+        double k = 0.2 + 0.8 * g / 100.0;
+        double R, G, B; Rgb(lv, out R, out G, out B);
+        var ramp = new ushort[256 * 3];
+        for (int i = 0; i < 256; i++)
+        {
+            ramp[i] = (ushort)(i * 257 * k * (on ? R : 1));
+            ramp[256 + i] = (ushort)(i * 257 * k * (on ? G : 1));
+            ramp[512 + i] = (ushort)(i * 257 * k * (on ? B : 1));
+        }
+        return ramp;
+    }
+    static int Level() { int lv; return int.TryParse(Settings()["level"], out lv) ? lv : 50; }
 
     public static bool Apply(bool on)
     {
         var gammas = Gammas();
+        int lv = Level();
         bool ok = true;
         foreach (var s in Screen.AllScreens)
         {
-            int g; if (!gammas.TryGetValue(s.DeviceName, out g)) g = 100;
-            double k = 0.2 + 0.8 * g / 100.0;
-            int lv; if (!int.TryParse(Settings()["level"], out lv)) lv = 50;
-            double R, G, B; Rgb(lv, out R, out G, out B);
-            var ramp = new ushort[256 * 3];
-            for (int i = 0; i < 256; i++)
-            {
-                ramp[i] = (ushort)(i * 257 * k * (on ? R : 1));
-                ramp[256 + i] = (ushort)(i * 257 * k * (on ? G : 1));
-                ramp[512 + i] = (ushort)(i * 257 * k * (on ? B : 1));
-            }
             IntPtr dc = CreateDC(null, s.DeviceName, null, IntPtr.Zero);
             if (dc == IntPtr.Zero) continue;
-            if (!SetDeviceGammaRamp(dc, ramp)) ok = false;
+            if (!SetDeviceGammaRamp(dc, TargetRamp(s.DeviceName, on, gammas, lv))) ok = false;
             DeleteDC(dc);
         }
         return ok;
     }
 
+    // Yumuşak geçiş: her ekranda o an gerçekten uygulanan rampadan hedefe (ease-in-out). Hep gerçek rampadan başladığı
+    // için yarıda kesilen bir geçişin ya da başka bir sürecin uyguladığı değerin üstünden atlamadan devam eder.
+    // Yeni bir ayar değişikliği (animGen) süren geçişi keser.
+    static int animGen;
+    // false: yeni bir değişiklik geçişi yarıda kesti
+    static bool Animate(int ms)
+    {
+        int gen = Volatile.Read(ref animGen);
+        bool on = Active;
+        var gammas = Gammas();
+        int lv = Level();
+        var devs = new List<string>(); var from = new List<ushort[]>(); var to = new List<ushort[]>();
+        foreach (var s in Screen.AllScreens)
+        {
+            var target = TargetRamp(s.DeviceName, on, gammas, lv);
+            var cur = new ushort[256 * 3];
+            IntPtr dc = CreateDC(null, s.DeviceName, null, IntPtr.Zero);
+            if (dc == IntPtr.Zero) continue;
+            bool read = GetDeviceGammaRamp(dc, cur);
+            DeleteDC(dc);
+            devs.Add(s.DeviceName); from.Add(read ? cur : target); to.Add(target);
+        }
+        var sw = Stopwatch.StartNew();
+        var frame = new ushort[256 * 3];
+        while (true)
+        {
+            double t = ms <= 0 ? 1 : Math.Min(1, sw.ElapsedMilliseconds / (double)ms);
+            double e = t < 0.5 ? 2 * t * t : 1 - Math.Pow(-2 * t + 2, 2) / 2;
+            for (int d = 0; d < devs.Count; d++)
+            {
+                for (int i = 0; i < frame.Length; i++) frame[i] = (ushort)(from[d][i] + (to[d][i] - from[d][i]) * e);
+                IntPtr dc = CreateDC(null, devs[d], null, IntPtr.Zero);
+                if (dc == IntPtr.Zero) continue;
+                SetDeviceGammaRamp(dc, frame);
+                DeleteDC(dc);
+            }
+            if (t >= 1) return true;
+            if (gen != Volatile.Read(ref animGen)) return false;
+            Thread.Sleep(16);
+        }
+    }
+
+    // Ayar dosyalarının anlık hali: değiştiyse geçiş yapılır
+    static string Snapshot()
+    {
+        var d = Settings();
+        var g = new List<string>(); foreach (var kv in Gammas()) g.Add(kv.Key + "=" + kv.Value);
+        g.Sort();
+        return d["on"] + "|" + d["level"] + "|" + d["mode"] + "|" + d["from"] + "|" + d["to"] + "|" + (Active ? "A" : "-") + "|" + string.Join(",", g);
+    }
+
     public static void StartKeeper()
     {
-        bool last = AnyActive();
+        string last = Snapshot();
         Apply(Active);
+        // Kenar çubuğundaki düğme / kaydırıcı ve bar'daki karartma ayrı bir helper süreciyle dosyaya yazar: değişikliği
+        // hemen fark et (yedek: 5 sn'lik yoklama, zamanlı açılıp kapanma da orada yakalanır).
+        var changed = new AutoResetEvent(false);
+        try
+        {
+            var fsw = new System.IO.FileSystemWatcher(System.IO.Path.GetDirectoryName(StateFile))
+            {
+                NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.Size,
+            };
+            System.IO.FileSystemEventHandler h = (s, e) =>
+            {
+                if (e.Name == "nightlight" || e.Name == "gamma") { Interlocked.Increment(ref animGen); changed.Set(); }
+            };
+            fsw.Changed += h; fsw.Created += h;
+            fsw.EnableRaisingEvents = true;
+            GC.KeepAlive(fsw);
+            keepWatcher = fsw;
+        }
+        catch (Exception ex) { Slider.Log("gece ışığı izleyici: " + ex.Message); }
         var t = new Thread(() =>
         {
+            bool resume = false; // önceki geçiş yarıda kesildi: ayar eski haline dönmüş olsa da hedefe geçişle git
             while (true)
             {
-                Thread.Sleep(5000);
-                bool now = AnyActive();
-                if (now || now != last) Apply(Active);
-                last = now;
+                changed.WaitOne(5000);
+                try
+                {
+                    string now = Snapshot();
+                    if (now != last || resume)
+                    {
+                        var a = last.Split('|'); var b = now.Split('|');
+                        // Açıp kapama 1 sn; saatle açılıp kapanma 3 sn (gün batımı gibi); yoğunluk / karartma kaydırıcıyı
+                        // takip etsin diye kısa
+                        int ms = a[0] != b[0] || a[2] != b[2] || a[3] != b[3] || a[4] != b[4] ? 1000
+                               : a[5] != b[5] ? 3000
+                               : a[1] != b[1] ? 300
+                               : a[6] != b[6] ? 150 : 600;
+                        last = now;
+                        resume = !Animate(ms);
+                    }
+                    else if (AnyActive()) Apply(Active); // başka bir uygulama / ekran değişimi rampayı sıfırladıysa
+                }
+                catch (Exception ex) { Slider.Log("gece ışığı: " + ex.GetBaseException().Message); }
             }
-        }) { IsBackground = true };
+        }) { IsBackground = true, Name = "nightlight" };
         t.Start();
     }
+    static System.IO.FileSystemWatcher keepWatcher;
 }
 
 // ---------------- Bölge seçici + Google Lens (ii modules/ii/regionSelector) ----------------
