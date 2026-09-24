@@ -332,7 +332,8 @@
           try {
             const ctl = new AbortController();
             const t = setTimeout(() => ctl.abort(), 250);
-            const r = await fetch('http://127.0.0.1:6131/overview-mode', { cache: 'no-store', signal: ctl.signal });
+            // POST: Zebar'ın service worker'ı GET cevabını önbelleğe alıyordu (ilk ";" hep geri geliyordu)
+            const r = await fetch('http://127.0.0.1:6131/overview-mode', { method: 'POST', cache: 'no-store', signal: ctl.signal });
             clearTimeout(t);
             if (r.ok) return (await r.text()).trim();
           } catch {}

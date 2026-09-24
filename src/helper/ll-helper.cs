@@ -2426,7 +2426,10 @@ static class Toasts
             }
             string cors = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Allow-Headers: *\r\n";
             string reqs = req.ToString();
-            if (reqs.StartsWith("GET /cmd?") || reqs.StartsWith("GET /overview-mode") || reqs.StartsWith("GET /log?")) { Command(s, reqs); c.Close(); return; }
+            // Widget'lar POST kullanır: Zebar'ın service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
+            // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
+            string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -2451,7 +2454,8 @@ static class Toasts
         string status = "403 Forbidden", body = "";
         if (origin == null || origin == ZEBAR_ORIGIN)
         {
-            string target = req.Substring(4, Math.Max(0, req.IndexOf(' ', 4) - 4)); // "/cmd?a=ws-3"
+            int sp1 = req.IndexOf(' '), sp2 = sp1 < 0 ? -1 : req.IndexOf(' ', sp1 + 1);
+            string target = sp2 > sp1 ? req.Substring(sp1 + 1, sp2 - sp1 - 1) : ""; // "/cmd?a=ws-3"
             if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; Slider.Log("overview modu okundu: '" + body + "'"); }
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             else
