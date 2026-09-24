@@ -1,4 +1,5 @@
-# hide-taskbar.ps1 döngüsünü durdurur ve Windows görev çubuğunu geri getirir.
+# LL kapanınca Windows görev çubuğunu geri getirir (gizli tutan ll-helper'dı). Eski sürümlerin hide-taskbar.ps1
+# döngüsü çalışıyorsa onu da durdurur.
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
     Where-Object { $_.CommandLine -like '*hide-taskbar.ps1*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }

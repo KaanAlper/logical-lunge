@@ -7,10 +7,9 @@
 general:
   startup_commands:
     - 'shell-exec zebar'
-    # Workspace slide animasyonu, yuvarlak köşeler, tek Super -> ii overview
+    # Workspace slide animasyonu, yuvarlak köşeler, tek Super -> ii overview. Windows görev çubuğunu da o gizli tutuyor
+    # (işlevini Zebar'daki ii bar'ı görüyor); LL kapanınca show-taskbar.ps1 geri getirir.
     - 'shell-exec %USERPROFILE%\.glzr\logical-lunge\helper\ll-helper.exe'
-    # Görev çubuğu tamamen gizli; işlevini Zebar'daki ii bar'ı görüyor.
-    - 'shell-exec --hide-window powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\.glzr\logical-lunge\scripts\hide-taskbar.ps1'
   shutdown_commands:
     - 'shell-exec taskkill /IM zebar.exe /F'
     - 'shell-exec taskkill /IM ll-helper.exe /F'

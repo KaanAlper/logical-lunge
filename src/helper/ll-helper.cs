@@ -71,6 +71,7 @@ static class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr after, string cls, string title);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc fn, IntPtr l);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int cmd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -5468,6 +5469,53 @@ static class WarmTerminal
     }
 }
 // ---------------- Açılış perdesi ----------------
+// Windows görev çubuğu, Başlat düğmesi ve ses/parlaklık OSD'si hiç görünmez: işlerini Zebar'daki bar ve OSD görüyor.
+// Windows 10'da ana görev çubuğunu kaldıran bir registry ayarı yok; yalnızca otomatik gizleme ve diğer monitörlerde
+// kapatma var (kurulum ikisini de yapıyor). Explorer onu kendisi yeniden gösterebiliyor (bir uygulama düğmesini yanıp
+// söndürünce, Explorer yeniden başlayınca...): göründüğü anda (EVENT_OBJECT_SHOW) gizlenir. Eskiden bunu hide-taskbar.ps1
+// 700 ms'lik yoklamayla yapıyordu ve görev çubuğu o arada "yanıp gidiyordu". LL kapanınca show-taskbar.ps1 geri getirir.
+static class TaskbarGuard
+{
+    static Native.WinEventDelegate cb;
+    static System.Windows.Forms.Timer timer;
+
+    // Mesaj döngüsü olan bir thread'den çağrılır: hook ve zamanlayıcı o thread'de çalışır
+    public static void Install()
+    {
+        if (cb != null) return;
+        cb = (hook, ev, h, idObject, idChild, thread, time) => { if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
+        Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
+        Sweep();
+        // Yoğunlukta kaçan olay olursa diye seyrek yedek tarama
+        timer = new System.Windows.Forms.Timer { Interval = 2000 };
+        timer.Tick += (s, e) => Sweep();
+        timer.Start();
+    }
+
+    static void Sweep()
+    {
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l) { if (Native.IsWindowVisible(h)) Hide(h); return true; }, IntPtr.Zero);
+    }
+
+    static string Cls(IntPtr h)
+    {
+        var c = new StringBuilder(64);
+        Native.GetClassName(h, c, 64);
+        return c.ToString();
+    }
+
+    static void Hide(IntPtr h)
+    {
+        string cs = Cls(h);
+        // Başlat düğmesi: görev çubuğunun sahip olduğu ayrı bir üst pencere (Button)
+        if (cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd" || (cs == "Button" && Cls(Native.GetWindow(h, 4)).StartsWith("Shell_")))
+            Native.ShowWindowAsync(h, 0); // SW_HIDE; Explorer askıdaysa beklemez
+        // Ses/parlaklık/medya OSD'si (NativeHWNDHost > DirectUIHWND): küçültülmüş host bir daha görünmez (HideVolumeOSD'nin yöntemi)
+        else if (cs == "NativeHWNDHost" && !Native.IsIconic(h) && Native.FindWindowEx(h, IntPtr.Zero, "DirectUIHWND", null) != IntPtr.Zero)
+            Native.ShowWindowAsync(h, 6); // SW_MINIMIZE
+    }
+}
+
 static class Splash
 {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
@@ -5571,6 +5619,7 @@ static class Splash
             var covers = new List<Cover>();
             var virt = SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
             foreach (var s in Screen.AllScreens) { var f = new Cover(s.Bounds, img, virt); f.Show(); covers.Add(f); }
+            TaskbarGuard.Install(); // görev çubuğu açılıştan itibaren görünmesin
             if (restartMode)
             {
                 foreach (var f in covers) f.Opacity = 0;
@@ -6134,6 +6183,7 @@ static class Program
         var roundThread = new Thread(() =>
         {
             Keep.Round = new Rounder(); Keep.Round.Start();
+            TaskbarGuard.Install();
             Application.Run();
         });
         roundThread.SetApartmentState(ApartmentState.STA);

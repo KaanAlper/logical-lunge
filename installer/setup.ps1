@@ -145,6 +145,8 @@ Add-UserPath (Split-Path $zbExe)
 # ---------------------------------------------------------------- files
 Step 'Copying Logical Lunge files'
 Copy-Item (Join-Path $Source 'logical-lunge\*') $LL -Recurse -Force
+# ll-helper hides the Windows taskbar itself now; the old polling script of earlier versions is removed
+Remove-Item (Join-Path $LL 'scripts\hide-taskbar.ps1') -Force -ErrorAction SilentlyContinue
 # installed version (the update button compares it with the latest release)
 Copy-Item (Join-Path $Source 'VERSION') (Join-Path $LL 'VERSION') -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force (Join-Path $ZB 'logical-lunge') | Out-Null
@@ -279,6 +281,9 @@ if (Test-Path $sr) {
     $s = (Get-ItemProperty $sr).Settings
     if ($s -and $s.Length -gt 8 -and $s[8] -ne 3) { $n = [byte[]]$s.Clone(); $n[8] = 3; Set-Reg $sr 'Settings' $n 'Binary' }
 }
+# No taskbar at all on the other monitors ("Show taskbar on all displays" off): an auto-hidden one still pops up
+# there when an app flashes its button
+Set-Reg "$cu\Explorer\Advanced" 'MMTaskbarEnabled' 0
 # Old conflicting startup entries are not touched; only our own autostart is added (scheduled task below).
 
 # ---------------------------------------------------------------- scheduled tasks
