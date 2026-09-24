@@ -34,6 +34,7 @@ const ROWS = [
   ['Oturum', 'Session', 'Sitzung', 'Session', 'Sesión', 'Sessione', 'Sessão', 'Сеанс', 'Сеанс', 'Sesja', 'セッション', '会话', '세션', 'الجلسة'],
   ['Kilitle', 'Lock', 'Sperren', 'Verrouiller', 'Bloquear', 'Blocca', 'Bloquear', 'Заблокировать', 'Заблокувати', 'Zablokuj', 'ロック', '锁定', '잠금', 'قفل'],
   ['Uyku', 'Sleep', 'Energie sparen', 'Veille', 'Suspender', 'Sospendi', 'Suspender', 'Сон', 'Сон', 'Uśpij', 'スリープ', '睡眠', '절전', 'سكون'],
+  ['Yenile', 'Reload', 'Neu laden', 'Recharger', 'Recargar', 'Ricarica', 'Recarregar', 'Перезапуск', 'Перезапуск', 'Przeładuj', '再読み込み', '重新加载', '다시 불러오기', 'إعادة تحميل'],
   ['Masaüstünü yenile', 'Reload desktop', 'Desktop neu laden', 'Recharger le bureau', 'Recargar escritorio', 'Ricarica il desktop', 'Recarregar área de trabalho', 'Перезапустить рабочий стол', 'Перезапустити робочий стіл', 'Przeładuj pulpit', 'デスクトップを再読み込み', '重新加载桌面', '데스크톱 다시 불러오기', 'إعادة تحميل سطح المكتب'],
   ['Çıkış', 'Log out', 'Abmelden', 'Déconnexion', 'Cerrar sesión', 'Esci', 'Sair', 'Выйти', 'Вийти', 'Wyloguj', 'ログアウト', '注销', '로그아웃', 'تسجيل الخروج'],
   ['Yeniden', 'Restart', 'Neustart', 'Redémarrer', 'Reiniciar', 'Riavvia', 'Reiniciar', 'Перезагрузка', 'Перезавантаження', 'Uruchom ponownie', '再起動', '重启', '다시 시작', 'إعادة التشغيل'],

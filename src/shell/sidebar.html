@@ -510,6 +510,8 @@
         const items = [
           ['lock', 'Kilitle', () => act('rundll32', ['user32.dll,LockWorkStation'])],
           ['dark_mode', 'Uyku', () => act('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0'])],
+          // Takılan / kapanan bir parça varsa masaüstünü (GlazeWM, Zebar, ll-helper) temiz baştan başlatır
+          ['refresh', 'Yenile', () => act(HELPER, ['--ps-bg', `${LL}\\restart-desktop.ps1`])],
           ['logout', 'Çıkış', () => act('shutdown', ['/l'])],
           ['restart_alt', 'Yeniden', () => act('shutdown', ['/r', '/t', '0'])],
           ['power_settings_new', 'Kapat', () => act('shutdown', ['/s', '/t', '0'])],
