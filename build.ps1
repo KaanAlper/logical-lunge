@@ -65,9 +65,7 @@ if (Test-Path "$Forks\glazewm\Cargo.toml") {
 if (Test-Path "$Forks\zebar\Cargo.toml") {
     Step 'Zebar fork'
     Push-Location "$Forks\zebar"
-    Native { npx --yes pnpm@9.4.0 install --frozen-lockfile } 'pnpm install'
-    Native { npx --yes pnpm@9.4.0 --filter zebar build } 'zebar client'
-    Native { npx --yes pnpm@9.4.0 --filter settings-ui build } 'settings-ui'
+    # Our Zebar has no settings UI / client package to build: only the Rust app (widgets are the shell's pack)
     Native { cargo build --release -p zebar } 'zebar'
     Copy-Item target\release\zebar.exe "$ll\bin\"
     Pop-Location
