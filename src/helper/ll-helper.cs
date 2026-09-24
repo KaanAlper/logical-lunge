@@ -2828,51 +2828,87 @@ class DialogCatcher
     Native.WinEventDelegate cb;
     static readonly HashSet<string> owners = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { "glazewm", "zebar", "ll-helper", "tacky-borders", "explorer", "powershell", "rundll32", "cmd" };
+    // Oluşturulurken görünmez yapılan, henüz karar verilmemiş kutular -> özgün genişletilmiş stil
+    readonly Dictionary<IntPtr, int> pending = new Dictionary<IntPtr, int>();
+    System.Windows.Forms.Timer safety;
 
+    [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object obj);
+    [DllImport("oleacc.dll")] static extern int AccessibleChildren(Accessibility.IAccessible container, int start, int count, [Out] object[] children, out int obtained);
+
+    // Mesaj döngüsü olan kendi thread'inde çağrılır
     public void Start()
     {
-        cb = OnShow;
-        Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
+        cb = OnEvent;
+        // CREATE..SHOW: kutu oluşturulduğu anda (gösterilmeden) görünmez yapılır, gösterilince karar verilir
+        Native.SetWinEventHook(0x8000, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
+        // Güvenlik ağı: 2 sn'de karar verilemeyen kutu (olay kaçtıysa) geri görünür olur; hiçbir pencere görünmez kalmaz
+        safety = new System.Windows.Forms.Timer { Interval = 500 };
+        safety.Tick += (s, e) =>
+        {
+            foreach (var kv in new List<KeyValuePair<IntPtr, int>>(pending))
+                if (!Native.IsWindow(kv.Key)) pending.Remove(kv.Key);
+                else if (Environment.TickCount - Created(kv.Key) > 2000) { Restore(kv.Key, kv.Value); Slider.Log("dialog: karar verilemedi, geri gösterildi"); }
+        };
+        safety.Start();
     }
 
-    void OnShow(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    readonly Dictionary<IntPtr, int> createdAt = new Dictionary<IntPtr, int>();
+    int Created(IntPtr h) { int t; return createdAt.TryGetValue(h, out t) ? t : 0; }
+
+    static string ClassOf(IntPtr h) { var c = new StringBuilder(64); Native.GetClassName(h, c, 64); return c.ToString(); }
+
+    void Hide(IntPtr h)
+    {
+        int ex0 = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
+        if ((ex0 & 0x00080000) == 0) Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex0 | 0x00080000); // WS_EX_LAYERED
+        Native.SetLayeredWindowAttributes(h, 0, 0, 0x2); // LWA_ALPHA, tamamen saydam
+        pending[h] = ex0; createdAt[h] = Environment.TickCount;
+    }
+
+    void Restore(IntPtr h, int ex0)
+    {
+        pending.Remove(h); createdAt.Remove(h);
+        Native.SetLayeredWindowAttributes(h, 0, 255, 0x2);
+        Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex0);
+        Native.RedrawWindow(h, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400); // INVALIDATE|UPDATENOW|ALLCHILDREN|FRAME
+    }
+
+    void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
         if (idObject != 0 || hwnd == IntPtr.Zero) return;
         try
         {
-            var cls = new StringBuilder(64);
-            Native.GetClassName(hwnd, cls, 64);
-            if (cls.ToString() != "#32770") return;
+            if (ev != 0x8000 && ev != Native.EVENT_OBJECT_SHOW) return;
+            if (ClassOf(hwnd) != "#32770") return;
             uint pid; Native.GetWindowThreadProcessId(hwnd, out pid);
             string proc;
             try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { return; }
             if (!owners.Contains(proc)) return;
 
-            // Kutu ekrana çizilmeden önce tamamen saydam yap: yoksa Windows'un hata kutusu bir an görünüp sonra bizim
-            // bildirimimiz geliyordu. Soru soran kutuysa aşağıda geri görünür yapılır.
-            int ex0 = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
-            Native.SetWindowLong(hwnd, Native.GWL_EXSTYLE, ex0 | 0x00080000); // WS_EX_LAYERED
-            Native.SetLayeredWindowAttributes(hwnd, 0, 0, 0x2); // LWA_ALPHA, tamamen saydam
+            if (ev == 0x8000) { Hide(hwnd); return; } // EVENT_OBJECT_CREATE: henüz ekranda değil
+            if (!pending.ContainsKey(hwnd)) Hide(hwnd); // oluşturma olayı kaçtıysa şimdi
+            int ex0 = pending[hwnd];
 
-            var texts = new List<string>(); var buttons = new List<IntPtr>();
+            var texts = new List<string>(); var buttons = new List<IntPtr>(); IntPtr dui = IntPtr.Zero;
             Native.EnumChildWindows(hwnd, delegate (IntPtr ch, IntPtr l)
             {
-                var c = new StringBuilder(64); Native.GetClassName(ch, c, 64);
+                string cn = ClassOf(ch);
                 var t = new StringBuilder(2048); Native.GetWindowText(ch, t, 2048);
-                string cn = c.ToString(), tx = t.ToString().Trim();
-                if (cn == "Button") buttons.Add(ch);
-                else if ((cn == "Static" || cn == "DirectUIHWND") && tx.Length > 0) texts.Add(tx);
+                string tx = t.ToString().Trim();
+                if (cn == "Button") { if (Native.IsWindowVisible(ch)) buttons.Add(ch); }
+                else if (cn == "Static" && tx.Length > 0) texts.Add(tx);
+                else if (cn == "DirectUIHWND" && dui == IntPtr.Zero) dui = ch;
                 return true;
             }, IntPtr.Zero);
-            if (buttons.Count != 1 || texts.Count == 0)
-            {
-                // soru soran kutuya dokunma: eski haline döndür
-                Native.SetLayeredWindowAttributes(hwnd, 0, 255, 0x2);
-                Native.SetWindowLong(hwnd, Native.GWL_EXSTYLE, ex0);
-                Native.RedrawWindow(hwnd, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400); // INVALIDATE|UPDATENOW|ALLCHILDREN|FRAME
-                return;
-            }
+            // Yeni tür kutular (TaskDialog: Çalıştır, explorer, kısayol hataları): metin DirectUIHWND'in içinde çiziliyor,
+            // pencere metni olarak okunmuyor; erişilebilirlik arabiriminden (ekran okuyucuların yolu) okunur.
+            if (texts.Count == 0 && dui != IntPtr.Zero) ReadAccessibleTexts(dui, texts);
 
+            // Yalnızca tek düğmeli (Tamam) bilgi / hata kutusu bildirime döner; soru soranlar (Evet/Hayır, özellikler,
+            // dosya işlemleri) olduğu gibi görünür
+            if (buttons.Count != 1 || texts.Count == 0) { Restore(hwnd, ex0); return; }
+
+            pending.Remove(hwnd); createdAt.Remove(hwnd);
             var title = new StringBuilder(256); Native.GetWindowText(hwnd, title, 256);
             Native.PostMessage(buttons[0], 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
             string head = title.ToString();
@@ -2880,7 +2916,49 @@ class DialogCatcher
             Toasts.Send("error", head.Length > 0 ? head : "Hata", string.Join("\n", texts), "error");
             Slider.Log("dialog -> toast: " + proc + " | " + head);
         }
-        catch (Exception ex) { Slider.Log("dialog: " + ex.GetBaseException().Message); }
+        catch (Exception ex)
+        {
+            Slider.Log("dialog: " + ex.GetBaseException().Message);
+            int ex0; if (pending.TryGetValue(hwnd, out ex0)) Restore(hwnd, ex0);
+        }
+    }
+
+    // MSAA: kutunun içindeki metin öğeleri (ROLE_SYSTEM_STATICTEXT / TEXT), sırayla ve tekrarsız
+    static void ReadAccessibleTexts(IntPtr h, List<string> into)
+    {
+        try
+        {
+            var iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71"); // IID_IAccessible
+            object o;
+            if (AccessibleObjectFromWindow(h, 0xFFFFFFFC, ref iid, out o) != 0) return; // OBJID_CLIENT
+            var acc = o as Accessibility.IAccessible;
+            if (acc != null) Walk(acc, into, 0);
+        }
+        catch { }
+    }
+
+    static void Walk(Accessibility.IAccessible acc, List<string> into, int depth)
+    {
+        if (depth > 8) return;
+        int n;
+        try { n = acc.accChildCount; } catch { return; }
+        if (n <= 0 || n > 200) return;
+        var kids = new object[n]; int got;
+        if (AccessibleChildren(acc, 0, n, kids, out got) != 0) return;
+        for (int i = 0; i < got; i++)
+        {
+            try
+            {
+                var child = kids[i] as Accessibility.IAccessible;
+                object role; string name;
+                if (child != null) { role = child.get_accRole(0); name = child.get_accName(0); }
+                else { role = acc.get_accRole(kids[i]); name = acc.get_accName(kids[i]); }
+                int r = role is int ? (int)role : 0;
+                if ((r == 41 || r == 42) && !string.IsNullOrWhiteSpace(name) && !into.Contains(name.Trim())) into.Add(name.Trim());
+                if (child != null) Walk(child, into, depth + 1);
+            }
+            catch { }
+        }
     }
 }
 

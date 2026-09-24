@@ -22,7 +22,7 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $fx = "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8"
 
 Step 'll-helper.exe'
-& $csc /nologo /target:winexe /optimize+ "/out:$ll\helper\ll-helper.exe" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll "$root\src\helper\ll-helper.cs"
+& $csc /nologo /target:winexe /optimize+ "/out:$ll\helper\ll-helper.exe" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:Accessibility.dll "$root\src\helper\ll-helper.cs"
 if ($LASTEXITCODE) { throw 'll-helper build failed' }
 
 Step 'media-art.exe (album art + seek, WinRT)'
