@@ -214,6 +214,13 @@
 
       createRoot(document.getElementById('root')).render(<App />);
 
+      // Helper'a "canlıyım": yüklenince ve 30 sn'de bir. Bar hata sayfasında ya da donmuş kalırsa helper bunu fark edip
+      // kabuğu kendisi yeniden başlatır (elle "Yenile" gerekmesin).
+      const ALIVE_ID = crypto.randomUUID();
+      const alive = () => fetch(`http://127.0.0.1:6131/bar-alive?id=${ALIVE_ID}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
+      alive();
+      setInterval(alive, 30000);
+
       function App() {
         const [o, setO] = useState(providers.outputMap);
         const [vw, setVw] = useState(window.innerWidth);

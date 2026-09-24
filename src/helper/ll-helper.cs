@@ -2469,6 +2469,57 @@ static class ZebarWatchdog
         return ps.Length > 0;
     }
 
+    // Bar sayfaları yüklenince ve sonra 30 sn'de bir "canlıyım" der (POST /bar-alive?id=<sayfa yüklemesi>). Zebar ayakta ve
+    // sunucusu açık olsa da bir bar hata sayfasında ya da donmuş kalabiliyordu (yenilemede eski Zebar'ın sunucusuna bağlanıp
+    // boş kalan bar gibi): son 150 sn'de canlı diyen bar sayısı bar penceresi sayısından azsa Zebar yeniden başlatılır.
+    static readonly Dictionary<string, DateTime> barAlive = new Dictionary<string, DateTime>();
+    static readonly DateTime helperStart = DateTime.Now;
+    public static void BarAlive(string id)
+    {
+        lock (barAlive)
+        {
+            if (!barAlive.ContainsKey(id)) Slider.Log("bar canlı: " + (id.Length > 8 ? id.Substring(0, 8) : id));
+            barAlive[id] = DateTime.Now;
+            if (barAlive.Count > 50)
+            {
+                var old = new List<string>();
+                foreach (var kv in barAlive) if ((DateTime.Now - kv.Value).TotalSeconds > 300) old.Add(kv.Key);
+                foreach (var k in old) barAlive.Remove(k);
+            }
+        }
+    }
+    static int AliveBars()
+    {
+        int n = 0;
+        lock (barAlive) foreach (var kv in barAlive) if ((DateTime.Now - kv.Value).TotalSeconds <= 150) n++;
+        return n;
+    }
+    static int BarWindows(int pid)
+    {
+        int n = 0;
+        var title = new StringBuilder(64);
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
+        {
+            uint p; Native.GetWindowThreadProcessId(h, out p);
+            if (p != pid) return true;
+            title.Length = 0; Native.GetWindowText(h, title, 64);
+            if (title.ToString() == "Zebar - logical-lunge / bar") n++;
+            return true;
+        }, IntPtr.Zero);
+        return n;
+    }
+    // Bar'ların sessiz kalması bir sorun mu: Zebar ve helper yeterince uzun süredir açık, ekran kilitli değil
+    static string SilentBars(Process zebar)
+    {
+        if ((DateTime.Now - helperStart).TotalSeconds < 160) return null; // helper yeni: bar'ların bir sonraki bildirimini bekle
+        DateTime started;
+        try { started = zebar.StartTime; } catch { return null; }
+        if ((DateTime.Now - started).TotalSeconds < 40) return null;
+        if (!FocusGuard.OnDefaultDesktop()) return null; // kilit ekranında zamanlayıcılar yavaşlar
+        int windows = BarWindows(zebar.Id), alive = AliveBars();
+        return windows > 0 && alive < windows ? "bar yanıt vermiyordu (" + alive + "/" + windows + " canlı)" : null;
+    }
+
     static void Restart(string why)
     {
         string exe = ExePath();
@@ -2498,8 +2549,9 @@ static class ZebarWatchdog
                     if (Maint.Quiet() || WmWatchdog.Recovering) { bad = 0; continue; }
                     var zs = Zebars();
                     bool running = zs.Count > 0;
+                    string problem = !running ? "zebar çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : SilentBars(zs[0]);
                     foreach (var p in zs) p.Dispose();
-                    string problem = !running ? "zebar çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : null;
+                    if (problem != null && problem.StartsWith("bar ")) lock (barAlive) barAlive.Clear(); // yeniden başlayınca sayım sıfırdan
                     if (problem == null) { bad = 0; failures = 0; continue; }
                     if (++bad < 2) continue;
                     bad = 0;
@@ -2867,7 +2919,7 @@ static class Toasts
             // Widget'lar POST kullanır: Zebar'ın service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -2901,6 +2953,12 @@ static class Toasts
                 int q = target.IndexOf("since="), since;
                 if (q < 0 || !int.TryParse(target.Substring(q + 6).Split('&')[0], out since)) since = -1;
                 body = Keys2.WaitOverviewSignal(since, 25000); status = "200 OK";
+            }
+            else if (target.StartsWith("/bar-alive?id="))
+            {
+                string id = Uri.UnescapeDataString(target.Substring(14).Split('&')[0]);
+                if (id.Length > 0 && id.Length <= 64) { ZebarWatchdog.BarAlive(id); status = "204 No Content"; }
+                else status = "400 Bad Request";
             }
             else if (target.StartsWith("/overview-signal?w=show") || target.StartsWith("/overview-signal?w=hide"))
             {
@@ -6233,7 +6291,7 @@ static class FocusGuard
     }
 
     // Kilit ekranı / ekran koruyucusu / UAC girdi masaüstündeyken ön plan sorgusu anlamsız
-    static bool OnDefaultDesktop()
+    public static bool OnDefaultDesktop()
     {
         IntPtr d = OpenInputDesktop(0, false, 0x0001); // DESKTOP_READOBJECTS
         if (d == IntPtr.Zero) return false;
