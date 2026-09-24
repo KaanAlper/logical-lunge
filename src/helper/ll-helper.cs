@@ -756,7 +756,7 @@ class Slider
 
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
-    static readonly string[] Pinned = { "Zebar - logical-lunge / osk", "Zebar - logical-lunge / sidebar-right", "Zebar - logical-lunge / toast" };
+    static readonly string[] Pinned = { "Zebar - logical-lunge / osk", "Zebar - logical-lunge / sidebar-right", "Zebar - logical-lunge / toast", "Zebar - logical-lunge / update" };
     // PiP gibi her workspace'te sabit duran, en üstte tutulan ve GlazeWM'in yönetmediği pencereler animasyon katmanının
     // altında kalıp geçiş boyunca kayboluyor, sonra "yapıştırılmış resim" gibi geri geliyordu. Canlı önizlemeleri kenarlık
     // katmanının en üstüne, kendi yerlerine konur: katman açıldığı karede görünürler, geçiş boyunca sabit kalırlar.
@@ -770,15 +770,21 @@ class Slider
         var skip = new HashSet<IntPtr>();
         if (animated != null) foreach (var t in animated) if (t != null) skip.Add(t.Src);
         var found = new List<KeyValuePair<IntPtr, Native.RECT>>();
+        var title = new StringBuilder(64);
         Native.EnumWindows(delegate (IntPtr h, IntPtr l)
         {
             if (skip.Contains(h) || !Native.IsWindowVisible(h) || Native.IsIconic(h)) return true;
-            if ((Native.GetWindowLong(h, Native.GWL_EXSTYLE) & 0x8) == 0) return true; // WS_EX_TOPMOST
+            // Bizim yapışık pencerelerimiz (bildirim, güncelleme kartı, ekran klavyesi, sağ panel) de PiP gibi: yalnızca
+            // RaisePinned ile öne alınınca katman açıldığı an altında kalıyor, kaydırmanın başında kaybolup geri geliyorlardı
+            title.Length = 0; Native.GetWindowText(h, title, 64);
+            bool ours = Array.IndexOf(Pinned, title.ToString()) >= 0;
+            if (!ours && (Native.GetWindowLong(h, Native.GWL_EXSTYLE) & 0x8) == 0) return true; // WS_EX_TOPMOST
             int cl;
             if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0) return true;
             Native.RECT r; Native.GetWindowRect(h, out r);
-            if (r.Right - r.Left < 40 || r.Bottom - r.Top < 40) return true;
+            if (r.Right - r.Left < 40 || r.Bottom - r.Top < 40) return true; // boş bildirim penceresi (içerik yok) de burada elenir
             if (!monArea.IntersectsWith(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom))) return true;
+            if (ours) { found.Add(new KeyValuePair<IntPtr, Native.RECT>(h, r)); return true; }
             uint pid; Native.GetWindowThreadProcessId(h, out pid);
             string pn;
             lock (pinProcs)
