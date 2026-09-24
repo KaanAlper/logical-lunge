@@ -71,6 +71,8 @@ const ROWS = [
   ['Kuruluyor…', 'Installing…', 'Wird installiert…', 'Installation…', 'Instalando…', 'Installazione…', 'Instalando…', 'Установка…', 'Встановлення…', 'Instalowanie…', 'インストール中…', '正在安装…', '설치 중…', 'جارٍ التثبيت…'],
   ['Güncelleme yapılamadı', 'Update failed', 'Update fehlgeschlagen', 'Échec de la mise à jour', 'Error al actualizar', 'Aggiornamento non riuscito', 'Falha na atualização', 'Не удалось обновить', 'Не вдалося оновити', 'Aktualizacja nie powiodła się', 'アップデートに失敗しました', '更新失败', '업데이트 실패', 'فشل التحديث'],
   ['Güncelle', 'Update', 'Aktualisieren', 'Mettre à jour', 'Actualizar', 'Aggiorna', 'Atualizar', 'Обновить', 'Оновити', 'Aktualizuj', 'アップデート', '更新', '업데이트', 'تحديث'],
+  ['Tümünü göster', 'Show all', 'Alles anzeigen', 'Tout afficher', 'Mostrar todo', 'Mostra tutto', 'Mostrar tudo', 'Показать всё', 'Показати все', 'Pokaż wszystko', 'すべて表示', '显示全部', '모두 보기', 'عرض الكل'],
+  ['Daha az göster', 'Show less', 'Weniger anzeigen', 'Afficher moins', 'Mostrar menos', 'Mostra meno', 'Mostrar menos', 'Показать меньше', 'Показати менше', 'Pokaż mniej', '表示を減らす', '收起', '간략히 보기', 'عرض أقل'],
   ['Daha sonra', 'Later', 'Später', 'Plus tard', 'Más tarde', 'Più tardi', 'Mais tarde', 'Позже', 'Пізніше', 'Później', '後で', '稍后', '나중에', 'لاحقًا'],
   ['Şimdi kur', 'Install now', 'Jetzt installieren', 'Installer maintenant', 'Instalar ahora', 'Installa ora', 'Instalar agora', 'Установить сейчас', 'Встановити зараз', 'Zainstaluj teraz', '今すぐインストール', '立即安装', '지금 설치', 'ثبّت الآن'],
   ['Yeniden dene', 'Try again', 'Erneut versuchen', 'Réessayer', 'Reintentar', 'Riprova', 'Tentar novamente', 'Повторить', 'Повторити', 'Spróbuj ponownie', '再試行', '重试', '다시 시도', 'أعد المحاولة'],

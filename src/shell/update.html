@@ -208,6 +208,17 @@
       .ver { font-size: 12px; color: var(--m3onSurfaceVariant); font-family: 'Rubik', sans-serif; }
       .body { margin-top: 3px; font-size: 13px; color: var(--m3onSurfaceVariant); line-height: 1.35; white-space: pre-line; }
       .body .notes { display: block; margin-top: 6px; max-height: 5.4em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); }
+      /* Notlar uzunsa açılır: açıkken maske yok, çok uzunsa kart içinde kayar */
+      .card.open .body .notes { max-height: 340px; overflow-y: auto; -webkit-mask-image: none; padding-right: 4px; }
+      .body .notes::-webkit-scrollbar { width: 6px; }
+      .body .notes::-webkit-scrollbar-thumb { background: var(--m3outlineVariant, rgba(255 255 255 / 25%)); border-radius: 999px; }
+      .more {
+        display: inline-flex; align-items: center; gap: 2px; margin-top: 4px; padding: 2px 8px 2px 4px;
+        border: 0; border-radius: 999px; background: transparent; color: var(--m3primary); font: inherit; font-size: 12px; cursor: pointer;
+      }
+      .more:hover { background: var(--m3secondaryContainer); }
+      .more .icon { font-size: 18px; transition: transform 250ms var(--emphDecel); }
+      .card.open .more .icon { transform: rotate(180deg); }
 
       .prog { margin-top: 10px; }
       .bar { position: relative; height: 8px; border-radius: 999px; background: var(--m3secondaryContainer); overflow: hidden; }
@@ -233,7 +244,7 @@
     <div id="stack"></div>
     <script type="module">
       import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
       import { LogicalSize } from 'https://esm.sh/@tauri-apps/api@2/dpi';
 
       const win = zebar.currentWidget().tauriWindow;
@@ -254,7 +265,18 @@
           await win.setSize(new LogicalSize(W, Math.max(1, Math.ceil(h))));
           await win.setIgnoreCursorEvents(!card);
         } catch (e) { console.error(e); }
+        announce(card ? h : 0);
       }
+      // Bildirimler ayrı bir pencere ve aynı köşede: kart açıkken üstüne biniyorlardı. Kartın yüksekliği yayınlanır,
+      // bildirim penceresi onun altına kayar (ikisi tek yığın gibi alt alta).
+      let announced = -1;
+      function announce(h) {
+        const v = Math.ceil(h);
+        if (v === announced) return;
+        announced = v;
+        emit('ll:update-card', { height: v }).catch(() => {});
+      }
+      listen('ll:update-card-query', () => { announced = -1; fit(); });
       fit();
 
       function close() {
@@ -306,6 +328,21 @@
             ${acts.length ? `<div class="acts">${acts.map((a, i) => `<button class="${a[0]}" data-i="${i}">${a[1]}</button>`).join('')}</div>` : ''}
           </div>`;
         card.querySelectorAll('.acts button').forEach(b => b.addEventListener('click', () => acts[+b.dataset.i][2]()));
+        // Notlar kesiliyorsa açılır ok: notlar kartın içinde açılır / kapanır (çok uzunsa kayar)
+        const notes = card.querySelector('.notes');
+        if (notes && notes.scrollHeight > notes.clientHeight + 2) {
+          const more = document.createElement('button');
+          more.className = 'more';
+          more.innerHTML = '<span class="icon">expand_more</span><span class="lbl">Tümünü göster</span>';
+          notes.after(more);
+          more.addEventListener('click', e => {
+            e.stopPropagation();
+            const open = card.classList.toggle('open');
+            more.querySelector('.lbl').textContent = open ? 'Daha az göster' : 'Tümünü göster';
+            if (!open) notes.scrollTop = 0;
+            requestAnimationFrame(fit);
+          });
+        }
         requestAnimationFrame(fit);
         if (state === 'uptodate') closeTimer = setTimeout(close, 3600);
       }

@@ -209,8 +209,8 @@
     <div id="stack"></div>
     <script type="module">
       import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
-      import { LogicalSize } from 'https://esm.sh/@tauri-apps/api@2/dpi';
+      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import { LogicalSize, PhysicalPosition } from 'https://esm.sh/@tauri-apps/api@2/dpi';
 
       const win = zebar.currentWidget().tauriWindow;
       const W = 420, TIMEOUT = 6000; // ii notifications.timeout
@@ -270,6 +270,21 @@
       }
 
       listen('ll:toast', e => show(e.payload || {}));
+
+      // Güncelleme kartı (ayrı pencere, aynı köşe) açıkken bildirimler onun altına dizilir; iki pencere üst üste biniyordu.
+      // Kart yüksekliğini yayınlar; aradaki boşluk kartlar arasındakiyle aynı olsun diye iki pencerenin dolgusu (10+10)
+      // çıkarılıp 8 eklenir.
+      let baseY = null, updateH = 0;
+      async function place() {
+        try {
+          const pos = await win.outerPosition();
+          if (baseY === null) baseY = pos.y;
+          const off = updateH > 0 ? Math.round((updateH - 12) * (await win.scaleFactor())) : 0;
+          if (pos.y !== baseY + off) await win.setPosition(new PhysicalPosition(pos.x, baseY + off));
+        } catch (e) { console.error(e); }
+      }
+      listen('ll:update-card', e => { updateH = Math.max(0, e.payload?.height || 0); place(); });
+      emit('ll:update-card-query').catch(() => {});
 
       // ll-helper'dan gelen bildirimler (yakalanan Windows hata pencereleri, açılamayan uygulamalar).
       // Helper'ın akış modu stdout'a satır satır JSON yazar; süreç biterse 3 sn sonra yeniden başlat.
