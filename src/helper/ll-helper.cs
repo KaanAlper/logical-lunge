@@ -4140,7 +4140,8 @@ static class SnipTool
         if (f.Action == "copy")
         {
             // true: helper kapansa da panoda kalsın
-            try { Clipboard.SetDataObject(outBmp, true, 5, 100); } catch { }
+            try { Clipboard.SetDataObject(outBmp, true, 10, 100); Slider.Log("alıntı panoya kopyalandı: " + outBmp.Width + "x" + outBmp.Height); }
+            catch (Exception ex) { Slider.Log("alıntı panoya kopyalanamadı: " + ex.Message); }
             return;
         }
         string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyPictures), "Screenshots");
@@ -4377,15 +4378,21 @@ static class ClipHistory
         }
     }
 
+    static string Formats()
+    {
+        try { var d = Clipboard.GetDataObject(); return d == null ? "(boş)" : string.Join(", ", d.GetFormats(false)); }
+        catch (Exception ex) { return "(okunamadı: " + ex.Message + ")"; }
+    }
+
     static void Changed()
     {
-        if (Retry(() => Clipboard.ContainsData("ExcludeClipboardContentFromMonitorProcessing"), false)) return;
+        if (Retry(() => Clipboard.ContainsData("ExcludeClipboardContentFromMonitorProcessing"), false)) { Slider.Log("pano: geçmişe alınmaması istendi"); return; }
         string text = Retry(() => Clipboard.ContainsText() ? Clipboard.GetText() : null, (string)null);
         bool hasText = !string.IsNullOrEmpty(text) && text.Trim().Length > 0;
         bool hasImage = Retry(() => Clipboard.ContainsImage() || Clipboard.ContainsData("PNG"), false);
         if (hasText && (!hasImage || !LinkLike(text))) { AddText(text); return; }
         byte[] png = hasImage ? ClipboardPng() : null;
-        if (png == null) { if (hasText) AddText(text); return; }
+        if (png == null) { Slider.Log("pano: görüntü okunamadı, biçimler=[" + Formats() + "]"); if (hasText) AddText(text); return; }
         string hash;
         using (var sha = System.Security.Cryptography.SHA1.Create()) hash = BitConverter.ToString(sha.ComputeHash(png)).Replace("-", "").Substring(0, 16);
         string file = "img-" + hash + ".png";
@@ -4448,9 +4455,13 @@ static class ClipHistory
     {
         Item it;
         lock (gate) it = Load().Find(x => x.id.ToString() == id);
-        if (it == null) return "{\"ok\":false}";
-        if (it.kind == "text") Clipboard.SetDataObject(it.text, true, 8, 40);
-        else using (var img = Image.FromFile(System.IO.Path.Combine(Dir, it.file))) Clipboard.SetDataObject(new Bitmap(img), true, 8, 40);
+        if (it == null) return "{\"ok\":false,\"error\":\"kayıt bulunamadı\"}";
+        try
+        {
+            if (it.kind == "text") Clipboard.SetDataObject(it.text, true, 10, 50);
+            else using (var img = Image.FromFile(System.IO.Path.Combine(Dir, it.file))) Clipboard.SetDataObject(new Bitmap(img), true, 10, 50);
+        }
+        catch (Exception ex) { return json.Serialize(new Dictionary<string, object> { { "ok", false }, { "error", ex.Message } }); }
         return "{\"ok\":true}";
     }
 
@@ -5688,14 +5699,9 @@ static class Program
         try { w.Write(""); w.Flush(); return true; } catch { return false; }
     }
 
+    // STA şart: pano (OLE), dosya kaydetme penceresi (COM) ana thread'de çalışıyor. Bu satırın altına başka bir metot
+    // eklenirse öznitelik ona geçer ve pano / kaydetme bozulur (bir kez oldu).
     [STAThread]
-    static bool Running(string name)
-    {
-        var ps = Process.GetProcessesByName(name);
-        foreach (var p in ps) p.Dispose();
-        return ps.Length > 0;
-    }
-
     static void Main(string[] args)
     {
         // ll-helper.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;

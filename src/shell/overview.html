@@ -416,7 +416,13 @@
                 name: c.kind === 'image' ? 'Görüntü' : first.slice(0, 140), img: c.kind === 'image' ? c.thumb : undefined, material: 'content_paste',
                 mono: c.kind === 'text' && /[{};=<>]/.test(first), verb: 'Kopyala',
                 exec: async () => {
-                  try { await zebar.shellExec(HELPER, ['--clip-set', c.id]); toast({ kind: 'ok', title: 'Panoya kopyalandı', body: c.kind === 'image' ? 'Görüntü' : first.slice(0, 80), icon: 'content_paste' }); }
+                  try {
+                    const r = await zebar.shellExec(HELPER, ['--clip-set', c.id]);
+                    const res = JSON.parse((r.stdout || '').trim() || '{}');
+                    if (!res.ok) throw new Error(res.error || 'Pano meşgul');
+                    // Kısa onay: uzun kalması rahatsız ediyordu
+                    toast({ kind: 'ok', title: 'Panoya kopyalandı', body: c.kind === 'image' ? 'Görüntü' : first.slice(0, 80), icon: 'content_paste', timeout: 1500 });
+                  }
                   catch (e) { toast({ kind: 'error', title: 'Kopyalanamadı', body: String(e?.message ?? e), icon: 'error' }); }
                 },
               });
