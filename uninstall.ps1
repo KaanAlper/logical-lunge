@@ -18,12 +18,26 @@ if (-not $KeepConfig -and -not $RemoveConfig) {
 
 if (-not $UserSid) { $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# Stop the window manager as the user before the elevated setup: GlazeWM hides the windows of other workspaces
+# (cloak) and a killed / older GlazeWM left them invisible. A graceful exit brings them back (Logical Lunge's GlazeWM
+# build); anything still hidden is brought back by the helper. Returns whether GlazeWM was running.
+function Stop-LLDesktop([string]$helperExe) {
+    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $gw) { return $false }
+    try { & $gw.Path command wm-exit 2>$null | Out-Null } catch {}
+    if (-not $gw.WaitForExit(5000)) { Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }
+    if ($helperExe -and (Test-Path $helperExe)) { try { & $helperExe --uncloak-orphans | Out-Null } catch {} }
+    return $true
+}
+
 if (-not $isAdmin) {
+    $wasRunning = Stop-LLDesktop (Join-Path $UserProfile '.glzr\logical-lunge\helper\ll-helper.exe')
     # one UAC prompt; the elevated copy needs to know whose settings to restore
     $self = Join-Path $env:TEMP 'logical-lunge-uninstall.ps1'
     Copy-Item $PSCommandPath $self -Force
     $choice = if ($RemoveConfig) { '-RemoveConfig' } else { '-KeepConfig' }
-    Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", '-UserProfile', "`"$UserProfile`"", '-UserSid', $UserSid, '-Elevated', $choice
+    try { Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", '-UserProfile', "`"$UserProfile`"", '-UserSid', $UserSid, '-Elevated', $choice }
+    catch { if ($wasRunning) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue } }   # UAC declined: desktop back
     return
 }
 

@@ -2234,6 +2234,61 @@ class MouseFocus
     }
 }
 
+// ---------------- Görünmez kalmış pencereler ----------------
+// GlazeWM gizli workspace'lerin pencerelerini kabuğun "cloak" özelliğiyle gizler. GlazeWM çökerse ya da zorla kapatılırsa
+// (güncelleme, kaldırma) bu pencereler görünmez kalıyordu. ll-helper.exe --uncloak-orphans: kabuğun gizlediği uygulama
+// pencerelerini geri getirir (GlazeWM'in kendi kullandığı arayüzle). Askıya alınmış UWP pencerelerine dokunmaz.
+static class Orphans
+{
+    [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IServiceProviderLL { [return: MarshalAs(UnmanagedType.IUnknown)] object QueryService(ref Guid service, ref Guid riid); }
+    [ComImport, Guid("372E1D3B-38D3-42E4-A15B-8AB2B178F513"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IApplicationViewLL { void m1(); void m2(); void m3(); void m4(); void m5(); void m6(); void m7(); void m8(); void m9(); [PreserveSig] int SetCloak(uint type, int flag); }
+    [ComImport, Guid("1841C6D7-4F9D-42C0-AF41-8747538F10E5"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IApplicationViewCollectionLL { void m1(); void m2(); void m3(); [PreserveSig] int GetViewForHwnd(IntPtr hwnd, out IApplicationViewLL view); }
+
+    // listOnly: yalnızca adayları yazdır. GlazeWM çalışırken hiçbir şey yapılmaz: gizli workspace'lerin pencereleri
+    // bilerek gizlidir, açılırlarsa ekrana dökülürlerdi.
+    public static int Uncloak(bool listOnly = false)
+    {
+        if (!listOnly && Process.GetProcessesByName("glazewm").Length > 0) { Slider.Log("uncloak: GlazeWM çalışıyor, atlandı"); return -1; }
+        var targets = new List<IntPtr>();
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
+        {
+            if (!Native.IsWindowVisible(h)) return true;
+            int cl;
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cl, 4) != 0 || cl != 2) return true; // 2 = kabuk gizlemiş
+            var c = new StringBuilder(128); Native.GetClassName(h, c, 128);
+            string cs = c.ToString();
+            if (cs == "Windows.UI.Core.CoreWindow" || cs == "ApplicationFrameWindow") return true; // askıdaki UWP
+            if ((Native.GetWindowLong(h, Native.GWL_EXSTYLE) & Native.WS_EX_TOOLWINDOW) != 0) return true;
+            targets.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        if (listOnly)
+        {
+            foreach (var h in targets) { var t = new StringBuilder(120); Native.GetWindowText(h, t, 120); Console.WriteLine(h.ToInt64() + " " + t); }
+            return targets.Count;
+        }
+        if (targets.Count == 0) return 0;
+        int n = 0;
+        try
+        {
+            var shell = (IServiceProviderLL)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("C2F03A33-21F5-47FA-B4BB-156362A2F239")));
+            var iid = typeof(IApplicationViewCollectionLL).GUID;
+            var coll = (IApplicationViewCollectionLL)shell.QueryService(ref iid, ref iid);
+            foreach (var h in targets)
+            {
+                IApplicationViewLL v;
+                if (coll.GetViewForHwnd(h, out v) == 0 && v != null && v.SetCloak(1, 0) == 0) n++;
+            }
+        }
+        catch (Exception ex) { Slider.Log("uncloak: " + ex.Message); }
+        Slider.Log("görünmez kalmış " + targets.Count + " pencereden " + n + " tanesi geri getirildi");
+        return n;
+    }
+}
+
 // ---------------- Zebar nöbetçisi ----------------
 // Bar ve tüm paneller Zebar'da. Zebar hiç açılmazsa (ör. yeni kurulumda PATH) ya da açık olduğu halde widget sunucusu
 // (127.0.0.1:6124) çalışmıyorsa (port o an önceki Zebar'da kaldıysa sunucusuz açılıyor, bar "bağlantı reddedildi"
@@ -5957,6 +6012,17 @@ static class Program
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             new Slider(new Glaze()).FocusUnderCursor();
+            return;
+        }
+
+        if (args.Length == 1 && args[0] == "--uncloak-orphans")
+        {
+            Console.WriteLine(Orphans.Uncloak());
+            return;
+        }
+        if (args.Length == 2 && args[0] == "--uncloak-orphans" && args[1] == "--list")
+        {
+            Orphans.Uncloak(true);
             return;
         }
 

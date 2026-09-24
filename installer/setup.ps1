@@ -101,6 +101,10 @@ if (-not (Test-Path "$env:WINDIR\System32\vcruntime140_1.dll")) {
 
 # ---------------------------------------------------------------- stop running parts
 Step 'Stopping running components'
+# Gracefully first: Logical Lunge's GlazeWM brings the windows of hidden workspaces back when it exits (the
+# non-elevated launchers already did this and uncloaked anything left)
+$gwRun = Get-Process glazewm -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($gwRun) { try { & $gwRun.Path command wm-exit 2>$null | Out-Null } catch {}; [void]$gwRun.WaitForExit(5000) }
 foreach ($n in 'glazewm', 'zebar', 'll-helper', 'tacky-borders', 'll-temps') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Milliseconds 800
 

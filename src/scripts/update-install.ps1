@@ -11,6 +11,18 @@ function Set-State($state, $err) {
     $j = [ordered]@{ state = $state; version = ''; bytes = 0; total = 0; error = [string]$err } | ConvertTo-Json -Compress
     [IO.File]::WriteAllText($status, $j, (New-Object Text.UTF8Encoding $false)) # BOM'suz
 }
+# Stop the window manager as the user before the elevated setup: GlazeWM hides the windows of other workspaces
+# (cloak) and a killed / older GlazeWM left them invisible. A graceful exit brings them back (Logical Lunge's GlazeWM
+# build); anything still hidden is brought back by the helper. Returns whether GlazeWM was running.
+function Stop-LLDesktop([string]$helperExe) {
+    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $gw) { return $false }
+    try { & $gw.Path command wm-exit 2>$null | Out-Null } catch {}
+    if (-not $gw.WaitForExit(5000)) { Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }
+    if ($helperExe -and (Test-Path $helperExe)) { try { & $helperExe --uncloak-orphans | Out-Null } catch {} }
+    return $true
+}
+
 $splash = $null
 try {
     Set-State 'installing' ''
@@ -25,8 +37,10 @@ try {
     $me = [Security.Principal.WindowsIdentity]::GetCurrent()
     $args2 = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $src 'installer\setup.ps1')`"",
         '-Source', "`"$src`"", '-UserProfile', "`"$env:USERPROFILE`"", '-UserSid', $me.User.Value, '-UserName', "`"$($me.Name)`"")
-    # Kullanıcı UAC'ı reddederse burada hata verir; örtü henüz açılmadığı için masaüstü olduğu gibi kalır
-    $setup = Start-Process powershell.exe -Verb RunAs -PassThru -ArgumentList $args2
+    $wasRunning = Stop-LLDesktop (Join-Path $src 'logical-lunge\helper\ll-helper.exe')
+    # Kullanıcı UAC'ı reddederse burada hata verir: masaüstünü (GlazeWM) geri başlat
+    try { $setup = Start-Process powershell.exe -Verb RunAs -PassThru -ArgumentList $args2 }
+    catch { if ($wasRunning) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue }; throw }
 
     # Onaylandı: kurulum masaüstünü kapatacak. Örtüyü hemen aç (kurulan dosya kilitlenmesin diye kopyadan)
     $copy = Join-Path $env:TEMP 'll-update-splash.exe'

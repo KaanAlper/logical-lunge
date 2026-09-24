@@ -40,13 +40,30 @@ if (-not $src) {
 }
 if (-not $src -or -not (Test-Path (Join-Path $src 'installer\setup.ps1'))) { Write-Host 'Installer files not found.' -ForegroundColor Red; return }
 
+# Stop the window manager as the user before the elevated setup: GlazeWM hides the windows of other workspaces
+# (cloak) and a killed / older GlazeWM left them invisible. A graceful exit brings them back (Logical Lunge's GlazeWM
+# build); anything still hidden is brought back by the helper. Returns whether GlazeWM was running.
+function Stop-LLDesktop([string]$helperExe) {
+    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $gw) { return $false }
+    try { & $gw.Path command wm-exit 2>$null | Out-Null } catch {}
+    if (-not $gw.WaitForExit(5000)) { Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300 }
+    if ($helperExe -and (Test-Path $helperExe)) { try { & $helperExe --uncloak-orphans | Out-Null } catch {} }
+    return $true
+}
+
 $me = [Security.Principal.WindowsIdentity]::GetCurrent()
 $args2 = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $src 'installer\setup.ps1')`"",
     '-Source', "`"$src`"", '-UserProfile', "`"$env:USERPROFILE`"", '-UserSid', $me.User.Value, '-UserName', "`"$($me.Name)`"")
 if ($env:LL_NO_TERMINAL) { $args2 += '-NoTerminal' }
 if ($env:LL_NO_SENSORS) { $args2 += '-NoSensors' }
 Write-Host 'Installing (Windows will ask for permission once)...'
-$p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $args2
+$wasRunning = Stop-LLDesktop (Join-Path $src 'logical-lunge\helper\ll-helper.exe')
+try { $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ArgumentList $args2 }
+catch {
+    if ($wasRunning) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue }
+    Write-Host 'Installation cancelled.' -ForegroundColor Yellow; return
+}
 if ($p.ExitCode -eq 0) {
     Write-Host ''
     Write-Host 'Logical Lunge is installed. Press Super for search, Super+Enter for a terminal.' -ForegroundColor Green
