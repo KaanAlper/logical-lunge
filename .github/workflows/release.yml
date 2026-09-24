@@ -1,9 +1,8 @@
 name: Release
 
 # Manual only: Actions -> Release -> Run workflow.
-# Builds dist\LogicalLunge-<version>.zip (+ .sha256) from this repo and the two forks
-# (KaanAlper/glazewm and KaanAlper/zebar, branch "logical-lunge"), bumps the version
-# automatically and publishes it as the latest GitHub release (what install.ps1 and the
+# Builds dist\LogicalLunge-<version>.zip (+ .sha256) from this repo (core, tiling, shell, UI,
+# tools), bumps the version automatically and publishes it as the latest GitHub release (what install.ps1 and the
 # in-app updater download).
 on:
   workflow_dispatch:
@@ -29,20 +28,6 @@ jobs:
       - name: Checkout Logical Lunge
         uses: actions/checkout@v4
 
-      - name: Checkout GlazeWM fork
-        uses: actions/checkout@v4
-        with:
-          repository: KaanAlper/glazewm
-          ref: logical-lunge
-          path: forks/glazewm
-
-      - name: Checkout Zebar fork
-        uses: actions/checkout@v4
-        with:
-          repository: KaanAlper/zebar
-          ref: logical-lunge
-          path: forks/zebar
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@nightly
 
@@ -50,8 +35,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
-            forks/glazewm
-            forks/zebar
+            tiling
+            shell
 
       - name: Install Node.js
         uses: actions/setup-node@v4
@@ -85,7 +70,7 @@ jobs:
 
       - name: Build package
         shell: pwsh
-        run: ./build.ps1 -Forks "$env:GITHUB_WORKSPACE\forks"
+        run: ./build.ps1
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

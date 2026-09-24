@@ -5,16 +5,26 @@
     <script>
 // Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
 // title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
-// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) aynı dilde. Yeni dil / metin: i18n.src.js.
+// Kurulumda seçilen dil ve saat prefs.json'da ({"language": "system" | "tr" | "en" ..., "clock": "24" | "12"}):
+// dil "system" değilse sistem dilinin yerine geçer; window.LL_HOUR12 saatlerin 12 saatlik (AM/PM) çizilmesi içindir.
 (function () {
-  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  var prefs = {};
+  try {
+    var px = new XMLHttpRequest(); px.open('GET', './prefs.json', false); px.send();
+    if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
+  } catch (e) {}
+  window.LL_PREFS = prefs;
+  window.LL_HOUR12 = prefs.clock === '12';
+  var lang = prefs.language && prefs.language !== 'system' ? prefs.language
+    : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
   window.LL_LOCALE = lang;
   var code = lang.slice(0, 2).toLowerCase();
   window.LL_T = function (s) { return s; };
   if (code === 'tr') return;
   var data = null;
   try {
-    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel kabuk sunucusundan, ~1 ms)
     var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
     if (x.status === 200) data = JSON.parse(x.responseText);
   } catch (e) {}
@@ -101,7 +111,7 @@
 })();
     </script>
     <!-- ii modules/ii/onScreenKeyboard: alttan kayarak gelen klavye. OskKey: 45x45, rounding.small,
-         colLayer1; panel colLayer0, windowRounding (18), aralık 5. Tuşlar ll-helper --osk ile
+         colLayer1; panel colLayer0, windowRounding (18), aralık 5. Tuşlar lunge.exe --osk ile
          odaktaki pencereye gönderilir; pencere odak almaz (helper WS_EX_NOACTIVATE verir). -->
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
@@ -172,7 +182,7 @@
       import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
 
       const win = zebar.currentWidget().tauriWindow;
-      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
+      const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       const osk = document.getElementById('osk');
       const rowsEl = document.getElementById('rows');
       let open = false, pinned = false, shift = false, caps = false;
@@ -269,7 +279,7 @@
         if (v) {
           ensureProc();
           // en üste al ama odak verme (tuşlar yazılan uygulamaya gitsin)
-          zebar.shellExec(HELPER, ['--top', 'Zebar - logical-lunge / osk']).catch(() => {});
+          zebar.shellExec(HELPER, ['--top', 'Logical Lunge · osk']).catch(() => {});
         }
       }
       setOpen(false);

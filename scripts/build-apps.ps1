@@ -43,7 +43,7 @@ public static class ShellIcon
 }
 '@
 
-$out = Join-Path $env:USERPROFILE '.glzr\zebar\logical-lunge\apps.json'
+$out = Join-Path $PSScriptRoot '..\ui\logical-lunge\apps.json'
 $skip = '(?i)(uninstall|kaldır|readme|beni oku|help|yardım|documentation|belgeler|release notes|license|lisans|website|web sitesi|manual|kılavuz|changelog|what''s new)'
 
 $shell = New-Object -ComObject Shell.Application

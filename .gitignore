@@ -1,6 +1,6 @@
 /dist/
 /build/
-src/shell/i18n.json
+/build/py-out/
 *.part
 __pycache__/
 

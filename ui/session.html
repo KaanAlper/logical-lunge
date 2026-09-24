@@ -5,16 +5,26 @@
     <script>
 // Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
 // title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
-// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) aynı dilde. Yeni dil / metin: i18n.src.js.
+// Kurulumda seçilen dil ve saat prefs.json'da ({"language": "system" | "tr" | "en" ..., "clock": "24" | "12"}):
+// dil "system" değilse sistem dilinin yerine geçer; window.LL_HOUR12 saatlerin 12 saatlik (AM/PM) çizilmesi içindir.
 (function () {
-  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  var prefs = {};
+  try {
+    var px = new XMLHttpRequest(); px.open('GET', './prefs.json', false); px.send();
+    if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
+  } catch (e) {}
+  window.LL_PREFS = prefs;
+  window.LL_HOUR12 = prefs.clock === '12';
+  var lang = prefs.language && prefs.language !== 'system' ? prefs.language
+    : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
   window.LL_LOCALE = lang;
   var code = lang.slice(0, 2).toLowerCase();
   window.LL_T = function (s) { return s; };
   if (code === 'tr') return;
   var data = null;
   try {
-    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel kabuk sunucusundan, ~1 ms)
     var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
     if (x.status === 200) data = JSON.parse(x.responseText);
   } catch (e) {}
@@ -192,17 +202,16 @@
       import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
 
       const win = zebar.currentWidget().tauriWindow;
-      win.setTitle('ll-session').catch(() => {});
+      win.setTitle('lunge-session').catch(() => {});
       win.hide().catch(() => {});
       const run = (prog, args) => zebar.shellSpawn(prog, args).catch(e => console.error(prog, e));
-      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
-      const RESTART = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts\\restart-desktop.ps1';
+      const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       // ii sessionScreen: kilitle, uyku, oturumu kapat, yeniden başlat, kapat, ürün yazılımı (UEFI/BIOS) ayarları
       const ITEMS = [
         { icon: 'lock', label: 'Kilitle', act: () => run('rundll32', ['user32.dll,LockWorkStation']) },
         { icon: 'dark_mode', label: 'Uyku', act: () => run('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0']) },
-        // Takılan / kapanan bir parça varsa masaüstünü (GlazeWM, Zebar, ll-helper) temiz baştan başlatır
-        { icon: 'refresh', label: 'Masaüstünü yenile', act: () => run(HELPER, ['--ps-bg', RESTART]) },
+        // Takılan / kapanan bir parça varsa masaüstünü (pencere yöneticisi, kabuk, çekirdek) temiz baştan başlatır
+        { icon: 'refresh', label: 'Masaüstünü yenile', act: () => run(HELPER, ['--restart-desktop']) },
         { icon: 'logout', label: 'Çıkış', act: () => run('shutdown', ['/l']) },
         { icon: 'restart_alt', label: 'Yeniden başlat', act: () => run('shutdown', ['/r', '/t', '0']) },
         { icon: 'developer_board', label: 'UEFI / BIOS', act: () => run('shutdown', ['/r', '/fw', '/t', '0']) },
@@ -213,7 +222,7 @@
       let primary = true;   // izlenemezse (API yoksa) her pencere birincil sayılır
       try { Promise.resolve(win.currentMonitor()).then(m => { primary = !!m && m.position.x === 0 && m.position.y === 0; }).catch(() => {}); } catch {}
       const hideAll = () => { hide(); emit('ll:session-hide').catch(() => {}); };
-      // Hata ayıklama için helper günlüğüne (%TEMP%\ll-helper.log)
+      // Hata ayıklama için ortak günlüğe (%LOCALAPPDATA%\LogicalLunge\logs\core.log)
       const log = m => fetch('http://127.0.0.1:6131/log?m=' + encodeURIComponent('session: ' + m), { method: 'POST' }).catch(() => {});
       let sel = 0, open = false, shownAt = 0, focusedAt = 0;
       row.innerHTML = ITEMS.map((it, i) => `<button class="sbtn ${it.danger ? 'danger' : ''}" data-i="${i}"><span class="icon">${it.icon}</span><span>${it.label}</span></button>`).join('');
@@ -242,7 +251,7 @@
         setTimeout(() => { if (!open) win.hide().catch(() => {}); }, 260);
       }
       win.hide().catch(() => {});
-      // Zebar pencereyi betik çalıştıktan sonra da gösterebiliyor (çok monitörlü açılış): gizli kalana dek tekrarla,
+      // Kabuk pencereyi betik çalıştıktan sonra da gösterebiliyor (çok monitörlü açılış): gizli kalana dek tekrarla,
       // yoksa tam ekran saydam pencere fare tıklamalarını yutar.
       [800, 2000, 4500, 9000, 16000].forEach(ms => setTimeout(() => { if (!open) win.hide().catch(() => {}); }, ms));
       listen('ll:session-toggle', () => (open ? hideAll() : show()));

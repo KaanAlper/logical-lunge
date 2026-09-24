@@ -7,8 +7,8 @@ if status is-interactive
 
     # PATH: MSYS2 araçları + Windows PATH'i (tekrarlar, klasör olmayan girişler ve terminalde komut
     # vermeyen program klasörleri atılır; fish her tuşta komutu tüm PATH'te arıyor, MSYS2'de bu pahalı)
-    set -l skip 'oculus-runtime|/Intel/Shared Libraries|PhysX|NvDLISR|Nsight Compute|Windows Performance Toolkit|Calibre2|MATLAB/[^/]+/runtime|glzr.io/Zebar|anaconda3/Library/usr/bin|_perl$|Common Files/Oracle/Java/javapath|libnvvp|Pulsar/resources$|\.exe$'
-    set -l clean /c/Users/$USER/scoop/shims /c/Users/$USER/.glzr/logical-lunge/tools/bin /c/Users/$USER/scoop/apps/starship/current /ucrt64/bin /usr/local/bin /usr/bin
+    set -l skip 'oculus-runtime|/Intel/Shared Libraries|PhysX|NvDLISR|Nsight Compute|Windows Performance Toolkit|Calibre2|MATLAB/[^/]+/runtime|anaconda3/Library/usr/bin|_perl$|Common Files/Oracle/Java/javapath|libnvvp|Pulsar/resources$|\.exe$'
+    set -l clean /c/Users/$USER/scoop/shims /c/Users/$USER/AppData/Local/Programs/LogicalLunge/tools/bin /c/Users/$USER/scoop/apps/starship/current /ucrt64/bin /usr/local/bin /usr/bin
     for p in $PATH
         contains -- $p $clean; and continue
         string match -rq -- $skip $p; and continue

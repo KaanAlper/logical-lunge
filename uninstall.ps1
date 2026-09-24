@@ -1,16 +1,22 @@
 ﻿# Logical Lunge - uninstaller. Restores every Windows setting that the installer changed and removes
 # everything it installed. Configuration files that existed before the install always come back.
-# Logical Lunge's own settings and data (its GlazeWM/Zebar/WezTerm/fish/starship/tacky-borders configs,
-# clipboard history, shortcut and night-light settings, downloaded wallpapers) are kept or removed:
+# Logical Lunge's own settings and data (~\.config\logical-lunge, its WezTerm/fish/starship configs, clipboard
+# history, widget data, shortcut and night-light settings, downloaded wallpapers) are kept or removed:
 #   -KeepConfig / -RemoveConfig, or a Yes/No/Cancel question when neither is given.
 param([string]$UserProfile = $env:USERPROFILE, [string]$UserSid = '', [switch]$Elevated, [switch]$KeepConfig, [switch]$RemoveConfig)
 $ErrorActionPreference = 'Continue'
 
+$LOCAL = Join-Path $UserProfile 'AppData\Local'
+$APP = Join-Path $LOCAL 'Programs\LogicalLunge'
+$DATA = Join-Path $LOCAL 'LogicalLunge'
+$STATE = Join-Path $DATA 'state'
+$CONF = Join-Path $UserProfile '.config\logical-lunge'
+
 if (-not $KeepConfig -and -not $RemoveConfig) {
     Add-Type -AssemblyName System.Windows.Forms
     $tr = (Get-UICulture).Name -like 'tr*'
-    $text = if ($tr) { "Logical Lunge kaldırılacak ve Windows ayarları eski haline dönecek.`n`nLogical Lunge'ın kendi ayarları ve verileri de silinsin mi? (config dosyaları, pano geçmişi, kısayol ve gece ışığı ayarları, indirilen duvar kağıtları)`n`nEvet: hepsini sil`nHayır: ayarları sakla`nİptal: kaldırma" }
-            else { "Logical Lunge will be removed and your Windows settings restored.`n`nAlso delete Logical Lunge's own settings and data? (config files, clipboard history, shortcut and night-light settings, downloaded wallpapers)`n`nYes: delete everything`nNo: keep my settings`nCancel: don't uninstall" }
+    $text = if ($tr) { "Logical Lunge kaldırılacak ve Windows ayarları eski haline dönecek.`n`nLogical Lunge'ın kendi ayarları ve verileri de silinsin mi? (ayar dosyaları, pano geçmişi, yapılacaklar, kısayol ve gece ışığı ayarları, indirilen duvar kağıtları)`n`nEvet: hepsini sil`nHayır: ayarları sakla`nİptal: kaldırma" }
+            else { "Logical Lunge will be removed and your Windows settings restored.`n`nAlso delete Logical Lunge's own settings and data? (config files, clipboard history, to-dos, shortcut and night-light settings, downloaded wallpapers)`n`nYes: delete everything`nNo: keep my settings`nCancel: don't uninstall" }
     $answer = [System.Windows.Forms.MessageBox]::Show($text, 'Logical Lunge', 'YesNoCancel', 'Question')
     if ($answer -eq 'Cancel') { return }
     if ($answer -eq 'Yes') { $RemoveConfig = $true } else { $KeepConfig = $true }
@@ -18,41 +24,26 @@ if (-not $KeepConfig -and -not $RemoveConfig) {
 
 if (-not $UserSid) { $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-# Stop the window manager as the user before the elevated setup: GlazeWM hides the windows of other workspaces
-# (cloak) and a killed / older GlazeWM left them invisible. A graceful exit brings them back (Logical Lunge's GlazeWM
-# build); anything still hidden is brought back by the helper. Returns whether GlazeWM was running.
-function Stop-LLDesktop([string]$helperExe) {
-    # Maintenance marker: ll-helper's watchdogs restart a crashed GlazeWM / Zebar / helper, but not while this is
-    # present (setup removes it when it starts the desktop again; it counts for 10 minutes at most)
-    $state = Join-Path $env:LOCALAPPDATA 'logical-lunge'
-    New-Item -ItemType Directory -Force $state | Out-Null
-    Set-Content (Join-Path $state 'maintenance') (Get-Date -Format o)
-    $gw = Get-Process glazewm -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
-    if (-not $gw) { return $false }
-    try { & $gw.Path command wm-exit 2>$null | Out-Null } catch {}
-    if (-not $gw.WaitForExit(5000)) {
-        # stuck: the helper first, so that it can't restart GlazeWM
-        Get-Process ll-helper -ErrorAction SilentlyContinue | Stop-Process -Force
-        Stop-Process -Id $gw.Id -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300
-    }
-    if ($helperExe -and (Test-Path $helperExe)) { try { & $helperExe --uncloak-orphans | Out-Null } catch {} }
-    return $true
-}
 
 if (-not $isAdmin) {
-    $wasRunning = Stop-LLDesktop (Join-Path $UserProfile '.glzr\logical-lunge\helper\ll-helper.exe')
+    # Stop the desktop as the user first: the window manager brings the windows of hidden workspaces back when it
+    # exits gracefully (and the core brings back anything left invisible)
+    $core = Join-Path $APP 'lunge.exe'
+    $wasRunning = [bool](Get-Process lunge-tiling -ErrorAction SilentlyContinue)
+    if (Test-Path $core) { & $core --stop-desktop | Out-Null }
     # one UAC prompt; the elevated copy needs to know whose settings to restore
     $self = Join-Path $env:TEMP 'logical-lunge-uninstall.ps1'
     Copy-Item $PSCommandPath $self -Force
     $choice = if ($RemoveConfig) { '-RemoveConfig' } else { '-KeepConfig' }
     try { Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", '-UserProfile', "`"$UserProfile`"", '-UserSid', $UserSid, '-Elevated', $choice }
-    catch { Remove-Item (Join-Path $env:LOCALAPPDATA 'logical-lunge\maintenance') -Force -ErrorAction SilentlyContinue; if ($wasRunning) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue } }   # UAC declined: desktop back
+    catch {
+        # UAC declined: the desktop comes back
+        Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
+        if ($wasRunning -and (Test-Path $core)) { Start-Process $core -WorkingDirectory $UserProfile }
+    }
     return
 }
 
-$LL = Join-Path $UserProfile '.glzr\logical-lunge'
-$ZB = Join-Path $UserProfile '.glzr\zebar'
-$STATE = Join-Path $UserProfile 'AppData\Local\logical-lunge'
 $HKU = "Registry::HKEY_USERS\$UserSid"
 $cu = "$HKU\Software\Microsoft\Windows\CurrentVersion"
 function Log([string]$m) { Write-Host $m }
@@ -62,12 +53,15 @@ $bf = Join-Path $STATE 'install-backup.json'
 if (Test-Path $bf) { $backup = Get-Content $bf -Raw | ConvertFrom-Json }
 
 Log '==> Stopping Logical Lunge'
-# the helper first: its watchdog would restart GlazeWM
-foreach ($n in 'll-helper', 'glazewm', 'zebar', 'tacky-borders', 'll-temps', 'll-songrec') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
+# the core first: its watchdogs would restart the other parts
+foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-temps', 'lunge-songrec', 'lunge-termcolors') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
 Remove-Item (Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue
 
 Log '==> Removing startup tasks'
-Get-ScheduledTask -TaskPath '\LL\' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+foreach ($folder in 'LogicalLunge', 'LL') {
+    Get-ScheduledTask -TaskPath "\$folder\" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
+    try { $svc = New-Object -ComObject Schedule.Service; $svc.Connect(); $svc.GetFolder('\').DeleteFolder($folder, 0) } catch {}
+}
 
 Log '==> Restoring Windows settings'
 if ($backup) {
@@ -89,7 +83,7 @@ Add-Type @'
 using System; using System.Runtime.InteropServices;
 public static class LLTB { [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string t); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n); }
 '@
-foreach ($c in 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd') { $h = [LLTB]::FindWindow($c, $null); if ($h -ne [IntPtr]::Zero) { [LLTB]::ShowWindow($h, 5) | Out-Null } }
+foreach ($c in 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd') { $h = [LLTB]::FindWindow($c, [NullString]::Value); if ($h -ne [IntPtr]::Zero) { [LLTB]::ShowWindow($h, 5) | Out-Null } }
 
 $installed = if ($backup) { @($backup.installed) } else { @() }
 # remove only the PATH entries the installer added
@@ -98,19 +92,9 @@ if ($added.Count) {
     $cur = (Get-ItemProperty "$HKU\Environment" -Name Path -ErrorAction SilentlyContinue).Path
     if ($cur) { Set-ItemProperty "$HKU\Environment" -Name Path -Value (($cur -split ';' | Where-Object { $_ -and $added -notcontains $_ }) -join ';') -Type ExpandString }
 }
-function Uninstall-Msi([string]$display) {
-    foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
-        Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-            $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-            if ($p.DisplayName -like "$display*" -and $_.PSChildName -match '^\{') { Start-Process msiexec.exe -ArgumentList '/x', $_.PSChildName, '/qn', '/norestart' -Wait }
-        }
-    }
-}
-if ($installed -contains 'glazewm') { Log '==> Removing GlazeWM'; Uninstall-Msi 'GlazeWM' }
-if ($installed -contains 'zebar') { Log '==> Removing Zebar'; Uninstall-Msi 'Zebar' }
 if ($installed -contains 'pawnio') {
     Log '==> Removing PawnIO driver'
-    $pw = Join-Path $LL 'tools\lhm\PawnIO_setup.exe'
+    $pw = Join-Path $APP 'tools\temps\PawnIO_setup.exe'
     if (Test-Path $pw) { Start-Process $pw -ArgumentList '-uninstall', '-silent' -Wait }
 }
 if ($installed -contains 'fonts') {
@@ -123,16 +107,17 @@ if ($installed -contains 'fonts') {
 if ($installed -contains 'msys2') { Log '==> Removing MSYS2 (fish)'; Remove-Item 'C:\msys64' -Recurse -Force -ErrorAction SilentlyContinue }
 
 Log $(if ($RemoveConfig) { '==> Removing program files and Logical Lunge settings' } else { '==> Removing program files (your settings are kept)' })
-foreach ($f in "$ZB\settings.json", "$UserProfile\.glzr\glazewm\config.yaml", "$UserProfile\.wezterm.lua", "$UserProfile\.config\fish\config.fish", "$UserProfile\.config\starship.toml") {
+foreach ($f in "$UserProfile\.wezterm.lua", "$UserProfile\.config\fish\config.fish", "$UserProfile\.config\starship.toml") {
     if (Test-Path "$f.before-ll") { Move-Item "$f.before-ll" $f -Force }   # your pre-install version always comes back
     elseif ($RemoveConfig) { Remove-Item $f -Force -ErrorAction SilentlyContinue }   # ours: there was none before the install
 }
-Remove-Item (Join-Path $ZB 'logical-lunge') -Recurse -Force -ErrorAction SilentlyContinue
-foreach ($d in 'bin', 'helper', 'tools', 'scripts') { Remove-Item (Join-Path $LL $d) -Recurse -Force -ErrorAction SilentlyContinue }
+Remove-Item $APP -Recurse -Force -ErrorAction SilentlyContinue
+if (Test-Path $APP) { Log "    some files are in use (an open terminal?) and stay in $APP; delete it after signing out" }
+foreach ($d in 'logs', 'update', 'rollback') { Remove-Item (Join-Path $DATA $d) -Recurse -Force -ErrorAction SilentlyContinue }
 Remove-Item $bf -Force -ErrorAction SilentlyContinue
 if ($RemoveConfig) {
-    Remove-Item (Join-Path $UserProfile '.config\tacky-borders') -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $STATE -Recurse -Force -ErrorAction SilentlyContinue   # clipboard history, shortcuts, night light
+    Remove-Item $CONF -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $DATA -Recurse -Force -ErrorAction SilentlyContinue   # clipboard history, widget data, night light
     # downloaded wallpapers: the user's Pictures folder (it may be redirected, e.g. to OneDrive)
     $pics = (Get-ItemProperty "$HKU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -Name 'My Pictures' -ErrorAction SilentlyContinue).'My Pictures'
     $pics = if ($pics) { $pics.Replace('%USERPROFILE%', $UserProfile) } else { Join-Path $UserProfile 'Pictures' }
@@ -144,5 +129,3 @@ Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Log ''
 Log 'Logical Lunge has been removed. Sign out and back in to finish.'
 Start-Sleep 3
-Remove-Item (Join-Path $LL 'uninstall.ps1') -Force -ErrorAction SilentlyContinue
-if ($RemoveConfig) { Remove-Item $LL -Recurse -Force -ErrorAction SilentlyContinue }

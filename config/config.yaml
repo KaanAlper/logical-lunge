@@ -1,23 +1,21 @@
 # end-4 illogical-impulse (Hyprland) kurulumunun Windows karşılığı.
-# Yedek: config.yaml.bak-20260922
 #
-# Win10'da GlazeWM kenarlık rengi / köşe yuvarlatma yapamıyor (Win11'e özel API).
-# Mor odak kenarlığını GlazeWM'in kendisi çiziyor (aşağıdaki borders: bölümü), pencere köşelerini ll-helper yuvarlıyor.
+# Logical Lunge pencere yöneticisinin (lunge-tiling) ayarları: ~\.config\logical-lunge\config.yaml
+# Win10'da Windows kenarlık rengi / köşe yuvarlatma yapamıyor (Win11'e özel API). Mor odak kenarlığını pencere
+# yöneticisi kendisi çiziyor (aşağıdaki borders: bölümü), pencere köşelerini çekirdek (lunge.exe) yuvarlıyor.
 
 general:
-  startup_commands:
-    - 'shell-exec zebar'
-    # Workspace slide animasyonu, yuvarlak köşeler, tek Super -> ii overview. Windows görev çubuğunu da o gizli tutuyor
-    # (işlevini Zebar'daki ii bar'ı görüyor); LL kapanınca show-taskbar.ps1 geri getirir.
-    - 'shell-exec %USERPROFILE%\.glzr\logical-lunge\helper\ll-helper.exe'
+  # Parçaları (pencere yöneticisi, kabuk) çekirdek (lunge.exe) kendi alt süreçleri olarak açar; burada başlatılacak
+  # bir şey yok.
+  startup_commands: []
+  # Çıkışta (wm-exit) kabuğu çekirdek kapatır ve Windows görev çubuğunu geri getirir; bu yedek, çekirdek o an
+  # çalışmıyorsa da aynısını yapar.
   shutdown_commands:
-    - 'shell-exec taskkill /IM zebar.exe /F'
-    - 'shell-exec taskkill /IM ll-helper.exe /F'
-    - 'shell-exec --hide-window powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File %USERPROFILE%\.glzr\logical-lunge\scripts\show-taskbar.ps1'
+    - 'shell-exec %LOCALAPPDATA%\Programs\LogicalLunge\lunge.exe --shutdown'
   config_reload_commands: []
 
-  # Hyprland input.follow_mouse = 1 -> ll-helper yapıyor (yalnızca gerçek fare hareketinde).
-  # GlazeWM'inki ara sıra tıklama gerektiriyordu; pencere kapanınca da odağı bozmasın diye kapalı.
+  # Hyprland input.follow_mouse = 1 -> çekirdek (lunge.exe) yapıyor (yalnızca gerçek fare hareketinde).
+  # Pencere yöneticisininki ara sıra tıklama gerektiriyordu; pencere kapanınca da odağı bozmasın diye kapalı.
   focus_follows_cursor: false
   toggle_workspace_on_refocus: false
 
@@ -77,7 +75,7 @@ window_behavior:
       maximized: false
       shown_on_top: true
 
-# Hyprland'da workspace'ler sınırsızdı; GlazeWM önceden tanımlı ister -> 30 tane.
+# Hyprland'da workspace'ler sınırsızdı; pencere yöneticisi önceden tanımlı ister -> 30 tane.
 # Boş olanlar bar'da nokta olarak görünür, açılınca otomatik silinir.
 workspaces:
   - name: '1'
@@ -114,8 +112,8 @@ workspaces:
 window_rules:
   - commands: ['ignore']
     match:
-      - window_process: { equals: 'zebar' }
-      - window_process: { equals: 'll-helper' }
+      - window_process: { equals: 'lunge-shell' }
+      - window_process: { equals: 'lunge' }
       - window_process: { equals: 'TaskBarHero' }
       - window_title: { regex: '[Pp]icture.in.[Pp]icture' }
         window_class: { regex: 'Chrome_WidgetWin_1|MozillaDialogClass' }
@@ -135,7 +133,7 @@ window_rules:
         window_class: { not_regex: 'PPTFrameClass' }
 
   # Genel diyalog sınıfları. Diğer her şey (boyutlanamayan, çerçevesiz açılır, sahipli pencereler,
-  # tam ekran oyunlar) uygulamaya özel kural olmadan ll-helper'da pencere özelliklerine göre karar verilir.
+  # tam ekran oyunlar) uygulamaya özel kural olmadan çekirdekte pencere özelliklerine göre karar verilir.
   - commands: ['set-floating --centered']
     match:
       - window_class: { equals: 'MozillaDialogClass' }
@@ -160,15 +158,15 @@ binding_modes:
 
 keybindings:
   # --- Pencere odağı: Super + ok ---
-  # ll-helper'da: yalnızca mevcut workspace'in pencereleri arasında gezer, asla başka
-  # workspace/monitöre atlamaz. GlazeWM'in "focus --direction"ı atladığı için burada bağlı DEĞİL.
+  # Çekirdekte: yalnızca mevcut workspace'in pencereleri arasında gezer, asla başka
+  # workspace/monitöre atlamaz. Pencere yöneticisinin "focus --direction"ı atladığı için burada bağlı DEĞİL.
 
   # --- Pencereyi kaydır / layout değiştir: Super + Shift + ok ---
-  # ll-helper'da: yalnızca workspace içinde (GlazeWM'inki kenarda 2. monitöre geçiriyordu), fare pencereyi izler.
+  # Çekirdekte: yalnızca workspace içinde (pencere yöneticisininki kenarda 2. monitöre geçiriyordu), fare pencereyi izler.
 
   # --- Workspace geçişi: Super + Ctrl + ←/→ (ve PageUp/PageDown) ---
-  # ll-helper çalışırken Super+Ctrl+←/→, Super+Ctrl+Shift+←/→ ve Super+sayı'yı o yakalar
-  # (slide animasyonlu); aşağıdakiler helper kapalıyken yedek.
+  # Çekirdek çalışırken Super+Ctrl+←/→, Super+Ctrl+Shift+←/→ ve Super+sayı'yı o yakalar
+  # (slide animasyonlu); aşağıdakiler çekirdek kapalıyken yedek.
   - commands: ['focus --prev-workspace']
     bindings: ['lwin+page_up', 'lwin+ctrl+page_up']
   - commands: ['focus --next-workspace']
@@ -185,7 +183,7 @@ keybindings:
   - commands: ['move --next-workspace', 'focus --next-workspace']
     bindings: ['lwin+shift+page_down']
 
-  # --- Super + sayı, Super+Ctrl+←/→, Super+Ctrl+Shift+←/→: ll-helper'da (keybinds.json, sağ panel > Kısayollar) ---
+  # --- Super + sayı, Super+Ctrl+←/→, Super+Ctrl+Shift+←/→: çekirdekte (keybinds.json, sağ panel > Kısayollar) ---
 
   # --- Super + Alt + sayı: pencereyi gönder (takip etmeden, Hyprland'daki gibi) ---
   - commands: ['move --workspace 1']
@@ -232,10 +230,10 @@ keybindings:
   # Kapatma: Hyprland custom'unda olduğu gibi sadece Alt+F4 (Windows'un kendisi yapıyor)
 
   # --- Uygulamalar ---
-  # Super+Enter/T (terminal), Super+W (Zen), E (Explorer), C (VS Code), X (Not Defteri) ll-helper'da:
+  # Super+Enter/T (terminal), Super+W (Zen), E (Explorer), C (VS Code), X (Not Defteri) çekirdekte:
   # önce farenin altındaki pencereyi odaklıyor (Hyprland dwindle yeni pencereyi oraya açar).
-  # GlazeWM'in shell-exec'i boşluklu tırnaklı yolları da ayrıştıramıyordu.
-  - commands: ['shell-exec %USERPROFILE%\.glzr\logical-lunge\tools\wezterm\wezterm-gui.exe']
+  # Pencere yöneticisinin shell-exec'i boşluklu tırnaklı yolları da ayrıştıramıyordu.
+  - commands: ['shell-exec %LOCALAPPDATA%\Programs\LogicalLunge\tools\wezterm\wezterm-gui.exe']
     bindings: ['ctrl+alt+t']
   - commands: ['shell-exec ms-settings:']
     bindings: ['lwin+i']
@@ -252,21 +250,21 @@ keybindings:
   - commands: ['wm-exit']
     bindings: ['lwin+shift+alt+e']
 
-# Pencere kenarlıkları: GlazeWM'in kendisi çiziyor (tacky-borders'ın çizim motoru içine alındı; ayrı program,
-# tepsi simgesi ya da ayrı ayar dosyası yok). Kenarlık pencereyle aynı adımda taşınır. Anahtarlar tacky-borders
-# config.yaml ile aynı. Bu bölüm silinirse kenarlık çizilmez; değişiklikler config yenilenince uygulanır.
+# Pencere kenarlıkları: pencere yöneticisi kendisi çiziyor (ayrı program, tepsi simgesi ya da ayrı ayar dosyası
+# yok). Kenarlık pencereyle aynı adımda taşınır. Bu bölüm silinirse kenarlık çizilmez; değişiklikler config yenilenince uygulanır.
 borders:
   render_backend: V2
   global:
     border_width: 2
     border_offset: 0
-    # Hyprland'deki rounding; ll-helper pencere köşelerini de aynı yarıçapla yuvarlar
+    # Hyprland'deki rounding; çekirdek pencere köşelerini de aynı yarıçapla yuvarlar
     border_radius: 14
     border_z_order: AboveWindow
     follow_native_border: true
     # Windows pencere animasyonları kapalı: kenarlık gecikmeden gelsin
     initialize_delay: 0
     unminimize_delay: 0
+    # Odak rengi (Hyprland col.active_border): #rrggbb ya da saydamlıkla #rrggbbaa
     active_color: "#b69df8cc"
     # Hyprland inactive_border: hafif görünür
     inactive_color: "#3a3a4099"
@@ -290,7 +288,7 @@ borders:
           opacity: 0.35
       inactive: []
       enabled: true
-  # Kenarlık yalnızca GlazeWM'in yönettiği pencerelere çizilir (yukarıdaki 'ignore' kuralındakilere, bar'a, PiP'e,
+  # Kenarlık yalnızca pencere yöneticisinin yönettiği pencerelere çizilir (yukarıdaki 'ignore' kuralındakilere, bar'a, PiP'e,
   # menülere çizilmez). Yönetilen bir uygulamada kenarlık istemezsen:
   #   window_rules:
   #     - match: Process

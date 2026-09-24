@@ -60,6 +60,7 @@ fn main() {
 
   res.set("OriginalFilename", "lunge-tiling.exe");
   res.set("ProductName", "Logical Lunge");
+  res.set("CompanyName", "Logical Lunge");
   res.set("FileDescription", "Logical Lunge Tiling");
 
   let version_number = std::env::var("VERSION_NUMBER").unwrap_or_else(|_| "0.0.0".to_string());

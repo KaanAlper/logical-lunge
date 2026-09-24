@@ -1,5 +1,4 @@
 {
-    "$schema": "https://github.com/glzr-io/zebar/raw/v3.0.0/resources/zpack-schema.json",
     "name": "logical-lunge",
     "version": "1.0.0",
     "description": "Logical Lunge — end-4 illogical-impulse (quickshell ii) Windows portu: bar, overview/arama, sağ kenar çubuğu, bildirimler.",
@@ -54,15 +53,15 @@
                         "argsRegex": ".*"
                     },
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": ".*"
                     },
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\tools\\lhm\\ll-temps.exe",
+                        "program": "{{INSTALL_ESC}}\\tools\\temps\\lunge-temps.exe",
                         "argsRegex": "^--read$"
                     },
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\media-art.exe",
+                        "program": "{{INSTALL_ESC}}\\tools\\lunge-media.exe",
                         "argsRegex": ".*"
                     }
                 ]
@@ -131,7 +130,7 @@
                         "argsRegex": ".*"
                     },
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": ".*"
                     }
                 ]
@@ -200,7 +199,7 @@
                         "argsRegex": ".*"
                     },
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": ".*"
                     }
                 ]
@@ -244,11 +243,11 @@
             "privileges": {
                 "shellCommands": [
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": "--toast-stream"
                     },
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": "^--open (https?|spotify):.*"
                     }
                 ]
@@ -292,7 +291,7 @@
             "privileges": {
                 "shellCommands": [
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": ".*"
                     }
                 ]
@@ -336,7 +335,7 @@
             "privileges": {
                 "shellCommands": [
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": ".*"
                     }
                 ]
@@ -405,7 +404,7 @@
                         "argsRegex": ".*"
                     },
                     {
-                        "program": "{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe",
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
                         "argsRegex": ".*"
                     }
                 ]

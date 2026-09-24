@@ -5,16 +5,26 @@
     <script>
 // Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
 // title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
-// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) aynı dilde. Yeni dil / metin: i18n.src.js.
+// Kurulumda seçilen dil ve saat prefs.json'da ({"language": "system" | "tr" | "en" ..., "clock": "24" | "12"}):
+// dil "system" değilse sistem dilinin yerine geçer; window.LL_HOUR12 saatlerin 12 saatlik (AM/PM) çizilmesi içindir.
 (function () {
-  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  var prefs = {};
+  try {
+    var px = new XMLHttpRequest(); px.open('GET', './prefs.json', false); px.send();
+    if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
+  } catch (e) {}
+  window.LL_PREFS = prefs;
+  window.LL_HOUR12 = prefs.clock === '12';
+  var lang = prefs.language && prefs.language !== 'system' ? prefs.language
+    : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
   window.LL_LOCALE = lang;
   var code = lang.slice(0, 2).toLowerCase();
   window.LL_T = function (s) { return s; };
   if (code === 'tr') return;
   var data = null;
   try {
-    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel kabuk sunucusundan, ~1 ms)
     var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
     if (x.status === 200) data = JSON.parse(x.responseText);
   } catch (e) {}
@@ -120,8 +130,8 @@
       import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
 
       const win = zebar.currentWidget().tauriWindow;
-      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
-      const LL = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts';
+      const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
+      const LL = '{{INSTALL_ESC}}\\scripts';
       const providers = zebar.createProviderGroup({
         audio: { type: 'audio' },
         host: { type: 'host', refreshInterval: 60000 },
@@ -130,7 +140,7 @@
       });
 
       const Icon = ({ name, fill }) => <span className={`icon ${fill ? 'fill' : ''}`}>{name}</span>;
-      // Hepsi ll-helper üzerinden: hiç konsol penceresi açılmaz
+      // Hepsi çekirdek üzerinden: hiç konsol penceresi açılmaz
       const helper = args => zebar.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
       const psFile = (file, args = []) => helper(['--ps', `${LL}\\${file}`, ...args]);
       const json = s => { try { return JSON.parse(s); } catch { return null; } };
@@ -153,8 +163,8 @@
           openedFocus.current = providers.outputMap.glazewm?.focusedContainer?.id ?? null;
           // Gizlenip yeniden gösterilince "her zaman üstte" düşebiliyor: her açılışta yeniden ver
           try { await win.show(); } catch {}
-          // Zebar'ın setAlwaysOnTop'u gizle/göster sonrası etkisiz: helper Windows API ile en üste alıp odaklar
-          helper(['--raise', 'Zebar - logical-lunge / sidebar-right']).catch(() => {});
+          // Kabuğun setAlwaysOnTop'u gizle/göster sonrası etkisiz: helper Windows API ile en üste alıp odaklar
+          helper(['--raise', 'Logical Lunge · sidebar-right']).catch(() => {});
           requestAnimationFrame(() => setOpen(true));
         }, []);
 
@@ -240,7 +250,7 @@
           'toggle-minimized': 'Simge durumuna küçült', 'wm-cycle-focus': 'Yüzen / döşeli pencereler arasında geç',
           'resize --width -10%': 'Pencereyi daralt', 'resize --width +10%': 'Pencereyi genişlet', 'wm-enable-binding-mode --name resize': 'Boyutlandırma modu',
           'shell-exec ms-settings:': 'Windows ayarları', 'shell-exec sndvol': 'Ses karıştırıcı',
-          'wm-reload-config': 'GlazeWM ayarlarını yenile', 'wm-redraw': 'Pencereleri yeniden çiz', 'wm-toggle-pause': "GlazeWM'i duraklat", 'wm-exit': "GlazeWM'den çık",
+          'wm-reload-config': 'Pencere yöneticisi ayarlarını yenile', 'wm-redraw': 'Pencereleri yeniden çiz', 'wm-toggle-pause': 'Döşemeyi duraklat', 'wm-exit': "Logical Lunge'dan çık",
         };
         if (map[c]) return map[c];
         if (/wezterm/i.test(c)) return 'Terminal (yedek)';
@@ -492,7 +502,7 @@
                 <button className="qbtn" title="Kısayollar" onClick={() => onPage('keys')}>
                   <Icon name="keyboard" />
                 </button>
-                <button className="qbtn" title="Ayarlar klasörü" onClick={() => zebar.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.glzr\\logical-lunge'])}>
+                <button className="qbtn" title="Ayarlar klasörü" onClick={() => zebar.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.config\\logical-lunge'])}>
                   <Icon name="settings" />
                 </button>
                 <button className="qbtn" title="Oturum" onClick={() => { emit('ll:sidebar-right-toggle').catch(() => {}); setTimeout(() => emit('ll:session-toggle').catch(() => {}), 150); }}>
@@ -510,8 +520,8 @@
         const items = [
           ['lock', 'Kilitle', () => act('rundll32', ['user32.dll,LockWorkStation'])],
           ['dark_mode', 'Uyku', () => act('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0'])],
-          // Takılan / kapanan bir parça varsa masaüstünü (GlazeWM, Zebar, ll-helper) temiz baştan başlatır
-          ['refresh', 'Yenile', () => act(HELPER, ['--ps-bg', `${LL}\\restart-desktop.ps1`])],
+          // Takılan / kapanan bir parça varsa masaüstünü (pencere yöneticisi, kabuk, çekirdek) temiz baştan başlatır
+          ['refresh', 'Yenile', () => act(HELPER, ['--restart-desktop'])],
           ['logout', 'Çıkış', () => act('shutdown', ['/l'])],
           ['restart_alt', 'Yeniden', () => act('shutdown', ['/r', '/t', '0'])],
           ['power_settings_new', 'Kapat', () => act('shutdown', ['/s', '/t', '0'])],

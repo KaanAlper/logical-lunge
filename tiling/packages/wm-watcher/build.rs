@@ -15,6 +15,7 @@ fn main() {
 
   res.set("OriginalFilename", "lunge-tiling-watcher.exe");
   res.set("ProductName", "Logical Lunge");
+  res.set("CompanyName", "Logical Lunge");
   res.set("FileDescription", "Logical Lunge Tiling Watcher");
 
   let version_parts = env!("VERSION_NUMBER")

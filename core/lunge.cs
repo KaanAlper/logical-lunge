@@ -1,11 +1,12 @@
-﻿// ll-helper — GlazeWM'in yapamadığı, Hyprland/ii'de olan üç şey:
+﻿// lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
+// süreç olarak açar ve korur (Supervisor, nöbetçiler); pencere yöneticisinin yapamadığı, Hyprland/ii'de olan şeyleri yapar:
 //   1) Workspace geçişinde "slide" animasyonu (Hyprland: animation workspaces, slide, menu_decel)
 //      DWM thumbnail'leri ile: eski workspace'in canlı görüntüsü kayarak çıkar, yenisi girer.
 //   2) Tüm pencerelerde yuvarlak köşe (Hyprland decoration.rounding) — Win10'da DWM yapmadığı
 //      için SetWindowRgn ile.
 //   3) Tek başına Super -> ii overview (arama) aç/kapa; Başlat menüsü açılmaz.
 //
-// Kısayollar (GlazeWM config'den buraya taşındı, animasyonlu olsunlar diye):
+// Kısayollar (tiling config'den buraya taşındı, animasyonlu olsunlar diye):
 //   Super+Ctrl+←/→          workspace sol/sağ
 //   Super+Ctrl+Shift+←/→    pencereyi taşı + takip et
 //   Super+1..0              workspace'e git
@@ -23,6 +24,45 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+
+// ---------------- Yollar ve adlar (tek yerde) ----------------
+// Kurulum: lunge.exe'nin klasörü (%LOCALAPPDATA%\Programs\LogicalLunge): exe'ler, ui, scripts, tools, VERSION.
+// Kullanıcının düzenlediği ayarlar: ~\.config\logical-lunge (config.yaml, keybinds.json).
+// Uygulama verisi: %LOCALAPPDATA%\LogicalLunge (state, logs, update; WebView verisi shell'de).
+static class Paths
+{
+    public static readonly string Install = AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+    public static readonly string Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    static readonly string DataRoot = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LogicalLunge");
+
+    public static string In(string rel) { return System.IO.Path.Combine(Install, rel); }
+    public static string Core { get { return In("lunge.exe"); } }
+    public static string Tiling { get { return In("lunge-tiling.exe"); } }
+    public static string TilingCli { get { return In("lunge-tiling-cli.exe"); } }
+    public static string Shell { get { return In("lunge-shell.exe"); } }
+    public static string Ui { get { return In("ui"); } }
+    public static string UiPack(string rel) { return System.IO.Path.Combine(Ui, "logical-lunge", rel); }
+    public static string Script(string name) { return In(System.IO.Path.Combine("scripts", name)); }
+    public static string Tool(string rel) { return In(System.IO.Path.Combine("tools", rel)); }
+    public static string Version { get { return In("VERSION"); } }
+
+    public static string ConfigDir { get { return Dir(System.IO.Path.Combine(Home, @".config\logical-lunge")); } }
+    public static string ConfigFile { get { return System.IO.Path.Combine(ConfigDir, "config.yaml"); } }
+    public static string StateDir { get { return Dir(System.IO.Path.Combine(DataRoot, "state")); } }
+    public static string State(string name) { return System.IO.Path.Combine(StateDir, name); }
+    public static string LogsDir { get { return Dir(System.IO.Path.Combine(DataRoot, "logs")); } }
+    public static string DataDir(string name) { return Dir(System.IO.Path.Combine(DataRoot, name)); }
+
+    static string Dir(string d) { try { System.IO.Directory.CreateDirectory(d); } catch { } return d; }
+}
+
+// Süreç adları ve widget pencere başlıkları (shell "Logical Lunge · <widget>" koyar)
+static class Names
+{
+    public const string Core = "lunge", Tiling = "lunge-tiling", Shell = "lunge-shell";
+    public const string Bar = "Logical Lunge · bar", Toast = "Logical Lunge · toast", Update = "Logical Lunge · update",
+        Osk = "Logical Lunge · osk", Sidebar = "Logical Lunge · sidebar-right", TitlePrefix = "Logical Lunge ·";
+}
 
 static class Native
 {
@@ -144,8 +184,8 @@ static class Native
     public const uint EVENT_OBJECT_SHOW = 0x8002, EVENT_OBJECT_LOCATIONCHANGE = 0x800B, EVENT_SYSTEM_FOREGROUND = 0x0003;
 }
 
-// ---------------- GlazeWM IPC (ws://localhost:6123) ----------------
-class Glaze
+// ---------------- tiling IPC (ws://localhost:6123) ----------------
+class TilingClient
 {
     ClientWebSocket ws;
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
@@ -213,7 +253,7 @@ class Glaze
 
     public void Command(string cmd) { Send("command " + cmd); }
 
-    // GlazeWM IPC'ye yanıt veriyor mu (pencere yöneticisi nöbetçisi için)
+    // tiling IPC'ye yanıt veriyor mu (pencere yöneticisi nöbetçisi için)
     public bool Ping() { return Send("query monitors") != null; }
 }
 
@@ -250,7 +290,7 @@ static class J
 // Kenarlık katmanı: animasyon katmanının hemen üstünde, yüzeysiz (WS_EX_NOREDIRECTIONBITMAP, tamamen şeffaf) pencere.
 // Kenarlık önizlemeleri burada ÖNCEDEN kaydedilip havuzda bekler; dondurma anında kayıt yapılmaz, yalnızca yerleştirilir.
 // (Kenarlıklar pencere önizlemelerinin üstünde olmalı; aynı katmanda bu, her dondurmada pencerelerden sonra yeniden kayıt
-// demekti. Pencere kapanırken DWM meşgulken bu kayıt 15-35 ms sürüyor, katman GlazeWM pencereleri kaydırdıktan sonra
+// demekti. Pencere kapanırken DWM meşgulken bu kayıt 15-35 ms sürüyor, katman tiling pencereleri kaydırdıktan sonra
 // açılıyordu.)
 class RingLayer : Form
 {
@@ -264,7 +304,7 @@ class RingLayer : Form
     public RingLayer()
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
-        Text = "ll-slide-rings";
+        Text = "lunge-slide-rings";
     }
     protected override bool ShowWithoutActivation { get { return true; } }
     protected override CreateParams CreateParams
@@ -307,7 +347,7 @@ class Overlay : Form
         TopMost = true;
         BackColor = Color.Black;
         StartPosition = FormStartPosition.Manual;
-        Text = "ll-slide";
+        Text = "lunge-slide";
     }
 
     // Katman hep "gösterilmiş" durur ama DWM ile gizlenir (DWMWA_CLOAK); açıp kapatmak yalnızca bu bayrak. Her animasyonda
@@ -327,7 +367,7 @@ class Overlay : Form
     }
     public void Reveal()
     {
-        // Sonradan açılan en üstteki pencerelerin (tacky-borders, Zebar) üstüne çık. Sahibi olmayan thread'den eşzamansız:
+        // Sonradan açılan en üstteki pencerelerin (kenarlık motoru, shell) üstüne çık. Sahibi olmayan thread'den eşzamansız:
         // UI thread'i başka bir animasyondaysa beklemesin.
         bool own = Thread.CurrentThread.ManagedThreadId == ownerThread;
         Native.SetWindowPos(Hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0400 | (own ? 0u : 0x4000u)); // TOPMOST, NOSIZE|NOMOVE|NOACTIVATE|NOOWNERZORDER
@@ -348,25 +388,24 @@ class Overlay : Form
     }
 }
 
-// Animasyon katmanı gerçek pencereleri örttüğü için tacky-borders'ın kenarlığı animasyon boyunca görünmüyordu; odaklı
+// Animasyon katmanı gerçek pencereleri örttüğü için kenarlık motoru'ın kenarlığı animasyon boyunca görünmüyordu; odaklı
 // pencerenin kenarlığını katmanın içinde biz çiziyoruz. Önceden bu, her karede yeniden boyutlanan ayrı bir pencereydi
 // (SetWindowPos + SetWindowRgn): büyük pencerede kare başına 10-50 ms (15-30 fps) tutuyordu ve animasyon döngüsü boyamaya
 // izin vermediği için yeni açılan alan beyaz/siyah yanıp sönüyordu. Şimdi kenarlık, ekran dışında duran küçük bir şablon
 // pencereden (kenar yumuşatmalı halka resmi) alınan DWM önizlemeleriyle çizilir: 4 köşe sabit boyutta, 4 kenar tek
 // piksellik şeritten gerilir (9 dilim). Kare başına yalnızca önizleme dikdörtgenleri güncellenir (~0,01 ms/çağrı) ve
 // kenarlık pencerelerle AYNI DWM karesinde hareket eder.
-static class TackyStyle
+static class BorderStyle
 {
     public static Color Active = Color.FromArgb(0xcc, 0xb6, 0x9d, 0xf8), Inactive = Color.FromArgb(0x99, 0x3a, 0x3a, 0x40);
     public static int Width = 2, Radius = 14;
-    static TackyStyle()
+    static BorderStyle()
     {
         try
         {
             string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            // Kenarlıkları GlazeWM çiziyor: ayarları config.yaml'daki borders: bölümünde (eski kurulumda tacky-borders ayarı)
-            string wmCfg = System.IO.Path.Combine(home, @".glzr\glazewm\config.yaml"), tackyCfg = System.IO.Path.Combine(home, @".config\tacky-borders\config.yaml");
-            string cfg = System.IO.File.Exists(wmCfg) && System.IO.File.ReadAllText(wmCfg).Contains("borders:") ? System.IO.File.ReadAllText(wmCfg) : System.IO.File.ReadAllText(tackyCfg);
+            // Kenarlıkları tiling çiziyor: ayarları config.yaml'daki borders: bölümünde (eski kurulumda kenarlık motoru ayarı)
+            string cfg = System.IO.File.ReadAllText(Paths.ConfigFile);
             Active = Parse(cfg, "active_color", Active);
             Inactive = Parse(cfg, "inactive_color", Inactive);
             var m = System.Text.RegularExpressions.Regex.Match(cfg, @"border_width:\s*(\d+)");
@@ -405,7 +444,7 @@ class RingTemplate : Form
     public RingTemplate(Color color, int bw, int radius)
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
-        Text = "ll-ring-src";
+        Text = "lunge-ring-src";
         Bw = bw; C = radius + bw + 1; S = 2 * C + 9; M = S / 2;
         Bounds = new Rectangle(X, Y, S, S);
         CreateControl(); Hwnd = Handle;
@@ -536,7 +575,7 @@ class Slider
 {
     [DllImport("user32.dll")] static extern IntPtr MonitorFromPoint(Point pt, uint flags);
     [DllImport("shcore.dll")] static extern int GetDpiForMonitor(IntPtr hmon, int type, out uint dx, out uint dy);
-    // Zebar'ın bar'ı 40 CSS px: DPI ölçeği %125/%150 olan monitörde 50/60 fiziksel piksel. Katmanlar bar'ın altından
+    // shell'in bar'ı 40 CSS px: DPI ölçeği %125/%150 olan monitörde 50/60 fiziksel piksel. Katmanlar bar'ın altından
     // başlamalı; ölçek monitör başına değişebilir (2-3 monitörlü kurulumlar).
     static int BarPx(int cx, int cy)
     {
@@ -552,9 +591,9 @@ class Slider
     const int BAR_H = 40;             // ii baseBarHeight — bar sabit kalır, altı kayar
     const int DURATION_MS = 520;       // Hyprland workspaces speed 7 (~700ms), menu_decel kuyruğu kısaltıldı
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
-    const int MAX_WS = 30;             // GlazeWM config'deki workspace sayısı (next/prev sarması için)
+    const int MAX_WS = 30;             // tiling config'deki workspace sayısı (next/prev sarması için)
 
-    readonly Glaze glaze;
+    readonly TilingClient glaze;
     // Her monitörün kendi katmanı hazır ve gizli bekler (Warm): tek katmanı başka monitöre taşımak yeniden boyutlama ve
     // boyama demekti (~15 ms). Listede olmayan bir dikdörtgen (monitör düzeni değişti) yedek katmanı taşıyarak kullanır.
     Overlay overlay = new Overlay();
@@ -570,7 +609,7 @@ class Slider
     }
     int ovW, ovH, culledCount;
     public volatile bool Interrupt;
-    // Animasyon sürerken başka işler (dwindle yön komutu) GlazeWM'i meşgul etmesin
+    // Animasyon sürerken başka işler (dwindle yön komutu) tiling'i meşgul etmesin
     public static volatile bool Animating;
     // Hyprland'de art arda basışta animasyon akmaya devam eder: bir önceki geçişten bu yana geçen süre
     // tam süreden kısaysa yeni animasyonu o kadar kısalt (en az MIN_MS). Tek basış tam uzunlukta kalır.
@@ -602,21 +641,21 @@ class Slider
     }
 
     static RingTemplate ringSrc, ringSrcInactive;
-    public Slider(Glaze g)
+    public Slider(TilingClient g)
     {
         glaze = g; spare = overlay;
         if (ringSrc == null)
         {
             try
             {
-                ringSrc = new RingTemplate(TackyStyle.Active, TackyStyle.Width, TackyStyle.Radius);
-                if (TackyStyle.Inactive.A > 0) ringSrcInactive = new RingTemplate(TackyStyle.Inactive, TackyStyle.Width, TackyStyle.Radius);
+                ringSrc = new RingTemplate(BorderStyle.Active, BorderStyle.Width, BorderStyle.Radius);
+                if (BorderStyle.Inactive.A > 0) ringSrcInactive = new RingTemplate(BorderStyle.Inactive, BorderStyle.Width, BorderStyle.Radius);
             }
             catch (Exception ex) { Log("ring: " + ex.Message); }
         }
     }
 
-    // Kenarlıklar (tacky-borders'ınkiler katmanın altında kalır): odaklı pencereye etkin, diğerlerine pasif renkte, her biri
+    // Kenarlıklar (kenarlık motoru'ınkiler katmanın altında kalır): odaklı pencereye etkin, diğerlerine pasif renkte, her biri
     // şablondan 8 DWM önizlemesi. Kenarlık katmanındaki havuzdan alınır (önceden, katman gizliyken kaydedilmiş); havuz
     // boşsa o an kaydedilir. Animasyon bitince takımlar gizlenip havuza döner.
     readonly List<Thumb> ringed = new List<Thumb>();
@@ -689,11 +728,11 @@ class Slider
         if (TestNoRings()) return;
         foreach (var t in ts) if (t != null && t.IsWin) RingAdd(t, t.Src == focused);
     }
-    // Yalnızca ölçüm için (A/B): %LOCALAPPDATA%\logical-lunge\test-no-rings varken animasyonlarda kenarlık halkası yok.
+    // Yalnızca ölçüm için (A/B): %LOCALAPPDATA%\LogicalLunge\state\test-no-rings varken animasyonlarda kenarlık halkası yok.
     // Kaydırma takılmasının halkaların (pencere başına 8 önizleme) mı pencere önizlemelerinin mi olduğunu ayırmak için.
     static bool TestNoRings()
     {
-        try { return System.IO.File.Exists(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\test-no-rings")); }
+        try { return System.IO.File.Exists(Paths.State(@"test-no-rings")); }
         catch { return false; }
     }
     // Odak değişti: etkin/pasif takımı değiştir (eskisi gizlenir, yenisi bir sonraki RingPlace'te yerleşir)
@@ -714,7 +753,7 @@ class Slider
         var p = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_VISIBLE, fVisible = false };
         foreach (var id in ids) Native.DwmUpdateThumbnailProperties(id, ref p);
     }
-    // winRect: pencere dikdörtgeni (katman koordinatı). Halka görünen çerçevenin kenarına ortalanır (tacky-borders gibi).
+    // winRect: pencere dikdörtgeni (katman koordinatı). Halka görünen çerçevenin kenarına ortalanır (kenarlık motoru gibi).
     static void RingPlace(Thumb t, Native.RECT winRect, byte opacity)
     {
         if (t == null) return;
@@ -779,14 +818,14 @@ class Slider
 
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
-    static readonly string[] Pinned = { "Zebar - logical-lunge / osk", "Zebar - logical-lunge / sidebar-right", "Zebar - logical-lunge / toast", "Zebar - logical-lunge / update" };
-    // PiP gibi her workspace'te sabit duran, en üstte tutulan ve GlazeWM'in yönetmediği pencereler animasyon katmanının
+    static readonly string[] Pinned = { Names.Osk, Names.Sidebar, Names.Toast, Names.Update };
+    // PiP gibi her workspace'te sabit duran, en üstte tutulan ve tiling'in yönetmediği pencereler animasyon katmanının
     // altında kalıp geçiş boyunca kayboluyor, sonra "yapıştırılmış resim" gibi geri geliyordu. Canlı önizlemeleri kenarlık
     // katmanının en üstüne, kendi yerlerine konur: katman açıldığı karede görünürler, geçiş boyunca sabit kalırlar.
     readonly List<IntPtr> pinIds = new List<IntPtr>();
     static readonly Dictionary<uint, string> pinProcs = new Dictionary<uint, string>();
     static readonly HashSet<string> pinSkipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "ll-helper", "tacky-borders", "zebar", "glazewm", "explorer", "ShellExperienceHost", "StartMenuExperienceHost", "SearchApp", "SearchUI", "TextInputHost", "LockApp" };
+        { Names.Core, Names.Shell, Names.Tiling, "explorer", "ShellExperienceHost", "StartMenuExperienceHost", "SearchApp", "SearchUI", "TextInputHost", "LockApp" };
     void PinsAttach(Rectangle monArea, int ox, int oy, IEnumerable<Thumb> animated)
     {
         PinsClear();
@@ -922,7 +961,7 @@ class Slider
         return r;
     }
 
-    // Görünen çerçeve (tacky-borders kenarlığı buna çizilir).
+    // Görünen çerçeve (kenarlık motoru kenarlığı buna çizilir).
     public static Native.RECT FrameRect(IntPtr h)
     {
         Native.RECT fr;
@@ -967,13 +1006,13 @@ class Slider
     {
         return new Native.RECT { Left = r.Left - d.Left, Top = r.Top - d.Top, Right = r.Right + d.Right, Bottom = r.Bottom + d.Bottom };
     }
-    // GlazeWM'in verdiği yerleşim dikdörtgeni (görünen çerçeve) -> pencere dikdörtgeni (gölge payları dahil)
+    // tiling'in verdiği yerleşim dikdörtgeni (görünen çerçeve) -> pencere dikdörtgeni (gölge payları dahil)
     public static Native.RECT WindowRectForFrame(IntPtr h, Native.RECT frame) { return Inflate(frame, FrameInsets(h)); }
     static bool SameRect(Native.RECT a, Native.RECT b) { return a.Left == b.Left && a.Top == b.Top && a.Right == b.Right && a.Bottom == b.Bottom; }
 
-    // GlazeWM pencereleri SetWindowPos ile (kısmen eşzamansız) taşır: dikdörtgenler iki ölçüm arka arkaya aynı
+    // tiling pencereleri SetWindowPos ile (kısmen eşzamansız) taşır: dikdörtgenler iki ölçüm arka arkaya aynı
     // kalana kadar bekle (en fazla ~150 ms), sonra bitiş konumlarını oku.
-    // Yeni pencere GlazeWM'in verdiği yere gerçekten oturana kadar bekle (görünen çerçeve, gölge kenarları hariç).
+    // Yeni pencere tiling'in verdiği yere gerçekten oturana kadar bekle (görünen çerçeve, gölge kenarları hariç).
     // Yoksa belirme animasyonu pencerenin açıldığı yerde (ekran ortası) oynar ve pencere sonra zıplar.
     public static void WaitPlaced(long h, Native.RECT target, int maxMs)
     {
@@ -1033,7 +1072,7 @@ class Slider
     public class Frozen { public int Ox, Oy; public Rectangle Mon; public readonly List<Thumb> All = new List<Thumb>(); public readonly Dictionary<long, Thumb> Win = new Dictionary<long, Thumb>(); public Overlay Ov; }
 
     // Dondur: katmanı aç, pencereleri şu anki görünür yerlerinde (ya da verilen eski ekran dikdörtgenlerinde)
-    // canlı görüntüleriyle göster. Arkasında GlazeWM ne yaparsa yapsın kullanıcı zıplama görmez. UI thread'inde.
+    // canlı görüntüleriyle göster. Arkasında tiling ne yaparsa yapsın kullanıcı zıplama görmez. UI thread'inde.
     // Animasyon nesli: her dondurma / kaydırma başlangıcında artar. Arka plandaki önbellek tazelemesi sorgusu sürerken bir
     // animasyon başladıysa sonucu atar (yoksa kapanan pencerenin henüz silinmiş hali önbelleğe yazılıp animasyonu bozuyordu).
     public static int Gen;
@@ -1094,9 +1133,9 @@ class Slider
 
     // Bitir: her pencereyi son yerine kaydır/ölçekle (emphasizedDecel), yeni açılan pencere %80'den büyüyüp belirir
     // (Hyprland windowsIn: popin 80%), sonra katmanı kaldır. UI thread'inde.
-    // targetFrames: GlazeWM'in hesapladığı son yerleşim (görünen çerçeve, ekran koordinatı). Verilince animasyon pencerelerin
+    // targetFrames: tiling'in hesapladığı son yerleşim (görünen çerçeve, ekran koordinatı). Verilince animasyon pencerelerin
     // gerçekten yer değiştirmesini BEKLEMEDEN başlar (önceden 16-150 ms bekleniyordu); pencere yer değiştirdiği an hedef onun
-    // gerçek yeridir (en küçük boyutu olan uygulama GlazeWM'in hesabından farklı yere oturabilir).
+    // gerçek yeridir (en küçük boyutu olan uygulama tiling'in hesabından farklı yere oturabilir).
     class Anim { public Thumb T; public IntPtr H; public Native.RECT Start, End, Before; public bool Moved, Resizes; public int Cx0, Cy0; public long SrcAt = -1; }
 
     public void Finish(Frozen f, IEnumerable<long> endHandles, long popin, int durationMs, Dictionary<long, Native.RECT> targetFrames = null)
@@ -1261,9 +1300,9 @@ class Slider
         return null;
     }
 
-    // commands: GlazeWM'e gönderilecekler. dirHint: +1 sağ, -1 sol, 0 = isimden hesapla.
+    // commands: tiling'e gönderilecekler. dirHint: +1 sağ, -1 sol, 0 = isimden hesapla.
     // ---- Pencere aç/kapa animasyonu (Hyprland windowsMove: speed 3 ≈ 300ms emphasizedDecel,
-    // windowsIn: popin 80%). GlazeWM pencereleri anında yerleştirir; biz eski yerleşimden yenisine
+    // windowsIn: popin 80%). tiling pencereleri anında yerleştirir; biz eski yerleşimden yenisine
     // canlı DWM önizlemelerini kaydırıp ölçekleyerek geçiş yapıyoruz, sonra gerçek pencereler görünür.
     const int MOVE_MS = 300;
     public static int MoveMs { get { return MOVE_MS; } }
@@ -1284,7 +1323,7 @@ class Slider
         return new Native.RECT { Left = r.Left - ox, Top = r.Top - oy, Right = r.Right - ox, Bottom = r.Bottom - oy };
     }
 
-    // Hyprland dwindle yeni pencereyi odaktakine değil FARENİN ALTINDAKİ pencereye açar. GlazeWM
+    // Hyprland dwindle yeni pencereyi odaktakine değil FARENİN ALTINDAKİ pencereye açar. tiling
     // hep odaktakinin yanına koyduğu için: terminal açmadan hemen önce fare altındakini odakla.
     public void FocusUnderCursor()
     {
@@ -1321,7 +1360,7 @@ class Slider
         }
     }
 
-    // Super+ok (focus) / Super+Shift+ok (move): yalnızca AYNI workspace içinde. GlazeWM'in
+    // Super+ok (focus) / Super+Shift+ok (move): yalnızca AYNI workspace içinde. tiling'in
     // "--direction" komutları o yönde pencere yoksa yan monitöre/workspace'e atlıyordu.
     // Sonunda fare hedef pencerenin ortasına taşınır (Hyprland'de odak değişince imleç de gider).
     public void Commands(string[] cmds) { foreach (var c in cmds) glaze.Command(c); }
@@ -1396,7 +1435,7 @@ class Slider
         return r;
     }
 
-    // Öz-test (ll-helper.exe --anim-selftest): odaklı monitörü dondurup pencereleri AYNI yerlerine "animasyonla"
+    // Öz-test (lunge.exe --anim-selftest): odaklı monitörü dondurup pencereleri AYNI yerlerine "animasyonla"
     // götürür. Doğruysa ekranda hiçbir şey kıpırdamaz; log'a kare süreleri yazılır.
     public void SelfTest()
     {
@@ -1430,17 +1469,17 @@ class Slider
         string id = J.Str(cur, "id");
         if (best == null)
         {
-            // O yönde komşu yok: GlazeWM (fork) pencereyi o kenara çıkarır; pencere ekranın o yarısını alır, geri kalan
+            // O yönde komşu yok: tiling (fork) pencereyi o kenara çıkarır; pencere ekranın o yarısını alır, geri kalan
             // düzen öbür yarıda şeklini korur (Hyprland dwindle movetoroot). Örn. 2x2'de sağ üstteki sağa -> sağda boydan,
             // solda [sol üst / sol alt] sütunu ile eski sağ alttaki yan yana. Tek durum hariç: pencere doğrudan
-            // workspace'in elemanıysa ve workspace zaten o eksendeyse GlazeWM pencereyi diğer monitörün
+            // workspace'in elemanıysa ve workspace zaten o eksendeyse tiling pencereyi diğer monitörün
             // workspace'ine atıyordu; orada hiçbir şey yapma. Tek pencerede de.
             var par0 = ParentOf(ws, J.Str(cur, "id"));
             string axis = dir == "left" || dir == "right" ? "horizontal" : "vertical";
             if (par0 == null || wins.Count < 2) return;
             if (J.Str(par0, "type") == "workspace" && J.Str(par0, "tilingDirection") == axis) return;
         }
-        // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), GlazeWM arkada yerleştirsin
+        // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), tiling arkada yerleştirsin
         var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
         var hs = new List<long>(Rects(wins).Keys);
         Frozen frozen = null;
@@ -1450,16 +1489,16 @@ class Slider
             try { frozen = (Frozen)Ui.Invoke((Func<Frozen>)(() => Freeze(monRect, hs, null))); } catch (Exception ex) { Log("freeze: " + ex.Message); }
         }
         long frozenAt = clk.ElapsedMilliseconds;
-        // GlazeWM (fork) Hyprland dwindle movewindow yapar: o yönde pencere varsa onu uzun kenarından böler; yoksa
+        // tiling (fork) Hyprland dwindle movewindow yapar: o yönde pencere varsa onu uzun kenarından böler; yoksa
         // bölme yönü değişir (yan yana iki pencerede Super+Shift+Yukarı -> odaktaki üstte tam genişlik).
         glaze.Command("move --direction " + dir);
 
         Dictionary<string, object> mA, wsA, curA; List<Dictionary<string, object>> winsA;
         bool ok = Current(out mA, out wsA, out winsA, out curA);
         var targets = ok ? Rects(winsA) : null;
-        Log("taşı " + dir + ": donma " + frozenAt + " ms, GlazeWM hazır " + clk.ElapsedMilliseconds + " ms");
+        Log("taşı " + dir + ": donma " + frozenAt + " ms, tiling hazır " + clk.ElapsedMilliseconds + " ms");
         var endHs = ok ? new List<long>(targets.Keys) : hs;
-        // Pencerelerin yerleşmesi beklenmez: hedef GlazeWM'in hesabı, yer değişince gerçek yer (Finish)
+        // Pencerelerin yerleşmesi beklenmez: hedef tiling'in hesabı, yer değişince gerçek yer (Finish)
         if (ok)
         {
             Dictionary<string, object> moved = null;
@@ -1479,7 +1518,7 @@ class Slider
     {
         try
         {
-            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-helper.log");
+            string path = System.IO.Path.Combine(Paths.LogsDir, "core.log");
             // 4 MB'yi geçince eskisi .old olur (animasyon başına satır yazılıyor; sınırsız büyümesin)
             var fi = new System.IO.FileInfo(path);
             if (fi.Exists && fi.Length > 4 * 1024 * 1024)
@@ -1597,7 +1636,7 @@ class Slider
         Log("snapshot " + clock.ElapsedMilliseconds + "ms old=" + oldThumbs.Count);
 
         // ---- Hızlı yol: hedef workspace önceden belliyse (Super+sayı, Super+Ctrl+←/→) animasyon
-        // GlazeWM komutunu BEKLEMEDEN başlar. GlazeWM'in geçişi pencere sayısıyla 100-200 ms sürüyor
+        // tiling komutunu BEKLEMEDEN başlar. tiling'in geçişi pencere sayısıyla 100-200 ms sürüyor
         // ve animasyon ondan sonra başladığı için her geçişte önce donma hissi oluyordu. Gizli
         // workspace'in pencereleri konumlarını koruduğu için önizlemeleri komuttan önce hazırlanabilir.
         string predicted = targetName;
@@ -1653,9 +1692,9 @@ class Slider
             int dur0 = Adaptive(ref lastSlideStart, moveFollow ? 340 : DURATION_MS); // taşıma daha kısa: pencere beklemeden yerine geçsin
             Animating = true;
 
-            // Taşı+takip et: GlazeWM komutu bittiği an (genelde kaymanın ilk ~50 ms'i) hedef workspace'teki pencereler
+            // Taşı+takip et: tiling komutu bittiği an (genelde kaymanın ilk ~50 ms'i) hedef workspace'teki pencereler
             // ve taşınan pencere yeni yerlerine doğru kaymayla AYNI ANDA ve esnemeden ilerler; ayrı bir "yerleşme"
-            // adımı yok (Hyprland'de de pencere kayarken boyutlanır). Hedef her karede canlı okunur: GlazeWM pencereyi
+            // adımı yok (Hyprland'de de pencere kayarken boyutlanır). Hedef her karede canlı okunur: tiling pencereyi
             // eşzamansız taşıdığı için ilk okuma eski yer olabilir.
             var from = new Dictionary<Thumb, Native.RECT>();
             if (moveFollow) { foreach (var t in newThumbs) from[t] = t.Dest; if (carried != null) from[carried] = carried.Dest; }
@@ -1717,8 +1756,8 @@ class Slider
             }
             long animEnd = clock.ElapsedMilliseconds;
             Log("slide" + (moveFollow ? "+taşı" : "") + ": " + mfFrames + " kare, en uzun kare " + mfMax + " ms, komut bitti " + cmdDoneAt + " ms, pencere yer değiştirdi " + movedAt + " ms " + fs.Report() + " önizleme=" + Native.LiveThumbs + " gizlenen=" + culledCount);
-            // Katmanı GlazeWM'in yanıtını değil GERÇEK durumu bekleyerek kaldır: eski workspace'in pencereleri gizlenip
-            // (cloak) yenininkiler göründüğü an. GlazeWM bazen pencereleri gösterdikten ~250 ms sonra yanıt veriyordu
+            // Katmanı tiling'in yanıtını değil GERÇEK durumu bekleyerek kaldır: eski workspace'in pencereleri gizlenip
+            // (cloak) yenininkiler göründüğü an. tiling bazen pencereleri gösterdikten ~250 ms sonra yanıt veriyordu
             // ve hızlı basışta her geçiş bunu bekliyordu. Yanıt arkada gelmeye devam eder.
             Func<IntPtr, bool> cloaked = hw => { int cv; return Native.DwmGetWindowAttribute(hw, Native.DWMWA_CLOAKED, out cv, 4) == 0 && cv != 0; };
             var waitSw = Stopwatch.StartNew();
@@ -1749,7 +1788,7 @@ class Slider
         foreach (var c in commands) glaze.Command(c);
         Log("commanded " + clock.ElapsedMilliseconds + "ms");
 
-        // GlazeWM komuta hemen "tamam" der ama workspace'i birkaç ms sonra değiştirir:
+        // tiling komuta hemen "tamam" der ama workspace'i birkaç ms sonra değiştirir:
         // gösterilen workspace değişene kadar kısa aralıklarla tekrar sor (en fazla ~250ms).
         Dictionary<string, object> newWs = null;
         for (int tries = 0; tries < 25; tries++)
@@ -1805,26 +1844,26 @@ class Slider
 
 // ---------------- Dwindle (Hyprland varsayılan layout'u) ----------------
 // Hyprland dwindle: yeni pencere, odaktaki pencereyi UZUN kenarı boyunca ikiye böler
-// (geniş -> yan yana, uzun -> alt alta) ve içe dönen bir spiral oluşur. GlazeWM'de bu layout
+// (geniş -> yan yana, uzun -> alt alta) ve içe dönen bir spiral oluşur. tiling'de bu layout
 // yok; odak her değiştiğinde odaktaki pencerenin en/boy oranına göre tiling yönünü ayarlıyoruz,
 // böylece bir sonraki pencere dwindle'daki gibi yerleşiyor.
 class Dwindle
 {
-    readonly Glaze glaze;
+    readonly TilingClient glaze;
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
-    public Dwindle(Glaze g) { glaze = g; }
+    public Dwindle(TilingClient g) { glaze = g; }
 
     // ---- Aç/kapa animasyonu için yerleşim hafızası ----
     Control ui; Slider slider;
     int animSeq;
-    readonly Glaze cacheGlaze = new Glaze();
+    readonly TilingClient cacheGlaze = new TilingClient();
     readonly object cacheLock = new object();
     Dictionary<long, Native.RECT> rects = new Dictionary<long, Native.RECT>();   // görünen pencereler
     Dictionary<long, string> monOf = new Dictionary<long, string>();              // pencere -> monitör id
     Dictionary<string, Rectangle> monRects = new Dictionary<string, Rectangle>();
 
-    public Dwindle(Glaze g, Control ui, Slider slider) : this(g)
+    public Dwindle(TilingClient g, Control ui, Slider slider) : this(g)
     {
         this.ui = ui; this.slider = slider;
         // Klavyeyle yeniden boyutlandırma vb. için hafızayı düzenli tazele
@@ -1886,18 +1925,18 @@ class Dwindle
         }
     }
 
-    // ---- Yeni pencere: Windows onu önce kendi varsayılan yerinde (ortada) gösterir, GlazeWM birkaç on ms sonra
+    // ---- Yeni pencere: Windows onu önce kendi varsayılan yerinde (ortada) gösterir, tiling birkaç on ms sonra
     // yerleştirir. Hyprland pencereyi son yerini alana kadar hiç göstermez: burada da pencere görünür olduğu an
     // (EVENT_OBJECT_SHOW) ekranı mevcut pencerelerle donduruyoruz; ortadaki pencere katmanın altında kalır,
-    // GlazeWM yer açınca son yerinde %80'den büyüyüp belirir. Yönetilmezse (açılış ekranı vb.) 0.9 sn'de kalkar.
+    // tiling yer açınca son yerinde %80'den büyüyüp belirir. Yönetilmezse (açılış ekranı vb.) 0.9 sn'de kalkar.
     Native.WinEventDelegate showCb;
     readonly object pendLock = new object();
     Slider.Frozen pendFrozen;
     long pendHandle;
     int pendAt;
     static readonly HashSet<string> noFreezeProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "zebar", "ll-helper", "tacky-borders", "glazewm", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost",
-          "LockApp", "TextInputHost", "ApplicationFrameHost", "msedgewebview2", "ll-songrec", "ll-termcolors" };
+        { Names.Shell, Names.Core, Names.Tiling, "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost",
+          "LockApp", "TextInputHost", "ApplicationFrameHost", "msedgewebview2", "lunge-songrec", "lunge-termcolors" };
 
     public void HookNewWindows()
     {
@@ -1973,7 +2012,7 @@ class Dwindle
         try { OnWindowGone(hwnd); } catch (Exception ex) { Slider.Log("gone hook: " + ex.Message); }
     }
 
-    // ---- Pencere kapanıyor / gizleniyor: Windows'un olayı GlazeWM'in bildiriminden ~30-40 ms önce gelir; o arada GlazeWM
+    // ---- Pencere kapanıyor / gizleniyor: Windows'un olayı tiling'in bildiriminden ~30-40 ms önce gelir; o arada tiling
     // kalan pencereleri yeniden yerleştirdiği için pencereler animasyon başlamadan zıplıyordu. Ekranı hemen, pencerelerin
     // görüldükleri yerlerde donduruyoruz; bildirim gelince AnimateChange bu katmanı alıp kaydırır. Gelmezse 0,4 sn'de kalkar.
     void OnWindowGone(IntPtr hwnd)
@@ -2009,7 +2048,7 @@ class Dwindle
             if (left != null)
             {
                 List<long> now; lock (cacheLock) now = new List<long>(rects.Keys);
-                slider.Finish(left, now, 0, 120); // GlazeWM bildirmedi: katmanı yumuşakça kaldır
+                slider.Finish(left, now, 0, 120); // tiling bildirmedi: katmanı yumuşakça kaldır
             }
         };
         timer.Start();
@@ -2024,7 +2063,7 @@ class Dwindle
         }
     }
 
-    // Pencere açıldı/kapandı. GlazeWM yerleşimi zaten değiştirdi; katmanı hemen, pencerelerin GÖRÜLDÜKLERİ eski
+    // Pencere açıldı/kapandı. tiling yerleşimi zaten değiştirdi; katmanı hemen, pencerelerin GÖRÜLDÜKLERİ eski
     // yerlerinden (önbellek) açıp arkada fareye göre yerleştirmeyi de yapıyoruz, sonra hepsi gerçek yerine kayar.
     // (Eskiden: önce zıplama, 60 ms sonra katman, sonra fareye göre ikinci zıplama ve 400 ms sonra üçüncüsü.)
     void AnimateChange(long anchorHandle, bool opened, Dictionary<string, object> win)
@@ -2041,7 +2080,7 @@ class Dwindle
         var start = new Dictionary<long, Native.RECT>();
         long pop = opened ? anchorHandle : 0;
 
-        // Açılışta SHOW, kapanışta HIDE/DESTROY anında dondurulmuş olabilir. Kapanış dondurulduysa ilk GlazeWM sorgusu
+        // Açılışta SHOW, kapanışta HIDE/DESTROY anında dondurulmuş olabilir. Kapanış dondurulduysa ilk tiling sorgusu
         // gereksiz (monitör önbellekte): animasyon ~15-20 ms erken başlar.
         Slider.Frozen f = TakePending(anchorHandle);
         bool preClosed = f != null && !opened;
@@ -2081,7 +2120,7 @@ class Dwindle
         Snapshot(out after, out afterMon, out mr);
         var end = new List<long>();
         foreach (var kv in afterMon) if (kv.Value == mid) end.Add(kv.Key);
-        // Pencerelerin yerleşmesi beklenmez (önceden 16-500 ms): hedef GlazeWM'in yerleşimi, pencere yer değiştirdiği
+        // Pencerelerin yerleşmesi beklenmez (önceden 16-500 ms): hedef tiling'in yerleşimi, pencere yer değiştirdiği
         // an gerçek yeri (Finish). Önbellekteki görünür dikdörtgenler de hedef yerleşimden hesaplanır.
         var v = new Dictionary<long, Native.RECT>();
         foreach (var kv in after) v[kv.Key] = Slider.WindowRectForFrame(new IntPtr(kv.Key), kv.Value);
@@ -2106,7 +2145,7 @@ class Dwindle
     //   - sahibi olan pencere (diyalog, "İndirilenler" vb.)         -> yüzen
     //   - yeniden boyutlanamayan pencere (updater, istemci, sihirbaz) -> yüzen
     //   - başlıksız ve kenarsız açılır pencere (özel arayüzlü istemci) -> yüzen
-    // Yüzen/tam ekran pencereler GlazeWM ayarıyla her zaman üstte.
+    // Yüzen/tam ekran pencereler tiling ayarıyla her zaman üstte.
     bool AutoFloat(Dictionary<string, object> win)
     {
         object hv;
@@ -2114,7 +2153,7 @@ class Dwindle
         IntPtr h = new IntPtr(Convert.ToInt64(hv));
         object st;
         var state = win.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
-        if (state != null && J.Str(state, "type") != "tiling") return false; // GlazeWM zaten yüzdürmüş
+        if (state != null && J.Str(state, "type") != "tiling") return false; // tiling zaten yüzdürmüş
 
         int style = Native.GetWindowLong(h, Native.GWL_STYLE);
         bool caption = (style & Native.WS_CAPTION) == Native.WS_CAPTION;
@@ -2137,9 +2176,9 @@ class Dwindle
     }
 
     // ---- Odak geçmişi (Hyprland gibi): odaklı pencere kapanınca aynı workspace'te en son
-    // odaklanan pencereye dön. GlazeWM ağaçtaki komşuyu odaklıyordu; art arda Alt+F4'te
+    // odaklanan pencereye dön. tiling ağaçtaki komşuyu odaklıyordu; art arda Alt+F4'te
     // sıra karışıyor, ilk açılan pencere en sona kalmıyordu.
-    const int AUTO_MS = 250; // kapanıştan hemen önce/sonra gelen odak, GlazeWM'in otomatik seçimidir
+    const int AUTO_MS = 250; // kapanıştan hemen önce/sonra gelen odak, tiling'in otomatik seçimidir
     readonly List<string> mru = new List<string>();
     readonly List<KeyValuePair<string, long>> pending = new List<KeyValuePair<string, long>>();
 
@@ -2169,7 +2208,7 @@ class Dwindle
         long now = Environment.TickCount;
         CommitOld(now);
         bool wasFocused = (mru.Count > 0 && mru[0] == id) || pending.Exists(p => p.Key == id);
-        // Kapanışın hemen öncesi/sonrasındaki odaklar GlazeWM'in otomatik seçimi: geçmişe yazma
+        // Kapanışın hemen öncesi/sonrasındaki odaklar tiling'in otomatik seçimi: geçmişe yazma
         pending.Clear();
         mru.Remove(id);
         if (!wasFocused) return;
@@ -2227,7 +2266,7 @@ class Dwindle
                 }
             }
             catch (Exception ex) { Slider.Log("dwindle: " + ex.GetBaseException().Message); }
-            Thread.Sleep(2000); // GlazeWM yeniden başlarsa tekrar bağlan
+            Thread.Sleep(2000); // tiling yeniden başlarsa tekrar bağlan
         }
     }
 
@@ -2268,13 +2307,13 @@ class Dwindle
 // Düşük seviyeli fare kancası sahte/sentetik hareketleri görmez.
 class MouseFocus
 {
-    readonly Glaze glaze;
+    readonly TilingClient glaze;
     readonly AutoResetEvent moved = new AutoResetEvent(false);
     Native.LowLevelMouseProc proc;
     IntPtr hookHandle;
     volatile int lastX = int.MinValue, lastY = int.MinValue;
 
-    public MouseFocus(Glaze g) { glaze = g; }
+    public MouseFocus(TilingClient g) { glaze = g; }
 
     // Kanca, klavye kancasıyla aynı (başka iş yapmayan) thread'de kurulur; burada sadece sinyal verilir.
     public void InstallHook()
@@ -2334,7 +2373,7 @@ class MouseFocus
                     (Native.GetWindowLong(fg, Native.GWL_EXSTYLE) & Native.WS_EX_TOPMOST) != 0)) continue;
                 if (root == lastRoot) continue; // son bakılan yönetilmeyen pencere (bar, masaüstü...)
 
-                // Yalnızca GlazeWM'in yönettiği ve odaktaki workspace'te görünen pencereler
+                // Yalnızca tiling'in yönettiği ve odaktaki workspace'te görünen pencereler
                 long handle = root.ToInt64();
                 foreach (var m in glaze.Monitors())
                     foreach (Dictionary<string, object> ws in J.Children(m))
@@ -2362,9 +2401,9 @@ class MouseFocus
 }
 
 // ---------------- Görünmez kalmış pencereler ----------------
-// GlazeWM gizli workspace'lerin pencerelerini kabuğun "cloak" özelliğiyle gizler. GlazeWM çökerse ya da zorla kapatılırsa
-// (güncelleme, kaldırma) bu pencereler görünmez kalıyordu. ll-helper.exe --uncloak-orphans: kabuğun gizlediği uygulama
-// pencerelerini geri getirir (GlazeWM'in kendi kullandığı arayüzle). Askıya alınmış UWP pencerelerine dokunmaz.
+// tiling gizli workspace'lerin pencerelerini kabuğun "cloak" özelliğiyle gizler. tiling çökerse ya da zorla kapatılırsa
+// (güncelleme, kaldırma) bu pencereler görünmez kalıyordu. lunge.exe --uncloak-orphans: kabuğun gizlediği uygulama
+// pencerelerini geri getirir (tiling'in kendi kullandığı arayüzle). Askıya alınmış UWP pencerelerine dokunmaz.
 static class Orphans
 {
     [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -2374,11 +2413,11 @@ static class Orphans
     [ComImport, Guid("1841C6D7-4F9D-42C0-AF41-8747538F10E5"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IApplicationViewCollectionLL { void m1(); void m2(); void m3(); [PreserveSig] int GetViewForHwnd(IntPtr hwnd, out IApplicationViewLL view); }
 
-    // listOnly: yalnızca adayları yazdır. GlazeWM çalışırken hiçbir şey yapılmaz: gizli workspace'lerin pencereleri
+    // listOnly: yalnızca adayları yazdır. tiling çalışırken hiçbir şey yapılmaz: gizli workspace'lerin pencereleri
     // bilerek gizlidir, açılırlarsa ekrana dökülürlerdi.
     public static int Uncloak(bool listOnly = false)
     {
-        if (!listOnly && Process.GetProcessesByName("glazewm").Length > 0) { Slider.Log("uncloak: GlazeWM çalışıyor, atlandı"); return -1; }
+        if (!listOnly && Process.GetProcessesByName(Names.Tiling).Length > 0) { Slider.Log("uncloak: tiling çalışıyor, atlandı"); return -1; }
         var targets = new List<IntPtr>();
         Native.EnumWindows(delegate (IntPtr h, IntPtr l)
         {
@@ -2390,7 +2429,7 @@ static class Orphans
             if (cs == "Windows.UI.Core.CoreWindow" || cs == "ApplicationFrameWindow") return true; // askıdaki UWP
             int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
             if ((ex & Native.WS_EX_TOOLWINDOW) != 0) return true;
-            // Tıklamayı geçiren şeffaf katmanlar (ör. görev çubuğu oyunu TaskBarHero): GlazeWM bunları yönetmez; gizliyse öyle
+            // Tıklamayı geçiren şeffaf katmanlar (ör. görev çubuğu oyunu TaskBarHero): tiling bunları yönetmez; gizliyse öyle
             // kalsın (geri getirilince görev çubuğu gizliyken efektleri ekranın üstünde yüzüyordu)
             if ((ex & Native.WS_EX_TRANSPARENT) != 0 && (ex & 0x00080000) != 0) return true; // TRANSPARENT + LAYERED
             targets.Add(h);
@@ -2420,15 +2459,14 @@ static class Orphans
     }
 }
 
-// ---------------- Zebar nöbetçisi ----------------
-// Bar ve tüm paneller Zebar'da. Zebar hiç açılmazsa (ör. yeni kurulumda PATH) ya da açık olduğu halde widget sunucusu
-// (127.0.0.1:6124) çalışmıyorsa (port o an önceki Zebar'da kaldıysa sunucusuz açılıyor, bar "bağlantı reddedildi"
-// gösteriyordu) masaüstü yarım kalmasın: GlazeWM çalışıyorken iki ardışık kontrolde (~10 sn) sorun sürerse Zebar'ı temiz
+// ---------------- Shell nöbetçisi ----------------
+// Bar ve tüm paneller shell'de. shell hiç açılmazsa (ör. yeni kurulumda PATH) ya da açık olduğu halde widget sunucusu
+// (127.0.0.1:6124) çalışmıyorsa (port o an önceki shell'de kaldıysa sunucusuz açılıyor, bar "bağlantı reddedildi"
+// gösteriyordu) masaüstü yarım kalmasın: tiling çalışıyorken iki ardışık kontrolde (~10 sn) sorun sürerse shell'i temiz
 // biçimde (port boşalana kadar bekleyip) yeniden başlat. Art arda başarısızlıkta beklemeyi uzatır.
-static class ZebarWatchdog
+static class ShellWatchdog
 {
     const int PORT = 6124;
-    static string lastPath;
 
     static bool PortOpen()
     {
@@ -2445,34 +2483,21 @@ static class ZebarWatchdog
         catch { return false; }
     }
 
-    static List<Process> Zebars()
+    static List<Process> Shells()
     {
-        var l = new List<Process>(Process.GetProcessesByName("zebar"));
-        foreach (var p in l) { try { lastPath = p.MainModule.FileName; } catch { } }
-        return l;
+        return new List<Process>(Process.GetProcessesByName(Names.Shell));
     }
 
-    static string ExePath()
+    static bool TilingRunning()
     {
-        if (lastPath != null && System.IO.File.Exists(lastPath)) return lastPath;
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        foreach (var exe in new[] {
-            System.IO.Path.Combine(home, @".glzr\logical-lunge\bin\zebar.exe"),
-            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"glzr.io\Zebar\zebar.exe") })
-            if (System.IO.File.Exists(exe)) return exe;
-        return null;
-    }
-
-    static bool GlazeRunning()
-    {
-        var ps = Process.GetProcessesByName("glazewm");
+        var ps = Process.GetProcessesByName(Names.Tiling);
         foreach (var p in ps) p.Dispose();
         return ps.Length > 0;
     }
 
-    // Bar sayfaları yüklenince ve sonra 30 sn'de bir "canlıyım" der (POST /bar-alive?id=<sayfa yüklemesi>). Zebar ayakta ve
-    // sunucusu açık olsa da bir bar hata sayfasında ya da donmuş kalabiliyordu (yenilemede eski Zebar'ın sunucusuna bağlanıp
-    // boş kalan bar gibi): son 150 sn'de canlı diyen bar sayısı bar penceresi sayısından azsa Zebar yeniden başlatılır.
+    // Bar sayfaları yüklenince ve sonra 30 sn'de bir "canlıyım" der (POST /bar-alive?id=<sayfa yüklemesi>). shell ayakta ve
+    // sunucusu açık olsa da bir bar hata sayfasında ya da donmuş kalabiliyordu (yenilemede eski shell'in sunucusuna bağlanıp
+    // boş kalan bar gibi): son 150 sn'de canlı diyen bar sayısı bar penceresi sayısından azsa shell yeniden başlatılır.
     static readonly Dictionary<string, DateTime> barAlive = new Dictionary<string, DateTime>();
     static readonly DateTime helperStart = DateTime.Now;
     public static void BarAlive(string id)
@@ -2504,53 +2529,57 @@ static class ZebarWatchdog
             uint p; Native.GetWindowThreadProcessId(h, out p);
             if (p != pid) return true;
             title.Length = 0; Native.GetWindowText(h, title, 64);
-            if (title.ToString() == "Zebar - logical-lunge / bar") n++;
+            if (title.ToString() == Names.Bar) n++;
             return true;
         }, IntPtr.Zero);
         return n;
     }
-    // Bar'ların sessiz kalması bir sorun mu: Zebar ve helper yeterince uzun süredir açık, ekran kilitli değil
-    static string SilentBars(Process zebar)
+    // Bar'ların sessiz kalması bir sorun mu: shell ve helper yeterince uzun süredir açık, ekran kilitli değil
+    static string SilentBars(Process shell)
     {
         if ((DateTime.Now - helperStart).TotalSeconds < 160) return null; // helper yeni: bar'ların bir sonraki bildirimini bekle
         DateTime started;
-        try { started = zebar.StartTime; } catch { return null; }
+        try { started = shell.StartTime; } catch { return null; }
         if ((DateTime.Now - started).TotalSeconds < 40) return null;
         if (!FocusGuard.OnDefaultDesktop()) return null; // kilit ekranında zamanlayıcılar yavaşlar
-        int windows = BarWindows(zebar.Id), alive = AliveBars();
+        int windows = BarWindows(shell.Id), alive = AliveBars();
         return windows > 0 && alive < windows ? "bar yanıt vermiyordu (" + alive + "/" + windows + " canlı)" : null;
+    }
+
+    // Kabuğu kurulum klasöründen, çekirdeğin alt süreci olarak başlatır (Görev Yöneticisi'nde tek uygulama).
+    // ShellExecute: çekirdeğin tutamaçları (tiling IPC bağlantısı vb.) shell'e miras kalmasın.
+    public static void StartShell(string why)
+    {
+        if (!System.IO.File.Exists(Paths.Shell)) { Slider.Log("shell nöbetçisi: " + why + ", " + Paths.Shell + " bulunamadı"); return; }
+        try { Process.Start(new ProcessStartInfo(Paths.Shell) { UseShellExecute = true, WorkingDirectory = Paths.Home }); Slider.Log("shell nöbetçisi: " + why + ", başlatıldı"); }
+        catch (Exception ex) { Slider.Log("shell nöbetçisi: başlatılamadı: " + ex.Message); }
     }
 
     static void Restart(string why)
     {
-        string exe = ExePath();
-        if (exe == null) { Slider.Log("zebar nöbetçisi: " + why + ", zebar.exe bulunamadı"); return; }
-        foreach (var p in Zebars()) { try { p.Kill(); p.WaitForExit(3000); } catch { } finally { p.Dispose(); } }
-        // Önceki süreç portu bırakana kadar bekle (yoksa yeni Zebar da sunucusuz açılabiliyor)
+        foreach (var p in Shells()) { try { p.Kill(); p.WaitForExit(3000); } catch { } finally { p.Dispose(); } }
+        // Önceki süreç portu bırakana kadar bekle (yoksa yeni shell da sunucusuz açılabiliyor)
         var sw = Stopwatch.StartNew();
         while (PortOpen() && sw.ElapsedMilliseconds < 5000) Thread.Sleep(200);
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        // ShellExecute: helper'ın tutamaçları (GlazeWM IPC bağlantısı vb.) Zebar'a miras kalmasın
-        try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = home }); Slider.Log("zebar nöbetçisi: " + why + ", yeniden başlatıldı: " + exe); }
-        catch (Exception ex) { Slider.Log("zebar nöbetçisi: başlatılamadı: " + ex.Message); }
+        StartShell(why);
     }
 
     public static void Start()
     {
         new Thread(() =>
         {
-            Thread.Sleep(15000); // oturum açılışında GlazeWM Zebar'ı kendisi başlatır
+            Thread.Sleep(15000); // açılışta shell'i Supervisor başlatır
             int bad = 0, failures = 0;
             while (true)
             {
                 Thread.Sleep(5000);
                 try
                 {
-                    if (!GlazeRunning()) { bad = 0; continue; } // GlazeWM kapalıyken (çıkış / yeniden başlatma) karışma
-                    if (Maint.Quiet() || WmWatchdog.Recovering) { bad = 0; continue; }
-                    var zs = Zebars();
+                    if (!TilingRunning()) { bad = 0; continue; } // tiling kapalıyken (çıkış / yeniden başlatma) karışma
+                    if (Maint.Quiet() || TilingWatchdog.Recovering) { bad = 0; continue; }
+                    var zs = Shells();
                     bool running = zs.Count > 0;
-                    string problem = !running ? "zebar çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : SilentBars(zs[0]);
+                    string problem = !running ? "shell çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : SilentBars(zs[0]);
                     foreach (var p in zs) p.Dispose();
                     if (problem != null && problem.StartsWith("bar ")) lock (barAlive) barAlive.Clear(); // yeniden başlayınca sayım sıfırdan
                     if (problem == null) { bad = 0; failures = 0; continue; }
@@ -2560,26 +2589,144 @@ static class ZebarWatchdog
                     failures++;
                     if (failures >= 3) Thread.Sleep(Math.Min(300000, 30000 * failures)); // sürekli başarısızsa sık sık deneme
                 }
-                catch (Exception ex) { Slider.Log("zebar nöbetçisi: " + ex.Message); }
+                catch (Exception ex) { Slider.Log("shell nöbetçisi: " + ex.Message); }
             }
         }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+    }
+}
+
+// ---------------- Kök süreç ----------------
+// lunge.exe masaüstünün köküdür: oturum açılınca yalnızca o başlar (\LogicalLunge\Start görevi); açılış perdesini,
+// tiling'i ve shell'i kendi alt süreçleri olarak açar, Görev Yöneticisi üçünü tek "lunge" altında gruplar. Sonradan
+// çöken parçayı nöbetçiler yine buradan başlatır. tiling'den çıkılınca (kod 0) shell'i kapatır, Windows görev
+// çubuğunu geri getirir ve kendisi de çıkar.
+static class Supervisor
+{
+    public static string PidFile { get { return Paths.State("core.pid"); } }
+
+    // Eksik parçaları sırayla açar: perde (istenirse), tiling, IPC'si hazır olunca shell. Çalışanlara dokunmaz.
+    public static void BringUp(bool splash)
+    {
+        if (!Maint.Running(Names.Tiling))
+        {
+            if (splash && !WarmTerminal.SplashActive()) Start(Paths.Core, "--splash");
+            TilingWatchdog.StartTiling();
+        }
+        // shell tiling'e bağlanır: IPC açılınca başlat (açılmazsa da başlat; bar ve güvenli taraf yine gelsin)
+        var sw = Stopwatch.StartNew();
+        while (!TilingIpcUp() && sw.ElapsedMilliseconds < 20000) Thread.Sleep(150);
+        if (!Maint.Running(Names.Shell)) ShellWatchdog.StartShell("açılış");
+    }
+
+    static bool TilingIpcUp()
+    {
+        try { using (var c = new System.Net.Sockets.TcpClient()) return c.ConnectAsync("127.0.0.1", 6123).Wait(150) && c.Connected; }
+        catch { return false; }
+    }
+
+    // ShellExecute: çekirdeğin tutamaçları alt sürece miras kalmasın
+    static void Start(string exe, string args)
+    {
+        try { Process.Start(new ProcessStartInfo(exe, args ?? "") { UseShellExecute = true, WorkingDirectory = Paths.Home }); }
+        catch (Exception ex) { Slider.Log("kök: " + System.IO.Path.GetFileName(exe) + " " + args + " başlatılamadı: " + ex.Message); }
+    }
+
+    static void Kill(string name, int exceptPid = 0)
+    {
+        foreach (var p in Process.GetProcessesByName(name))
+        {
+            try { if (p.Id != exceptPid) { p.Kill(); p.WaitForExit(3000); } }
+            catch { }
+            finally { p.Dispose(); }
+        }
+    }
+
+    // tiling'den çıkıldı: shell'i kapat, Windows görev çubuğunu geri getir. exitSelf: çekirdek de çıkar.
+    public static void Shutdown(string why, bool exitSelf)
+    {
+        Slider.Log("kapanış: " + why);
+        Kill(Names.Shell);
+        TaskbarGuard.Release();
+        if (exitSelf) Environment.Exit(0);
+    }
+
+    // Asıl çekirdek (kilidi tutan, argümansız başlayan): açılışta süreç kimliğini yazar
+    static Process MainCore()
+    {
+        try
+        {
+            int pid = int.Parse(System.IO.File.ReadAllText(PidFile).Trim());
+            var p = Process.GetProcessById(pid);
+            if (p.Id != Process.GetCurrentProcess().Id && p.ProcessName.Equals(Names.Core, StringComparison.OrdinalIgnoreCase)) return p;
+            p.Dispose();
+        }
+        catch { }
+        return null;
+    }
+
+    // Eski kurulumun (0.1.x) parça adları: güncellemede / taşımada onlar da temiz kapatılır
+    static readonly string[] LegacyCore = { "ll-helper" }, LegacyParts = { "glazewm", "zebar", "tacky-borders" };
+
+    // Masaüstünü kapatır (kurulum, güncelleme, "masaüstünü yenile"): bakım işareti, önce çekirdek (kapanan parçaları
+    // yeniden başlatmasın), pencere yöneticisine nazik çıkış (gizli workspace'lerin pencerelerini geri getirir), kalanlar,
+    // sonra görünmez kalmış pencereler. Bakım işareti kalır; kaldırmak çağıranın işi (en geç 10 dakikada geçersizleşir).
+    public static void StopDesktop()
+    {
+        Maint.Mark();
+        try { System.IO.File.WriteAllText(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\maintenance"), DateTime.UtcNow.ToString("o")); } catch { }
+        var core = MainCore();
+        if (core != null) { try { core.Kill(); core.WaitForExit(3000); } catch { } finally { core.Dispose(); } }
+        foreach (var n in LegacyCore) Kill(n);
+        if (Maint.Running(Names.Tiling) || Maint.Running("glazewm"))
+        {
+            try { new TilingClient().Command("wm-exit"); } catch { }
+            var sw = Stopwatch.StartNew();
+            while ((Maint.Running(Names.Tiling) || Maint.Running("glazewm")) && sw.ElapsedMilliseconds < 6000) Thread.Sleep(100);
+        }
+        Kill(Names.Tiling);
+        Kill(Names.Shell);
+        foreach (var n in LegacyParts) Kill(n);
+        Thread.Sleep(300);
+        Slider.Log("masaüstü kapatıldı; geri getirilen pencere: " + Orphans.Uncloak());
+    }
+
+    // "Masaüstünü yenile" (oturum menüsü, Başlat kısayolu; lunge.exe --restart-desktop): bütün parçaları kapatıp temiz
+    // baştan açar. Açık pencereler kapanmaz, yeniden başlayan pencere yöneticisi onları yerleştirir; geçişi perde örter.
+    // Tutamaç devralmadan (ShellExecute): kabuğun başlattığı bu süreç kabuğun soketlerini (6124) miras almış olabilir;
+    // onları taşıyan bir alt süreç yeni kabuğun sunucusunu açmasını engelliyordu. İş temiz bir kopyada yapılır.
+    public static void RestartDesktopDetached()
+    {
+        Start(Paths.Core, "--restart-desktop-now");
+    }
+
+    public static void RestartDesktop()
+    {
+        // Perde: mevcut masaüstünün kapanmasını, sonra yenisinin hazır olmasını bekler (ortam değişkeni ShellExecute'la
+        // başlatılan alt sürece geçer)
+        Environment.SetEnvironmentVariable("LL_SPLASH_WAIT_RESTART", "1");
+        Start(Paths.Core, "--splash");
+        Environment.SetEnvironmentVariable("LL_SPLASH_WAIT_RESTART", null);
+        try { StopDesktop(); }
+        finally { Maint.Unmark(); }
+        // Yeni kök: pencere yöneticisini ve kabuğu o açar (perde zaten açık)
+        Start(Paths.Core, null);
     }
 }
 
 // ---------------- Kendini toparlama ----------------
 // Bir OS gibi: bir parça çökerse ya da donarsa kullanıcı komut satırı, taskkill bilmeden masaüstü kendiliğinden
 // toparlanır. Nöbetçiler birbirini korur (yeni süreç yok):
-//   GlazeWM çöker / donar      -> helper (WmWatchdog) masaüstünü yeniden başlatır
-//   Zebar çöker                -> helper (ZebarWatchdog)
+//   tiling çöker / donar      -> helper (TilingWatchdog) masaüstünü yeniden başlatır
+//   shell çöker                -> helper (ShellWatchdog)
 //   helper çöker (yönetilen hata) ya da arayüzü donar -> helper kendini yeniden başlatır (SelfHeal)
-//   helper tamamen ölür        -> Zebar'ın bildirim kopyası (ll-helper --toast-stream) onu başlatır
-// Hepsi kasıtlı çıkışta (GlazeWM 0 koduyla kapanır, kapanırken helper'ı ve Zebar'ı da kapatır), oturum kapanırken
+//   helper tamamen ölür        -> shell'in bildirim kopyası (lunge --toast-stream) onu başlatır
+// Hepsi kasıtlı çıkışta (tiling 0 koduyla kapanır, kapanırken helper'ı ve shell'i da kapatır), oturum kapanırken
 // ve bakım sırasında (kurulum, güncelleme, kaldırma, "masaüstünü yenile") hiçbir şey yapmaz. Çöküş döngüsüne
 // girmesinler diye her biri 5 dakikada en fazla 3 kez dener.
 static class Maint
 {
     public static volatile bool SessionEnding;
-    static string Dir { get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge"); } }
+    static string Dir { get { return Paths.StateDir; } }
 
     // Bakım işareti: kurulum / güncelleme / kaldırma / "masaüstünü yenile" bırakır. Yarım kalan bir işlem nöbetçileri
     // sonsuza dek susturmasın diye 10 dakikadan eskisi sayılmaz.
@@ -2595,6 +2742,16 @@ static class Maint
     }
 
     // Son 5 dakikadaki denemeler (süreçler arası, dosyada): sınırı aşmadıysa bu denemeyi kaydeder ve true döner.
+    public static void Mark()
+    {
+        try { System.IO.File.WriteAllText(System.IO.Path.Combine(Dir, "maintenance"), DateTime.UtcNow.ToString("o")); } catch { }
+    }
+
+    public static void Unmark()
+    {
+        try { System.IO.File.Delete(System.IO.Path.Combine(Dir, "maintenance")); } catch { }
+    }
+
     public static bool Allow(string name)
     {
         string file = System.IO.Path.Combine(Dir, name);
@@ -2620,7 +2777,7 @@ static class Maint
         return true;
     }
 
-    public static string HelperExe { get { return System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ll-helper.exe"); } }
+    public static string CoreExe { get { return Paths.Core; } }
 
     public static int RunHidden(string exe, string args, int waitMs)
     {
@@ -2640,10 +2797,10 @@ static class Maint
     }
 }
 
-// GlazeWM'i izler. Çıkış kodu 0 değilse (çökme, zorla kapatılma, başlatma hatası) ya da 15 sn'den uzun IPC'ye yanıt
-// vermezse masaüstünü yeniden başlatır. Kasıtlı çıkış 0 koduyla olur (ve helper'ı da kapatır). Yeniden başlatılan GlazeWM
+// tiling'i izler. Çıkış kodu 0 değilse (çökme, zorla kapatılma, başlatma hatası) ya da 15 sn'den uzun IPC'ye yanıt
+// vermezse masaüstünü yeniden başlatır. Kasıtlı çıkış 0 koduyla olur (ve helper'ı da kapatır). Yeniden başlatılan tiling
 // açılamazsa (ör. çöken sürecin IPC portu, süreci tamamen kapanana kadar dolu kalabiliyor) port boşalınca yeniden denenir.
-static class WmWatchdog
+static class TilingWatchdog
 {
     const int IPC_PORT = 6123;
     static int recoveringUntil;
@@ -2654,12 +2811,12 @@ static class WmWatchdog
         new Thread(Loop) { IsBackground = true, Priority = ThreadPriority.BelowNormal, Name = "wm-watchdog" }.Start();
     }
 
-    // Pencere yöneticisi: en eski glazewm süreci (glazewm.exe "command ..." gibi kısa ömürlü CLI çağrıları da aynı adla
+    // Pencere yöneticisi: en eski lunge-tiling süreci (kısa ömürlü CLI çağrıları da aynı adla
     // görünür; 5 sn'den genç olan sayılmaz)
     static Process FindWm()
     {
         Process best = null;
-        foreach (var p in Process.GetProcessesByName("glazewm"))
+        foreach (var p in Process.GetProcessesByName(Names.Tiling))
         {
             try
             {
@@ -2675,8 +2832,6 @@ static class WmWatchdog
         }
         return best;
     }
-
-    static string wmPath;
 
     static bool PortFree()
     {
@@ -2694,9 +2849,9 @@ static class WmWatchdog
     static void Loop()
     {
         Thread.Sleep(10000); // oturum açılışı / helper yeni başladı: önce her şey yerine otursun
-        var ipc = new Glaze();
+        var ipc = new TilingClient();
         Process wm = null;
-        bool wanted = false;  // GlazeWM çalışmalı mı: çalışırken görüldü ve kasıtlı kapanmadı
+        bool wanted = false;  // tiling çalışmalı mı: çalışırken görüldü ve kasıtlı kapanmadı
         int missing = 0, hung = 0, tick = 0, starts = 0, nextStartAt = 0;
         bool portNoted = false;
         while (true)
@@ -2710,11 +2865,11 @@ static class WmWatchdog
                     if (wm != null)
                     {
                         // Tutamaç şimdi açılır: yoksa süreç kapandıktan sonra çıkış kodu okunamıyor
-                        try { var handle = wm.Handle; wmPath = wm.MainModule.FileName; } catch { }
+                        try { var handle = wm.Handle; } catch { }
                         if (starts > 0)
                         {
-                            Slider.Log("wm nöbetçisi: GlazeWM yeniden çalışıyor");
-                            // Bildirim, Zebar geri gelip bildirim kanalına bağlanınca
+                            Slider.Log("tiling nöbetçisi: tiling yeniden çalışıyor");
+                            // Bildirim, shell geri gelip bildirim kanalına bağlanınca
                             new Thread(() =>
                             {
                                 Thread.Sleep(9000);
@@ -2724,24 +2879,24 @@ static class WmWatchdog
                         wanted = true; hung = 0; missing = 0; starts = 0; portNoted = false;
                         continue;
                     }
-                    if (Maint.Quiet() || Maint.Running("glazewm")) { missing = 0; continue; } // bakım / açılıyor
+                    if (Maint.Quiet() || Maint.Running(Names.Tiling)) { missing = 0; continue; } // bakım / açılıyor
                     if (!wanted)
                     {
-                        // Helper GlazeWM'siz başladı ya da GlazeWM'i hiç görmedi. Kasıtlı çıkış helper'ı da kapattığı için
-                        // helper yaşarken GlazeWM ~20 sn yoksa masaüstü bozuktur: GlazeWM çalışmalı.
+                        // Helper tiling'siz başladı ya da tiling'i hiç görmedi. Kasıtlı çıkış helper'ı da kapattığı için
+                        // helper yaşarken tiling ~20 sn yoksa masaüstü bozuktur: tiling çalışmalı.
                         if (++missing < 10) continue;
                         missing = 0; wanted = true; nextStartAt = Environment.TickCount;
                     }
                     if (Environment.TickCount - nextStartAt < 0) continue;
                     if (!PortFree())
                     {
-                        if (!portNoted) { portNoted = true; Slider.Log("wm nöbetçisi: IPC portu hâlâ eski süreçte; boşalınca başlatılacak"); }
+                        if (!portNoted) { portNoted = true; Slider.Log("tiling nöbetçisi: IPC portu hâlâ eski süreçte; boşalınca başlatılacak"); }
                         continue;
                     }
                     starts++;
-                    Slider.Log("wm nöbetçisi: GlazeWM çalışmıyor; başlatılıyor (deneme " + starts + ")");
-                    Maint.RunHidden(Maint.HelperExe, "--uncloak-orphans", 15000);
-                    StartWm();
+                    Slider.Log("tiling nöbetçisi: tiling çalışmıyor; başlatılıyor (deneme " + starts + ")");
+                    Maint.RunHidden(Maint.CoreExe, "--uncloak-orphans", 15000);
+                    Supervisor.BringUp(false);
                     nextStartAt = Environment.TickCount + Math.Min(120000, 15000 * starts);
                     if (starts == 3)
                         Toasts.Send("error", "Pencere yöneticisi açılamıyor",
@@ -2754,10 +2909,17 @@ static class WmWatchdog
                     int code = -1;
                     try { code = wm.ExitCode; } catch { }
                     wm.Dispose(); wm = null;
-                    if (code == 0) { wanted = false; Slider.Log("wm nöbetçisi: GlazeWM kapandı (kasıtlı, kod 0)"); continue; }
-                    Thread.Sleep(1500); // kasıtlı kapanışta helper bu arada kapatılır; oturum kapanıyorsa bayrak kalkar
-                    if (Maint.Quiet()) { wanted = false; Slider.Log("wm nöbetçisi: GlazeWM kapandı (kod " + code + "), bakım / oturum kapanışı: dokunulmadı"); continue; }
-                    if (!Recover("GlazeWM beklenmedik biçimde kapandı (kod " + code + ")")) { wanted = false; continue; }
+                    if (code == 0)
+                    {
+                        wanted = false;
+                        Slider.Log("tiling nöbetçisi: tiling kapandı (kasıtlı, kod 0)");
+                        // Çıkış: masaüstünü Windows'a geri ver. Bakımda (yenile / güncelleme) parçaları o işlem yönetir.
+                        if (!Maint.Quiet()) Supervisor.Shutdown("tiling'den çıkıldı", true);
+                        continue;
+                    }
+                    Thread.Sleep(1500); // oturum kapanıyorsa bu arada bayrak kalkar
+                    if (Maint.Quiet()) { wanted = false; Slider.Log("tiling nöbetçisi: tiling kapandı (kod " + code + "), bakım / oturum kapanışı: dokunulmadı"); continue; }
+                    if (!Recover("Pencere yöneticisi beklenmedik biçimde kapandı (kod " + code + ")")) { wanted = false; continue; }
                     wanted = true; starts = 1; portNoted = false; nextStartAt = Environment.TickCount + 15000;
                     continue;
                 }
@@ -2767,18 +2929,18 @@ static class WmWatchdog
                 if (++tick % 3 != 0) continue;
                 if ((DateTime.Now - wm.StartTime).TotalSeconds < 30) { hung = 0; continue; }
                 if (PingWithTimeout(ipc, 8000)) { hung = 0; continue; }
-                if (++hung < 3) { Slider.Log("wm nöbetçisi: GlazeWM yanıt vermedi (" + hung + "/3)"); continue; }
+                if (++hung < 3) { Slider.Log("tiling nöbetçisi: tiling yanıt vermedi (" + hung + "/3)"); continue; }
                 hung = 0;
                 if (Maint.Quiet()) continue;
-                Slider.Log("wm nöbetçisi: GlazeWM 15 sn'den uzun yanıt vermedi; kapatılıyor");
+                Slider.Log("tiling nöbetçisi: tiling 15 sn'den uzun yanıt vermedi; kapatılıyor");
                 try { wm.Kill(); wm.WaitForExit(5000); } catch { }
                 // Bir sonraki turda çıkış kodu 0 olmadığı için masaüstü yeniden başlatılır
             }
-            catch (Exception ex) { Slider.Log("wm nöbetçisi: " + ex.Message); if (wm != null) { try { wm.Dispose(); } catch { } wm = null; } }
+            catch (Exception ex) { Slider.Log("tiling nöbetçisi: " + ex.Message); if (wm != null) { try { wm.Dispose(); } catch { } wm = null; } }
         }
     }
 
-    static bool PingWithTimeout(Glaze g, int ms)
+    static bool PingWithTimeout(TilingClient g, int ms)
     {
         var done = new ManualResetEvent(false);
         bool ok = false;
@@ -2786,41 +2948,37 @@ static class WmWatchdog
         return done.WaitOne(ms) && ok;
     }
 
-    // GlazeWM'i kurulumdaki görevinden (ayarlarıyla) başlatır; görev yoksa exe'den
-    static void StartWm()
+    // tiling'i kurulum klasöründen, çekirdeğin alt süreci olarak başlatır (Görev Yöneticisi'nde tek uygulama).
+    // ShellExecute: çekirdeğin tutamaçları tiling'e miras kalmasın.
+    public static void StartTiling()
     {
-        if (Maint.RunHidden("schtasks.exe", "/run /tn \"\\LL\\GlazeWM\"", 10000) == 0) return;
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        string exe = wmPath != null && System.IO.File.Exists(wmPath) ? wmPath : System.IO.Path.Combine(home, @".glzr\logical-lunge\bin\glazewm.exe");
-        if (!System.IO.File.Exists(exe)) exe = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), @"glzr.io\glazewm.exe");
-        // ShellExecute: helper'ın tutamaçları GlazeWM'e miras kalmasın
-        try { Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true, WorkingDirectory = home }); }
-        catch (Exception ex) { Slider.Log("wm nöbetçisi: GlazeWM başlatılamadı: " + ex.Message); }
+        if (!System.IO.File.Exists(Paths.Tiling)) { Slider.Log("tiling nöbetçisi: " + Paths.Tiling + " bulunamadı"); return; }
+        try { Process.Start(new ProcessStartInfo(Paths.Tiling) { UseShellExecute = true, WorkingDirectory = Paths.Home }); }
+        catch (Exception ex) { Slider.Log("tiling nöbetçisi: tiling başlatılamadı: " + ex.Message); }
     }
 
-    // Masaüstünü temiz baştan başlatır: kalanları kapat, gizli kalmış pencereleri geri getir, GlazeWM'i başlat (o da
-    // Zebar'ı açar; helper zaten çalıştığı için yeni kopyası kendiliğinden kapanır). Çöküş döngüsünde (5 dakikada 3)
-    // vazgeçer ve false döner.
+    // Masaüstünü temiz baştan başlatır: kalanları kapat, gizli kalmış pencereleri geri getir, tiling'i başlat. shell'i
+    // Shell nöbetçisi geri açar. Çöküş döngüsünde (5 dakikada 3) vazgeçer ve false döner.
     static bool Recover(string why)
     {
         if (!Maint.Allow("wm-restarts"))
         {
-            Slider.Log("wm nöbetçisi: " + why + "; son 5 dakikada 3 kez yeniden başlatıldı, bırakıldı");
+            Slider.Log("tiling nöbetçisi: " + why + "; son 5 dakikada 3 kez yeniden başlatıldı, bırakıldı");
             Toasts.Send("error", "Pencere yöneticisi tekrar tekrar kapanıyor",
                 "Otomatik olarak yeniden başlatılmadı. Oturum menüsünden \"Masaüstünü yenile\"yi seçin ya da oturumu kapatıp açın.", "error");
             return false;
         }
         Volatile.Write(ref recoveringUntil, Environment.TickCount + 30000);
-        Slider.Log("wm nöbetçisi: " + why + "; masaüstü yeniden başlatılıyor");
-        foreach (var name in new[] { "zebar", "glazewm" })
+        Slider.Log("tiling nöbetçisi: " + why + "; masaüstü yeniden başlatılıyor");
+        foreach (var name in new[] { Names.Shell, Names.Tiling })
             foreach (var p in Process.GetProcessesByName(name))
             {
                 try { p.Kill(); p.WaitForExit(3000); } catch { }
                 finally { p.Dispose(); }
             }
-        Maint.RunHidden(Maint.HelperExe, "--uncloak-orphans", 15000);
-        if (PortFree()) StartWm();
-        else Slider.Log("wm nöbetçisi: IPC portu hâlâ eski süreçte; boşalınca başlatılacak");
+        Maint.RunHidden(Maint.CoreExe, "--uncloak-orphans", 15000);
+        if (PortFree()) Supervisor.BringUp(false);
+        else Slider.Log("tiling nöbetçisi: IPC portu hâlâ eski süreçte; boşalınca başlatılacak");
         return true;
     }
 }
@@ -2841,7 +2999,7 @@ static class SelfHeal
             if (Maint.Quiet()) { Slider.Log("kendini toparlama atlandı (" + why + "): bakım / oturum kapanışı"); return; }
             if (!Maint.Allow("helper-restarts")) { Slider.Log("kendini toparlama: son 5 dakikada 3 kez denendi, bırakıldı (" + why + ")"); return; }
             Slider.Log("helper yeniden başlıyor: " + why);
-            Process.Start(new ProcessStartInfo(Maint.HelperExe, "--respawn") { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
+            Process.Start(new ProcessStartInfo(Maint.CoreExe, "--respawn") { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
         }
         catch (Exception ex) { try { Slider.Log("helper yeniden başlatılamadı: " + ex.Message); } catch { } }
     }
@@ -2874,7 +3032,7 @@ static class SelfHeal
 }
 
 // ---------------- Bildirim kanalı (toast widget'ına) ----------------
-// Zebar toast widget'ı http://127.0.0.1:6131/events adresine EventSource ile bağlanır; helper
+// shell toast widget'ı http://127.0.0.1:6131/events adresine EventSource ile bağlanır; helper
 // buradan bildirim gönderir (Windows hata pencereleri yerine). Yalnızca loopback dinlenir.
 static class Toasts
 {
@@ -2917,7 +3075,7 @@ static class Toasts
             }
             string cors = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Allow-Headers: *\r\n";
             string reqs = req.ToString();
-            // Widget'lar POST kullanır: Zebar'ın service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
+            // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
             if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
@@ -2934,16 +3092,16 @@ static class Toasts
     }
 
     // Bar ve overview'dan anında komut (her tıklamada yeni helper süreci başlatmak ~100-300 ms sürüyordu).
-    // Yalnızca Zebar widget'larının kökeninden (yerel varlık sunucusu) ve yalnızca zararsız komutlar: başka bir sitenin
+    // Yalnızca shell widget'larının kökeninden (yerel varlık sunucusu) ve yalnızca zararsız komutlar: başka bir sitenin
     // tarayıcıdan bu kanalı kullanması mümkün değil (tarayıcı Origin'i gönderir).
-    const string ZEBAR_ORIGIN = "http://127.0.0.1:6124";
+    const string SHELL_ORIGIN = "http://127.0.0.1:6124";
     static void Command(System.Net.Sockets.NetworkStream s, string req)
     {
         string origin = null;
         foreach (var line in req.Split(new[] { "\r\n" }, StringSplitOptions.None))
             if (line.StartsWith("Origin:", StringComparison.OrdinalIgnoreCase)) origin = line.Substring(7).Trim();
         string status = "403 Forbidden", body = "";
-        if (origin == null || origin == ZEBAR_ORIGIN)
+        if (origin == null || origin == SHELL_ORIGIN)
         {
             int sp1 = req.IndexOf(' '), sp2 = sp1 < 0 ? -1 : req.IndexOf(' ', sp1 + 1);
             string target = sp2 > sp1 ? req.Substring(sp1 + 1, sp2 - sp1 - 1) : ""; // "/cmd?a=ws-3"
@@ -2958,7 +3116,7 @@ static class Toasts
             else if (target.StartsWith("/bar-alive?id="))
             {
                 string id = Uri.UnescapeDataString(target.Substring(14).Split('&')[0]);
-                if (id.Length > 0 && id.Length <= 64) { ZebarWatchdog.BarAlive(id); status = "204 No Content"; }
+                if (id.Length > 0 && id.Length <= 64) { ShellWatchdog.BarAlive(id); status = "204 No Content"; }
                 else status = "400 Bad Request";
             }
             else if (target.StartsWith("/overview-signal?w=show") || target.StartsWith("/overview-signal?w=hide"))
@@ -2979,7 +3137,7 @@ static class Toasts
             }
         }
         var bytes = Encoding.UTF8.GetBytes(body);
-        var head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nAccess-Control-Allow-Origin: " + ZEBAR_ORIGIN + "\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + bytes.Length + "\r\nConnection: close\r\n\r\n");
+        var head = Encoding.ASCII.GetBytes("HTTP/1.1 " + status + "\r\nAccess-Control-Allow-Origin: " + SHELL_ORIGIN + "\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: " + bytes.Length + "\r\nConnection: close\r\n\r\n");
         s.Write(head, 0, head.Length);
         if (bytes.Length > 0) s.Write(bytes, 0, bytes.Length);
         s.Flush();
@@ -3006,14 +3164,14 @@ static class Toasts
 }
 
 // ---------------- Windows hata pencerelerini yakala ----------------
-// Tek "Tamam" butonlu bilgi/hata kutularını (GlazeWM "Non-fatal error", Explorer "bulunamıyor",
-// Zebar/tacky hataları...) kapatıp metnini toast olarak gösterir. Cevap bekleyen (Evet/Hayır)
+// Tek "Tamam" butonlu bilgi/hata kutularını (tiling "Non-fatal error", Explorer "bulunamıyor",
+// shell/kenarlık hataları...) kapatıp metnini toast olarak gösterir. Cevap bekleyen (Evet/Hayır)
 // kutulara dokunmaz.
 class DialogCatcher
 {
     Native.WinEventDelegate cb;
     static readonly HashSet<string> owners = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "glazewm", "zebar", "ll-helper", "tacky-borders", "explorer", "powershell", "rundll32", "cmd" };
+        { Names.Tiling, Names.Shell, Names.Core, "explorer", "powershell", "rundll32", "cmd" };
     // Oluşturulurken görünmez yapılan, henüz karar verilmemiş kutular -> özgün genişletilmiş stil
     readonly Dictionary<IntPtr, int> pending = new Dictionary<IntPtr, int>();
     System.Windows.Forms.Timer safety;
@@ -3098,7 +3256,7 @@ class DialogCatcher
             var title = new StringBuilder(256); Native.GetWindowText(hwnd, title, 256);
             Native.PostMessage(buttons[0], 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
             string head = title.ToString();
-            if (proc.Equals("glazewm", StringComparison.OrdinalIgnoreCase)) head = "GlazeWM: " + head;
+            if (proc.Equals(Names.Tiling, StringComparison.OrdinalIgnoreCase)) head = "Pencere yöneticisi: " + head;
             Toasts.Send("error", head.Length > 0 ? head : "Hata", string.Join("\n", texts), "error");
             Slider.Log("dialog -> toast: " + proc + " | " + head);
         }
@@ -3151,13 +3309,13 @@ class DialogCatcher
 // ---------------- Yuvarlak köşeler ----------------
 class Rounder
 {
-    const int RADIUS = 14; // tacky-borders border_radius ile aynı
+    const int RADIUS = 14; // kenarlık motoru border_radius ile aynı
     readonly Dictionary<IntPtr, long> applied = new Dictionary<IntPtr, long>();
     readonly Dictionary<IntPtr, List<long>> resets = new Dictionary<IntPtr, List<long>>();
     readonly HashSet<IntPtr> giveUp = new HashSet<IntPtr>();
     Native.WinEventDelegate cb;
     static readonly HashSet<string> skipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { "zebar", "tacky-borders", "glazewm", "ll-helper", "explorer", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost", "LockApp" };
+        { Names.Shell, Names.Tiling, Names.Core, "explorer", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost", "LockApp" };
     static readonly Dictionary<uint, string> procCache = new Dictionary<uint, string>();
 
     public void Start()
@@ -3182,7 +3340,7 @@ class Rounder
         var sb = new StringBuilder(64);
         if (Native.GetWindowText(h, sb, 64) == 0) return;
         string t = sb.ToString();
-        if (t != "Zebar - logical-lunge / bar" && t != "Zebar - logical-lunge / toast" && t != "Zebar - logical-lunge / osk") return;
+        if (t != Names.Bar && t != Names.Toast && t != Names.Osk) return;
         int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
         if ((ex & Native.WS_EX_NOACTIVATE) == 0) Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex | Native.WS_EX_NOACTIVATE);
     }
@@ -3267,7 +3425,7 @@ class Rounder
     }
 }
 
-// ---------------- Kısayollar (%LOCALAPPDATA%\logical-lunge\keybinds.json) ----------------
+// ---------------- Kısayollar (~\.config\logical-lunge\keybinds.json) ----------------
 // Helper'ın işlediği tüm kısayollar burada tanımlı; sağ paneldeki kısayol düzenleyicisi dosyayı yazar,
 // helper dosyayı izleyip anında yeniden yükler. Dosyada olmayan eylem varsayılanını kullanır; boş dize
 // ("") o eylemi kapatır. Biçim: "Super+Ctrl+Shift+Alt+Tuş" (Tuş: Left/Right/Up/Down, Enter, Space,
@@ -3297,9 +3455,7 @@ static class Binds
     {
         get
         {
-            string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge");
-            System.IO.Directory.CreateDirectory(dir);
-            return System.IO.Path.Combine(dir, "keybinds.json");
+            return System.IO.Path.Combine(Paths.ConfigDir, "keybinds.json");
         }
     }
 
@@ -3451,7 +3607,7 @@ static class Binds
         Load();
     }
 
-    // ll-helper.exe --keybinds -> [{"id","combo","default"}] (düzenleyici için)
+    // lunge.exe --keybinds -> [{"id","combo","default"}] (düzenleyici için)
     public static string ListJson()
     {
         var eff = Effective();
@@ -3481,7 +3637,7 @@ class Keys2
     public bool Dispatch(string act) { return RunAction(act); }
     static int lastMoveAction = Environment.TickCount - 100000;
 
-    // Test kanalı (yalnızca LL_TEST=1 ortam değişkeniyle başlatılınca açılır): \\.\pipe\ll-helper-test'e yazılan her
+    // Test kanalı (yalnızca LL_TEST=1 ortam değişkeniyle başlatılınca açılır): \\.\pipe\lunge-test'e yazılan her
     // satır (ws-3, move-left, ws-move-next ...) klavyenin çağırdığı RunAction'a gider. Kanca enjekte tuşları bilerek yok
     // saydığı için otomatik animasyon testinin tek yolu.
     public void StartTestPipe()
@@ -3493,7 +3649,7 @@ class Keys2
             {
                 try
                 {
-                    using (var pipe = new System.IO.Pipes.NamedPipeServerStream("ll-helper-test", System.IO.Pipes.PipeDirection.In))
+                    using (var pipe = new System.IO.Pipes.NamedPipeServerStream("lunge-test", System.IO.Pipes.PipeDirection.In))
                     {
                         pipe.WaitForConnection();
                         using (var rd = new System.IO.StreamReader(pipe))
@@ -3590,7 +3746,7 @@ class Keys2
 
         // Gerçek Win tuşu Windows'a HİÇ iletilmez: Windows tek başına bir Win basışı görmediği için Başlat
         // menüsü (ve görev çubuğundaki logo) hiçbir tuş sırasıyla açılamaz. Bizim işlemediğimiz bir kombinasyon
-        // (Win+L, Win+V, GlazeWM'in lwin+f'i...) gelince Win'i o anda enjekte edip tuşu arkasından yeniden
+        // (Win+L, Win+V, tiling'in lwin+f'i...) gelince Win'i o anda enjekte edip tuşu arkasından yeniden
         // göndeririz; bırakmada önce sahte tuş, sonra Win bırakma gider.
         if (vk == VK_LWIN || vk == VK_RWIN)
         {
@@ -3691,7 +3847,7 @@ class Keys2
         if (act.StartsWith("move-") || act.StartsWith("focus-") || act.StartsWith("ws-"))
         {
             lastMoveAction = Environment.TickCount;
-            IntPtr ov = Native.FindWindow(null, "ll-overview");
+            IntPtr ov = Native.FindWindow(null, "lunge-overview");
             if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) HideOverview(ov);
         }
         if (act == "clipboard") { ui.BeginInvoke((Action)ToggleClipboard); return true; }
@@ -3749,7 +3905,7 @@ class Keys2
             var cls = new StringBuilder(64); Native.GetClassName(fg, cls, 64);
             var title = new StringBuilder(128); Native.GetWindowText(fg, title, 128);
             string c = cls.ToString(), t = title.ToString();
-            bool shell = fg == IntPtr.Zero || c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || t.StartsWith("Zebar") || t.StartsWith("ll-");
+            bool shell = fg == IntPtr.Zero || c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || t.StartsWith(Names.TitlePrefix) || t.StartsWith("lunge-");
             if (shell) return false;
             Native.PostMessage(fg, 0x0112, (IntPtr)0xF060, IntPtr.Zero); // WM_SYSCOMMAND SC_CLOSE
             return true;
@@ -3758,11 +3914,11 @@ class Keys2
     }
     public static string TerminalPath { get { return Terminal; } }
     // Hyprland $terminal (kitty) karşılığı: logical-lunge içindeki WezTerm; yoksa Windows Terminal
-    static readonly string Terminal = System.IO.File.Exists(Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\.glzr\logical-lunge\tools\wezterm\wezterm-gui.exe"))
-        ? Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\.glzr\logical-lunge\tools\wezterm\wezterm-gui.exe") : "wt.exe";
+    static readonly string Terminal = System.IO.File.Exists(Paths.Tool(@"wezterm\wezterm-gui.exe"))
+        ? Paths.Tool(@"wezterm\wezterm-gui.exe") : "wt.exe";
 
     // Hyprland keybinds.lua: Super+W tarayıcı, E dosya yöneticisi, C kod editörü, X metin editörü.
-    // GlazeWM'in shell-exec'i boşluklu tırnaklı yolları ayrıştıramıyordu ("doesn't have an ending").
+    // tiling'in shell-exec'i boşluklu tırnaklı yolları ayrıştıramıyordu ("doesn't have an ending").
     // Her bilgisayarda çalışsın: tarayıcı = sistemin varsayılanı, kod editörü = bulunan ilk editör
     static readonly Dictionary<string, string> Apps = new Dictionary<string, string>
     {
@@ -3800,7 +3956,7 @@ class Keys2
     // Overview modu bayrağı: bir kez okunur ve silinir ("" ya da ";" = pano)
     public static string TakeOverviewMode()
     {
-        string f = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\overview-mode.txt");
+        string f = Paths.State(@"overview-mode.txt");
         string m = "";
         if (System.IO.File.Exists(f)) { try { m = System.IO.File.ReadAllText(f).Trim(); System.IO.File.Delete(f); } catch { } }
         return m;
@@ -3808,7 +3964,7 @@ class Keys2
 
     // Overview (Super / Super+V) kapanınca odak boşta kalıyordu (elle tıklamak gerekiyordu): açılmadan önceki pencereye
     // geri ver. Kapanırken başka bir pencere odak aldıysa (overview'dan uygulama açıldı, başka yere tıklandı) ya da bir
-    // workspace / taşıma kısayoluyla kapandıysa (odağı GlazeWM yönetir) dokunma.
+    // workspace / taşıma kısayoluyla kapandıysa (odağı tiling yönetir) dokunma.
     static int overviewGen;
     static bool ShellLike(IntPtr w)
     {
@@ -3816,7 +3972,7 @@ class Keys2
         var c = new StringBuilder(64); Native.GetClassName(w, c, 64);
         var t = new StringBuilder(128); Native.GetWindowText(w, t, 128);
         string cs = c.ToString(), ts = t.ToString();
-        return cs == "Progman" || cs == "WorkerW" || cs == "Shell_TrayWnd" || ts.StartsWith("Zebar") || ts.StartsWith("ll-");
+        return cs == "Progman" || cs == "WorkerW" || cs == "Shell_TrayWnd" || ts.StartsWith(Names.TitlePrefix) || ts.StartsWith("lunge-");
     }
     static void RestoreFocusAfterOverview(IntPtr ov, IntPtr prev, int gen)
     {
@@ -3824,7 +3980,7 @@ class Keys2
         while (!Native.IsWindowVisible(ov) && sw.ElapsedMilliseconds < 1500) Thread.Sleep(15);
         while (Native.IsWindowVisible(ov)) { if (gen != overviewGen || sw.Elapsed.TotalMinutes > 30) return; Thread.Sleep(15); }
         if (gen != overviewGen) return;
-        Thread.Sleep(60); // yeni açılan pencere / GlazeWM odağı alsın
+        Thread.Sleep(60); // yeni açılan pencere / tiling odağı alsın
         if (gen != overviewGen || Environment.TickCount - lastMoveAction < 700) return;
         IntPtr fg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
         if (fg != ov && !ShellLike(fg)) return;
@@ -3836,7 +3992,7 @@ class Keys2
     }
 
     // Overview widget'ı helper'ın Win32 ile gösterip gizlediğini görünürlüğü 40 ms'de bir sorarak anlıyordu (gün boyu
-    // saniyede 25 IPC: boştaki Zebar'ın başlıca işi). Artık helper haber verir; widget /overview-wait uzun yoklamasıyla
+    // saniyede 25 IPC: boştaki shell'in başlıca işi). Artık helper haber verir; widget /overview-wait uzun yoklamasıyla
     // bekler. Sıra numarası iki istek arasındaki olayı kaçırmamak için; aradaki birden fazla olaydan sonuncusu yeter.
     static readonly object ovSignalLock = new object();
     static int ovSignalSeq;
@@ -3873,7 +4029,7 @@ class Keys2
         IntPtr prevFg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
         int gen = Interlocked.Increment(ref overviewGen);
         if (prevFg != h && !ShellLike(prevFg)) ThreadPool.QueueUserWorkItem(_ => RestoreFocusAfterOverview(h, prevFg, gen));
-        string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge");
+        string d = Paths.StateDir;
         string flag = System.IO.Path.Combine(d, "overview-mode.txt");
         try { System.IO.Directory.CreateDirectory(d); System.IO.File.WriteAllText(flag, mode); } catch { }
         int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
@@ -3897,7 +4053,7 @@ class Keys2
     // Super+V: overview'u pano modunda (";" öneki) aç; açıkken tekrar basınca kapat
     static void ToggleClipboard()
     {
-        IntPtr h = Native.FindWindow(null, "ll-overview");
+        IntPtr h = Native.FindWindow(null, "lunge-overview");
         if (h == IntPtr.Zero) return;
         if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { HideOverview(h); return; }
         ShowOverviewInMode(h, ";");
@@ -3905,7 +4061,7 @@ class Keys2
 
     static void ToggleOverview()
     {
-        IntPtr h = Native.FindWindow(null, "ll-overview");
+        IntPtr h = Native.FindWindow(null, "lunge-overview");
         if (h == IntPtr.Zero) return;
         if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { HideOverview(h); return; }
         // Mod bayrağı: "s" = düz arama (pano modunun bayrağı ";"); widget taze açılmış gibi davransın
@@ -3914,7 +4070,7 @@ class Keys2
 }
 
 // ---------------- Mikrofon (Windows Core Audio) ----------------
-// Zebar'ın setMute'u yalnızca varsayılan kayıt cihazını susturuyordu; Discord gibi uygulamalar
+// shell'in setMute'u yalnızca varsayılan kayıt cihazını susturuyordu; Discord gibi uygulamalar
 // "iletişim" cihazını ya da başka bir mikrofonu kullanınca ses gitmeye devam ediyordu.
 // Burada TÜM etkin kayıt cihazları birlikte susturulur/açılır.
 static class Mic
@@ -3981,8 +4137,8 @@ static class Mic
 }
 
 // ---------------- Ekran klavyesi girişi ----------------
-// ll-helper.exe --osk : stdin'den satır okur ("tap <vk>", "down <vk>", "up <vk>", "text <karakterler>")
-// ve SendInput ile odaktaki pencereye yollar. Zebar'daki ii tarzı ekran klavyesi bunu kullanır.
+// lunge.exe --osk : stdin'den satır okur ("tap <vk>", "down <vk>", "up <vk>", "text <karakterler>")
+// ve SendInput ile odaktaki pencereye yollar. shell'deki ii tarzı ekran klavyesi bunu kullanır.
 static class Osk
 {
     static Native.INPUT Key(ushort vk, ushort scan, uint flags)
@@ -4026,7 +4182,7 @@ static class Osk
 
 // ---------------- Gece ışığı (ii: hyprsunset, gama tabanlı) ----------------
 // Windows'un kendi gece ışığı yerine ekranın gama eğrisini sıcak renge çeker; ii de böyle yapar.
-// Durum %LOCALAPPDATA%\logical-lunge\nightlight dosyasında; açıkken ana helper birkaç sn'de bir
+// Durum %LOCALAPPDATA%\LogicalLunge\state\nightlight dosyasında; açıkken ana helper birkaç sn'de bir
 // yeniden uygular (Windows mod değişiminde / uykudan dönüşte gamayı sıfırlayabiliyor).
 static class NightLight
 {
@@ -4078,7 +4234,7 @@ static class NightLight
     static bool MainRunning()
     {
         Mutex m;
-        if (!Mutex.TryOpenExisting("ll-helper-single", out m)) return false;
+        if (!Mutex.TryOpenExisting("LogicalLunge.Core", out m)) return false;
         m.Dispose();
         return true;
     }
@@ -4110,7 +4266,7 @@ static class NightLight
     {
         get
         {
-            string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "logical-lunge");
+            string dir = Paths.StateDir;
             System.IO.Directory.CreateDirectory(dir);
             return System.IO.Path.Combine(dir, "nightlight");
         }
@@ -4123,7 +4279,7 @@ static class NightLight
     }
 
     // Hyprland'deki gibi parlaklık 0'ın altına inilince gama 100 -> 0 (yazılımsal karartma), ekran başına.
-    // %LOCALAPPDATA%\logical-lunge\gamma: "\\.\DISPLAY1=60" satırları; yeniden başlatınca da korunur.
+    // %LOCALAPPDATA%\LogicalLunge\state\gamma: "\\.\DISPLAY1=60" satırları; yeniden başlatınca da korunur.
     // Gama 0 simsiyah olmasın: gerçek çarpan %20..%100.
     static string GammaFile { get { return System.IO.Path.Combine(System.IO.Path.GetDirectoryName(StateFile), "gamma"); } }
     public static Dictionary<string, int> Gammas()
@@ -4373,7 +4529,7 @@ static class RegionSearch
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e); Activate();
-            // Ekran alıntısı HER ŞEYİN üstünde kalmalı: odak değişince pencereler (ve Zebar penceresi) kendini
+            // Ekran alıntısı HER ŞEYİN üstünde kalmalı: odak değişince pencereler (ve shell penceresi) kendini
             // en üst katmana alıp donmuş görüntünün üstüne çıkabiliyordu. Kapanana kadar sık sık yeniden en üste al.
             keepTop = new System.Windows.Forms.Timer { Interval = 30 };
             keepTop.Tick += (o, ev) => Native.SetWindowPos(Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // TOPMOST, NOSIZE|NOMOVE|NOACTIVATE
@@ -4421,7 +4577,7 @@ static class RegionSearch
             "const s=atob('" + b64 + "'),a=new Uint8Array(s.length);for(let k=0;k<s.length;k++)a[k]=s.charCodeAt(k);" +
             "const dt=new DataTransfer();dt.items.add(new File([a],'image.png',{type:'image/png'}));" +
             "document.getElementById('i').files=dt.files;document.getElementById('f').submit();</script>";
-        string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-lens-" + ts + ".html");
+        string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lunge-lens-" + ts + ".html");
         System.IO.File.WriteAllText(path, html);
         string url = new Uri(path).AbsoluteUri;
 
@@ -4481,7 +4637,7 @@ static class SnipTool
             var t = new StringBuilder(64); Native.GetWindowText(fg, t, 64);
             string c = cls.ToString();
             bool emptyFocus = pid == (uint)Process.GetCurrentProcess().Id || c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd"
-                || t.ToString().StartsWith("Zebar - logical-lunge / bar") || !Native.IsWindowVisible(fg);
+                || t.ToString().StartsWith(Names.Bar) || !Native.IsWindowVisible(fg);
             if (!emptyFocus) return;
         }
         Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // odak kilidi
@@ -4967,7 +5123,7 @@ static class SnipTool
         return found;
     }
 
-    public static string PidFile { get { return System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-snip.pid"); } }
+    public static string PidFile { get { return System.IO.Path.Combine(System.IO.Path.GetTempPath(), "lunge-snip.pid"); } }
 
     // Önceki alıntı süreci hâlâ çalışıyor ama hiç görünür penceresi yoksa takılıdır: kapat
     public static bool KillStale()
@@ -4976,7 +5132,7 @@ static class SnipTool
         {
             int pid = int.Parse(System.IO.File.ReadAllText(PidFile).Trim());
             var pr = Process.GetProcessById(pid);
-            if (!pr.ProcessName.Equals("ll-helper", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!pr.ProcessName.Equals(Names.Core, StringComparison.OrdinalIgnoreCase)) return false;
             bool visible = false;
             Native.EnumWindows(delegate (IntPtr h, IntPtr l)
             {
@@ -4997,7 +5153,7 @@ static class SnipTool
 }
 
 // ---------------- Pano geçmişi (Super+V: ii "overviewClipboardToggle" / cliphist) ----------------
-// Çalışan helper panoyu dinler (WM_CLIPBOARDUPDATE); metinler ve görüntüler %LOCALAPPDATA%\logical-lunge\clipboard'a
+// Çalışan helper panoyu dinler (WM_CLIPBOARDUPDATE); metinler ve görüntüler %LOCALAPPDATA%\LogicalLunge\state\clipboard'a
 // yazılır (en çok 100 kayıt). Overview'da ";" öneki bu listeyi gösterir. Parola yöneticileri gibi geçmişe eklenmesini
 // istemeyen uygulamalar (ExcludeClipboardContentFromMonitorProcessing / CanIncludeInClipboardHistory) atlanır.
 //   --clip-list        -> [{"id","kind":"text|image","text","lines","thumb","time"}]  (en yeni önce)
@@ -5013,7 +5169,7 @@ static class ClipHistory
     {
         get
         {
-            string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\clipboard");
+            string d = Paths.DataDir("clipboard");
             System.IO.Directory.CreateDirectory(d);
             return d;
         }
@@ -5257,7 +5413,7 @@ static class Updater
     {
         get
         {
-            string d = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\update");
+            string d = Paths.DataDir("update");
             System.IO.Directory.CreateDirectory(d);
             return d;
         }
@@ -5266,7 +5422,7 @@ static class Updater
 
     static string Installed()
     {
-        try { string f = System.IO.Path.Combine(Home, @".glzr\logical-lunge\VERSION"); if (System.IO.File.Exists(f)) return System.IO.File.ReadAllText(f).Trim(); } catch { }
+        try { string f = Paths.Version; if (System.IO.File.Exists(f)) return System.IO.File.ReadAllText(f).Trim(); } catch { }
         try
         {
             var v = Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\LogicalLunge", "DisplayVersion", null) as string;
@@ -5444,14 +5600,16 @@ static class Updater
             foreach (var f in System.IO.Directory.GetFiles(Dir, "LogicalLunge-*.zip"))
                 if (System.IO.File.Exists(f + ".ok") && (zip == null || System.IO.File.GetLastWriteTime(f) > System.IO.File.GetLastWriteTime(zip))) zip = f;
             if (zip == null) throw new Exception("İndirilmiş güncelleme bulunamadı.");
-            string script = System.IO.Path.Combine(Home, @".glzr\logical-lunge\scripts\update-install.ps1");
+            string script = Paths.Script("update-install.ps1");
             if (!System.IO.File.Exists(script)) throw new Exception("update-install.ps1 bulunamadı.");
             // Kurulum betik klasörünü değiştirir: kendi kopyasından çalıştır
             string copy = System.IO.Path.Combine(Dir, "update-install.ps1");
             System.IO.File.Copy(script, copy, true);
             SetStatus("installing", System.IO.Path.GetFileNameWithoutExtension(zip).Replace("LogicalLunge-", ""), 0, 0, "");
+            // ShellExecute: kabuğun başlattığı bu süreç onun soketlerini miras almış olabilir; dakikalarca süren kurulum
+            // betiği onları taşırsa yeni kabuk sunucusunu açamıyor
             Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + copy + "\" -Zip \"" + zip + "\"")
-                { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
+                { UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden, WorkingDirectory = Paths.Home });
         }
         catch (Exception ex) { SetStatus("error", "", 0, 0, ex.GetBaseException().Message); }
         return Status();
@@ -5460,9 +5618,9 @@ static class Updater
 
 // ---------------- Alt+Tab pencere değiştirici ----------------
 // Super arama menüsü ve workspace önizlemesi gibi ii görünümünde: koyu yuvarlak panel, canlı DWM önizlemeli kartlar,
-// seçili kart mor vurgulu. Tüm workspace'lerdeki pencereler (GlazeWM) son kullanıma göre sıralı; Alt basılı tutulup
+// seçili kart mor vurgulu. Tüm workspace'lerdeki pencereler (tiling) son kullanıma göre sıralı; Alt basılı tutulup
 // Tab ile ilerlenir (Shift+Tab geri, ok tuşları, Enter, Esc iptal, fare ile tık), Alt bırakılınca seçilen pencere açılır.
-// Arayüz ll-helper içinde çizilir (WebView yok): yük altında bile anında açılır.
+// Arayüz lunge içinde çizilir (WebView yok): yük altında bile anında açılır.
 class Switcher : Form
 {
     public static volatile bool Active;
@@ -5482,7 +5640,7 @@ class Switcher : Form
     readonly List<Card> cards = new List<Card>();
     int sel;
     RectangleF hi, hiTarget;
-    readonly Glaze glaze = new Glaze();
+    readonly TilingClient glaze = new TilingClient();
     readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer { Interval = 15 };
     readonly System.Windows.Forms.Timer altWatch = new System.Windows.Forms.Timer { Interval = 40 };
     int animStart, fadeStart;
@@ -5502,7 +5660,7 @@ class Switcher : Form
     Switcher()
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
-        BackColor = Surface; DoubleBuffered = true; Opacity = 0; Text = "ll-switcher";
+        BackColor = Surface; DoubleBuffered = true; Opacity = 0; Text = "lunge-switcher";
         anim.Tick += (o, e) => Tick();
         altWatch.Tick += (o, e) =>
         {
@@ -5923,7 +6081,7 @@ static class Wallpaper
 
     // Seçilen duvar kağıdı kalıcıdır: başka araçlar (ör. Superpaper) açılışta kendi resmini uygularsa, birkaç dakika
     // içinde bizim seçimimiz geri yüklenir. Kayıt: satır başına "mod<TAB>yol".
-    static string StatePath { get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\wallpaper.txt"); } }
+    static string StatePath { get { return Paths.State(@"wallpaper.txt"); } }
 
     static void SaveState(string path, string mode)
     {
@@ -5982,9 +6140,9 @@ static class Wallpaper
         // ii switchwall.sh gibi terminal renklerini yeni duvar kağıdından üret (varsa)
         try
         {
-            string exe = Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\.glzr\logical-lunge\tools\termcolors\ll-termcolors.exe");
-            string tc = Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\.glzr\logical-lunge\tools\termcolors\wezterm-colors.py");
-            string py = Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\.glzr\logical-lunge\tools\songrec\venv\Scripts\pythonw.exe");
+            string exe = Paths.Tool(@"termcolors\lunge-termcolors.exe");
+            string tc = Paths.Tool(@"termcolors\wezterm-colors.py");
+            string py = Paths.Tool(@"songrec\venv\Scripts\pythonw.exe");
             if (System.IO.File.Exists(exe))
                 Process.Start(new ProcessStartInfo(exe, "--path \"" + path + "\"") { UseShellExecute = false, CreateNoWindow = true });
             else if (System.IO.File.Exists(tc) && System.IO.File.Exists(py))
@@ -6166,7 +6324,7 @@ static class WarmTerminal
     static string Home { get { return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile); } }
     static string Request { get { return System.IO.Path.Combine(Home, @".config\wezterm\ll-spawn"); } }
 
-    public static bool SplashActive() { Mutex m; if (Mutex.TryOpenExisting("ll-splash", out m)) { m.Dispose(); return true; } return false; }
+    public static bool SplashActive() { Mutex m; if (Mutex.TryOpenExisting("lunge-splash", out m)) { m.Dispose(); return true; } return false; }
 
     static bool IsWezterm(string path) { return path != null && path.EndsWith("wezterm-gui.exe", StringComparison.OrdinalIgnoreCase); }
 
@@ -6220,14 +6378,14 @@ static class WarmTerminal
     }
 }
 // ---------------- Açılış perdesi ----------------
-// Windows görev çubuğu, Başlat düğmesi ve ses/parlaklık OSD'si hiç görünmez: işlerini Zebar'daki bar ve OSD görüyor.
+// Windows görev çubuğu, Başlat düğmesi ve ses/parlaklık OSD'si hiç görünmez: işlerini shell'deki bar ve OSD görüyor.
 // Windows 10'da ana görev çubuğunu kaldıran bir registry ayarı yok; yalnızca otomatik gizleme ve diğer monitörlerde
 // kapatma var (kurulum ikisini de yapıyor). Explorer onu kendisi yeniden gösterebiliyor (bir uygulama düğmesini yanıp
 // söndürünce, Explorer yeniden başlayınca...): göründüğü anda (EVENT_OBJECT_SHOW) gizlenir. Eskiden bunu hide-taskbar.ps1
 // 700 ms'lik yoklamayla yapıyordu ve görev çubuğu o arada "yanıp gidiyordu". LL kapanınca show-taskbar.ps1 geri getirir.
-// Bizim kabuk (Zebar'daki bar) ayakta mı. Bar 20 sn'den uzun yoksa (Zebar ya da GlazeWM çöktü / açılamadı) helper
+// Bizim kabuk (shell'deki bar) ayakta mı. Bar 20 sn'den uzun yoksa (shell ya da tiling çöktü / açılamadı) helper
 // güvenli tarafa açılır: Windows görev çubuğu ve Win tuşu (Başlat menüsü) geri gelir, kullanıcı hiçbir zaman barsız,
-// görev çubuğusuz ve Başlat'sız kalmaz. Bar dönünce ikisi yine bizim. (Kısa Zebar yeniden başlatmaları sayılmaz.)
+// görev çubuğusuz ve Başlat'sız kalmaz. Bar dönünce ikisi yine bizim. (Kısa shell yeniden başlatmaları sayılmaz.)
 static class ShellState
 {
     static volatile bool up = true;
@@ -6237,7 +6395,7 @@ static class ShellState
     // Durum değiştiyse true (TaskbarGuard'ın 2 sn'lik zamanlayıcısından)
     public static bool Update()
     {
-        bool bar = Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, "Zebar - logical-lunge / bar") != IntPtr.Zero;
+        bool bar = Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, Names.Bar) != IntPtr.Zero;
         if (bar)
         {
             missingSince = -1;
@@ -6323,7 +6481,7 @@ static class PerfGuard
         }
     }
 
-    // ll-helper.exe --black-box: kasma anında elle kayıt (bekleme süresine takılmaz)
+    // lunge.exe --black-box: kasma anında elle kayıt (bekleme süresine takılmaz)
     public static void DumpNow(string why) { lock (gate) lastDump = Environment.TickCount - 600000; Dump(why); }
 
     static void Dump(string why)
@@ -6406,7 +6564,7 @@ static class PerfGuard
     static string Parts()
     {
         var sb = new StringBuilder();
-        foreach (var name in new[] { "glazewm", "zebar", "ll-helper", "dwm" })
+        foreach (var name in new[] { Names.Tiling, Names.Shell, Names.Core, "dwm" })
             foreach (var p in Process.GetProcessesByName(name))
             {
                 try
@@ -6426,7 +6584,7 @@ static class PerfGuard
 // Hyprland'de odak hiç boşta kalmaz. Windows'ta ise odaktaki pencere kapanınca ya da ekran alıntısı, bir iletişim kutusu,
 // bildirim kapanınca ön plan masaüstüne, bar'a, gizli (başka workspace'teki) bir pencereye ya da hiçbir şeye düşebiliyordu:
 // klavye bir yere gitmiyor, fareyle tıklamak gerekiyordu. Bu durum ~0,75 sn sürerse bekçi odağı görünen workspace'te
-// GlazeWM'in odaklı saydığı pencereye (yoksa imlecin altındakine) geri verir. Boş workspace'te, fare tuşu basılıyken, açık
+// tiling'in odaklı saydığı pencereye (yoksa imlecin altındakine) geri verir. Boş workspace'te, fare tuşu basılıyken, açık
 // bir sağ tık menüsünde, kilit ekranında, bakımda ve kabuk yokken (Windows görev çubuğu modu) karışmaz.
 static class FocusGuard
 {
@@ -6434,7 +6592,7 @@ static class FocusGuard
     [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder info, int len, out int needed);
 
-    static readonly Glaze glaze = new Glaze();
+    static readonly TilingClient glaze = new TilingClient();
 
     public static void Start()
     {
@@ -6500,7 +6658,7 @@ static class FocusGuard
         // kullanıcı onlarla uğraşıyordur.
         var t = new StringBuilder(128); Native.GetWindowText(root, t, 128);
         string title = t.ToString();
-        if (title == "Zebar - logical-lunge / bar" || title == "Zebar - logical-lunge / toast" || title == "Zebar - logical-lunge / update")
+        if (title == Names.Bar || title == Names.Toast || title == Names.Update)
         {
             Native.RECT r;
             var p = Cursor.Position;
@@ -6537,7 +6695,7 @@ static class FocusGuard
         var pick = focused ?? under ?? first;
         if (pick == null) return 0;
         var hw = new IntPtr(Convert.ToInt64(pick["handle"]));
-        // Önce GlazeWM üzerinden (durumu da güncel kalsın); o pencereyi zaten odaklı sayıyorsa ön plana getirmeyebilir
+        // Önce tiling üzerinden (durumu da güncel kalsın); o pencereyi zaten odaklı sayıyorsa ön plana getirmeyebilir
         glaze.Command("focus --container-id " + J.Str(pick, "id"));
         Thread.Sleep(150);
         if (Lost() != null)
@@ -6579,6 +6737,21 @@ static class TaskbarGuard
     }
 
     static bool FailOpen;
+    static volatile bool released;
+
+    // Logical Lunge kapanıyor: görev çubukları, Başlat düğmesi ve Windows'un ses / parlaklık göstergesi geri gelir,
+    // bundan sonra gizlenmez
+    public static void Release()
+    {
+        released = true;
+        ShowAll();
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
+        {
+            if (Cls(h) == "NativeHWNDHost" && Native.FindWindowEx(h, IntPtr.Zero, "DirectUIHWND", null) != IntPtr.Zero)
+                Native.ShowWindowAsync(h, 9); // SW_RESTORE: gizlerken küçültülmüştü
+            return true;
+        }, IntPtr.Zero);
+    }
 
     // Güvenli tarafa açılma: görev çubukları ve Başlat düğmesi yeniden görünür (otomatik gizlemede kenara gelince açılır)
     static void ShowAll()
@@ -6606,7 +6779,7 @@ static class TaskbarGuard
 
     static void Hide(IntPtr h)
     {
-        if (FailOpen && !ShellState.Up) return;
+        if (released || (FailOpen && !ShellState.Up)) return;
         string cs = Cls(h);
         // Başlat düğmesi: görev çubuğunun sahip olduğu ayrı bir üst pencere (Button)
         if (cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd" || (cs == "Button" && Cls(Native.GetWindow(h, 4)).StartsWith("Shell_")))
@@ -6623,14 +6796,14 @@ static class Splash
 
     static bool Ready()
     {
-        // GlazeWM IPC portu açık ve Zebar bar penceresi var mı
+        // tiling IPC portu açık ve shell bar penceresi var mı
         try { using (var c = new System.Net.Sockets.TcpClient()) { if (!c.ConnectAsync("127.0.0.1", 6123).Wait(150)) return false; } }
         catch { return false; }
-        return FindWindow(null, "Zebar - logical-lunge / bar") != IntPtr.Zero;
+        return FindWindow(null, Names.Bar) != IntPtr.Zero;
     }
 
     // Kilitli olabilir (Superpaper gibi araçlar dosyayı yeniden yazarken) -> paylaşımlı aç; olmazsa son iyi kopya.
-    static string CachePath { get { return System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\splash-wall.jpg"); } }
+    static string CachePath { get { return Paths.State(@"splash-wall.jpg"); } }
     static bool SpanStyle()
     {
         string st = (string)Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallpaperStyle", null);
@@ -6708,7 +6881,7 @@ static class Splash
     public static void Run()
     {
         bool created;
-        using (var m = new Mutex(true, "ll-splash", out created))
+        using (var m = new Mutex(true, "lunge-splash", out created))
         {
             if (!created) return;
             // Güncelleme sırasında (LL_SPLASH_WAIT_RESTART=1): örtü yumuşakça belirir, önce mevcut masaüstünün kapanmasını,
@@ -6800,7 +6973,7 @@ static class LaunchQueue
                     Toasts.Send("error", "Açılamadı", System.IO.Path.GetFileName(path) + ": " + ex.Message, "error");
                     continue;
                 }
-                // Pencere GlazeWM'e gelene kadar bekle (en fazla 3 sn), sonra biraz yerleşsin
+                // Pencere tiling'e gelene kadar bekle (en fazla 3 sn), sonra biraz yerleşsin
                 if (Managed.WaitOne(3000)) Thread.Sleep(120);
             }
         }) { IsBackground = true };
@@ -6861,10 +7034,10 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        // ll-helper.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
-        // GlazeWM ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
+        // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
+        // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
-        // ll-helper.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
+        // lunge.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
         if (args.Length == 2 && args[0] == "--audio-default")
         {
             int hr;
@@ -6872,11 +7045,11 @@ static class Program
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write("{\"ok\":" + (hr == 0 ? "true" : "false") + ",\"hr\":" + hr + "}"); so.Flush();
             return;
-        }        // ll-helper.exe --songrec [-i 2 -t 30 -s monitor]: müzik tanıma exe'sini konsolsuz çalıştır, sonucu aktar.
+        }        // lunge.exe --songrec [-i 2 -t 30 -s monitor]: müzik tanıma exe'sini konsolsuz çalıştır, sonucu aktar.
         // Overview düğmesi bu süreci durdurursa (kill) Job Object sayesinde tanıma da hemen kapanır.
         if (args.Length >= 1 && args[0] == "--songrec")
         {
-            string exe = Environment.ExpandEnvironmentVariables(@"%USERPROFILE%\.glzr\logical-lunge\tools\songrec\ll-songrec.exe");
+            string exe = Paths.Tool(@"songrec\lunge-songrec.exe");
             var sb = new StringBuilder();
             for (int i = 1; i < args.Length; i++) sb.Append(QuoteArg(args[i])).Append(' ');
             string res = "{\"error\":\"audio\"}";
@@ -6915,7 +7088,7 @@ static class Program
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write(outText); so.Flush();
             return;
-        }        // ll-helper.exe --capture: ana helper'dan bir kısayol yakalamasını iste, sonucu yaz ("" = iptal)
+        }        // lunge.exe --capture: ana helper'dan bir kısayol yakalamasını iste, sonucu yaz ("" = iptal)
         if (args.Length == 1 && args[0] == "--capture")
         {
             string res = System.IO.Path.Combine(Binds.CaptureDir, "capture.res");
@@ -6931,7 +7104,7 @@ static class Program
             so.Write(got ?? ""); so.Flush();
             return;
         }
-        // ll-helper.exe --bind <id> <combo> | --bind-reset
+        // lunge.exe --bind <id> <combo> | --bind-reset
         if (args.Length == 3 && args[0] == "--bind") { Binds.Set(args[1], args[2]); return; }
         if (args.Length == 1 && args[0] == "--bind-reset") { Binds.Set("", null); return; }
         if (args.Length == 1 && args[0] == "--keybinds")
@@ -6960,16 +7133,16 @@ static class Program
             uo.Write(ut); uo.Flush();
             return;
         }
-        // ll-helper.exe --black-box: o anki performans durumunu (işlemci / GPU / parçalar) log'a yaz
+        // lunge.exe --black-box: o anki performans durumunu (işlemci / GPU / parçalar) log'a yaz
         if (args.Length == 1 && args[0] == "--black-box") { PerfGuard.DumpNow("elle istendi"); return; }
-        // ll-helper.exe --switcher-demo: Alt+Tab menüsünü 6 sn göster (sınama; kısayolsuz)
+        // lunge.exe --switcher-demo: Alt+Tab menüsünü 6 sn göster (sınama; kısayolsuz)
         if (args.Length == 1 && args[0] == "--switcher-demo") { Switcher.Demo(); return; }
-        // ll-helper.exe --log <metin>: widget'ların hata ayıklama günlüğü (%TEMP%\ll-helper.log)
+        // lunge.exe --log <metin>: widget'ların hata ayıklama günlüğü (%LOCALAPPDATA%\LogicalLunge\logs\core.log)
         if (args.Length == 2 && args[0] == "--log") { Slider.Log("widget: " + args[1]); return; }
-        // ll-helper.exe --overview-show clip|plain: overview'u ilgili modda aç (test / betik için; Super / Super+V aynısını yapar)
+        // lunge.exe --overview-show clip|plain: overview'u ilgili modda aç (test / betik için; Super / Super+V aynısını yapar)
         if (args.Length == 2 && args[0] == "--overview-show")
         {
-            IntPtr ovh = Native.FindWindow(null, "ll-overview");
+            IntPtr ovh = Native.FindWindow(null, "lunge-overview");
             if (ovh != IntPtr.Zero)
             {
                 Keys2.ShowOverviewInMode(ovh, args[1] == "clip" ? ";" : "s");
@@ -7004,21 +7177,21 @@ static class Program
             co.Write(ct); co.Flush();
             return;
         }
-        // ll-helper.exe --snip-screen: farenin olduğu monitörün tamamı, sormadan panoya + dosyaya
+        // lunge.exe --snip-screen: farenin olduğu monitörün tamamı, sormadan panoya + dosyaya
         if (args.Length == 1 && args[0] == "--snip-screen")
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             SnipTool.RunScreen();
             return;
         }
-        // ll-helper.exe --snip: bölge ekran alıntısı + düzenleme (Hyprland Print: grim + slurp + swappy)
+        // lunge.exe --snip: bölge ekran alıntısı + düzenleme (Hyprland Print: grim + slurp + swappy)
         if (args.Length >= 1 && args.Length <= 2 && args[0] == "--snip")
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             int wait; // --snip 350: paneller kapansın diye önce bekle
             if (args.Length == 2 && int.TryParse(args[1], out wait)) Thread.Sleep(Math.Min(2000, wait));
             bool fresh;
-            var sm = new Mutex(true, "ll-snip", out fresh);
+            var sm = new Mutex(true, "lunge-snip", out fresh);
             // Önceki alıntı süreci penceresiz takılı kaldıysa (ör. kaydetme penceresi hiç açılamadı) yenileri sonsuza dek
             // engellenmesin: onu kapatıp kilidi devral
             if (!fresh && SnipTool.KillStale())
@@ -7034,26 +7207,26 @@ static class Program
             }
             return;
         }
-        // ll-helper.exe --open <https://... | spotify:...>: bağlantıyı varsayılan uygulamada aç. explorer.exe'ye
+        // lunge.exe --open <https://... | spotify:...>: bağlantıyı varsayılan uygulamada aç. explorer.exe'ye
         // verilen adres "&" içerince klasör açıyordu; ShellExecute doğrudan protokol işleyicisine gider.
         if (args.Length == 2 && args[0] == "--open" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^(https?|spotify|mailto):", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
         {
             try { Process.Start(new ProcessStartInfo(args[1]) { UseShellExecute = true }); } catch { }
             return;
-        }        // ll-helper.exe --lens: ii "region search" — alan seç, Google Lens'te aç
+        }        // lunge.exe --lens: ii "region search" — alan seç, Google Lens'te aç
         if (args.Length == 1 && args[0] == "--lens")
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             RegionSearch.Lens();
             return;
         }
-        // ll-helper.exe --toast-stream: çalışan helper'ın bildirim kanalına bağlanıp her bildirimi
-        // stdout'a tek satır JSON yazar. Zebar toast widget'ı bunu shellSpawn ile okur (widget'ların
-        // yerel adreslere doğrudan bağlanmasına Zebar izin vermiyor).
+        // lunge.exe --toast-stream: çalışan helper'ın bildirim kanalına bağlanıp her bildirimi
+        // stdout'a tek satır JSON yazar. shell toast widget'ı bunu shellSpawn ile okur (widget'ların
+        // yerel adreslere doğrudan bağlanmasına shell izin vermiyor).
         if (args.Length == 1 && args[0] == "--toast-stream")
         {
-            // Zebar (ebeveyn) kapanınca bu kopya da kapansın: yoksa Zebar'dan miras aldığı sunucu
-            // soketini tutarak yeni Zebar'ın açılmasını engelliyor.
+            // shell (ebeveyn) kapanınca bu kopya da kapansın: yoksa shell'den miras aldığı sunucu
+            // soketini tutarak yeni shell'in açılmasını engelliyor.
             int parent = ParentPid();
             new Thread(() =>
             {
@@ -7066,7 +7239,7 @@ static class Program
             }) { IsBackground = true }.Start();
             var stdout = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
             // Helper'ın koruyucusu: asıl helper (Super, animasyonlar, pano...) tamamen kapanmışsa ve ~10 sn içinde geri
-            // gelmediyse onu başlatır. GlazeWM kapalıysa (kasıtlı çıkış) ya da bakım sırasında karışmaz.
+            // gelmediyse onu başlatır. tiling kapalıysa (kasıtlı çıkış) ya da bakım sırasında karışmaz.
             int refused = 0;
             while (true)
             {
@@ -7076,10 +7249,10 @@ static class Program
                     {
                         refused = 0;
                         System.Threading.Mutex existing;
-                        bool alive = System.Threading.Mutex.TryOpenExisting("ll-helper-single", out existing);
+                        bool alive = System.Threading.Mutex.TryOpenExisting("LogicalLunge.Core", out existing);
                         if (existing != null) existing.Dispose();
-                        if (!alive && Maint.Running("glazewm") && !Maint.Quiet() && Maint.Allow("helper-restarts"))
-                            Process.Start(new ProcessStartInfo(Maint.HelperExe) { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
+                        if (!alive && Maint.Running(Names.Tiling) && !Maint.Quiet() && Maint.Allow("helper-restarts"))
+                            Process.Start(new ProcessStartInfo(Maint.CoreExe) { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
                     }
                     using (var c = new System.Net.Sockets.TcpClient("127.0.0.1", 6131))
                     using (var s = c.GetStream())
@@ -7101,15 +7274,15 @@ static class Program
             }
         }
 
-        // ll-helper.exe --ps <script.ps1> [argümanlar]   : PowerShell'i HİÇ pencere açmadan çalıştırır,
+        // lunge.exe --ps <script.ps1> [argümanlar]   : PowerShell'i HİÇ pencere açmadan çalıştırır,
         //                                                   çıktısını kendi stdout'una aktarır
-        // ll-helper.exe --ps-bg <script.ps1> [argümanlar]: aynı, ama beklemeden arka planda bırakır
-        // (Zebar'dan doğrudan powershell çağırmak bir anlık konsol penceresi gösterebiliyordu.)
+        // lunge.exe --ps-bg <script.ps1> [argümanlar]: aynı, ama beklemeden arka planda bırakır
+        // (shell'den doğrudan powershell çağırmak bir anlık konsol penceresi gösterebiliyordu.)
         if (args.Length >= 2 && args[0] == "--ps-bg")
         {
-            // Uzun ömürlü arka plan betiği (uyanık tut vb.): ShellExecute ile başlat ki Zebar'dan
-            // miras kalan soket/tanıtıcıları DEVRALMASIN. Aksi halde Zebar kapanınca 6124 portu
-            // bu süreçte asılı kalıyor ve yeni Zebar sunucusunu açamıyor (bar boş geliyordu).
+            // Uzun ömürlü arka plan betiği (uyanık tut vb.): ShellExecute ile başlat ki shell'den
+            // miras kalan soket/tanıtıcıları DEVRALMASIN. Aksi halde shell kapanınca 6124 portu
+            // bu süreçte asılı kalıyor ve yeni shell sunucusunu açamıyor (bar boş geliyordu).
             var sbg = new StringBuilder("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ");
             for (int i = 1; i < args.Length; i++) sbg.Append(QuoteArg(args[i])).Append(' ');
             Process.Start(new ProcessStartInfo("powershell.exe", sbg.ToString().TrimEnd())
@@ -7142,7 +7315,7 @@ static class Program
             Environment.Exit(p.ExitCode);
         }
 
-        // ll-helper.exe --mic toggle|on|off|status -> {"muted":true}  (on = mikrofon açık)
+        // lunge.exe --mic toggle|on|off|status -> {"muted":true}  (on = mikrofon açık)
         if (args.Length == 2 && args[0] == "--mic")
         {
             if (args[1] == "toggle") Mic.SetAll(!Mic.IsMuted());
@@ -7154,8 +7327,8 @@ static class Program
         }
         if (args.Length == 1 && args[0] == "--osk") { Osk.Run(); return; }
 
-        // ll-helper.exe --raise "<pencere başlığı>" : pencereyi her zaman üstte yapıp en öne getir.
-        // (Zebar'ın setAlwaysOnTop'u gizle/göster sonrası etkisiz kalıyordu; sağ panel terminalin arkasında açılıyordu.)
+        // lunge.exe --raise "<pencere başlığı>" : pencereyi her zaman üstte yapıp en öne getir.
+        // (shell'in setAlwaysOnTop'u gizle/göster sonrası etkisiz kalıyordu; sağ panel terminalin arkasında açılıyordu.)
         // --top: yalnızca en üste al, odak verme (ekran klavyesi: tuşlar yazılan uygulamaya gitmeli)
         if (args.Length == 2 && (args[0] == "--raise" || args[0] == "--top"))
         {
@@ -7168,7 +7341,7 @@ static class Program
             return;
         }
 
-        // ll-helper.exe --gamma <\\.\DISPLAY1> [0-100]  -> {"gamma":60,"ok":true}  (değer yoksa yalnızca okur)
+        // lunge.exe --gamma <\\.\DISPLAY1> [0-100]  -> {"gamma":60,"ok":true}  (değer yoksa yalnızca okur)
         if ((args.Length == 2 || args.Length == 3) && args[0] == "--gamma")
         {
             bool ok = true; int gv;
@@ -7178,7 +7351,7 @@ static class Program
             return;
         }
 
-        // ll-helper.exe --nightlight on|off|toggle|status  -> {"on":true}
+        // lunge.exe --nightlight on|off|toggle|status  -> {"on":true}
         if (args.Length == 2 && args[0] == "--nightlight")
         {
             if (args[1] == "on") NightLight.Enabled = true;
@@ -7188,7 +7361,7 @@ static class Program
             so.Write(NightLight.StatusJson()); so.Flush();
             return;
         }
-        // ll-helper.exe --nightlight-set level 60 | mode manual|after|range | from 20:00 | to 07:00
+        // lunge.exe --nightlight-set level 60 | mode manual|after|range | from 20:00 | to 07:00
         if (args.Length == 3 && args[0] == "--nightlight-set" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^(level|mode|from|to)$"))
         {
             NightLight.Set(args[1], args[2]);
@@ -7197,12 +7370,12 @@ static class Program
             return;
         }
 
-        // Tek seferlik: ll-helper.exe --focus-under-cursor  (overview uygulama açmadan önce çağırır,
+        // Tek seferlik: lunge.exe --focus-under-cursor  (overview uygulama açmadan önce çağırır,
         // yeni pencere Hyprland dwindle'daki gibi farenin altındaki pencereyi bölsün)
         if (args.Length == 1 && args[0] == "--focus-under-cursor")
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
-            new Slider(new Glaze()).FocusUnderCursor();
+            new Slider(new TilingClient()).FocusUnderCursor();
             return;
         }
 
@@ -7220,11 +7393,11 @@ static class Program
         if (args.Length == 1 && args[0] == "--anim-selftest")
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
-            new Slider(new Glaze()).SelfTest();
+            new Slider(new TilingClient()).SelfTest();
             return;
         }
 
-        // Tek seferlik: ll-helper.exe --slide next|prev|<workspace>  (bar tıklamaları ve test için)
+        // Tek seferlik: lunge.exe --slide next|prev|<workspace>  (bar tıklamaları ve test için)
         if (args.Length == 2 && args[0] == "--slide")
         {
             // Çalışan helper varsa işi ona devret (katman ve kenarlıkları hazır, animasyon hemen başlar)
@@ -7237,13 +7410,22 @@ static class Program
             }
             catch { }
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
-            var g = new Glaze();
+            var g = new TilingClient();
             var sl = new Slider(g);
             if (args[1] == "next") sl.Run(new[] { "focus --next-workspace" }, 1, null);
             else if (args[1] == "prev") sl.Run(new[] { "focus --prev-workspace" }, -1, null);
             else sl.Run(new[] { "focus --workspace " + args[1] }, 0, args[1]);
             return;
         }
+
+        // lunge.exe --restart-desktop: "Masaüstünü yenile" (oturum menüsü, Başlat kısayolu)
+        if (args.Length == 1 && args[0] == "--restart-desktop") { Supervisor.RestartDesktopDetached(); return; }
+        if (args.Length == 1 && args[0] == "--restart-desktop-now") { Supervisor.RestartDesktop(); return; }
+        // lunge.exe --stop-desktop: kurulum / güncelleme / kaldırma öncesi masaüstünü kapatır (bakım işareti kalır)
+        if (args.Length == 1 && args[0] == "--stop-desktop") { Supervisor.StopDesktop(); return; }
+        // lunge.exe --shutdown: tiling kapanırken (config'deki shutdown_commands) çalışır. Asıl işi çekirdek yapar;
+        // bu yedek çekirdek yoksa da shell'in kapanıp Windows görev çubuğunun geri gelmesini sağlar.
+        if (args.Length == 1 && args[0] == "--shutdown") { if (!Maint.Quiet()) Supervisor.Shutdown("çıkış komutu", false); return; }
 
         // Yakalanmayan her hatayı yığın iziyle log'a yaz (sessiz çökme olmasın)
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
@@ -7255,7 +7437,7 @@ static class Program
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
         bool created;
-        var mutex = new Mutex(true, "ll-helper-single", out created);
+        var mutex = new Mutex(true, "LogicalLunge.Core", out created);
         // Kendini yeniden başlatan kopya: eskisi kapanıp kilidi bırakana kadar bekle
         if (!created && args.Length == 1 && args[0] == "--respawn")
         {
@@ -7264,6 +7446,10 @@ static class Program
         }
         if (!created) return;
         SelfHeal.IsMain = true;
+        try { System.IO.File.WriteAllText(Supervisor.PidFile, Process.GetCurrentProcess().Id.ToString()); } catch { }
+        // Kök süreç: eksik parçaları (perde, tiling, shell) kendi alt süreçleri olarak aç. Çekirdeğin kendi kurulumunu
+        // beklemez; perde hemen gelsin.
+        new Thread(() => { try { Supervisor.BringUp(true); } catch (Exception ex) { Slider.Log("kök: " + ex.Message); } }) { IsBackground = true, Name = "bring-up" }.Start();
         Microsoft.Win32.SystemEvents.SessionEnding += (s0, e0) => { Maint.SessionEnding = true; };
         try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { } // PER_MONITOR_AWARE_V2
 
@@ -7272,16 +7458,16 @@ static class Program
         ui.Load += (s, e) => ui.Hide();
         var h = ui.Handle;
 
-        var glaze = new Glaze();
+        var glaze = new TilingClient();
         var slider = new Slider(glaze);
         slider.Warm();
         // Monitör takıldı/çıkarıldı ya da çözünürlük değişti: yeni dikdörtgenlerin katmanı da hazır beklesin
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s0, e0) => { try { ui.BeginInvoke((Action)slider.Warm); } catch { } };
         Slider.Ui = ui;
-        var dwindle = new Dwindle(new Glaze(), ui, slider);
+        var dwindle = new Dwindle(new TilingClient(), ui, slider);
         dwindle.Start(); // kendi IPC bağlantısıyla: slide'ı beklemesin
         dwindle.HookNewWindows();
-        LaunchQueue.Start(new Slider(new Glaze())); // kendi bağlantısı: animasyonu beklemesin
+        LaunchQueue.Start(new Slider(new TilingClient())); // kendi bağlantısı: animasyonu beklemesin
         NightLight.StartKeeper();
         Switcher.Init(ui);
         ClipHistory.StartListener();
@@ -7303,7 +7489,7 @@ static class Program
             var keys = new Keys2(ui, slider);
             keys.Start();
             keys.StartTestPipe();
-            var mouse = new MouseFocus(new Glaze());
+            var mouse = new MouseFocus(new TilingClient());
             mouse.InstallHook();
             mouse.StartWorker();
             // Windows kancayı bir şekilde sökse bile geri gelsin
@@ -7333,12 +7519,12 @@ static class Program
             try
             {
                 string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                string apps = System.IO.Path.Combine(home, @".glzr\zebar\logical-lunge\apps.json");
-                string build = System.IO.Path.Combine(home, @".glzr\logical-lunge\scripts\build-apps.ps1");
+                string apps = Paths.UiPack("apps.json");
+                string build = Paths.Script("build-apps.ps1");
                 if (!System.IO.File.Exists(apps) && System.IO.File.Exists(build))
                     Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + build + "\"") { UseShellExecute = false, CreateNoWindow = true });
                 string colors = System.IO.Path.Combine(home, @".config\wezterm\ll-colors.lua");
-                string tc = System.IO.Path.Combine(home, @".glzr\logical-lunge\tools\termcolors\ll-termcolors.exe");
+                string tc = Paths.Tool(@"termcolors\lunge-termcolors.exe");
                 if (!System.IO.File.Exists(colors) && System.IO.File.Exists(tc))
                     Process.Start(new ProcessStartInfo(tc) { UseShellExecute = false, CreateNoWindow = true });
                 // Yalnızca oturum açılışında (perde ekranı örterken); sonradan helper yeniden başlarsa pencere göstermesin
@@ -7348,17 +7534,17 @@ static class Program
             catch (Exception ex) { Slider.Log("first run: " + ex.Message); }
         });
         // Arkada derleme / oyun / güncelleme CPU'yu doldursa da kayma ve odak gecikmesin: helper ve
-        // GlazeWM yüksek öncelikte (GlazeWM yeniden başlarsa diye 10 sn'de bir yenilenir; yönetici gerekmez).
+        // tiling yüksek öncelikte (tiling yeniden başlarsa diye 10 sn'de bir yenilenir; yönetici gerekmez).
         try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { }
         var prioThread = new Thread(() =>
         {
             while (true)
             {
-                foreach (var name in new[] { "glazewm", "zebar" })
+                foreach (var name in new[] { Names.Tiling, Names.Shell })
                     foreach (var pr in Process.GetProcessesByName(name))
                         try
                         {
-                            var want = name == "glazewm" ? ProcessPriorityClass.High : ProcessPriorityClass.AboveNormal;
+                            var want = name == Names.Tiling ? ProcessPriorityClass.High : ProcessPriorityClass.AboveNormal;
                             if (pr.PriorityClass != want) pr.PriorityClass = want;
                         }
                         catch { }
@@ -7368,8 +7554,8 @@ static class Program
         }) { IsBackground = true, Priority = ThreadPriority.Lowest };
         prioThread.Start();
 
-        ZebarWatchdog.Start();
-        WmWatchdog.Start();
+        ShellWatchdog.Start();
+        TilingWatchdog.Start();
         FocusGuard.Start();
         PerfGuard.Start();
         SelfHeal.WatchUi(ui);

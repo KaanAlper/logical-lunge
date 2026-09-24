@@ -1,4 +1,4 @@
-# ii "Keep awake" (idle inhibitor): çalıştığı sürece ekran ve sistem uykuya geçmez.
+﻿# ii "Keep awake" (idle inhibitor): çalıştığı sürece ekran ve sistem uykuya geçmez.
 Add-Type @'
 using System; using System.Runtime.InteropServices;
 public static class KA { [DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint f); }

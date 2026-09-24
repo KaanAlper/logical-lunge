@@ -1,4 +1,4 @@
-# Wi-Fi / Bluetooth radyoları (WinRT Windows.Devices.Radios) — ii quick toggles için.
+﻿# Wi-Fi / Bluetooth radyoları (WinRT Windows.Devices.Radios) — ii quick toggles için.
 # Kullanım: radios.ps1 get            -> {"wifi":"On","bluetooth":"Off"}
 #           radios.ps1 set wifi On|Off
 param([string]$Action = 'get', [string]$Kind = '', [string]$State = '')

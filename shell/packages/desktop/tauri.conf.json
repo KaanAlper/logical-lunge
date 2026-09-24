@@ -1,5 +1,4 @@
 {
-  "$schema": "node_modules/@tauri-apps/cli/config.schema.json",
   "build": {
     "frontendDist": "./frontend"
   },
@@ -7,31 +6,17 @@
   "version": "0.0.0",
   "identifier": "com.logicallunge.shell",
   "bundle": {
-    "active": true,
+    "active": false,
     "icon": [
       "resources/icons/32x32.png",
       "resources/icons/128x128.png",
       "resources/icons/128x128@2x.png",
-      "resources/icons/icon.icns",
       "resources/icons/icon.ico"
     ],
     "shortDescription": "Logical Lunge Shell",
-    "category": "Utility",
-    "publisher": "Logical Lunge",
-    "resources": ["resources/*", "../../resources/**/*"],
-    "targets": ["deb", "appimage", "msi", "dmg"],
-    "windows": {
-      "signCommand": "powershell -ExecutionPolicy Bypass -File ./resources/scripts/sign.ps1 -FilePath %1",
-      "wix": {
-        "template": "./installer.wxs"
-      }
-    },
-    "macOS": {
-      "minimumSystemVersion": "14.6"
-    }
+    "publisher": "Logical Lunge"
   },
   "app": {
-    "macOSPrivateApi": true,
     "security": {
       "csp": {
         "default-src": "'self' asset:",

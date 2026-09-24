@@ -23,7 +23,7 @@ $rows = ($raw -join "`n") | ConvertFrom-Json
 
 # Uygulama adlarını ve ikonlarını overview'ün uygulama listesinden bul
 $apps = @()
-$appsFile = Join-Path $env:USERPROFILE '.glzr\zebar\logical-lunge\apps.json'
+$appsFile = Join-Path $PSScriptRoot '..\ui\logical-lunge\apps.json'
 if (Test-Path $appsFile) { $apps = [IO.File]::ReadAllText($appsFile) | ConvertFrom-Json }
 
 $out = foreach ($r in $rows) {

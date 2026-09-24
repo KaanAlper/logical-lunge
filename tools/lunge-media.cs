@@ -1,14 +1,14 @@
 // Çalan medyanın albüm kapağını data URL olarak stdout'a yazar (ii medya kutusu için).
 // ii kapağı MPRIS'ten alır; Windows karşılığı GlobalSystemMediaTransportControls.
-// Derleme: helper klasöründe build-media-art.ps1
+// Derleme: build.ps1 (Windows 10 SDK gerekir)
 using System;
 using System.IO;
 using Windows.Media.Control;
 
 static class Program
 {
-    // media-art.exe               -> kapak (data URL)
-    // media-art.exe --seek <sn>    -> çalan medyayı o saniyeye sar (Zebar'ın medya API'sinde ileri sarma yok)
+    // lunge-media.exe              -> kapak (data URL)
+    // lunge-media.exe --seek <sn>  -> çalan medyayı o saniyeye sar (kabuğun medya API'sinde ileri sarma yok)
     static void Main(string[] args)
     {
         try

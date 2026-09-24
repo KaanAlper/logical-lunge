@@ -1,4 +1,4 @@
-# Sağ panel için tek seferde durum: uyanık tut açık mı, uygulama teması açık mı.
+﻿# Sağ panel için tek seferde durum: uyanık tut açık mı, uygulama teması açık mı.
 #   status.ps1            -> {"awake":true,"light":false}
 #   status.ps1 stop-awake -> keep-awake.ps1 süreçlerini durdurur
 param([string]$Action = '')

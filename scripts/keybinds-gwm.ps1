@@ -1,16 +1,16 @@
-﻿# Kısayol düzenleyicisi için GlazeWM kısayolları (config.yaml > keybindings). Çıktı JSON.
+﻿# Kısayol düzenleyicisi için pencere yöneticisi kısayolları (config.yaml > keybindings). Çıktı JSON.
 #   keybinds-gwm.ps1 list                 -> [{"index":0,"commands":[...],"bindings":["Super+F", ...]}]
 #   keybinds-gwm.ps1 set <index> <combo>  -> ilk kısayolu değiştirir (diğerleri kalır), config'i yeniden yükler
 #   keybinds-gwm.ps1 reset                -> ilk düzenlemeden önce saklanan özgün kısayollara döner
 param([string]$Action = 'list', [int]$Index = -1, [string]$Combo = '')
 
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-$cfg = Join-Path $env:USERPROFILE '.glzr\glazewm\config.yaml'
-$state = Join-Path $env:LOCALAPPDATA 'logical-lunge'
-$orig = Join-Path $state 'glazewm-keybindings.default.json'
+$cfg = Join-Path $env:USERPROFILE '.config\logical-lunge\config.yaml'
+$state = Join-Path $env:LOCALAPPDATA 'LogicalLunge\state'
+$orig = Join-Path $state 'tiling-keybindings.default.json'
 New-Item -ItemType Directory -Force $state | Out-Null
 
-# GlazeWM "lwin+shift+f" <-> bizim "Super+Shift+F"
+# Pencere yöneticisinin "lwin+shift+f" <-> bizim "Super+Shift+F"
 $toUi = @{ lwin = 'Super'; rwin = 'Super'; ctrl = 'Ctrl'; control = 'Ctrl'; shift = 'Shift'; alt = 'Alt'; menu = 'Alt'
     left = 'Left'; right = 'Right'; up = 'Up'; down = 'Down'; enter = 'Enter'; space = 'Space'; tab = 'Tab'
     page_up = 'PageUp'; page_down = 'PageDown'; oem_1 = ';'; oem_7 = "'"; oem_comma = 'Comma'; oem_period = 'Period'; escape = 'Escape' }
@@ -77,7 +77,7 @@ switch ($Action) {
     }
 }
 if ($Action -ne 'list') {
-    # GlazeWM'e yeniden yüklet
+    # Pencere yöneticisine yeniden yüklet
     try {
         $ws = New-Object System.Net.WebSockets.ClientWebSocket
         $ws.ConnectAsync([Uri]'ws://127.0.0.1:6123', [Threading.CancellationToken]::None).Wait(2000) | Out-Null

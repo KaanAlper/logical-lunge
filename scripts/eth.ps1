@@ -1,6 +1,6 @@
 ﻿# Ethernet kutucuğu. Çıktı JSON.
 #   eth.ps1 status  -> {"state":"up|disconnected|disabled|none","name":"Ethernet","desc":"...","speed":"2.5 Gbps","ip":"..."}
-#   eth.ps1 toggle  -> yönetici görevini (LL\Ethernet-On / LL\Ethernet-Off) tetikler; izin sormaz
+#   eth.ps1 toggle  -> yönetici görevini (LogicalLunge\Ethernet-On / LogicalLunge\Ethernet-Off) tetikler; izin sormaz
 #   eth.ps1 enable | disable -> kartı açar/kapatır (YÖNETİCİ gerekir; zamanlanmış görev bunu çağırır)
 param([string]$Action = 'status')
 
@@ -18,7 +18,7 @@ switch ($Action) {
     'toggle' {
         $a = Get-Eth | Select-Object -First 1
         if (-not $a) { '{"ok":false}'; exit }
-        $task = if ($a.Status -eq 'Disabled') { 'LL\Ethernet-On' } else { 'LL\Ethernet-Off' }
+        $task = if ($a.Status -eq 'Disabled') { 'LogicalLunge\Ethernet-On' } else { 'LogicalLunge\Ethernet-Off' }
         $null = schtasks /run /tn $task 2>&1
         '{"ok":' + ($(if ($LASTEXITCODE -eq 0) { 'true' } else { 'false' })) + ',"needSetup":' + ($(if ($LASTEXITCODE -ne 0) { 'true' } else { 'false' })) + '}'
         exit

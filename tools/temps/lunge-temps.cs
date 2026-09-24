@@ -1,7 +1,7 @@
 // Logical Lunge sıcaklık okuyucu (bar'daki kullanım menüsünün "Sıcaklık" sütunu).
-//   ll-temps.exe          -> yönetici olarak (LL\Temps zamanlanmış görevi) arka planda çalışır; LibreHardwareMonitorLib ile
-//                            CPU paket / GPU çekirdek / GPU sıcak nokta sıcaklığını 2 sn'de bir C:\Users\Public\ll-temps.json'a yazar
-//   ll-temps.exe --read   -> yetkisiz: dosyayı stdout'a basar (Zebar bunu okur)
+//   lunge-temps.exe       -> yönetici olarak (LogicalLunge\Temps zamanlanmış görevi) arka planda çalışır; LibreHardwareMonitorLib ile
+//                            CPU paket / GPU çekirdek / GPU sıcak nokta sıcaklığını 2 sn'de bir C:\Users\Public\lunge-temps.json'a yazar
+//   lunge-temps.exe --read -> yetkisiz: dosyayı stdout'a basar (kabuktaki bar bunu okur)
 // CPU sıcaklığı için PawnIO sürücüsü gerekir (setup-temps.ps1 kurar); yoksa yalnızca GPU gelir.
 using System;
 using System.IO;
@@ -12,7 +12,7 @@ using LibreHardwareMonitor.Hardware;
 
 static class Program
 {
-    const string OUT = @"C:\Users\Public\ll-temps.json";
+    const string OUT = @"C:\Users\Public\lunge-temps.json";
 
     static string Num(float? v) { return v.HasValue ? Math.Round(v.Value).ToString(CultureInfo.InvariantCulture) : "null"; }
 
@@ -41,9 +41,9 @@ static class Program
                 // 15 sn'den eski veri = servis çalışmıyor
                 if (fi.Exists && (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalSeconds < 15) { Console.Write(File.ReadAllText(OUT)); return 0; }
                 Console.Write("{\"running\":false}");
-                // Görev kurulmamışsa yetkisiz başlat (yalnızca GPU okunur). ShellExecute: Zebar'ın soketlerini devralmasın.
+                // Görev kurulmamışsa yetkisiz başlat (yalnızca GPU okunur). ShellExecute: kabuğun soketlerini devralmasın.
                 bool free;
-                using (var m = new Mutex(false, @"Global\ll-temps"))
+                using (var m = new Mutex(false, @"Global\lunge-temps"))
                 {
                     try { free = m.WaitOne(0); } catch (AbandonedMutexException) { free = true; }
                     if (free) m.ReleaseMutex();
@@ -57,7 +57,7 @@ static class Program
         }
 
         bool created;
-        var mutex = new Mutex(true, @"Global\ll-temps", out created);
+        var mutex = new Mutex(true, @"Global\lunge-temps", out created);
         if (!created) return 0;
 
         Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;

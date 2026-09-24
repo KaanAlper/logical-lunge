@@ -39,7 +39,7 @@ config.window_padding = { left = '21.75pt', right = '21.75pt', top = '21.75pt', 
 config.window_close_confirmation = 'NeverPrompt'
 config.skip_close_confirmation_for_processes_named = { 'fish', 'bash', 'powershell.exe', 'pwsh.exe', 'cmd.exe' }
 
--- Pencere çerçevesi yok (GlazeWM döşer, köşeleri helper yuvarlar), sekme çubuğu yalnızca birden fazla sekmede
+-- Pencere çerçevesi yok (pencere yöneticisi döşer, köşeleri çekirdek yuvarlar), sekme çubuğu yalnızca birden fazla sekmede
 config.window_decorations = 'RESIZE'
 config.hide_tab_bar_if_only_one_tab = true
 config.use_fancy_tab_bar = false

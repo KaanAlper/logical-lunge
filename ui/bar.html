@@ -5,16 +5,26 @@
     <script>
 // Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
 // title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
-// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) zaten sistem dilinde. Yeni dil / metin: i18n.src.js.
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) aynı dilde. Yeni dil / metin: i18n.src.js.
+// Kurulumda seçilen dil ve saat prefs.json'da ({"language": "system" | "tr" | "en" ..., "clock": "24" | "12"}):
+// dil "system" değilse sistem dilinin yerine geçer; window.LL_HOUR12 saatlerin 12 saatlik (AM/PM) çizilmesi içindir.
 (function () {
-  var lang = (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  var prefs = {};
+  try {
+    var px = new XMLHttpRequest(); px.open('GET', './prefs.json', false); px.send();
+    if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
+  } catch (e) {}
+  window.LL_PREFS = prefs;
+  window.LL_HOUR12 = prefs.clock === '12';
+  var lang = prefs.language && prefs.language !== 'system' ? prefs.language
+    : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
   window.LL_LOCALE = lang;
   var code = lang.slice(0, 2).toLowerCase();
   window.LL_T = function (s) { return s; };
   if (code === 'tr') return;
   var data = null;
   try {
-    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel Zebar sunucusundan, ~1 ms)
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel kabuk sunucusundan, ~1 ms)
     var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
     if (x.status === 200) data = JSON.parse(x.responseText);
   } catch (e) {}
@@ -137,7 +147,7 @@
         audio: { type: 'audio' },
         media: { type: 'media' },
         systray: { type: 'systray' },
-        time: { type: 'date', formatting: 'HH:mm' },
+        time: { type: 'date', formatting: window.LL_HOUR12 ? 'h:mm a' : 'HH:mm' },
         day: { type: 'date', formatting: 'EEEE, dd/MM', locale: (window.LL_LOCALE || 'en').slice(0, 2) },
       });
 
@@ -161,27 +171,27 @@
 
       const shell = (prog, args) => zebar.shellSpawn(prog, args).catch(err => console.error(prog, err));
 
-      // Workspace geçişi ll-helper üzerinden: Hyprland'deki slide animasyonuyla.
-      // Helper yoksa / hata verirse doğrudan GlazeWM komutu.
-      const HELPER = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\ll-helper.exe';
-      const ART = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\helper\\media-art.exe';
-      const TEMPS = '{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\tools\\lhm\\ll-temps.exe';
+      // Workspace geçişi çekirdek (lunge.exe) üzerinden: Hyprland'deki slide animasyonuyla.
+      // Çekirdek yoksa / hata verirse doğrudan pencere yöneticisi komutu.
+      const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
+      const ART = '{{INSTALL_ESC}}\\tools\\lunge-media.exe';
+      const TEMPS = '{{INSTALL_ESC}}\\tools\\temps\\lunge-temps.exe';
       // Önce çalışan helper'a yerel HTTP ile (anında; her tıklamada yeni süreç başlatmak ~100-300 ms sürüyordu),
-      // olmazsa helper süreciyle, o da olmazsa doğrudan GlazeWM komutuyla.
+      // olmazsa helper süreciyle, o da olmazsa doğrudan pencere yöneticisi komutuyla.
       function slide(target, run) {
-        // POST: Zebar'ın service worker'ı başka adreslere giden GET cevaplarını önbelleğe alıp tekrar veriyor
+        // POST: kabuğun service worker'ı başka adreslere giden GET cevaplarını önbelleğe alıp tekrar veriyor
         fetch(`http://127.0.0.1:6131/cmd?a=ws-${encodeURIComponent(target)}`, { method: 'POST', cache: 'no-store' })
           .then(r => { if (r.status !== 204) throw new Error(String(r.status)); })
           .catch(() => zebar.shellSpawn(HELPER, ['--slide', target]).catch(() => {
             run(target === 'next' ? 'focus --next-workspace' : target === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${target}`);
           }));
       }
-      // PowerShell her zaman ll-helper üzerinden: hiç konsol penceresi açılmaz
+      // PowerShell her zaman çekirdek üzerinden: hiç konsol penceresi açılmaz
       const psFile = (file, args = []) => zebar.shellExec(HELPER, ['--ps', `${LL}\\${file}`, ...args]);
-      const LL = `${'{{USERPROFILE_ESC}}\\.glzr\\logical-lunge\\scripts'}`;
+      const LL = `${'{{INSTALL_ESC}}\\scripts'}`;
 
       // ---- Parlaklık (WMI → dahili ekran; olmazsa DDC/CI) ----
-      // Bar hangi monitördeyse onun parlaklığı (GlazeWM currentMonitor.deviceName)
+      // Bar hangi monitördeyse onun parlaklığı (pencere yöneticisinin currentMonitor.deviceName)
       let MONITOR = 'Primary';
       let brightnessCache = null;
       async function readBrightness() {
@@ -529,7 +539,7 @@
       const GB = b => `${(b / 1073741824).toFixed(1)} GB`;
 
       // ii ResourcesPopup.qml: RAM | Swap | CPU sütunları
-      // Bizim payımız: CPU / GPU sıcaklığı (tools\lhm\ll-temps.exe, LibreHardwareMonitor). CPU için PawnIO + LL\Temps görevi gerekir.
+      // Bizim payımız: CPU / GPU sıcaklığı (tools\temps\lunge-temps.exe, LibreHardwareMonitor). CPU için PawnIO + LogicalLunge\Temps görevi gerekir.
       // Yalnızca kutu açıkken okunur (her okuma bir süreç: eskiden hep açık bar da 2 sn'de bir okuyordu, iki monitörde
       // saniyede bir süreç). Kutu açılınca son değer hemen görünür, taze değer ~50 ms sonra gelir.
       let tempsCache = null;

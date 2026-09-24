@@ -7,6 +7,6 @@ foreach ($pair in @(@('Ethernet-On', 'enable'), @('Ethernet-Off', 'disable'))) {
         -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" $($pair[1])"
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1)
-    Register-ScheduledTask -TaskPath '\LL\' -TaskName $pair[0] -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+    Register-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName $pair[0] -Action $action -Principal $principal -Settings $settings -Force | Out-Null
 }
 "ok"

@@ -27,7 +27,6 @@ shell-util = { path = "../../crates/shell-util" }
 starship-battery = "0.8"
 sysinfo = "0.30"
 tauri = { version = "2", features = [
-  "macos-private-api",
   "protocol-asset",
   "webview-data-url",
 ] }
