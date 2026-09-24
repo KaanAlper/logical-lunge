@@ -29,3 +29,4 @@ node_modules/
 # Rust build output
 /tiling/target/
 /shell/target/
+/shell/packages/desktop/gen/
