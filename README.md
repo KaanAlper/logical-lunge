@@ -80,7 +80,7 @@ Windows asks for permission **once**. The installer silently downloads whatever 
 | `$env:LL_NO_TERMINAL = 1` | Skip WezTerm + fish + fonts |
 | `$env:LL_NO_SENSORS = 1` | Skip the PawnIO driver (no CPU temperature) |
 
-**Uninstall:** *Settings → Apps → Logical Lunge → Uninstall*, or run `~\.glzr\logical-lunge\uninstall.ps1`. Every Windows setting goes back to what it was; your own configs (GlazeWM / WezTerm / fish / starship, shortcuts, night light, downloaded wallpapers) are kept.
+**Uninstall:** *Settings → Apps → Logical Lunge → Uninstall*, or run `~\.glzr\logical-lunge\uninstall.ps1`. Every Windows setting goes back to what it was (taskbar, desktop icons, Snap, Win shortcuts, startup delay) and config files you had before the install come back. You're asked whether Logical Lunge's own settings and data (its configs, clipboard history, shortcuts, night light, downloaded wallpapers) should be deleted too; `-RemoveConfig` / `-KeepConfig` skip the question. Windows on other workspaces are brought back before anything is removed.
 
 ### Default keybinds
 
@@ -168,7 +168,7 @@ Hyprland üzerindeki **illogical-impulse** (`ii`) Quickshell kurulumunun Windows
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-Windows **bir kez** izin ister, gerisini yükleyici yapar. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları eski haline döner; kendi ayar dosyaların silinmez.
+Windows **bir kez** izin ister, gerisini yükleyici yapar. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
 
 ### Uyumluluk
 
