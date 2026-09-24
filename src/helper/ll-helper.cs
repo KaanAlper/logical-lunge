@@ -509,6 +509,28 @@ class FrameStats
     }
 }
 
+// Animasyon zamanı, karenin ekranda görüneceği ana göre: DWM'in şimdiden sonraki ilk vsync'i. "Şimdi"ye göre hesaplanınca
+// güncellemenin karenin neresinde yapıldığına göre değişen bir hata kalıyordu (geç kalan karede pencere eğrinin gerisinde
+// görünüp sonra sıçrıyordu). Hyprland değerleri gerçek zamana göre ilerletir; burada ayrıca gösterim anı hedeflenir. İlk
+// karenin gösterim anı 0'dır. DWM zaman bilgisi alınamazsa "şimdi" kullanılır.
+class PresentClock
+{
+    static readonly double ToMs = 1000.0 / Stopwatch.Frequency;
+    long baseQpc = -1;
+    public double Ms()
+    {
+        long now = Stopwatch.GetTimestamp(), next = now;
+        var t = new Native.DWM_TIMING_INFO(); t.cbSize = (uint)Marshal.SizeOf(typeof(Native.DWM_TIMING_INFO));
+        if (Native.DwmGetCompositionTimingInfo(IntPtr.Zero, ref t) == 0 && t.qpcRefreshPeriod > 0 && t.qpcVBlank > 0)
+        {
+            long period = (long)t.qpcRefreshPeriod, vb = (long)t.qpcVBlank;
+            next = vb + (Math.Max(0, now - vb) / period + 1) * period;
+        }
+        if (baseQpc < 0) baseQpc = next;
+        return (next - baseQpc) * ToMs;
+    }
+}
+
 class Slider
 {
     [DllImport("user32.dll")] static extern IntPtr MonitorFromPoint(Point pt, uint flags);
@@ -1122,6 +1144,7 @@ class Slider
         RingsFocus(focusedNow);
 
         var sw = Stopwatch.StartNew();
+        var pc = new PresentClock();
         var fs = new FrameStats();
         int frames = 0; long lastFrame = 0, maxGap = 0;
         while (!Interrupt)
@@ -1130,7 +1153,7 @@ class Slider
             long nowMs = sw.ElapsedMilliseconds;
             if (frames > 0 && nowMs - lastFrame > maxGap) maxGap = nowMs - lastFrame;
             lastFrame = nowMs; frames++;
-            double p = Math.Min(1.0, nowMs / (double)durationMs);
+            double p = Math.Min(1.0, pc.Ms() / durationMs);
             double e = Bezier(0.05, 0.7, 0.1, 1, p); // Hyprland emphasizedDecel
             foreach (var a in items)
             {
@@ -1645,26 +1668,30 @@ class Slider
                 return false;
             };
             var sw0 = Stopwatch.StartNew();
+            var pc = new PresentClock();
+            double rStart = 0;
             var fs = new FrameStats();
             culledCount = 0;
             while (!Interrupt)
             {
                 fs.Begin();
                 long nowMs0 = sw0.ElapsedMilliseconds;
+                double at = pc.Ms(); // bu karenin ekranda görüneceği an
                 if (mfFrames > 0 && nowMs0 - mfLast > mfMax) mfMax = nowMs0 - mfLast;
                 mfLast = nowMs0; mfFrames++;
                 if (cmdDoneAt < 0 && task.IsCompleted) cmdDoneAt = nowMs0;
                 if (movedAt < 0 && moveFollow && WindowsMoved()) movedAt = nowMs0;
-                double p = Math.Min(1.0, sw0.ElapsedMilliseconds / (double)dur0);
+                double p = Math.Min(1.0, at / dur0);
                 double e = Bezier(0.1, 1, 0, 1, p);
                 int shift = (int)Math.Round(e * (mw + GAP));
                 if (moveFollow && swR == null && (task.IsCompleted || WindowsMoved()))
                 {
                     // Pencere yeni boyutuna geçti: yerleşme kayma ile BİRLİKTE, en az 300 ms'lik yumuşak bir geçişle
                     swR = Stopwatch.StartNew();
-                    durR = Math.Max(200, (int)(dur0 - sw0.ElapsedMilliseconds));
+                    rStart = at;
+                    durR = Math.Max(200, (int)(dur0 - at));
                 }
-                double pR = swR == null ? 0 : Math.Min(1.0, swR.ElapsedMilliseconds / (double)durR);
+                double pR = swR == null ? 0 : Math.Min(1.0, (at - rStart) / durR);
                 double eR = Bezier(0.05, 0.7, 0.1, 1, pR);
                 foreach (var t in oldThumbs) Move(t, -fdir * shift);
                 foreach (var t in newThumbs)
@@ -1756,10 +1783,10 @@ class Slider
             }
             Native.DwmFlush();
 
-            var sw = Stopwatch.StartNew();
+            var pc = new PresentClock();
             while (!Interrupt)
             {
-                double p = Math.Min(1.0, sw.ElapsedMilliseconds / (double)DURATION_MS);
+                double p = Math.Min(1.0, pc.Ms() / DURATION_MS);
                 double e = Bezier(0.1, 1, 0, 1, p);
                 int shift = (int)Math.Round(e * (mw + GAP));
                 foreach (var t in oldThumbs) Move(t, -dir * shift);
