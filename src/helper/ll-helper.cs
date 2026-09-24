@@ -1011,7 +1011,7 @@ class Slider
     // targetFrames: GlazeWM'in hesapladığı son yerleşim (görünen çerçeve, ekran koordinatı). Verilince animasyon pencerelerin
     // gerçekten yer değiştirmesini BEKLEMEDEN başlar (önceden 16-150 ms bekleniyordu); pencere yer değiştirdiği an hedef onun
     // gerçek yeridir (en küçük boyutu olan uygulama GlazeWM'in hesabından farklı yere oturabilir).
-    class Anim { public Thumb T; public IntPtr H; public Native.RECT Start, End, Before, Ins0; public bool Moved, Resizes, OldSrc; public int Cx0, Cy0; public long SrcAt = -1; }
+    class Anim { public Thumb T; public IntPtr H; public Native.RECT Start, End, Before; public bool Moved, Resizes; public int Cx0, Cy0; public long SrcAt = -1; }
 
     public void Finish(Frozen f, IEnumerable<long> endHandles, long popin, int durationMs, Dictionary<long, Native.RECT> targetFrames = null)
     {
@@ -1041,7 +1041,7 @@ class Slider
                 pop = t;
             }
             a.Resizes = isNew || (a.Start.Right - a.Start.Left) != (end.Right - end.Left) || (a.Start.Bottom - a.Start.Top) != (end.Bottom - end.Top);
-            a.Cx0 = t.Cx; a.Cy0 = t.Cy; a.Ins0 = t.Ins;
+            a.Cx0 = t.Cx; a.Cy0 = t.Cy;
             items.Add(a);
         }
         // Artık bu workspace'te olmayan (kapanan / taşınan) pencereler katmanda kalmasın
@@ -1090,7 +1090,6 @@ class Slider
                 {
                     PlaceVisible(a.T, r, a.Resizes);
                     if (a.Resizes && a.SrcAt < 0 && (a.T.Cx != a.Cx0 || a.T.Cy != a.Cy0)) a.SrcAt = nowMs;
-                    if (a.Resizes) ShowOldContent(a, r);
                 }
                 RingPlace(a.T, r, op);
             }
@@ -1107,30 +1106,6 @@ class Slider
         PinsClear();
         foreach (var t in f.All) Native.DwmUnregisterThumbnail(t.Id);
         Animating = false;
-    }
-
-    // Büyüyen pencere: DWM kaynağı hemen yeni boyuta büyüyor ama uygulama yeni alanı hemen çizmiyor (WezTerm gibi GPU
-    // ile çizenlerde yüzlerce ms). Eski görüntü sol üstte kalıyor, altı boş: kenarlık halkası içi boş bir çerçeve gibi
-    // pencereden ayrı büyüyordu. Hyprland gibi: kaynak başlangıçtakinden büyükken yalnızca eski çizili alan (başlangıç
-    // boyutu, sol üst) hedefe ölçeklenir, içerik halkayla birlikte büyür. Katman kalkınca gerçek pencere görünür.
-    static void ShowOldContent(Anim a, Native.RECT r)
-    {
-        bool grown = a.Cx0 > 0 && a.Cy0 > 0 && (a.T.Cx > a.Cx0 || a.T.Cy > a.Cy0);
-        if (!grown && !a.OldSrc) return;
-        var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTSOURCE | Native.DWM_TNP_RECTDESTINATION };
-        if (grown)
-        {
-            pr.rcSource = RingTemplate.R(0, 0, Math.Min(a.Cx0, a.T.Cx), Math.Min(a.Cy0, a.T.Cy));
-            pr.rcDestination = Deflate(r, a.Ins0);
-        }
-        else
-        {
-            // Kaynak yeniden küçüldü: tamamını göster
-            pr.rcSource = RingTemplate.R(0, 0, a.T.Cx, a.T.Cy);
-            pr.rcDestination = Deflate(r, a.T.Ins);
-        }
-        a.OldSrc = grown;
-        Native.DwmUpdateThumbnailProperties(a.T.Id, ref pr);
     }
 
     Thumb RegisterWin(IntPtr hw, Native.RECT dest)
