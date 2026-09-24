@@ -498,7 +498,9 @@
       function Resource({ icon, pct, warn }) {
         return (
           <div className={`resource ${pct >= warn ? 'warn' : ''}`}>
-            <div className="ring"><Ring value={pct / 100} /><Icon name={icon} /></div>
+            {/* Halka yazılan tam sayıyla aynı adımda değişir: kesirli her okuma (RAM her 3 sn'de) 400 ms'lik geçişi, yani
+                ~24 kare çizimi boşuna oynatıyordu */}
+            <div className="ring"><Ring value={Math.round(pct) / 100} /><Icon name={icon} /></div>
             <span className="pct">{Math.round(pct)}</span>
           </div>
         );
@@ -506,7 +508,6 @@
 
       // ii Resources.qml (alwaysShowSwap / alwaysShowCpu açık): RAM, Swap, CPU; üzerine gelince ResourcesPopup
       function Resources({ cpu, memory, popup }) {
-        useTemps();
         return (
           <div className="resources" {...popup('res')}>
             {memory && <Resource icon="memory" pct={memory.usage} warn={95} />}
@@ -522,7 +523,8 @@
 
       // ii ResourcesPopup.qml: RAM | Swap | CPU sütunları
       // Bizim payımız: CPU / GPU sıcaklığı (tools\lhm\ll-temps.exe, LibreHardwareMonitor). CPU için PawnIO + LL\Temps görevi gerekir.
-      // Bar'daki Resources (hep açık) de çağırır: kutu açıldığında son değer hazırdır.
+      // Yalnızca kutu açıkken okunur (her okuma bir süreç: eskiden hep açık bar da 2 sn'de bir okuyordu, iki monitörde
+      // saniyede bir süreç). Kutu açılınca son değer hemen görünür, taze değer ~50 ms sonra gelir.
       let tempsCache = null;
       function useTemps() {
         const [t, setT] = useState(tempsCache);

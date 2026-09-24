@@ -97,6 +97,21 @@ static class Native
     }
     [DllImport("dwmapi.dll")] public static extern int DwmUpdateThumbnailProperties(IntPtr thumb, ref DWM_THUMBNAIL_PROPERTIES p);
     [DllImport("dwmapi.dll")] public static extern int DwmFlush();
+    [StructLayout(LayoutKind.Sequential, Pack = 1)] public struct UNSIGNED_RATIO { public uint uiNumerator, uiDenominator; }
+    // dwmapi.h: pshpack1 içinde tanımlı; cbSize tam tutmazsa çağrı reddedilir
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    public struct DWM_TIMING_INFO
+    {
+        public uint cbSize; public UNSIGNED_RATIO rateRefresh; public ulong qpcRefreshPeriod; public UNSIGNED_RATIO rateCompose;
+        public ulong qpcVBlank, cRefresh; public uint cDXRefresh; public ulong qpcCompose, cFrame; public uint cDXPresent;
+        public ulong cRefreshFrame, cFrameSubmitted; public uint cDXPresentSubmitted; public ulong cFrameConfirmed; public uint cDXPresentConfirmed;
+        public ulong cRefreshConfirmed; public uint cDXRefreshConfirmed; public ulong cFramesLate; public uint cFramesOutstanding;
+        public ulong cFrameDisplayed, qpcFrameDisplayed, cRefreshFrameDisplayed, cFrameComplete, qpcFrameComplete, cFramePending, qpcFramePending;
+        public ulong cFramesDisplayed, cFramesComplete, cFramesPending, cFramesAvailable, cFramesDropped, cFramesMissed;
+        public ulong cRefreshNextDisplayed, cRefreshNextPresented, cRefreshesDisplayed, cRefreshesPresented, cRefreshStarted;
+        public ulong cPixelsReceived, cPixelsDrawn, cBuffersEmpty;
+    }
+    [DllImport("dwmapi.dll")] public static extern int DwmGetCompositionTimingInfo(IntPtr hwnd, ref DWM_TIMING_INFO info);
     [StructLayout(LayoutKind.Sequential)] public struct SIZE { public int cx, cy; }
     public delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
     [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
@@ -449,6 +464,21 @@ class FrameStats
     double t0, t1, lastEnd = -1, sumUpd, sumFlush, sumGap, maxTotal;
     string worst = "";
     public int Frames;
+    // Kare aralığı dağılımı (yenileme periyoduna göre): zamanında / 1 vsync kaçırdı / 2+ kaçırdı. Ortalama aynı olsa da
+    // karışık aralıklar (7-14-7-14 ms) göze takılma olarak görünür.
+    readonly double period = RefreshPeriodMs();
+    int onTime, miss1, miss2;
+    static double RefreshPeriodMs()
+    {
+        try
+        {
+            var t = new Native.DWM_TIMING_INFO(); t.cbSize = (uint)Marshal.SizeOf(typeof(Native.DWM_TIMING_INFO));
+            if (Native.DwmGetCompositionTimingInfo(IntPtr.Zero, ref t) == 0 && t.rateRefresh.uiNumerator > 0)
+                return 1000.0 * t.rateRefresh.uiDenominator / t.rateRefresh.uiNumerator;
+        }
+        catch { }
+        return 1000.0 / 60;
+    }
     readonly int gc0, gc1, gc2;
 
     public FrameStats()
@@ -464,6 +494,7 @@ class FrameStats
         double total = lastEnd < 0 ? t2 - t0 : t2 - lastEnd;
         sumUpd += upd; sumFlush += fl; sumGap += gap;
         if (total > maxTotal) { maxTotal = total; worst = string.Format("güncelleme {0:0.0} + flush {1:0.0} + boşluk {2:0.0}", upd, fl, gap); }
+        if (lastEnd >= 0) { if (total < period * 1.5) onTime++; else if (total < period * 2.5) miss1++; else miss2++; }
         lastEnd = t2; Frames++;
     }
     public string Report()
@@ -472,6 +503,7 @@ class FrameStats
         sb.AppendFormat("[{0} kare/{1:0} ms; en uzun {2:0.0} ms = {3}; toplam güncelleme {4:0} flush {5:0} boşluk {6:0} ms; GC {7}/{8}/{9}",
             Frames, sw.Elapsed.TotalMilliseconds, maxTotal, worst, sumUpd, sumFlush, sumGap,
             GC.CollectionCount(0) - gc0, GC.CollectionCount(1) - gc1, GC.CollectionCount(2) - gc2);
+        sb.AppendFormat("; aralık {0:0.0} ms: zamanında {1} / 1 kaçık {2} / 2+ kaçık {3}", period, onTime, miss1, miss2);
         sb.Append("]");
         return sb.ToString();
     }
@@ -2793,7 +2825,7 @@ static class Toasts
             // Widget'lar POST kullanır: Zebar'ın service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -2821,6 +2853,17 @@ static class Toasts
             int sp1 = req.IndexOf(' '), sp2 = sp1 < 0 ? -1 : req.IndexOf(' ', sp1 + 1);
             string target = sp2 > sp1 ? req.Substring(sp1 + 1, sp2 - sp1 - 1) : ""; // "/cmd?a=ws-3"
             if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; Slider.Log("overview modu okundu: '" + body + "'"); }
+            else if (target.StartsWith("/overview-wait"))
+            {
+                // Uzun yoklama: istek overview gösterilene / gizlenene ya da 25 sn dolana kadar bekletilir
+                int q = target.IndexOf("since="), since;
+                if (q < 0 || !int.TryParse(target.Substring(q + 6).Split('&')[0], out since)) since = -1;
+                body = Keys2.WaitOverviewSignal(since, 25000); status = "200 OK";
+            }
+            else if (target.StartsWith("/overview-signal?w=show") || target.StartsWith("/overview-signal?w=hide"))
+            {
+                Keys2.OverviewSignal(target.EndsWith("hide") ? "hide" : "show"); status = "204 No Content";
+            }
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             else
             {
@@ -3543,7 +3586,7 @@ class Keys2
         {
             lastMoveAction = Environment.TickCount;
             IntPtr ov = Native.FindWindow(null, "ll-overview");
-            if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) Native.ShowWindow(ov, 0);
+            if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) HideOverview(ov);
         }
         if (act == "clipboard") { ui.BeginInvoke((Action)ToggleClipboard); return true; }
         string[] dirs = { "left", "right", "up", "down" };
@@ -3686,6 +3729,39 @@ class Keys2
         Native.SetForegroundWindow(prev);
     }
 
+    // Overview widget'ı helper'ın Win32 ile gösterip gizlediğini görünürlüğü 40 ms'de bir sorarak anlıyordu (gün boyu
+    // saniyede 25 IPC: boştaki Zebar'ın başlıca işi). Artık helper haber verir; widget /overview-wait uzun yoklamasıyla
+    // bekler. Sıra numarası iki istek arasındaki olayı kaçırmamak için; aradaki birden fazla olaydan sonuncusu yeter.
+    static readonly object ovSignalLock = new object();
+    static int ovSignalSeq;
+    static string ovSignalWhat = "";
+    public static void OverviewSignal(string what)
+    {
+        lock (ovSignalLock) { ovSignalSeq++; ovSignalWhat = what; Monitor.PulseAll(ovSignalLock); }
+    }
+    // "sıra olay": since < 0 yalnızca eşitler (olay yok); sıra since'ten farklıysa hemen döner (helper yeniden başladıysa
+    // sıra sıfırdan başlar, widget eşitlenir); aynıysa bir olay ya da zaman aşımı beklenir (olay boş).
+    public static string WaitOverviewSignal(int since, int timeoutMs)
+    {
+        lock (ovSignalLock)
+        {
+            if (since < 0) return ovSignalSeq + " ";
+            var sw = Stopwatch.StartNew();
+            while (ovSignalSeq == since)
+            {
+                int left = timeoutMs - (int)sw.ElapsedMilliseconds;
+                if (left <= 0) break;
+                Monitor.Wait(ovSignalLock, left);
+            }
+            return ovSignalSeq + " " + (ovSignalSeq == since ? "" : ovSignalWhat);
+        }
+    }
+    public static void HideOverview(IntPtr h)
+    {
+        Native.ShowWindow(h, 0);
+        OverviewSignal("hide");
+    }
+
     public static void ShowOverviewInMode(IntPtr h, string mode)
     {
         IntPtr prevFg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
@@ -3698,6 +3774,7 @@ class Keys2
         Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex | 0x00080000); // WS_EX_LAYERED
         Native.SetLayeredWindowAttributes(h, 0, 0, 0x2);              // tamamen saydam
         Native.ShowWindow(h, 5);
+        OverviewSignal("show");
         Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
         Native.SetForegroundWindow(h);
         ThreadPool.QueueUserWorkItem(_ =>
@@ -3716,7 +3793,7 @@ class Keys2
     {
         IntPtr h = Native.FindWindow(null, "ll-overview");
         if (h == IntPtr.Zero) return;
-        if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { Native.ShowWindow(h, 0); return; }
+        if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { HideOverview(h); return; }
         ShowOverviewInMode(h, ";");
     }
 
@@ -3724,7 +3801,7 @@ class Keys2
     {
         IntPtr h = Native.FindWindow(null, "ll-overview");
         if (h == IntPtr.Zero) return;
-        if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { Native.ShowWindow(h, 0); return; }
+        if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { HideOverview(h); return; }
         // Mod bayrağı: "s" = düz arama (pano modunun bayrağı ";"); widget taze açılmış gibi davransın
         ShowOverviewInMode(h, "s");
     }
@@ -6358,7 +6435,13 @@ static class Program
         if (args.Length == 2 && args[0] == "--overview-show")
         {
             IntPtr ovh = Native.FindWindow(null, "ll-overview");
-            if (ovh != IntPtr.Zero) { Keys2.ShowOverviewInMode(ovh, args[1] == "clip" ? ";" : "s"); Thread.Sleep(1500); }
+            if (ovh != IntPtr.Zero)
+            {
+                Keys2.ShowOverviewInMode(ovh, args[1] == "clip" ? ";" : "s");
+                // Widget'ın beklediği haber bu süreçte değil çalışan helper'da: ona ilet
+                try { using (var wc = new System.Net.WebClient()) wc.UploadString("http://127.0.0.1:6131/overview-signal?w=show", ""); } catch { }
+                Thread.Sleep(1500);
+            }
             return;
         }
         // Pano geçmişi ve overview modu: --clip-list | --clip-set <id> | --clip-del <id> | --clip-clear | --overview-mode

@@ -354,25 +354,43 @@
         const hide = () => { setOpen(false); win.hide().catch(() => {}); };
 
         // Helper pencereyi Win32 ile gizleyip gösterir (Super / Super+V): bu, sayfaya blur/focus olayı göndermez ve
-        // 'open' eski kalır. Görünürlüğü kısa aralıkla izle: gizlendiyse kapalı say, helper gösterdiyse (bizim
-        // show() çağrımız dışında) taze açılış gibi işle ve helper'ın mod bayrağını oku.
+        // 'open' eski kalır. Helper gösterdiğini / gizlediğini uzun yoklamayla (/overview-wait) bildirir: gösterdiyse
+        // (bizim show() çağrımız dışında) taze açılış gibi işle ve mod bayrağını oku, gizlediyse kapalı say. Eskiden
+        // görünürlük 40 ms'de bir soruluyordu (gün boyu saniyede 25 IPC). Helper yoksa ya da cevap vermiyorsa
+        // görünürlüğü saniyede bir yoklar ve tekrar dener.
         const openRef = useRef(false); openRef.current = open;
         const showRef = useRef(null); showRef.current = show;
         useEffect(() => {
-          let was = false;
-          const t = setInterval(async () => {
-            try {
-              const v = await win.isVisible();
-              if (v && !was) {
-                if (!openRef.current) showRef.current();
-                else readMode().then(m => {
-                  if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
-                });
-              } else if (!v && was && openRef.current) setOpen(false);
-              was = v;
-            } catch {}
-          }, 40);
-          return () => clearInterval(t);
+          let alive = true, seq = -1, was = false;
+          const shown = () => {
+            if (!openRef.current) showRef.current();
+            else readMode().then(m => {
+              if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
+            });
+          };
+          const hidden = () => { if (openRef.current) setOpen(false); };
+          (async () => {
+            while (alive) {
+              const ctl = new AbortController();
+              const t = setTimeout(() => ctl.abort(), 30000); // helper 25 sn'de cevaplar; cevabın gövdesi de bu süreye dahil
+              try {
+                const r = await fetch(`http://127.0.0.1:6131/overview-wait?since=${seq}`, { method: 'POST', cache: 'no-store', signal: ctl.signal });
+                const m = r.ok ? /^(\d+) ?(show|hide)?$/.exec((await r.text()).trim()) : null;
+                if (!m) throw new Error('overview-wait');
+                seq = +m[1];
+                if (m[2] === 'show') shown(); else if (m[2] === 'hide') hidden();
+              } catch {
+                if (!alive) break;
+                try {
+                  const v = await win.isVisible();
+                  if (v && !was) shown(); else if (!v && was) hidden();
+                  was = v;
+                } catch {}
+                await new Promise(res => setTimeout(res, 1000));
+              } finally { clearTimeout(t); }
+            }
+          })();
+          return () => { alive = false; };
         }, []);
 
         // Açılışta gizli başla; Super (ll-helper) ya da bar olayı açar
