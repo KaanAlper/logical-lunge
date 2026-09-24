@@ -40,7 +40,8 @@ One admin prompt; everything else downloads and installs silently. · Tek yönet
 
 A complete Windows desktop that looks and behaves like the **illogical-impulse** (`ii`) Quickshell setup on Hyprland — the bar, the right sidebar, the Super-key overview, the animations and the keybinds — not a theme, a working shell:
 
-- **Tiling** with Hyprland's dwindle layout ported into our GlazeWM fork: a new window splits the window under the mouse along its longer side and opens on the half the mouse is over (`force_split = 0`); `movewindow` splits the neighbouring window the same way. New windows never flash at the screen centre — they appear only once in place.
+- **Tiling** with Hyprland's dwindle layout ported into our GlazeWM fork: a new window splits the window under the mouse along its longer side and opens on the half the mouse is over (`force_split = 0`); `movewindow` splits the neighbouring window the same way, and a window that leaves gives its space back to its split partner, so the halves stay halves however much you rearrange. New windows never flash at the screen centre — they appear only once in place.
+- **Window borders** drawn by the window manager itself (the tacky-borders engine, built into our GlazeWM): purple for the focused window, subtle for the others, only on windows the WM manages (never on the bar, menus or picture-in-picture), moving in the same step as their window. No separate program, no tray icon.
 - **ii bar**: workspaces with app icons, resources (RAM / swap / CPU / **CPU & GPU temperature**), media with album art and seeking, tray with drag-to-pin, clock, battery, scroll-to-change brightness (left edge) and volume (right edge) with an OSD.
 - **ii right sidebar**: Android-style quick toggles (Wi-Fi, Ethernet, Bluetooth, keep-awake, mic, audio, night light with schedule + intensity, dark mode, screenshot, on-screen keyboard, do-not-disturb) with slide-down cards, notifications, calendar with month/year picker, to-do and pomodoro timer.
 - **Shortcuts editor** and **wallpaper picker** built into the sidebar (per-monitor or one image spanning all monitors — Superpaper-style *superscreen*).
@@ -49,11 +50,12 @@ A complete Windows desktop that looks and behaves like the **illogical-impulse**
 - **Ctrl+Print**: the whole monitor under the mouse, copied to the clipboard and saved to `Pictures\Screenshots` without asking.
 - **Clipboard history** (Super+V, ii's cliphist): text and images, searchable, opens in the Super search box with the `;` prefix.
 - **Alt+Tab switcher**: live window previews across all workspaces, most recently used first, drawn by the helper so it opens instantly under load.
-- **Session screen** (power button in the sidebar): dimmed screen with lock / sleep / sign out / restart / **UEFI-BIOS** / shut down.
+- **Session screen** (power button in the sidebar): dimmed screen with lock / sleep / **reload desktop** / sign out / restart / **UEFI-BIOS** / shut down.
+- **It heals itself**, like an OS should: if the window manager crashes or hangs, the bar crashes, or the helper crashes or freezes, the part is restarted automatically (windows hidden on other workspaces come back first). If the shell's bar is ever missing, the Windows taskbar and the Start menu (Win key) come back until it returns — you are never left without a way to launch things. *Reload desktop* (session screen, sidebar, or *Restart Logical Lunge* in the Start menu) restarts everything cleanly without a command line.
 - **Updates**: the sidebar's update button checks GitHub releases, shows a card with a progress bar, then *Install now* / *Later*. A downloaded update is remembered; installing asks for permission once and restarts the desktop.
 - **Animations**: smooth workspace slides, window open / close / move animations (Hyprland `emphasizedDecel` curves), popups that slide in and out.
 - **Terminal**: WezTerm configured exactly like ii's kitty (JetBrains Mono Nerd Font, beam cursor, ii's wallpaper-generated Material You colors) running **fish** with **starship**.
-- **Boot straight into the desktop**: a wallpaper splash covers Windows until the shell is ready; the Windows taskbar and Start menu never show (Super is owned by the shell *only while it runs*).
+- **Boot straight into the desktop**: a wallpaper splash covers Windows until the shell is ready; the Windows taskbar and Start menu never show — not on other monitors either, and not when an app flashes its taskbar button (Super is owned by the shell *only while it runs*).
 
 ### Why this exists
 
@@ -64,6 +66,7 @@ Recreating ii on Windows means fixing things nobody warns you about:
 3. **Workspace switches lag** by 100–200 ms with many windows → the slide starts from DWM thumbnails before the WM finishes, at high process priority.
 4. **Apps reset rounded window regions**, dialogs flicker under focus-follows-mouse, Windows error boxes pop up → all handled (rounded corners, real-mouse-movement focus, error dialogs turned into ii-style toasts).
 5. **Everything had to survive a reboot and a different PC** → one installer, one UAC prompt, every Windows setting backed up and restored on uninstall.
+6. **Three foreign programs don't feel like one desktop** (each with its own tray icon, settings window and config) → the forks are stripped down to what the shell uses and the border tool lives inside the window manager; the parts watch each other and recover from crashes on their own.
 
 ### Install
 
@@ -79,6 +82,8 @@ Windows asks for permission **once**. The installer silently downloads whatever 
 |---|---|
 | `$env:LL_NO_TERMINAL = 1` | Skip WezTerm + fish + fonts |
 | `$env:LL_NO_SENSORS = 1` | Skip the PawnIO driver (no CPU temperature) |
+
+**Update:** the sidebar's update button, or run the one-liner again. Leftovers of older versions are cleaned up: the separate tacky-borders program and its config, the taskbar script, and the upstream GlazeWM / Zebar that early versions installed (only the ones Logical Lunge installed).
 
 **Uninstall:** *Settings → Apps → Logical Lunge → Uninstall*, or run `~\.glzr\logical-lunge\uninstall.ps1`. Every Windows setting goes back to what it was (taskbar, desktop icons, Snap, Win shortcuts, startup delay) and config files you had before the install come back. You're asked whether Logical Lunge's own settings and data (its configs, clipboard history, shortcuts, night light, downloaded wallpapers) should be deleted too; `-RemoveConfig` / `-KeepConfig` skip the question. Windows on other workspaces are brought back before anything is removed.
 
@@ -118,12 +123,17 @@ The UI follows the system language: English, Deutsch, Français, Español, Itali
 ### How it works
 
 ```
-GlazeWM (tiling, IPC)  ←→  ll-helper (C#: keys, slides, animations, dwindle, focus, rounding, toasts,
-                                       splash, snip, Lens, wallpapers, gamma/night light, shortcuts)
-Zebar  (WebView2 widgets: bar, sidebar, overview, toast, OSK — React)
+GlazeWM   (Rust, our fork)  tiling (Hyprland dwindle), IPC, window borders (tacky-borders engine, in-process)
+   ↕ IPC
+ll-helper (C#)              keys, slides and window animations, focus, rounded corners, toasts, splash,
+                            screenshots / Lens, wallpapers, night light, shortcuts — and the watchdogs that
+                            restart GlazeWM and Zebar if they crash or hang
+Zebar     (Rust + WebView2, our fork)  bar, sidebar, overview, session screen, toasts, on-screen keyboard
 ```
 
-**Roadmap — one program.** The next step merges GlazeWM + Zebar + ll-helper into a single `Logical Lunge` executable built from forks, dropping what the shell doesn't use (Zebar's widget manager / marketplace window and tray icon, runtime config editing, GlazeWM's tray icon) — see [docs/ROADMAP.md](docs/ROADMAP.md).
+One install, one uninstall, one autostart, one entry in *Settings → Apps*, one config for the window manager and its borders, and no foreign tray icons or settings windows — but still three cooperating processes, so a crash in one part never takes the others down.
+
+**Roadmap.** Next: ll-helper becomes the root of the desktop (it starts and stops the other parts, so *reload* can restart just the bar or just the window manager), and windows keep their workspaces across a reload. Later, possibly a single executable — see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Build from source
 
@@ -135,14 +145,14 @@ $env:LL_SOURCE = "$PWD\dist\LogicalLunge-$(Get-Content VERSION)"; .\install.ps1
 
 Needs the Windows 10 SDK (for `media-art.exe`), Python 3.12 (packaged helpers are built with PyInstaller — the target PC needs no Python) and Node.js (translations).
 
-The GlazeWM and Zebar forks (branch `logical-lunge`: Hyprland dwindle layout, no tray icons, unused providers removed) are built too when they are checked out next to this repo:
+The GlazeWM and Zebar forks (branch `logical-lunge`: Hyprland dwindle layout and the built-in window borders in GlazeWM; no tray icons, settings window, marketplace or unused providers in Zebar) are built too when they are checked out next to this repo:
 
 ```powershell
 git clone -b logical-lunge https://github.com/KaanAlper/glazewm ..\logical-lunge-forks\glazewm
 git clone -b logical-lunge https://github.com/KaanAlper/zebar   ..\logical-lunge-forks\zebar
 ```
 
-This needs Rust (nightly for Zebar) and pnpm.
+This needs Rust (nightly for Zebar); nothing else — Zebar has no settings UI or client package to build any more.
 
 ---
 
@@ -152,7 +162,8 @@ This needs Rust (nightly for Zebar) and pnpm.
 
 Hyprland üzerindeki **illogical-impulse** (`ii`) Quickshell kurulumunun Windows karşılığı. Bar, sağ panel, Super menüsü, animasyonlar ve kısayollar birebir; tema değil, çalışan bir masaüstü kabuğu:
 
-- **Döşeme**: Hyprland `force_split = 0` gibi farenin altındaki yarıya açılan dwindle ("altın oran") bölmeleri.
+- **Döşeme**: Hyprland `force_split = 0` gibi farenin altındaki yarıya açılan dwindle bölmeleri. Pencere taşınınca ya da kapanınca yeri bölmedeki eşine geçer; ne kadar karıştırırsan karıştır yarılar yarı kalır.
+- **Pencere kenarlıkları** pencere yöneticisinin içinde (tacky-borders'ın çizim motoru GlazeWM'e gömülü): odaktaki mor, diğerleri silik; yalnızca yönetilen pencerelerde (bar, menüler, PiP hariç), pencereyle aynı adımda hareket eder. Ayrı program ya da tepsi simgesi yok.
 - **ii bar**: uygulama simgeli workspace'ler, kaynaklar (RAM / swap / CPU / **CPU & GPU sıcaklığı**), kapaklı ve sarılabilir medya, sürükleyerek sabitlenen tepsi, saat, pil, sol kenarda kaydırınca parlaklık, sağ kenarda ses (OSD'li).
 - **ii sağ panel**: Android tarzı hızlı ayarlar (Wi-Fi, Ethernet, Bluetooth, uyanık tut, mikrofon, ses, zamanlamalı ve yoğunluk ayarlı gece ışığı, karanlık mod, ekran alıntısı, ekran klavyesi, sessiz) ve alta kayan kartlar; bildirimler; ay/yıl seçicili takvim; yapılacaklar; zamanlayıcı.
 - Panelde **kısayol düzenleyici** ve **duvar kağıdı seçici** (monitör başına ya da tüm monitörlere yayılan tek resim, Superpaper'daki gibi).
@@ -160,7 +171,8 @@ Hyprland üzerindeki **illogical-impulse** (`ii`) Quickshell kurulumunun Windows
 - **Ekran alıntısı** (Print): alan seç, üzerine kalem / çember / dikdörtgen / renkle çiz, kopyala ya da kaydet.
 - **Animasyonlar**: kaygan workspace geçişleri, pencere açma/kapama/taşıma animasyonları, kayarak açılıp kapanan popup'lar.
 - **Terminal**: ii'nin kitty ayarlarıyla birebir WezTerm (JetBrains Mono Nerd Font, çizgi imleç, duvar kağıdından üretilen Material You renkleri) içinde **fish** + **starship**.
-- **Doğrudan masaüstüne açılış**: kabuk hazır olana kadar duvar kağıdı perdesi; Windows görev çubuğu ve Başlat menüsü hiç görünmez (Super tuşu yalnızca program açıkken kabuğundur).
+- **Doğrudan masaüstüne açılış**: kabuk hazır olana kadar duvar kağıdı perdesi; Windows görev çubuğu ve Başlat menüsü hiç görünmez — diğer monitörlerde de, bir uygulama görev çubuğu düğmesini yanıp söndürdüğünde de (Super tuşu yalnızca program açıkken kabuğundur).
+- **Kendini toparlar**: pencere yöneticisi çöker ya da donarsa, bar çökerse, helper çöker ya da donarsa o parça kendiliğinden yeniden başlar (diğer workspace'lerde gizli kalan pencereler önce geri gelir). Bar bir sebeple yoksa, dönene kadar Windows görev çubuğu ve Başlat menüsü (Win tuşu) geri gelir; hiçbir zaman eli kolu bağlı kalmazsın. **Masaüstünü yenile** (oturum ekranı, sağ panel ya da Başlat menüsündeki *Logical Lunge'u yeniden başlat*) komut satırı bilmeden her şeyi temiz baştan başlatır.
 
 ### Kurulum
 
@@ -168,7 +180,7 @@ Hyprland üzerindeki **illogical-impulse** (`ii`) Quickshell kurulumunun Windows
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-Windows **bir kez** izin ister, gerisini yükleyici yapar. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
+Windows **bir kez** izin ister, gerisini yükleyici yapar. **Güncelleme:** sağ paneldeki güncelle düğmesi ya da aynı komutu tekrar çalıştırmak; eski sürümlerden kalanlar (ayrı tacky-borders programı ve ayarı, görev çubuğu betiği, ilk sürümlerin kurduğu upstream GlazeWM / Zebar) temizlenir. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
 
 ### Uyumluluk
 

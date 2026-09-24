@@ -105,6 +105,8 @@ Step 'Stopping running components'
 $gwRun = Get-Process glazewm -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($gwRun) { try { & $gwRun.Path command wm-exit 2>$null | Out-Null } catch {}; [void]$gwRun.WaitForExit(5000) }
 foreach ($n in 'glazewm', 'zebar', 'll-helper', 'tacky-borders', 'll-temps') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue }
+# Older versions hid the taskbar with a PowerShell loop (the helper does it now)
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*hide-taskbar.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Milliseconds 800
 
 # ---------------------------------------------------------------- GlazeWM + Zebar
@@ -117,6 +119,30 @@ if ($bundled) {
     $gwExe = Join-Path $LL 'bin\glazewm.exe'
     $zbExe = Join-Path $LL 'bin\zebar.exe'
     Add-UserPath (Join-Path $LL 'bin')
+
+    # Older versions installed the upstream GlazeWM and Zebar (MSIs with their own tray icons, Start menu entries and
+    # settings windows); our builds replace them. Only the copies Logical Lunge installed go, never ones the user had.
+    foreach ($app in @(@('glazewm', 'GlazeWM'), @('zebar', 'Zebar'))) {
+        if (@($backup.installed) -notcontains $app[0]) { continue }
+        foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
+            Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
+                $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                if ($p.DisplayName -like "$($app[1])*" -and $_.PSChildName -match '^\{') {
+                    Log "    removing the upstream $($app[1]) an older version installed"
+                    Start-Process msiexec.exe -ArgumentList '/x', $_.PSChildName, '/qn', '/norestart' -Wait
+                }
+            }
+        }
+        $backup.installed = @($backup.installed | Where-Object { $_ -ne $app[0] })
+    }
+    # ... and the PATH entry that made "zebar" resolve to it
+    $oldZb = Join-Path $env:ProgramFiles 'glzr.io\Zebar'
+    if (@($backup.installed) -contains "path:$oldZb") {
+        $cur = (Get-ItemProperty "$HKU\Environment" -Name Path -ErrorAction SilentlyContinue).Path
+        if ($cur) { Set-ItemProperty "$HKU\Environment" -Name Path -Value (($cur -split ';' | Where-Object { $_ -and $_ -ne $oldZb }) -join ';') -Type ExpandString }
+        $backup.installed = @($backup.installed | Where-Object { $_ -ne "path:$oldZb" })
+    }
+    Save-Backup
 }
 else {
 Step "Installing GlazeWM $GLAZEWM_VER"
@@ -179,6 +205,14 @@ $gcText = [IO.File]::ReadAllText($gc)
 # Window borders are drawn by our GlazeWM build itself (the `borders:` section of its config); the separate
 # tacky-borders program of older versions is removed
 Remove-Item (Join-Path $LL 'tools\tacky-borders.exe') -Force -ErrorAction SilentlyContinue
+# ... and its config, if it is the one older versions wrote (a tacky-borders setup of the user's own is kept)
+$tc = Join-Path $UserProfile '.config\tacky-borders\config.yaml'
+if ((Test-Path $tc) -and ((Get-Content $tc -Raw -ErrorAction SilentlyContinue) -match 'illogical-impulse')) {
+    $td = Split-Path $tc
+    Remove-Item $tc -Force -ErrorAction SilentlyContinue
+    Get-ChildItem $td -Filter '*.log*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    if (-not (Get-ChildItem $td -Force -ErrorAction SilentlyContinue)) { Remove-Item $td -Force -ErrorAction SilentlyContinue }
+}
 
 Step 'Installing DDC/CI brightness tool (NirSoft ControlMyMonitor)'
 $cz = Get-File 'https://www.nirsoft.net/utils/controlmymonitor.zip' 'controlmymonitor.zip'
