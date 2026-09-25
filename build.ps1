@@ -7,7 +7,7 @@
 #       uninstall.ps1, ui\logical-lunge\*, scripts\*.ps1, tools\{lunge-media.exe, temps\, termcolors\, songrec\}
 #   config\   templates for ~\.config\logical-lunge and the terminal
 #   installer\setup.ps1
-param([switch]$SkipPython, [switch]$SkipRust)
+param([switch]$SkipPython, [switch]$SkipRust, [switch]$NoZip)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -104,19 +104,14 @@ foreach ($exe in 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watch
     if (-not (Test-Path (Join-Path $app $exe))) { throw "$exe is missing (build without -SkipRust)" }
 }
 
-Step 'UI (widget pack) + translations'
-Push-Location "$root\ui"; try { Native { node i18n.src.js } 'i18n' } finally { Pop-Location }
-$snippet = [IO.File]::ReadAllText("$root\ui\i18n.snippet.js").Replace("`r`n", "`n")
-Get-ChildItem "$root\ui" -File | Where-Object { $_.Name -notin 'i18n.src.js', 'i18n.snippet.js' } | ForEach-Object {
-    $dst = Join-Path $pack $_.Name
-    if ($_.Extension -eq '.html') {
-        # every widget carries the same inline translation layer
-        $h = [IO.File]::ReadAllText($_.FullName).Replace("`r`n", "`n")
-        $h = [regex]::Replace($h, '(?s)    <script>\n// Logical Lunge dil katmanı.*?    </script>', ("    <script>`n" + $snippet + '    </script>').Replace('$', '$$'))
-        [IO.File]::WriteAllText($dst, $h, (New-Object Text.UTF8Encoding $false))
-    }
-    else { Copy-Item $_.FullName $dst }
+Step 'UI (widgets bundled with their libraries and fonts; translations)'
+# React, the Tauri API and the shell client are bundled in (ui\build.mjs): nothing is loaded from the network
+Push-Location "$root\ui"
+try {
+    Native { npm ci --no-audit --no-fund } 'npm ci (ui)'
+    Native { node build.mjs $pack } 'ui build'
 }
+finally { Pop-Location }
 
 Step 'Scripts, configs, installer'
 Copy-Item "$root\scripts\*.ps1" "$app\scripts\"
@@ -125,6 +120,7 @@ Copy-Item "$root\config" "$out\config" -Recurse
 Copy-Item "$root\installer\setup.ps1" "$out\installer\"
 Copy-Item "$root\VERSION" $out
 
+if ($NoZip) { Write-Host "Built $out (no zip)" -ForegroundColor Green; return }
 Step 'Package'
 $zip = Join-Path $root "dist\$name.zip"
 Remove-Item $zip -ErrorAction SilentlyContinue

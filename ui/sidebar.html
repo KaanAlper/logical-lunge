@@ -112,36 +112,31 @@
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" type="text/css" href="./sidebar.css" />
-    <script
-      src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"
-      integrity="sha256-aS0B0wnsaDByLfE16h4MDCP1fQFccysd1YWOcV+gbBo="
-      crossorigin="anonymous"
-    ></script>
   </head>
   <body>
     <div id="root"></div>
-    <script type="text/babel" data-type="module">
+    <script type="module">
       // ii modules/ii/sidebarRight/SidebarRightContent.qml:
       //   SystemButtonRow, AndroidQuickPanel (quickToggles.style = "android"),
       //   CenterWidgetGroup (NotificationList), BottomWidgetGroup (takvim / yapılacaklar / zamanlayıcı)
-      import React, { useState, useEffect, useRef, useCallback } from 'https://esm.sh/react@18';
-      import { createRoot } from 'https://esm.sh/react-dom@18/client';
-      import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import React, { useState, useEffect, useRef, useCallback } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import * as lunge from 'lunge/shell';
+      import { listen, emit } from '@tauri-apps/api/event';
 
-      const win = zebar.currentWidget().tauriWindow;
+      const win = lunge.currentWidget().tauriWindow;
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       const LL = '{{INSTALL_ESC}}\\scripts';
-      const providers = zebar.createProviderGroup({
+      const providers = lunge.createProviderGroup({
         audio: { type: 'audio' },
         host: { type: 'host', refreshInterval: 60000 },
         network: { type: 'network', refreshInterval: 10000 },
-        glazewm: { type: 'glazewm' },
+        tiling: { type: 'tiling' },
       });
 
       const Icon = ({ name, fill }) => <span className={`icon ${fill ? 'fill' : ''}`}>{name}</span>;
       // Hepsi çekirdek üzerinden: hiç konsol penceresi açılmaz
-      const helper = args => zebar.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
+      const helper = args => lunge.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
       const psFile = (file, args = []) => helper(['--ps', `${LL}\\${file}`, ...args]);
       const json = s => { try { return JSON.parse(s); } catch { return null; } };
       const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
@@ -160,7 +155,7 @@
           setTimeout(() => win.hide().catch(() => {}), 260);
         }, []);
         const show = useCallback(async () => {
-          openedFocus.current = providers.outputMap.glazewm?.focusedContainer?.id ?? null;
+          openedFocus.current = providers.outputMap.tiling?.focusedContainer?.id ?? null;
           // Gizlenip yeniden gösterilince "her zaman üstte" düşebiliyor: her açılışta yeniden ver
           try { await win.show(); } catch {}
           // Kabuğun setAlwaysOnTop'u gizle/göster sonrası etkisiz: helper Windows API ile en üste alıp odaklar
@@ -182,7 +177,7 @@
 
         // Panel her zaman odak almayabiliyor (blur hiç gelmez): başka pencereye odak geçince
         // (tık, kısayol ya da fareyle) kapan.
-        const focusedId = o.glazewm?.focusedContainer?.id;
+        const focusedId = o.tiling?.focusedContainer?.id;
         useEffect(() => {
           if (open && openedFocus.current !== null && focusedId && focusedId !== openedFocus.current) hide();
         }, [focusedId]);
@@ -237,7 +232,7 @@
       const llLabel = id => LL_LABELS[id] || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
       const llGroup = id => id.startsWith('focus-') || id.startsWith('move-') || id === 'close' ? 'win'
         : id.startsWith('ws-') ? 'ws' : (id.startsWith('screenshot') || id === 'clipboard') ? 'sys' : 'app';
-      function gwmLabel(cmds) {
+      function tilingLabel(cmds) {
         const c = cmds.join(' ; ');
         let m;
         if ((m = c.match(/^move --workspace (\d+)$/))) return `Pencereyi workspace ${m[1]}'e gönder`;
@@ -256,7 +251,7 @@
         if (/wezterm/i.test(c)) return 'Terminal (yedek)';
         return c;
       }
-      const gwmGroup = cmds => {
+      const tilingGroup = cmds => {
         const c = cmds.join(' ');
         if (/workspace/.test(c)) return 'ws';
         if (/shell-exec/.test(c)) return 'app';
@@ -281,14 +276,14 @@
 
       function ShortcutsPage({ onClose }) {
         const [ll, setLl] = useState([]);
-        const [gwm, setGwm] = useState([]);
+        const [tiling, setTiling] = useState([]);
         const [locked, setLocked] = useState(true);
         const [capturing, setCapturing] = useState(null); // satır anahtarı
         const [msg, setMsg] = useState(null);
         const [q, setQ] = useState('');
         const load = useCallback(() => {
           helper(['--keybinds']).then(s => { const r = json(s); if (Array.isArray(r)) setLl(r); }).catch(() => {});
-          psFile('keybinds-gwm.ps1', ['list']).then(s => { const r = json(s); if (Array.isArray(r)) setGwm(r); }).catch(() => {});
+          psFile('keybinds-tiling.ps1', ['list']).then(s => { const r = json(s); if (Array.isArray(r)) setTiling(r); }).catch(() => {});
         }, []);
         useEffect(load, []);
         useEffect(() => { window.__llCapturing = !!capturing; }, [capturing]);
@@ -296,7 +291,7 @@
         const rows = [
           { key: 'super', group: 'sys', label: 'Arama / overview', combo: 'Super', fixed: true },
           ...ll.map(b => ({ key: 'll:' + b.id, group: llGroup(b.id), label: llLabel(b.id), combo: b.combo, def: b.default, src: 'll', id: b.id })),
-          ...gwm.map(g => ({ key: 'gwm:' + g.index, group: gwmGroup(g.commands), label: gwmLabel(g.commands), combo: g.bindings[0] || '', extra: g.bindings.slice(1), src: 'gwm', id: g.index })),
+          ...tiling.map(g => ({ key: 'tiling:' + g.index, group: tilingGroup(g.commands), label: tilingLabel(g.commands), combo: g.bindings[0] || '', extra: g.bindings.slice(1), src: 'tiling', id: g.index })),
         ];
         const shown = q ? rows.filter(r => low(r.label).includes(low(q)) || low(r.combo).includes(low(q))) : rows;
 
@@ -313,13 +308,13 @@
         };
         const apply = async (row, combo) => {
           if (row.src === 'll') await helper(['--bind', row.id, combo]).catch(() => {});
-          else await psFile('keybinds-gwm.ps1', ['set', String(row.id), combo]).catch(() => {});
+          else await psFile('keybinds-tiling.ps1', ['set', String(row.id), combo]).catch(() => {});
           setMsg({ kind: 'ok', text: `${row.label}: ${combo || 'kapatıldı'}` });
           load();
         };
         const resetAll = async () => {
           await helper(['--bind-reset']).catch(() => {});
-          await psFile('keybinds-gwm.ps1', ['reset']).catch(() => {});
+          await psFile('keybinds-tiling.ps1', ['reset']).catch(() => {});
           setMsg({ kind: 'ok', text: 'Tüm kısayollar varsayılana döndü' });
           load();
         };
@@ -502,7 +497,7 @@
                 <button className="qbtn" title="Kısayollar" onClick={() => onPage('keys')}>
                   <Icon name="keyboard" />
                 </button>
-                <button className="qbtn" title="Ayarlar klasörü" onClick={() => zebar.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.config\\logical-lunge'])}>
+                <button className="qbtn" title="Ayarlar klasörü" onClick={() => lunge.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.config\\logical-lunge'])}>
                   <Icon name="settings" />
                 </button>
                 <button className="qbtn" title="Oturum" onClick={() => { emit('ll:sidebar-right-toggle').catch(() => {}); setTimeout(() => emit('ll:session-toggle').catch(() => {}), 150); }}>
@@ -516,7 +511,7 @@
 
       // ii sessionScreen: kilitle / uyku / çıkış / yeniden başlat / kapat
       function SessionRow() {
-        const act = (prog, args) => zebar.shellSpawn(prog, args);
+        const act = (prog, args) => lunge.shellSpawn(prog, args);
         const items = [
           ['lock', 'Kilitle', () => act('rundll32', ['user32.dll,LockWorkStation'])],
           ['dark_mode', 'Uyku', () => act('rundll32', ['powrprof.dll,SetSuspendState', '0,1,0'])],
@@ -566,7 +561,7 @@
       }
 
       const signalIcon = s => (s >= 75 ? 'signal_wifi_4_bar' : s >= 50 ? 'network_wifi_3_bar' : s >= 25 ? 'network_wifi_2_bar' : 'network_wifi_1_bar');
-      const openSettings = uri => zebar.shellSpawn('explorer', [uri]);
+      const openSettings = uri => lunge.shellSpawn('explorer', [uri]);
 
       let awakeRestarted = false;
       function AndroidQuickPanel({ o, open }) {
@@ -701,7 +696,7 @@
           },
           screenSnip: {
             name: 'Ekran alıntısı', icon: 'screenshot_region', toggled: false, status: '',
-            action: () => { emit('ll:sidebar-right-toggle').catch(() => {}); zebar.shellSpawn(HELPER, ['--snip', '350']).catch(() => {}); },
+            action: () => { emit('ll:sidebar-right-toggle').catch(() => {}); lunge.shellSpawn(HELPER, ['--snip', '350']).catch(() => {}); },
           },
           onScreenKeyboard: {
             name: 'Ekran klavyesi', icon: 'keyboard', toggled: false, status: '',

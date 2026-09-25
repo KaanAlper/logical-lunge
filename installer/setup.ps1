@@ -265,7 +265,7 @@ try {
     if (Test-Path $apps) { Copy-Item $apps (Join-Path $PACK 'apps.json') -Force }
     # placeholders -> this user's paths
     $esc = $UserProfile.Replace('\', '\\'); $appEsc = $APP.Replace('\', '\\')
-    Get-ChildItem $PACK -File -Include *.html, *.json, *.css -Recurse | ForEach-Object {
+    Get-ChildItem $PACK -File -Include *.html, *.js, *.json, *.css -Recurse | ForEach-Object {
         $t = [IO.File]::ReadAllText($_.FullName)
         $n = $t.Replace('{{INSTALL_ESC}}', $appEsc).Replace('{{INSTALL}}', $APP).Replace('{{USERPROFILE_ESC}}', $esc).Replace('{{USERPROFILE}}', $UserProfile)
         if ($n -ne $t) { [IO.File]::WriteAllText($_.FullName, $n, $UTF8) }

@@ -30,3 +30,8 @@ node_modules/
 /tiling/target/
 /shell/target/
 /shell/packages/desktop/gen/
+
+# UI build (ui/build.mjs)
+/ui/node_modules/
+/ui/.build/
+/ui/dist/

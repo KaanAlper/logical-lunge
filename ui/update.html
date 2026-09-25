@@ -113,8 +113,7 @@
     <!-- Güncelleme kartı: sağ üstte kayarak gelir. (toast.html ile aynı pencere düzeni) -- ii modules/ii/notificationPopup karşılığı: sağ üstte, bar'ın altında kayarak gelen kartlar.
          Pencere odak çalmaz: hep açık ama boşken fare tıklamalarını geçirir. -->
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
-      @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block');
+      @import url('./fonts.css');
       :root {
         --m3primary: #d0bcff; --m3onPrimary: #381e72;
         --m3primaryContainer: #4f378b; --m3onPrimaryContainer: #eaddff;
@@ -254,15 +253,15 @@
   <body>
     <div id="stack"></div>
     <script type="module">
-      import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
-      import { LogicalSize } from 'https://esm.sh/@tauri-apps/api@2/dpi';
+      import * as lunge from 'lunge/shell';
+      import { listen, emit } from '@tauri-apps/api/event';
+      import { LogicalSize } from '@tauri-apps/api/dpi';
 
-      const win = zebar.currentWidget().tauriWindow;
+      const win = lunge.currentWidget().tauriWindow;
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       const W = 420, RECHECK_MS = 6 * 3600 * 1000;
       const stack = document.getElementById('stack');
-      const helper = args => zebar.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
+      const helper = args => lunge.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
       const json = s => { try { return JSON.parse(s); } catch { return null; } };
       const load = k => { try { return localStorage.getItem(k); } catch { return null; } };
       const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
@@ -270,12 +269,25 @@
 
       let card = null, busy = false, closeTimer = null, info = null;
 
+      // Boşken pencere gerçekten gizlenir: saydam da olsa açık kalan pencere oyunun üstünde her karede birleştiriliyor
+      // ve içinde kalan animasyonlar çizilmeye devam ediyordu. Odak çalmadan çekirdek gösterir / gizler (tam ekran oyunda
+      // bildirimi oyun bitince gösterir); çekirdeğe ulaşılamazsa Tauri.
+      let shownState = null;
+      const setShown = v => {
+        if (shownState === v) return;
+        shownState = v;
+        fetch(`http://127.0.0.1:6131/widget?w=update&v=${v ? 1 : 0}`, { method: 'POST', cache: 'no-store' })
+          .then(r => { if (!r.ok) throw new Error(String(r.status)); })
+          .catch(() => (v ? win.show() : win.hide()).catch(() => {}));
+      };
+
       async function fit() {
         const h = card ? stack.getBoundingClientRect().height : 1;
         try {
           await win.setSize(new LogicalSize(W, Math.max(1, Math.ceil(h))));
           await win.setIgnoreCursorEvents(!card);
         } catch (e) { console.error(e); }
+        setShown(!!card);
         announce(card ? h : 0);
       }
       // Bildirimler ayrı bir pencere ve aynı köşede: kart açıkken üstüne biniyorlardı. Kartın yüksekliği yayınlanır,

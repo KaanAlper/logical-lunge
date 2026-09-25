@@ -23,6 +23,31 @@ require.
   widgets load only from the app's own `ui` folder; Logical Lunge's data and log locations; the browser context
   menu, developer tools and browser shortcuts are disabled in widgets.
 
+### Zebar client library: `ui/lib/shell-client.js`
+
+- Source: the `zebar` npm package 3.3.1 (https://github.com/glzr-io/zebar, `packages/client-api`)
+- Copyright: glzr-io and Zebar contributors
+- License: GNU General Public License v3.0
+- Changes: only the API and providers the widgets use; no console logging of provider output; the window manager
+  provider is renamed `tiling`, talks to `ui/lib/tiling-client.js` (a new IPC client) and coalesces its queries.
+
+### Libraries bundled into the widgets at build time (`ui/package.json`)
+
+| Project | License |
+|---|---|
+| [React](https://github.com/facebook/react) / React DOM 18.3.1 | MIT, Copyright (c) Meta Platforms, Inc. and affiliates |
+| [Tauri JS API](https://github.com/tauri-apps/tauri) 2.10.1 | MIT or Apache-2.0, Copyright (c) Tauri Programme within The Commons Conservancy |
+| [Zod](https://github.com/colinhacks/zod) 3.24.2 | MIT, Copyright (c) Colin McDonnell |
+| [Luxon](https://github.com/moment/luxon) 3.4.4 | MIT, Copyright (c) JS Foundation and other contributors |
+
+### Fonts: `ui/fonts/`
+
+| Font | License |
+|---|---|
+| [Google Sans Flex](https://fonts.google.com/specimen/Google+Sans+Flex) | SIL Open Font License 1.1 |
+| [Rubik](https://github.com/googlefonts/rubik) | SIL Open Font License 1.1 |
+| [Material Symbols Rounded](https://github.com/google/material-design-icons) | Apache-2.0 |
+
 ### tacky-borders: `tiling/packages/wm-borders`
 
 - Source: https://github.com/lukeyou05/tacky-borders

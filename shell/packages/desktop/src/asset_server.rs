@@ -1,6 +1,5 @@
 use std::{
   collections::HashMap,
-  io::Cursor,
   path::{Path, PathBuf},
   sync::LazyLock,
   time::{Duration, Instant},
@@ -8,9 +7,9 @@ use std::{
 
 use rocket::{
   fs::NamedFile,
-  http::{ContentType, Cookie, CookieJar, Header, SameSite, Status},
+  http::{ContentType, Cookie, CookieJar, SameSite, Status},
   request::{FromRequest, Outcome},
-  response::{self, Redirect, Responder, Response},
+  response::Redirect,
   Request,
 };
 use tokio::{sync::Mutex, task};
@@ -40,7 +39,7 @@ fn build_asset_server() -> rocket::Rocket<rocket::Build> {
     .configure(
       rocket::Config::figment().merge(("port", ASSET_SERVER_PORT)),
     )
-    .mount("/", routes![sw_js, normalize_css, init, instance, serve])
+    .mount("/", routes![normalize_css, init, instance, serve])
 }
 
 /// Logical Lunge: identifies the process serving the port (see
@@ -194,25 +193,6 @@ pub fn init(
   );
 
   Redirect::to(redirect)
-}
-
-#[get("/__shell/sw.js")]
-pub fn sw_js() -> SwResponse {
-  SwResponse(include_str!("../resources/sw.js"))
-}
-
-#[derive(Debug)]
-pub struct SwResponse(&'static str);
-
-#[rocket::async_trait]
-impl<'r> Responder<'r, 'static> for SwResponse {
-  fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
-    Response::build()
-      .header(Header::new("Content-Type", "text/javascript"))
-      .header(Header::new("Service-Worker-Allowed", "/"))
-      .sized_body(self.0.len(), Cursor::new(self.0))
-      .ok()
-  }
 }
 
 #[get("/__shell/normalize.css")]

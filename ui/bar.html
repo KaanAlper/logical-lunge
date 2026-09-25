@@ -112,23 +112,18 @@
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" type="text/css" href="./styles.css" />
-    <script
-      src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"
-      integrity="sha256-aS0B0wnsaDByLfE16h4MDCP1fQFccysd1YWOcV+gbBo="
-      crossorigin="anonymous"
-    ></script>
   </head>
   <body>
     <div id="root"></div>
 
-    <script type="text/babel" data-type="module">
-      import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'https://esm.sh/react@18';
-      import { createRoot } from 'https://esm.sh/react-dom@18/client';
-      import * as zebar from 'https://esm.sh/zebar@3';
-      import { emit, listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+    <script type="module">
+      import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import * as lunge from 'lunge/shell';
+      import { emit, listen } from '@tauri-apps/api/event';
       // Her monitörde ayrı bir bar penceresi var; OSD'yi tek monitörde göstermek için kimlik
       const BAR_ID = Math.random().toString(36).slice(2);
-      import { LogicalSize } from 'https://esm.sh/@tauri-apps/api@2/dpi';
+      import { LogicalSize } from '@tauri-apps/api/dpi';
 
       // ---- ii ölçüleri (Appearance.qml) ----
       const SHOWN = 10;              // bar.workspaces.shown
@@ -138,8 +133,8 @@
       // ii eşikleri 1200/1000; Windows'ta tray + başlık daha geniş, 1280'lik ekran için biraz yukarı çekildi
       const shortenLevel = w => (w <= 1100 ? 2 : w <= 1440 ? 1 : 0);
 
-      const providers = zebar.createProviderGroup({
-        glazewm: { type: 'glazewm' },
+      const providers = lunge.createProviderGroup({
+        tiling: { type: 'tiling' },
         cpu: { type: 'cpu', refreshInterval: 3000 },
         memory: { type: 'memory', refreshInterval: 3000 },
         battery: { type: 'battery' },
@@ -163,13 +158,13 @@
         const target = Math.max(BAR_H, ...Object.values(heightRequests));
         if (target === lastHeight) return;
         lastHeight = target;
-        const win = zebar.currentWidget().tauriWindow;
+        const win = lunge.currentWidget().tauriWindow;
         win.setSize(new LogicalSize(window.innerWidth, target)).catch(err => console.error('resize', err));
         // Bar uzadığında (OSD / tray paneli) uygulamaların üstünde kalsın, sonra normale dönsün
         win.setAlwaysOnTop(target > BAR_H).catch(err => console.error('ontop', err));
       }
 
-      const shell = (prog, args) => zebar.shellSpawn(prog, args).catch(err => console.error(prog, err));
+      const shell = (prog, args) => lunge.shellSpawn(prog, args).catch(err => console.error(prog, err));
 
       // Workspace geçişi çekirdek (lunge.exe) üzerinden: Hyprland'deki slide animasyonuyla.
       // Çekirdek yoksa / hata verirse doğrudan pencere yöneticisi komutu.
@@ -182,12 +177,12 @@
         // POST: kabuğun service worker'ı başka adreslere giden GET cevaplarını önbelleğe alıp tekrar veriyor
         fetch(`http://127.0.0.1:6131/cmd?a=ws-${encodeURIComponent(target)}`, { method: 'POST', cache: 'no-store' })
           .then(r => { if (r.status !== 204) throw new Error(String(r.status)); })
-          .catch(() => zebar.shellSpawn(HELPER, ['--slide', target]).catch(() => {
+          .catch(() => lunge.shellSpawn(HELPER, ['--slide', target]).catch(() => {
             run(target === 'next' ? 'focus --next-workspace' : target === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${target}`);
           }));
       }
       // PowerShell her zaman çekirdek üzerinden: hiç konsol penceresi açılmaz
-      const psFile = (file, args = []) => zebar.shellExec(HELPER, ['--ps', `${LL}\\${file}`, ...args]);
+      const psFile = (file, args = []) => lunge.shellExec(HELPER, ['--ps', `${LL}\\${file}`, ...args]);
       const LL = `${'{{INSTALL_ESC}}\\scripts'}`;
 
       // ---- Parlaklık (WMI → dahili ekran; olmazsa DDC/CI) ----
@@ -206,12 +201,12 @@
       let gammaCache = 100, gammaTimer = null;
       const gammaDev = () => MONITOR.split('\\Monitor')[0];
       function readGamma() {
-        return zebar.shellExec(HELPER, ['--gamma', gammaDev()]).then(r => { try { gammaCache = JSON.parse(r.stdout).gamma; } catch {} }).catch(() => {});
+        return lunge.shellExec(HELPER, ['--gamma', gammaDev()]).then(r => { try { gammaCache = JSON.parse(r.stdout).gamma; } catch {} }).catch(() => {});
       }
       function setGamma(v) {
         gammaCache = v;
         clearTimeout(gammaTimer);
-        gammaTimer = setTimeout(() => zebar.shellExec(HELPER, ['--gamma', gammaDev(), String(v)]).catch(() => {}), 40);
+        gammaTimer = setTimeout(() => lunge.shellExec(HELPER, ['--gamma', gammaDev(), String(v)]).catch(() => {}), 40);
       }
       let brightnessTimer = null;
       let lastBrightnessSet = 0;
@@ -275,7 +270,7 @@
         }, [apps]);
 
         useEffect(() => { providers.onOutput(() => setO({ ...providers.outputMap })); }, []);
-        const devName = o.glazewm?.currentMonitor?.deviceName;
+        const devName = o.tiling?.currentMonitor?.deviceName;
         useEffect(() => {
           if (!devName) return;
           MONITOR = `${devName}\\Monitor0`;
@@ -308,7 +303,7 @@
           return () => { un.then(f => f()); };
         }, []);
         const isFocusedMonitor = () => {
-          const g = providers.outputMap.glazewm;
+          const g = providers.outputMap.tiling;
           return !g || !g.focusedMonitor || g.currentMonitor?.id === g.focusedMonitor.id;
         };
         const shouldShowOsd = () => {
@@ -344,8 +339,8 @@
 
         useEffect(() => { requestHeight('osd', osd ? BAR_H + 90 : BAR_H); }, [!!osd]);
 
-        const gwm = o.glazewm;
-        const run = cmd => gwm?.runCommand(cmd);
+        const tiling = o.tiling;
+        const run = cmd => tiling?.runCommand(cmd);
         const level = shortenLevel(vw);
         const sideW = SIDE_W[level];
 
@@ -410,11 +405,11 @@
                   {/* ii spark simgesi yerine arama: overview'un ne işe yaradığı ilk bakışta anlaşılsın */}
                   <Icon name="search" style={{ fontSize: 21 }} />
                 </button>
-                {level === 0 && <ActiveWindow gwm={gwm} onClick={toggleSidebarLeft} />}
-                {gwm?.isPaused && (
+                {level === 0 && <ActiveWindow tiling={tiling} onClick={toggleSidebarLeft} />}
+                {tiling?.isPaused && (
                   <button className="pill-mode paused" onClick={() => run('wm-toggle-pause')}>Duraklatıldı</button>
                 )}
-                {gwm?.bindingModes?.map(m => (
+                {tiling?.bindingModes?.map(m => (
                   <button key={m.name} className="pill-mode" onClick={() => run(`wm-disable-binding-mode --name ${m.name}`)}>
                     {m.displayName ?? m.name}
                   </button>
@@ -429,7 +424,7 @@
                 </div>
 
                 <div className="group ws-group">
-                  <Workspaces gwm={gwm} run={run} onRightClick={toggleOverview} iconFor={iconFor} />
+                  <Workspaces tiling={tiling} run={run} onRightClick={toggleOverview} iconFor={iconFor} />
                 </div>
 
                 <div className="group side" style={{ width: sideW }}>
@@ -490,13 +485,13 @@
         );
       }
 
-      function ActiveWindow({ gwm, onClick }) {
-        const w = gwm?.focusedContainer;
+      function ActiveWindow({ tiling, onClick }) {
+        const w = tiling?.focusedContainer;
         const isWin = w?.type === 'window';
         return (
           <div className="active-window" onClick={onClick}>
             <span className="cls">{isWin ? (w.processName || '').replace(/\.exe$/i, '').toLowerCase() : 'Masaüstü'}</span>
-            <span className="title">{isWin ? w.title : `Workspace ${gwm?.focusedWorkspace?.name ?? 1}`}</span>
+            <span className="title">{isWin ? w.title : `Workspace ${tiling?.focusedWorkspace?.name ?? 1}`}</span>
           </div>
         );
       }
@@ -546,7 +541,7 @@
       function useTemps() {
         const [t, setT] = useState(tempsCache);
         useEffect(() => {
-          const read = () => zebar.shellExec(TEMPS, ['--read']).then(r => { try { setT(tempsCache = JSON.parse(r.stdout)); } catch {} }).catch(() => {});
+          const read = () => lunge.shellExec(TEMPS, ['--read']).then(r => { try { setT(tempsCache = JSON.parse(r.stdout)); } catch {} }).catch(() => {});
           read();
           const id = setInterval(read, 2000);
           return () => clearInterval(id);
@@ -638,7 +633,7 @@
       function loadArt(title) {
         if (!title || artCache[title] !== undefined) return Promise.resolve(artCache[title]);
         if (!artWaiters[title]) {
-          artWaiters[title] = zebar.shellExec(ART, []).then(r => {
+          artWaiters[title] = lunge.shellExec(ART, []).then(r => {
             const url = (r.stdout || '').trim();
             return (artCache[title] = url.startsWith('data:') ? url : null);
           }).catch(() => null).finally(() => { delete artWaiters[title]; });
@@ -681,7 +676,7 @@
                   const r = e.currentTarget.getBoundingClientRect();
                   const sec = Math.max(0, Math.min(end, ((e.clientX - r.left) / r.width) * end));
                   Object.assign(mediaClock, { pos: sec, at: Date.now() });
-                  zebar.shellExec(ART, ['--seek', sec.toFixed(1)]).catch(() => {});
+                  lunge.shellExec(ART, ['--seek', sec.toFixed(1)]).catch(() => {});
                 }}><div className="mp-fill" style={{ width: `${pct}%` }} /><div className="mp-knob" style={{ left: `${pct}%` }} /></div>
                 <button onClick={() => media.next?.(opt)}><Icon name="skip_next" fill /></button>
               </div>
@@ -694,7 +689,7 @@
       }
 
       // Workspace'teki en büyük pencerenin ikonu (ii: bar.workspaces.showAppIcons, biggestWindow)
-      function biggestWindows(gwm) {
+      function biggestWindows(tiling) {
         const out = {};
         const walk = (node, name) => {
           for (const c of node.children ?? []) {
@@ -705,18 +700,18 @@
             } else walk(c, name);
           }
         };
-        (gwm?.allWorkspaces ?? []).forEach(ws => walk(ws, ws.name));
+        (tiling?.allWorkspaces ?? []).forEach(ws => walk(ws, ws.name));
         return out;
       }
 
       // ii Workspaces.qml — occupied arka planı birleşik, aktif gösterge "trailing":
       // ön kenar 100ms, arka kenar 300ms (AnimatedTabIndexPair), OutSine. Dolu olanlarda uygulama ikonu.
-      function Workspaces({ gwm, run, onRightClick, iconFor }) {
+      function Workspaces({ tiling, run, onRightClick, iconFor }) {
         const lastWheel = useRef(0);
         const prevIdx = useRef(null);
         const [dir, setDir] = useState(0);
 
-        const current = parseInt(gwm?.focusedWorkspace?.name ?? '1', 10) || 1;
+        const current = parseInt(tiling?.focusedWorkspace?.name ?? '1', 10) || 1;
         const base = Math.floor((current - 1) / SHOWN) * SHOWN;
         const idx = current - base - 1;
 
@@ -725,9 +720,9 @@
           prevIdx.current = idx;
         }, [idx]);
 
-        if (!gwm) return <div className="ws-track" style={{ width: SHOWN * WS }} />;
+        if (!tiling) return <div className="ws-track" style={{ width: SHOWN * WS }} />;
 
-        const big = biggestWindows(gwm);
+        const big = biggestWindows(tiling);
         const occupied = new Set(Object.keys(big).map(n => parseInt(n, 10)));
         const slots = Array.from({ length: SHOWN }, (_, i) => base + i + 1);
 
@@ -787,7 +782,7 @@
         const stop = fn => e => { e.stopPropagation(); fn(); };
         return (
           <div className="utils">
-            <button className="circle-btn" title="Bölge ekran görüntüsü" onClick={stop(() => zebar.shellSpawn(HELPER, ['--snip']).catch(() => {}))}>
+            <button className="circle-btn" title="Bölge ekran görüntüsü" onClick={stop(() => lunge.shellSpawn(HELPER, ['--snip']).catch(() => {}))}>
               <Icon name="screenshot_region" />
             </button>
             <button className="circle-btn" title="Ekran klavyesi" onClick={stop(() => emit('ll:osk-toggle').catch(() => {}))}>

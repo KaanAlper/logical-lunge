@@ -597,10 +597,9 @@ impl WidgetFactory {
     &self,
     state: &WidgetState,
   ) -> anyhow::Result<String> {
+    // Read by the widgets' client library (ui/lib/shell-client.js).
     let state_script =
-      // The widgets' client library reads the state under this name; it
-      // changes together with the client (bundled with the app).
-      format!("window.__ZEBAR_STATE={};", serde_json::to_string(state)?);
+      format!("window.__LUNGE_STATE={};", serde_json::to_string(state)?);
 
     let sw_script = include_str!("../resources/initialization-script.js");
 

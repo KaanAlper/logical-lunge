@@ -113,8 +113,7 @@
     <!-- ii modules/ii/notificationPopup karşılığı: sağ üstte, bar'ın altında kayarak gelen kartlar.
          Pencere odak çalmaz: hep açık ama boşken fare tıklamalarını geçirir. -->
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
-      @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block');
+      @import url('./fonts.css');
       :root {
         --m3primary: #d0bcff; --m3onPrimary: #381e72;
         --m3primaryContainer: #4f378b; --m3onPrimaryContainer: #eaddff;
@@ -198,13 +197,13 @@
     <div id="stage"><div id="row"></div></div>
     <div id="hint">Esc ile kapat</div>
     <script type="module">
-      import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import * as lunge from 'lunge/shell';
+      import { listen, emit } from '@tauri-apps/api/event';
 
-      const win = zebar.currentWidget().tauriWindow;
+      const win = lunge.currentWidget().tauriWindow;
       win.setTitle('lunge-session').catch(() => {});
       win.hide().catch(() => {});
-      const run = (prog, args) => zebar.shellSpawn(prog, args).catch(e => console.error(prog, e));
+      const run = (prog, args) => lunge.shellSpawn(prog, args).catch(e => console.error(prog, e));
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       // ii sessionScreen: kilitle, uyku, oturumu kapat, yeniden başlat, kapat, ürün yazılımı (UEFI/BIOS) ayarları
       const ITEMS = [

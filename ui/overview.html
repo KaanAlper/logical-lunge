@@ -112,26 +112,21 @@
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" type="text/css" href="./overview.css" />
-    <script
-      src="https://unpkg.com/@babel/standalone@7.25.6/babel.min.js"
-      integrity="sha256-aS0B0wnsaDByLfE16h4MDCP1fQFccysd1YWOcV+gbBo="
-      crossorigin="anonymous"
-    ></script>
   </head>
   <body>
     <div id="root"></div>
-    <script type="text/babel" data-type="module">
+    <script type="module">
       // ii modules/ii/overview: Super ile açılır. Üstte SearchWidget, altında OverviewWidget.
-      import React, { useState, useEffect, useRef, useMemo } from 'https://esm.sh/react@18';
-      import { createRoot } from 'https://esm.sh/react-dom@18/client';
-      import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen, emit } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import React, { useState, useEffect, useRef, useMemo } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import * as lunge from 'lunge/shell';
+      import { listen, emit } from '@tauri-apps/api/event';
 
-      const win = zebar.currentWidget().tauriWindow;
+      const win = lunge.currentWidget().tauriWindow;
       // Çekirdek (tek başına Super) pencereyi başlığından bulur
       win.setTitle('lunge-overview').catch(() => {});
 
-      const providers = zebar.createProviderGroup({ glazewm: { type: 'glazewm' } });
+      const providers = lunge.createProviderGroup({ tiling: { type: 'tiling' } });
 
       // ii Config.options.search.prefix
       const PREFIX = { action: '/', app: '>', math: '=', shell: '$', web: '?', clip: ';' };
@@ -139,7 +134,7 @@
       const LL = '{{INSTALL_ESC}}\\scripts';
 
       const Icon = ({ name, style }) => <span className="icon" style={style}>{name}</span>;
-      const spawn = (p, a) => zebar.shellSpawn(p, a).catch(e => console.error(p, e));
+      const spawn = (p, a) => lunge.shellSpawn(p, a).catch(e => console.error(p, e));
       // Komut / adres tek argüman olarak script'e gider (tırnak kaçışı derdi yok). Script hiç konsol
       // penceresi açmaz; sonucu JSON döner, ii tarzı bildirim (toast widget'ı) olarak gösterilir.
       const toast = payload => emit('ll:toast', payload).catch(() => {});
@@ -148,11 +143,11 @@
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       async function focusUnderCursor() {
         await new Promise(r => setTimeout(r, 60));
-        try { await zebar.shellExec(HELPER, ['--focus-under-cursor']); } catch {}
+        try { await lunge.shellExec(HELPER, ['--focus-under-cursor']); } catch {}
       }
       async function runScript(mode, text) {
         try {
-          const r = await zebar.shellExec(HELPER, ['--ps', `${LL}\\run.ps1`, mode, text]);
+          const r = await lunge.shellExec(HELPER, ['--ps', `${LL}\\run.ps1`, mode, text]);
           const out = (r.stdout || '').trim();
           if (out) {
             const res = JSON.parse(out.split(/\r?\n/).pop());
@@ -264,8 +259,8 @@
         { name: 'logout', desc: 'Oturumu kapat', run: () => spawn('shutdown', ['/l']) },
         { name: 'restart', desc: 'Yeniden başlat', run: () => spawn('shutdown', ['/r', '/t', '0']) },
         { name: 'shutdown', desc: 'Kapat', run: () => spawn('shutdown', ['/s', '/t', '0']) },
-        { name: 'reload', desc: 'Pencere yöneticisi ayarlarını yenile', run: gwm => gwm?.runCommand('wm-reload-config') },
-        { name: 'apps', desc: 'Uygulama listesini yenile', run: () => zebar.shellExec(HELPER, ['--ps', `${LL}\\build-apps.ps1`]).then(() => window.__llLoadApps?.()).catch(() => {}) },
+        { name: 'reload', desc: 'Pencere yöneticisi ayarlarını yenile', run: tiling => tiling?.runCommand('wm-reload-config') },
+        { name: 'apps', desc: 'Uygulama listesini yenile', run: () => lunge.shellExec(HELPER, ['--ps', `${LL}\\build-apps.ps1`]).then(() => window.__llLoadApps?.()).catch(() => {}) },
       ];
 
       // ---- ii services/SongRec.qml: çalan müziği tanı (Shazam). ii Linux'ta songrec kullanır; burada
@@ -280,7 +275,7 @@
           let out = '';
           try {
             // ii Config.options.musicRecognition: interval 4, timeout 16... burada 2 sn aralık, 30 sn toplam
-            this.proc = await zebar.shellSpawn(HELPER, ['--songrec', '-i', '2', '-t', '30', '-s', 'monitor']);
+            this.proc = await lunge.shellSpawn(HELPER, ['--songrec', '-i', '2', '-t', '30', '-s', 'monitor']);
           } catch (e) {
             toast({ kind: 'error', title: 'Müzik tanınamadı', body: 'Tanıma aracı başlatılamadı', icon: 'music_off' });
             return;
@@ -315,19 +310,19 @@
         const [query, setQuery] = useState('');
         const [sel, setSel] = useState(0);
         const [apps, setApps] = useState([]);
-        const [gwm, setGwm] = useState(providers.outputMap.glazewm);
+        const [tiling, setTiling] = useState(providers.outputMap.tiling);
         // ii "overviewClipboardToggle" / cliphist: ";" öneki pano geçmişini listeler (Super+V)
         const [clips, setClips] = useState([]);
         const clipMode = query.startsWith(PREFIX.clip);
         const loadClips = async () => {
-          try { const r = await zebar.shellExec(HELPER, ['--clip-list']); setClips(JSON.parse((r.stdout || '').trim() || '[]')); }
+          try { const r = await lunge.shellExec(HELPER, ['--clip-list']); setClips(JSON.parse((r.stdout || '').trim() || '[]')); }
           catch { setClips([]); }
         };
         useEffect(() => { if (open && clipMode) loadClips(); }, [open, clipMode]);
         const inputRef = useRef(null);
         const resultsRef = useRef(null);
 
-        useEffect(() => { providers.onOutput(() => setGwm(providers.outputMap.glazewm)); }, []);
+        useEffect(() => { providers.onOutput(() => setTiling(providers.outputMap.tiling)); }, []);
 
         const loadApps = () => fetch(`./apps.json?t=${Date.now()}`).then(r => r.json()).then(setApps).catch(() => {});
         window.__llLoadApps = loadApps;
@@ -347,7 +342,7 @@
             clearTimeout(t);
             if (r.ok) return (await r.text()).trim();
           } catch {}
-          try { const r = await withTimeout(zebar.shellExec(HELPER, ['--overview-mode']), 600, null); if (r) return (r.stdout || '').trim(); } catch {}
+          try { const r = await withTimeout(lunge.shellExec(HELPER, ['--overview-mode']), 600, null); if (r) return (r.stdout || '').trim(); } catch {}
           return '';
         };
         // Odak olayı ve görünürlük yoklaması aynı açılışı iki kez tetikleyebiliyor; ikincisi bayrağı boş bulup ";"yi siliyordu
@@ -445,7 +440,7 @@
                 mono: c.kind === 'text' && /[{};=<>]/.test(first), verb: 'Kopyala',
                 exec: async () => {
                   try {
-                    const r = await zebar.shellExec(HELPER, ['--clip-set', c.id]);
+                    const r = await lunge.shellExec(HELPER, ['--clip-set', c.id]);
                     const res = JSON.parse((r.stdout || '').trim() || '{}');
                     if (!res.ok) throw new Error(res.error || 'Pano meşgul');
                     // Kısa onay: uzun kalması rahatsız ediyordu
@@ -460,7 +455,7 @@
           if (q.startsWith(PREFIX.action)) {
             const a = q.slice(1).toLowerCase();
             ACTIONS.filter(x => x.name.startsWith(a.split(' ')[0]))
-              .forEach(x => push({ key: 'a' + x.name, type: 'Eylem', name: `/${x.name}`, sub: x.desc, material: 'settings_suggest', verb: 'Çalıştır', exec: () => x.run(gwm) }));
+              .forEach(x => push({ key: 'a' + x.name, type: 'Eylem', name: `/${x.name}`, sub: x.desc, material: 'settings_suggest', verb: 'Çalıştır', exec: () => x.run(tiling) }));
             return out;
           }
           if (q.startsWith(PREFIX.shell)) {
@@ -511,7 +506,7 @@
               exec: () => runScript('url', SEARCH_ENGINE + encodeURIComponent(term)) });
           }
           return out;
-        }, [query, apps, gwm, clips]);
+        }, [query, apps, tiling, clips]);
 
         useEffect(() => { setSel(0); }, [query]);
         useEffect(() => {
@@ -528,7 +523,7 @@
           else if (e.key === 'Delete' && results[sel]?.clipId) {
             e.preventDefault();
             const id = results[sel].clipId;
-            zebar.shellExec(HELPER, ['--clip-del', id]).then(loadClips).catch(() => {});
+            lunge.shellExec(HELPER, ['--clip-del', id]).then(loadClips).catch(() => {});
           }
           else if (e.key === 'Tab') { e.preventDefault(); if (results[0]) setQuery(results[sel]?.name ?? results[0].name); }
         };
@@ -588,7 +583,7 @@
                   </>
                 )}
               </div>
-              {!query && <WorkspaceOverview gwm={gwm} apps={apps} onDone={hide} />}
+              {!query && <WorkspaceOverview tiling={tiling} apps={apps} onDone={hide} />}
             </div>
           </>
         );
@@ -615,17 +610,17 @@
 
       // ii OverviewWidget.qml: workspace'lerin küçük önizlemesi, pencereler ikonlarıyla;
       // tıkla -> odakla, sürükle-bırak -> başka workspace'e taşı.
-      function WorkspaceOverview({ gwm, apps, onDone }) {
+      function WorkspaceOverview({ tiling, apps, onDone }) {
         const [drag, setDrag] = useState(null);
         const [over, setOver] = useState(null);
-        if (!gwm) return null;
+        if (!tiling) return null;
 
-        const mon = gwm.focusedMonitor ?? gwm.allMonitors?.[0];
+        const mon = tiling.focusedMonitor ?? tiling.allMonitors?.[0];
         if (!mon) return null;
         const scale = 0.18; // Config.options.overview.scale
         const rows = 2, cols = 5; // overview.rows / columns
         const W = Math.round(mon.width * scale), H = Math.round(mon.height * scale);
-        const current = parseInt(gwm.focusedWorkspace?.name ?? '1', 10) || 1;
+        const current = parseInt(tiling.focusedWorkspace?.name ?? '1', 10) || 1;
         const base = Math.floor((current - 1) / (rows * cols)) * rows * cols;
 
         const iconFor = proc => {
@@ -647,9 +642,9 @@
             else walk(c, wsName);
           }
         };
-        (gwm.allMonitors ?? []).forEach(m => (m.children ?? []).forEach(ws => { monOf[ws.name] = m; walk(ws, ws.name); }));
+        (tiling.allMonitors ?? []).forEach(m => (m.children ?? []).forEach(ws => { monOf[ws.name] = m; walk(ws, ws.name); }));
 
-        const run = cmd => gwm.runCommand(cmd).catch(() => {});
+        const run = cmd => tiling.runCommand(cmd).catch(() => {});
 
         return (
           <div className="overview" style={{ gridTemplateColumns: `repeat(${cols}, ${W}px)` }}>
@@ -658,14 +653,14 @@
               const wins = byWs[n] ?? [];
               return (
                 <div key={n}
-                     className={`ws ${n === gwm.focusedWorkspace?.name ? 'active' : ''} ${over === n ? 'drop' : ''}`}
+                     className={`ws ${n === tiling.focusedWorkspace?.name ? 'active' : ''} ${over === n ? 'drop' : ''}`}
                      style={{ width: W, height: H }}
-                     onClick={() => { onDone(); zebar.shellSpawn('{{INSTALL_ESC}}\\lunge.exe', ['--slide', n]).catch(() => run(`focus --workspace ${n}`)); }}
+                     onClick={() => { onDone(); lunge.shellSpawn('{{INSTALL_ESC}}\\lunge.exe', ['--slide', n]).catch(() => run(`focus --workspace ${n}`)); }}
                      onDragOver={e => { e.preventDefault(); setOver(n); }}
                      onDragLeave={() => setOver(o => (o === n ? null : o))}
                      onDrop={e => {
                        e.preventDefault(); setOver(null);
-                       if (drag) gwm.runCommand(`move --workspace ${n}`, drag).catch(() => {});
+                       if (drag) tiling.runCommand(`move --workspace ${n}`, drag).catch(() => {});
                        setDrag(null);
                      }}>
                   <span className="num">{n}</span>

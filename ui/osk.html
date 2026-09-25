@@ -114,8 +114,7 @@
          colLayer1; panel colLayer0, windowRounding (18), aralık 5. Tuşlar lunge.exe --osk ile
          odaktaki pencereye gönderilir; pencere odak almaz (helper WS_EX_NOACTIVATE verir). -->
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,300..700&family=Rubik:wght@400;500&display=swap');
-      @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block');
+      @import url('./fonts.css');
       :root {
         --m3primary: #d0bcff; --m3onPrimary: #381e72;
         --colLayer0: #141218; --colLayer0Border: #2c2a31; --colLayer1: #1d1b20; --colLayer1Hover: #2b2930;
@@ -178,14 +177,26 @@
       <div class="rows" id="rows"></div>
     </div>
     <script type="module">
-      import * as zebar from 'https://esm.sh/zebar@3';
-      import { listen } from 'https://esm.sh/@tauri-apps/api@2/event';
+      import * as lunge from 'lunge/shell';
+      import { listen } from '@tauri-apps/api/event';
 
-      const win = zebar.currentWidget().tauriWindow;
+      const win = lunge.currentWidget().tauriWindow;
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       const osk = document.getElementById('osk');
       const rowsEl = document.getElementById('rows');
       let open = false, pinned = false, shift = false, caps = false;
+
+      // Boşken pencere gerçekten gizlenir: saydam da olsa açık kalan pencere oyunun üstünde her karede birleştiriliyor
+      // ve içinde kalan animasyonlar çizilmeye devam ediyordu. Odak çalmadan çekirdek gösterir / gizler (tam ekran oyunda
+      // bildirimi oyun bitince gösterir); çekirdeğe ulaşılamazsa Tauri.
+      let shownState = null;
+      const setShown = v => {
+        if (shownState === v) return;
+        shownState = v;
+        fetch(`http://127.0.0.1:6131/widget?w=osk&v=${v ? 1 : 0}`, { method: 'POST', cache: 'no-store' })
+          .then(r => { if (!r.ok) throw new Error(String(r.status)); })
+          .catch(() => (v ? win.show() : win.hide()).catch(() => {}));
+      };
       const mods = { ctrl: false, alt: false, win: false, altgr: false };
 
       // Türkçe Q düzeni. w: genişlik çarpanı. vk: sanal tuş kodu; t: normal / s: Shift karakteri
@@ -211,7 +222,7 @@
       async function ensureProc() {
         if (proc) return proc;
         try {
-          proc = await zebar.shellSpawn(HELPER, ['--osk']);
+          proc = await lunge.shellSpawn(HELPER, ['--osk']);
           proc.onExit(() => { proc = null; });
         } catch (e) { console.error('osk', e); proc = null; }
         return proc;
@@ -276,11 +287,9 @@
         osk.classList.toggle('hidden', !v);
         // Kapalıyken pencere tıklamaları tamamen geçirir (görünmez)
         try { await win.setIgnoreCursorEvents(!v); } catch {}
-        if (v) {
-          ensureProc();
-          // en üste al ama odak verme (tuşlar yazılan uygulamaya gitsin)
-          zebar.shellExec(HELPER, ['--top', 'Logical Lunge · osk']).catch(() => {});
-        }
+        // açılınca en üste gelir ama odak almaz (tuşlar yazılan uygulamaya gitsin); kapanınca kayma bitince gizlenir
+        if (v) { ensureProc(); setShown(true); }
+        else setTimeout(() => { if (!open) setShown(false); }, 260);
       }
       setOpen(false);
 

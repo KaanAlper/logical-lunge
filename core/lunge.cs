@@ -2595,6 +2595,75 @@ static class ShellWatchdog
     }
 }
 
+// ---------------- Üstte duran widget pencereleri ----------------
+// Bildirim, güncelleme kartı ve ekran klavyesi en üstte duran saydam pencereler. Boşken gerçekten gizlenirler: saydam da
+// olsa açık bir pencere oyunun üstünde duruyor, Windows oyunu doğrudan ekrana veremiyor (DWM her kareyi birleştiriyor) ve
+// içinde kalan bir animasyon saniyede 144 kez çizilmeye devam ediyordu. Kabuk açık kaldıkça biriken kasmanın nedeni buydu;
+// masaüstünü yenilemek widget'ları sıfırdan açtığı için geçiriyordu. Göster / gizle odak çalmadan burada yapılır (widget'lar
+// /widget?w=..&v=.. ile ister). Tam ekran oyun ya da sunum sürerken bildirim ve güncelleme kartı gösterilmez; bittiğinde
+// hâlâ gösterilmesi isteniyorsa gelir.
+static class WidgetWindows
+{
+    [DllImport("shell32.dll")] static extern int SHQueryUserNotificationState(out int state);
+
+    static readonly Dictionary<string, string> Titles = new Dictionary<string, string> { { "toast", Names.Toast }, { "update", Names.Update }, { "osk", Names.Osk } };
+    static readonly Dictionary<string, bool> wanted = new Dictionary<string, bool>();
+    static readonly object gate = new object();
+    static bool waiting;
+
+    // Tam ekran uygulama / D3D oyun / sunum: Windows kendi bildirimlerini de göstermez
+    public static bool Busy()
+    {
+        int st;
+        return SHQueryUserNotificationState(out st) == 0 && (st == 2 || st == 3 || st == 4);
+    }
+
+    public static bool Set(string w, bool visible)
+    {
+        if (!Titles.ContainsKey(w)) return false;
+        lock (gate) wanted[w] = visible;
+        if (!Apply(w)) WaitForGameEnd();
+        return true;
+    }
+
+    // false: gösterilmesi gerekiyor ama oyun sürüyor
+    static bool Apply(string w)
+    {
+        bool v;
+        lock (gate) v = wanted.ContainsKey(w) && wanted[w];
+        IntPtr h = Native.FindWindow(null, Titles[w]);
+        if (h == IntPtr.Zero) return true;
+        bool hold = v && w != "osk" && Busy();   // ekran klavyesini kullanıcı açar: her zaman
+        if (v && !hold) Native.SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0040); // HWND_TOPMOST; NOSIZE|NOMOVE|NOACTIVATE|SHOWWINDOW
+        else if (Native.IsWindowVisible(h)) Native.ShowWindowAsync(h, 0); // SW_HIDE
+        return !hold;
+    }
+
+    static void WaitForGameEnd()
+    {
+        lock (gate) { if (waiting) return; waiting = true; }
+        new Thread(() =>
+        {
+            try
+            {
+                while (true)
+                {
+                    Thread.Sleep(1000);
+                    bool pending = false;
+                    foreach (var w in new[] { "toast", "update" })
+                    {
+                        bool v; lock (gate) v = wanted.ContainsKey(w) && wanted[w];
+                        if (v && !Apply(w)) pending = true;
+                    }
+                    if (!pending) break;
+                }
+            }
+            catch (Exception ex) { Slider.Log("widget pencereleri: " + ex.Message); }
+            finally { lock (gate) waiting = false; }
+        }) { IsBackground = true, Name = "widget-wait", Priority = ThreadPriority.BelowNormal }.Start();
+    }
+}
+
 // ---------------- Kök süreç ----------------
 // lunge.exe masaüstünün köküdür: oturum açılınca yalnızca o başlar (\LogicalLunge\Start görevi); açılış perdesini,
 // tiling'i ve shell'i kendi alt süreçleri olarak açar, Görev Yöneticisi üçünü tek "lunge" altında gruplar. Sonradan
@@ -3078,7 +3147,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -3124,6 +3193,12 @@ static class Toasts
                 Keys2.OverviewSignal(target.EndsWith("hide") ? "hide" : "show"); status = "204 No Content";
             }
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
+            else if (target.StartsWith("/widget?"))
+            {
+                // /widget?w=toast|update|osk&v=0|1: üstte duran widget penceresini odak çalmadan göster / gizle
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/widget\?w=(toast|update|osk)&v=([01])$");
+                status = m.Success && WidgetWindows.Set(m.Groups[1].Value, m.Groups[2].Value == "1") ? "204 No Content" : "400 Bad Request";
+            }
             else
             {
                 int q = target.IndexOf("a=");

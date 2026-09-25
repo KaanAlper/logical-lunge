@@ -27,50 +27,10 @@
   document.addEventListener('wheel', e => e.ctrlKey && e.preventDefault(), { capture: true, passive: false });
 })();
 
-// Clear console every 15 minutes.
-setInterval(
-  () => {
-    console.clear();
-    console.info(
-      '%c[shell]%c Console is cleared every 15 minutes to prevent memory buildup from logged data.',
-      'color: #4ade80',
-      'color: inherit',
-    );
-  },
-  1000 * 60 * 15,
-);
-
+// The widgets and all their libraries and fonts are served by the shell itself
+// (no network requests), so no service worker cache is needed; widgets don't log
+// provider output, so the console doesn't need periodic clearing either.
 if (window.location.host === '127.0.0.1:6124') {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker
-      .register('/__shell/sw.js', { scope: '/' })
-      .then(sw => {
-        console.info(
-          '%c[shell]%c Service Worker registered.',
-          'color: #4ade80',
-          'color: inherit',
-        );
-
-        const message = {
-          type: 'SET_CONFIG',
-          // The widgets' client library still reads this name (see widget_factory.rs).
-          config: window.__ZEBAR_STATE.config.caching,
-        };
-
-        sw.active?.postMessage(message);
-        sw.installing?.postMessage(message);
-        sw.waiting?.postMessage(message);
-      })
-      .catch(err =>
-        console.error(
-          '%c[shell]%c Service Worker failed to register:',
-          'color: #4ade80',
-          'color: inherit',
-          err,
-        ),
-      );
-  }
-
   document.addEventListener('DOMContentLoaded', () => {
     addFavicon();
     loadCss('/__shell/normalize.css');
