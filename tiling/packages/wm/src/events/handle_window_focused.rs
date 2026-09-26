@@ -5,7 +5,8 @@ use wm_platform::NativeWindow;
 
 use crate::{
   commands::{
-    container::set_focused_descendant, window::run_window_rules,
+    container::set_focused_descendant,
+    window::{manage_window, run_window_rules},
     workspace::focus_workspace,
   },
   models::WorkspaceTarget,
@@ -19,6 +20,22 @@ pub fn handle_window_focused(
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
+  // Logical Lunge: a window that should be managed but was missed (e.g.
+  // its show event came before the WM could see it) is managed when it
+  // gets focus, instead of staying on every workspace behind the tiled
+  // windows. Windows that aren't manageable (menus, tool windows) and
+  // ones ignored by a window rule are left alone.
+  if state.window_from_native(native_window).is_none()
+    && !state.ignored_windows.contains(native_window)
+    && native_window.is_visible().unwrap_or(false)
+  {
+    manage_window(native_window.clone(), None, state, config)?;
+
+    if state.window_from_native(native_window).is_some() {
+      info!("Managed a missed window on focus.");
+    }
+  }
+
   let found_window = state.window_from_native(native_window);
   let focused_container =
     state.focused_container().context("No focused container.")?;

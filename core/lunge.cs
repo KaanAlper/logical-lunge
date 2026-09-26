@@ -94,6 +94,10 @@ static class Native
     [DllImport("kernel32.dll")] public static extern IntPtr GetModuleHandle(string name);
     [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
     [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    // Çekirdeğin kendi ürettiği tuşların imzası (dwExtraInfo): kanca yalnızca bunları atlar. Telefondan / uzak
+    // bağlantıdan / ekran klavyesinden gelen yapay tuşlar gerçek tuş gibi işlenir (eskiden hepsi atlanıyordu: Win
+    // tuşu doğrudan Windows'a gidip Başlat menüsünü açıyordu).
+    public static readonly UIntPtr LL_MARK = (UIntPtr)0x4C4C4B31u; // "LLK1"
     [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventDelegate fn, uint pid, uint tid, uint flags);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll", SetLastError = true)] public static extern int SetWindowRgn(IntPtr h, IntPtr rgn, bool redraw);
@@ -4577,13 +4581,13 @@ class Keys2
         catch (Exception ex) { Slider.Log("slide: " + ex.Message); }
     }
 
-    static void SuppressStart() { Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero); }
+    static void SuppressStart() { Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK); }
 
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         var k = (Native.KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.KBDLLHOOKSTRUCT));
-        if ((k.flags & Native.LLKHF_INJECTED) != 0) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        if ((k.flags & Native.LLKHF_INJECTED) != 0 && (UIntPtr)(ulong)k.extra.ToInt64() == Native.LL_MARK) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         // Kabuk (bar) çökmüş / açılamamışsa tuşlar olduğu gibi Windows'a: Win tuşu Başlat menüsünü açar (ShellState).
         // Basılı bir Win ya da açık değiştirici varsa önce o biter.
         if (!ShellState.Up && !winDown && !Switcher.Active) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
@@ -4612,7 +4616,7 @@ class Keys2
             lastWinEvent = now;
             if (isDown && fresh)
             {
-                if (winInjected) Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, UIntPtr.Zero);
+                if (winInjected) Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK);
                 winDown = true; winInjected = false; winVk = vk;
                 otherKeyWhileWin = false; swallowedWithWin = false;
                 // Win'den önce basılı tutulan Ctrl/Shift/Alt da "kombinasyon" sayılır
@@ -4625,7 +4629,7 @@ class Keys2
                 {
                     winInjected = false;
                     SuppressStart();
-                    Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, UIntPtr.Zero); // KEYUP | EXTENDEDKEY
+                    Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK); // KEYUP | EXTENDEDKEY
                 }
                 // Yalnızca tek başına Super: ll overview
                 else if (!otherKeyWhileWin && !modifierWhileWin && !Binds.Capturing) ui.BeginInvoke((Action)ToggleOverview);
@@ -4684,9 +4688,9 @@ class Keys2
             if (!winInjected)
             {
                 winInjected = true;
-                Native.keybd_event((byte)winVk, 0, 0x1, UIntPtr.Zero); // EXTENDEDKEY
+                Native.keybd_event((byte)winVk, 0, 0x1, Native.LL_MARK); // EXTENDEDKEY
             }
-            Native.keybd_event((byte)vk, (byte)k.scanCode, (k.flags & 0x1) != 0 ? 0x1u : 0u, UIntPtr.Zero);
+            Native.keybd_event((byte)vk, (byte)k.scanCode, (k.flags & 0x1) != 0 ? 0x1u : 0u, Native.LL_MARK);
             return (IntPtr)1;
         }
 
@@ -4847,7 +4851,7 @@ class Keys2
         int cl;
         if (!Native.IsWindow(prev) || !Native.IsWindowVisible(prev) || Native.IsIconic(prev)) return;
         if (Native.DwmGetWindowAttribute(prev, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0) return; // başka workspace'te
-        Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
+        Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK);
         Native.SetForegroundWindow(prev);
     }
 
@@ -4897,7 +4901,7 @@ class Keys2
         Native.SetLayeredWindowAttributes(h, 0, 0, 0x2);              // tamamen saydam
         Native.ShowWindow(h, 5);
         OverviewSignal("show");
-        Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
+        Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK);
         Native.SetForegroundWindow(h);
         ThreadPool.QueueUserWorkItem(_ =>
         {
@@ -5870,7 +5874,7 @@ static class SnipTool
                 || t.ToString().StartsWith(Names.Bar) || !Native.IsWindowVisible(fg);
             if (!emptyFocus) return;
         }
-        Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // odak kilidi
+        Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK); // odak kilidi
         Native.SetForegroundWindow(prev);
     }
 
@@ -5908,7 +5912,7 @@ static class SnipTool
         int focusTries;
         void TakeForeground()
         {
-            Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero);
+            Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
             Native.SetForegroundWindow(Handle);
             Activate();
         }
@@ -6951,7 +6955,7 @@ class Switcher : Form
         // Alt bırakıldı: seçimi uygula (Alt olayı sisteme geçer; sahte tuş menü çubuğunu etkinleştirmesin diye araya girer)
         if (isUp && (vk == VK_MENU || vk == 0xA4 || vk == 0xA5))
         {
-            Native.keybd_event(VK_DUMMY, 0, 0, UIntPtr.Zero); Native.keybd_event(VK_DUMMY, 0, 2, UIntPtr.Zero);
+            Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK);
             ui.BeginInvoke((Action)(() => inst.CommitCurrent()));
             return false;
         }
@@ -7938,7 +7942,7 @@ static class FocusGuard
         Thread.Sleep(150);
         if (Lost() != null)
         {
-            Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // odak kilidi
+            Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK); // odak kilidi
             Native.SetForegroundWindow(hw);
             Thread.Sleep(100);
         }
@@ -8583,7 +8587,7 @@ static class Program
             if (rh == IntPtr.Zero || !Native.IsWindowVisible(rh)) return;
             Native.SetWindowPos(rh, new IntPtr(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | (args[0] == "--top" ? 0x0010u : 0u) /*NOSIZE|NOMOVE|NOACTIVATE*/);
             if (args[0] == "--top") return;
-            Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // önplan izni
+            Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK); // önplan izni
             Native.SetForegroundWindow(rh);
             return;
         }

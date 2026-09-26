@@ -156,8 +156,8 @@ fn check_is_manageable(
   #[cfg(target_os = "windows")]
   {
     use wm_platform::{
-      NativeWindowWindowsExt, WS_CAPTION, WS_CHILD, WS_EX_NOACTIVATE,
-      WS_EX_TOOLWINDOW,
+      NativeWindowWindowsExt, WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW,
+      WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
     // TODO: Temporary fix for managing Flow Launcher until a force manage
@@ -182,8 +182,15 @@ fn check_is_manageable(
       // Notepad++ and title bar menu in Keepass. Although not
       // foolproof, these can typically be identified by having an
       // owner window and no title bar.
+      //
+      // Logical Lunge: unless the window asks for a taskbar button
+      // (`WS_EX_APPWINDOW`), like Windows' own taskbar / alt+tab rule.
+      // Installers and launchers with their own title bar are often owned
+      // by a hidden window; they stayed unmanaged (on every workspace,
+      // behind the tiled windows).
       if native_window.has_owner_window()
         && !native_window.has_window_style(WS_CAPTION)
+        && !native_window.has_window_style_ex(WS_EX_APPWINDOW)
       {
         return Ok(None);
       }
