@@ -124,6 +124,18 @@ impl Util {
     Ok((point.x, point.y))
   }
 
+  /// Logical Lunge: deletes both bitmaps that `GetIconInfo` created. Each
+  /// is deleted on its own: with `?`, a failed (e.g. null) mask left the
+  /// color bitmap behind, one GDI object per icon update.
+  fn delete_icon_bitmaps(icon_info: &ICONINFO) {
+    if !icon_info.hbmMask.is_invalid() {
+      let _ = unsafe { DeleteObject(icon_info.hbmMask) };
+    }
+    if !icon_info.hbmColor.is_invalid() {
+      let _ = unsafe { DeleteObject(icon_info.hbmColor) };
+    }
+  }
+
   /// Converts a Windows icon to a sendable image.
   pub fn icon_to_image(icon: isize) -> crate::Result<RgbaImage> {
     let mut icon_info = ICONINFO::default();
@@ -140,8 +152,7 @@ impl Util {
 
     if bitmap_res == 0 {
       let error = windows::core::Error::from_win32();
-      unsafe { DeleteObject(icon_info.hbmMask) }.ok()?;
-      unsafe { DeleteObject(icon_info.hbmColor) }.ok()?;
+      Self::delete_icon_bitmaps(&icon_info);
       return Err(error.into());
     }
 
@@ -164,8 +175,7 @@ impl Util {
     let dc = unsafe { GetDC(None) };
     if dc.is_invalid() {
       let error = windows::core::Error::from_win32();
-      unsafe { DeleteObject(icon_info.hbmMask) }.ok()?;
-      unsafe { DeleteObject(icon_info.hbmColor) }.ok()?;
+      Self::delete_icon_bitmaps(&icon_info);
       return Err(error.into());
     }
 
@@ -208,8 +218,7 @@ impl Util {
     };
 
     unsafe { ReleaseDC(None, dc) };
-    unsafe { DeleteObject(icon_info.hbmMask) }.ok()?;
-    unsafe { DeleteObject(icon_info.hbmColor) }.ok()?;
+    Self::delete_icon_bitmaps(&icon_info);
 
     if color_result == 0 || mask_result == 0 {
       return Err(windows::core::Error::from_win32().into());

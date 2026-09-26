@@ -118,16 +118,107 @@ impl Provider for SystrayProvider {
       return;
     };
 
+    // Logical Lunge: some programs update their tray icon or tooltip dozens
+    // of times a second. Each update re-encoded every icon as PNG and sent
+    // them all to the bar, which parsed and redrew them (~33 times a
+    // second while idle). Updates are now coalesced (at most one output
+    // per 250 ms; the first one after a quiet period goes out at once),
+    // nothing is sent when no icon, tooltip or image changed, and PNGs are
+    // cached by image hash. An animated icon (e.g. Google Drive's sync
+    // spinner, ~30 frames a second) only changes its image: such updates go
+    // out at most once a second.
+    const MIN_GAP: std::time::Duration = std::time::Duration::from_millis(250);
+    const IMAGE_ONLY_GAP: std::time::Duration =
+      std::time::Duration::from_secs(1);
+    let mut last_emit_at = tokio::time::Instant::now() - IMAGE_ONLY_GAP;
+    let mut dirty = true;
+    let mut listening = true;
+    let mut next_emit = tokio::time::Instant::now();
+    let mut last_sig: Option<Vec<(String, String, String)>> = None;
+    let mut png_cache: std::collections::HashMap<String, Vec<u8>> =
+      std::collections::HashMap::new();
+
     loop {
       tokio::select! {
-        _ = systray.events() => {
+        event = systray.events(), if listening => {
+          // The tray listener ended: stop polling (it'd return at once).
+          if event.is_none() {
+            listening = false;
+          }
+          dirty = true;
+        }
+        _ = tokio::time::sleep_until(next_emit), if dirty => {
+          dirty = false;
+          next_emit = tokio::time::Instant::now() + MIN_GAP;
+
+          let icons = systray
+            .icons()
+            .into_iter()
+            .filter(|icon| icon.is_visible)
+            .collect::<Vec<_>>();
+
+          let sig = icons
+            .iter()
+            .map(|icon| {
+              (
+                icon.stable_id.to_string(),
+                icon.tooltip.clone(),
+                icon.icon_image_hash.clone().unwrap_or_default(),
+              )
+            })
+            .collect::<Vec<_>>();
+
+          if last_sig.as_ref() == Some(&sig) {
+            continue;
+          }
+
+          let image_only = last_sig.as_ref().is_some_and(|last| {
+            last.len() == sig.len()
+              && last
+                .iter()
+                .zip(&sig)
+                .all(|(a, b)| a.0 == b.0 && a.1 == b.1)
+          });
+
+          if image_only && last_emit_at.elapsed() < IMAGE_ONLY_GAP {
+            dirty = true;
+            next_emit = last_emit_at + IMAGE_ONLY_GAP;
+            continue;
+          }
+
+          last_sig = Some(sig);
+          last_emit_at = tokio::time::Instant::now();
+
+          let mut output_icons = Vec::with_capacity(icons.len());
+          for icon in icons {
+            let Some(hash) = icon.icon_image_hash.clone() else {
+              continue;
+            };
+            let bytes = match png_cache.get(&hash) {
+              Some(bytes) => bytes.clone(),
+              None => match icon.to_image_format(ImageFormat::Png) {
+                Ok(bytes) => {
+                  png_cache.insert(hash.clone(), bytes.clone());
+                  bytes
+                }
+                Err(_) => continue,
+              },
+            };
+            output_icons.push(SystrayOutputIcon {
+              id: icon.stable_id.to_string(),
+              tooltip: icon.tooltip.clone(),
+              icon_bytes: bytes,
+              icon_hash: hash,
+            });
+          }
+
+          // Only the images still shown stay cached.
+          png_cache.retain(|hash, _| {
+            output_icons.iter().any(|icon| &icon.icon_hash == hash)
+          });
+
           self.common.emitter.emit_output(Ok(SystrayOutput {
-            icons: systray
-              .icons()
-              .into_iter()
-              .filter(|icon| icon.is_visible)
-              .filter_map(|icon| SystrayOutputIcon::try_from(icon).ok())
-              .collect(),
+            icons: output_icons,
           }));
         }
         Some(input) = self.common.input.async_rx.recv() => {
