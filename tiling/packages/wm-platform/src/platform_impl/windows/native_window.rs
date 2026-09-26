@@ -3,9 +3,9 @@ use std::time::Duration;
 use tokio::task;
 use tracing::warn;
 use windows::{
-  core::PWSTR,
+  core::{w, PCWSTR, PWSTR},
   Win32::{
-    Foundation::{CloseHandle, BOOL, HWND, LPARAM, POINT, RECT},
+    Foundation::{CloseHandle, BOOL, HANDLE, HWND, LPARAM, POINT, RECT},
     Graphics::Dwm::{
       DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR,
       DWMWA_CLOAKED, DWMWA_COLOR_NONE, DWMWA_EXTENDED_FRAME_BOUNDS,
@@ -26,7 +26,9 @@ use windows::{
         GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
         IsZoomed, SendNotifyMessageW, SetForegroundWindow,
-        SetLayeredWindowAttributes, SetWindowLongPtrW, SetWindowPlacement,
+        GetPropW, GetWindowPlacement, RemovePropW, SetLayeredWindowAttributes,
+        SetPropW,
+        SetWindowLongPtrW, SetWindowPlacement,
         SetWindowPos, ShowWindowAsync, WindowFromPoint, GA_ROOT,
         GWL_EXSTYLE, GWL_STYLE, GW_OWNER, HWND_NOTOPMOST, HWND_TOP,
         HWND_TOPMOST, LAYERED_WINDOW_ATTRIBUTES_FLAGS, LWA_ALPHA,
@@ -34,7 +36,7 @@ use windows::{
         SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOCOPYBITS, SWP_NOMOVE,
         SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SWP_NOZORDER,
         SWP_SHOWWINDOW, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_RESTORE,
-        SW_SHOWNA, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
+        SW_SHOWNA, SW_SHOWNOACTIVATE, WINDOWPLACEMENT, WINDOW_EX_STYLE, WINDOW_STYLE,
         WM_CLOSE, WPF_ASYNCWINDOWPLACEMENT, WS_DLGFRAME, WS_EX_LAYERED,
         WS_THICKFRAME,
       },
@@ -442,11 +444,14 @@ impl NativeWindow {
         Ok(())
       }
       Some(rect) => {
+        // Logical Lunge: without activating. Restoring a maximized or
+        // minimized window into its tile must not take the focus (restoring
+        // the minimized windows found on startup focused each in turn).
         let placement = WINDOWPLACEMENT {
           #[allow(clippy::cast_possible_truncation)]
           length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
           flags: WPF_ASYNCWINDOWPLACEMENT,
-          showCmd: SW_RESTORE.0 as u32,
+          showCmd: SW_SHOWNOACTIVATE.0 as u32,
           rcNormalPosition: RECT {
             left: rect.left,
             top: rect.top,
@@ -542,6 +547,54 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindowWindowsExt::set_z_order`].
+  /// Implements [`NativeWindowWindowsExt::show_no_activate`].
+  pub(crate) fn show_no_activate(&self) -> crate::Result<()> {
+    unsafe { ShowWindowAsync(self.hwnd(), SW_SHOWNOACTIVATE) }.ok()?;
+    Ok(())
+  }
+
+  /// Implements [`NativeWindowWindowsExt::restored_frame`].
+  pub(crate) fn restored_frame(&self) -> crate::Result<Rect> {
+    let mut placement = WINDOWPLACEMENT {
+      #[allow(clippy::cast_possible_truncation)]
+      length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
+      ..Default::default()
+    };
+    unsafe { GetWindowPlacement(self.hwnd(), &raw mut placement) }?;
+    let r = placement.rcNormalPosition;
+    Ok(Rect::from_ltrb(r.left, r.top, r.right, r.bottom))
+  }
+
+  /// Implements [`NativeWindowWindowsExt::set_slot`].
+  pub(crate) fn set_slot(&self, slot: Option<&Rect>) -> crate::Result<()> {
+    const LT: PCWSTR = w!("LungeSlotLT");
+    const RB: PCWSTR = w!("LungeSlotRB");
+    unsafe {
+      match slot {
+        Some(rect) => {
+          let (lt, rb) = (
+            pack_slot(rect.left, rect.top),
+            pack_slot(rect.right, rect.bottom),
+          );
+          // unchanged: no work (every redraw of a tile passes here)
+          if GetPropW(self.hwnd(), LT).0 != lt
+            || GetPropW(self.hwnd(), RB).0 != rb
+          {
+            SetPropW(self.hwnd(), LT, HANDLE(lt))?;
+            SetPropW(self.hwnd(), RB, HANDLE(rb))?;
+          }
+        }
+        None => {
+          if GetPropW(self.hwnd(), LT).0 != 0 {
+            let _ = RemovePropW(self.hwnd(), LT);
+            let _ = RemovePropW(self.hwnd(), RB);
+          }
+        }
+      }
+    }
+    Ok(())
+  }
+
   pub(crate) fn set_z_order(
     &self,
     z_order: &WindowZOrder,
@@ -834,4 +887,18 @@ fn desktop_window() -> NativeWindow {
   };
 
   NativeWindow::new(handle.0)
+}
+
+/// Two coordinates in one property value; each half is offset so that no
+/// real slot packs to 0 (which reads as "no property"). Read by the core
+/// (`Rounder`) and by the borders.
+fn pack_slot(a: i32, b: i32) -> isize {
+  const BIAS: u32 = 0x4000_0000;
+  #[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+  let packed = (u64::from((a as u32).wrapping_add(BIAS)) << 32)
+    | u64::from((b as u32).wrapping_add(BIAS));
+  #[allow(clippy::cast_possible_wrap)]
+  {
+    packed as isize
+  }
 }

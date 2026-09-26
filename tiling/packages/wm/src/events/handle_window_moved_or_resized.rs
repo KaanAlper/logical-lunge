@@ -285,6 +285,41 @@ pub fn handle_window_moved_or_resized(
       }
     };
 
+    // Logical Lunge: like Hyprland's fake fullscreen. A tiled window that
+    // makes itself fullscreen (a video's fullscreen button) fills its own
+    // tile. Real fullscreen is the `toggle-fullscreen` command (Super+F),
+    // and windows that start fullscreen (games, Steam Big Picture) stay
+    // fullscreen. An app that takes the screen back more than 3 times in
+    // 2 s is let go, instead of fighting it (flicker).
+    #[cfg(target_os = "windows")]
+    if should_fullscreen
+      && !is_maximized
+      && matches!(window.state(), WindowState::Tiling)
+    {
+      use wm_platform::NativeWindowWindowsExt;
+
+      let handle = window.native().hwnd().0;
+      let now = std::time::Instant::now();
+      let entry = state.fake_fullscreen.entry(handle).or_insert((now, 0));
+      if now.duration_since(entry.0) > std::time::Duration::from_secs(2) {
+        *entry = (now, 0);
+      }
+      entry.1 += 1;
+      let tries = entry.1;
+      if state.fake_fullscreen.len() > 64 {
+        state
+          .fake_fullscreen
+          .retain(|_, (at, _)| now.duration_since(*at).as_secs() < 10);
+      }
+
+      if tries <= 3 {
+        tracing::info!("Fullscreen inside the tile: {window}");
+        state.pending_sync.queue_container_to_redraw(window.clone());
+        return Ok(());
+      }
+      tracing::info!("Window insists on fullscreen, letting it: {window}");
+    }
+
     // Handle a window being maximized or entering fullscreen.
     if is_maximized || should_fullscreen {
       let is_same_state = is_maximized

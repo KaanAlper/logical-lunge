@@ -54,6 +54,11 @@ pub struct WmState {
   /// Used to decide whether to override incoming focus events.
   pub unmanaged_or_minimized_timestamp: Option<Instant>,
 
+  /// Logical Lunge: tiled windows kept in their tile when they made
+  /// themselves fullscreen -- window handle -> (first time, times). A window
+  /// that keeps taking the whole screen back is let go (no fight).
+  pub fake_fullscreen: std::collections::HashMap<isize, (Instant, u32)>,
+
   /// Configs of currently enabled binding modes.
   pub binding_modes: Vec<BindingModeConfig>,
 
@@ -90,6 +95,7 @@ impl WmState {
       prev_effects_window: None,
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
+      fake_fullscreen: std::collections::HashMap::new(),
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       is_paused: false,

@@ -280,6 +280,32 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_z_order(&self, zorder: &WindowZOrder) -> crate::Result<()>;
 
+  /// Shows a minimized window again in its last place, without activating
+  /// it (`SW_SHOWNOACTIVATE`).
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn show_no_activate(&self) -> crate::Result<()>;
+
+  /// Where the window is when not minimized / maximized (its "normal"
+  /// placement), for a window found minimized.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn restored_frame(&self) -> crate::Result<Rect>;
+
+  /// Logical Lunge: publishes the window's slot in the layout (its visible
+  /// frame, screen coordinates) as window properties. The core cuts a window
+  /// that stays bigger than its slot (a minimum size) to it, and the border
+  /// follows the cut. `None` removes them (floating, fullscreen, unmanaged).
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn set_slot(&self, slot: Option<&Rect>) -> crate::Result<()>;
+
   /// Sets the visibility of the window's title bar.
   ///
   /// # Platform-specific
@@ -398,6 +424,18 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_z_order(&self, z_order: &WindowZOrder) -> crate::Result<()> {
     self.inner.set_z_order(z_order)
+  }
+
+  fn show_no_activate(&self) -> crate::Result<()> {
+    self.inner.show_no_activate()
+  }
+
+  fn restored_frame(&self) -> crate::Result<Rect> {
+    self.inner.restored_frame()
+  }
+
+  fn set_slot(&self, slot: Option<&Rect>) -> crate::Result<()> {
+    self.inner.set_slot(slot)
   }
 
   fn set_title_bar_visibility(&self, visible: bool) -> crate::Result<()> {

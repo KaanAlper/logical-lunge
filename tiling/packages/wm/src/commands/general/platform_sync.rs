@@ -78,6 +78,11 @@ pub fn platform_sync(
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
     redraw_containers(&focused_container, state, config)?;
+
+    #[cfg(target_os = "windows")]
+    if let Err(err) = keep_floating_above_tiling(state) {
+      tracing::warn!("Failed to keep floating windows on top: {}", err);
+    }
   }
 
   if state.pending_sync.needs_cursor_jump()
@@ -217,6 +222,67 @@ fn windows_to_bring_to_front(
     .collect::<Vec<_>>();
 
   Ok(windows_to_bring_to_front)
+}
+
+/// Logical Lunge: a floating window (dialog, launcher, update screen) is
+/// never left under a tiling window it overlaps, whatever raised the tiling
+/// window (the app, a click, a restart). Checked after every redraw; a
+/// floating window found under one is raised again, without taking focus.
+#[cfg(target_os = "windows")]
+fn keep_floating_above_tiling(state: &WmState) -> anyhow::Result<()> {
+  let mut floating = Vec::new();
+  let mut tiling = Vec::new();
+
+  for workspace in state.workspaces().iter().filter(|w| w.is_displayed()) {
+    for window in workspace
+      .descendants()
+      .filter_map(|descendant| descendant.as_window_container().ok())
+    {
+      match window.state() {
+        WindowState::Floating(_) => floating.push(window),
+        WindowState::Tiling => tiling.push(window),
+        _ => {}
+      }
+    }
+  }
+
+  if floating.is_empty() || tiling.is_empty() {
+    return Ok(());
+  }
+
+  // Top to bottom on Windows (`EnumWindows` order).
+  let order = state
+    .dispatcher
+    .visible_windows()?
+    .iter()
+    .map(|window| window.hwnd().0)
+    .collect::<Vec<_>>();
+
+  let rank = |window: &WindowContainer| {
+    let handle = window.native().hwnd().0;
+    order.iter().position(|h| *h == handle)
+  };
+
+  for float in &floating {
+    let (Some(float_rank), Ok(float_rect)) = (rank(float), float.to_rect())
+    else {
+      continue;
+    };
+
+    let covered = tiling.iter().any(|tile| {
+      rank(tile).is_some_and(|tile_rank| tile_rank < float_rank)
+        && tile
+          .to_rect()
+          .is_ok_and(|rect| rect.intersection_area(&float_rect) > 0)
+    });
+
+    if covered {
+      tracing::info!("Raising floating window above tiling: {float}");
+      float.native().set_z_order(&WindowZOrder::Normal)?;
+    }
+  }
+
+  Ok(())
 }
 
 /// Whether `window` is a floating window to keep above the tiling windows
@@ -486,6 +552,21 @@ fn reposition_window(
         SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
         SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_EX_TOPMOST, WS_MAXIMIZEBOX,
       };
+
+      // Logical Lunge: a tile's visible frame, so that a window that stays
+      // bigger (a minimum size) is cut to it instead of covering its
+      // neighbours (see `NativeWindowWindowsExt::set_slot`).
+      {
+        use wm_platform::NativeWindowWindowsExt;
+        let slot = if window.state() == WindowState::Tiling && is_visible {
+          Some(window.to_rect()?)
+        } else {
+          None
+        };
+        if let Err(err) = window.native().set_slot(slot.as_ref()) {
+          tracing::warn!("Failed to set window slot: {}", err);
+        }
+      }
 
       // Restore window if it's minimized/maximized and shouldn't be. This
       // is needed to be able to move and resize it.

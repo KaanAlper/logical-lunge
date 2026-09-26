@@ -400,7 +400,9 @@ impl WindowBorder {
 
     // Sets the border's rect from the tracking window's visible frame.
     fn set_window_rect(&mut self, frame: RECT) {
-        self.window_rect = frame;
+        // Logical Lunge: a tiled window bigger than its slot is cut to the
+        // slot by the core; the border goes around what is visible.
+        self.window_rect = clip_to_slot(self.tracking_window, frame);
         let stroke_width = self.drawer.stroke_width;
         let border_padding = self.border_padding;
         // Make space for the border + padding
@@ -1163,5 +1165,41 @@ impl WindowBorder {
         }
 
         self.last_reorder_time = Some(time::Instant::now());
+    }
+}
+
+/// The window's slot in the layout (window properties written by the window
+/// manager, `NativeWindowWindowsExt::set_slot`), intersected with `frame`.
+fn clip_to_slot(hwnd: HWND, frame: RECT) -> RECT {
+    use windows::Win32::UI::WindowsAndMessaging::GetPropW;
+    use windows::core::w;
+
+    let (lt, rb) = unsafe {
+        (
+            GetPropW(hwnd, w!("LungeSlotLT")).0 as i64,
+            GetPropW(hwnd, w!("LungeSlotRB")).0 as i64,
+        )
+    };
+    if lt == 0 || rb == 0 {
+        return frame;
+    }
+    let unpack = |v: i64| {
+        const BIAS: u32 = 0x4000_0000;
+        (
+            ((v >> 32) as u32).wrapping_sub(BIAS) as i32,
+            (v as u32).wrapping_sub(BIAS) as i32,
+        )
+    };
+    let ((left, top), (right, bottom)) = (unpack(lt), unpack(rb));
+    let cut = RECT {
+        left: frame.left.max(left),
+        top: frame.top.max(top),
+        right: frame.right.min(right),
+        bottom: frame.bottom.min(bottom),
+    };
+    if cut.right > cut.left && cut.bottom > cut.top {
+        cut
+    } else {
+        frame
     }
 }

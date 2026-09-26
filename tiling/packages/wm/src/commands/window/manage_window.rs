@@ -26,11 +26,24 @@ pub fn manage_window(
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
-  let Some(native_properties) =
+  let Some(mut native_properties) =
     check_is_manageable(&native_window).unwrap_or(None)
   else {
     return Ok(());
   };
+
+  // Logical Lunge: an open window is never "minimized" in the layout (on
+  // startup, windows left minimized by an app or before a restart). It is
+  // managed like a shown one, with the frame it had before minimizing, and
+  // the platform sync shows it again in its place without taking focus.
+  #[cfg(target_os = "windows")]
+  if native_properties.is_minimized {
+    use wm_platform::NativeWindowWindowsExt;
+    if let Ok(frame) = native_window.restored_frame() {
+      native_properties.frame = frame;
+    }
+    native_properties.is_minimized = false;
+  }
 
   // Without a target parent the window was just opened (place it under the
   // cursor); with one, it's being managed on startup (build a spiral).

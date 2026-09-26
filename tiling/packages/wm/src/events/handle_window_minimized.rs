@@ -26,6 +26,33 @@ pub fn handle_window_minimized(
       properties.is_minimized = is_minimized;
     });
 
+    // Logical Lunge: an open window never leaves the layout -- it is on a
+    // workspace or closed to the tray. Without a taskbar, a minimized window
+    // was only reachable with alt+tab. A tiled or floating window that gets
+    // minimized (its minimize button, the app itself) keeps its place and is
+    // shown again, without taking the focus. Minimize-to-tray apps hide
+    // themselves right after minimizing: they are left alone (not visible
+    // any more when the check runs). Fullscreen windows (games) still
+    // minimize normally.
+    #[cfg(target_os = "windows")]
+    if is_minimized
+      && matches!(window.state(), WindowState::Tiling | WindowState::Floating(_))
+    {
+      use wm_platform::NativeWindowWindowsExt;
+
+      info!("Window minimized, keeping it in the layout: {window}");
+      let native = window.native().clone();
+      tokio::task::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        if native.is_visible().unwrap_or(false)
+          && native.is_minimized().unwrap_or(false)
+        {
+          let _ = native.show_no_activate();
+        }
+      });
+      return Ok(());
+    }
+
     if is_minimized && window.state() != WindowState::Minimized {
       info!("Window minimized: {window}");
 

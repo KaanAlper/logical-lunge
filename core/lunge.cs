@@ -4221,6 +4221,22 @@ class Rounder
         Apply(hwnd);
     }
 
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetProp(IntPtr h, string name);
+
+    // İki koordinat tek değerde; her yarı sıfır okunmasın diye kaydırılmış (tiling: pack_slot)
+    static bool Slot(IntPtr h, out Native.RECT slot)
+    {
+        slot = new Native.RECT();
+        long lt = GetProp(h, "LungeSlotLT").ToInt64(), rb = GetProp(h, "LungeSlotRB").ToInt64();
+        if (lt == 0 || rb == 0) return false;
+        unchecked
+        {
+            slot.Left = (int)((uint)(lt >> 32) - 0x40000000u); slot.Top = (int)((uint)lt - 0x40000000u);
+            slot.Right = (int)((uint)(rb >> 32) - 0x40000000u); slot.Bottom = (int)((uint)rb - 0x40000000u);
+        }
+        return slot.Right > slot.Left && slot.Bottom > slot.Top;
+    }
+
     static string ProcName(IntPtr h)
     {
         uint pid; Native.GetWindowThreadProcessId(h, out pid);
@@ -4264,7 +4280,17 @@ class Rounder
             return;
         }
 
-        long key = ((long)(fr.Right - fr.Left) << 32) | (uint)(fr.Bottom - fr.Top);
+        // Pencere yöneticisi döşenmiş pencerenin yuvasını pencere özelliği olarak yazar (LungeSlotLT/RB). Yuvasından
+        // büyük kalan pencere (en küçük boyutu yuvaya sığmıyor) yuvaya kesilir: komşusunun üstüne binmez, taşan
+        // yere tıklama komşuya gider. Kenarlık da aynı kesilmiş alana çizilir.
+        Native.RECT vis = fr, slot;
+        if (Slot(h, out slot))
+        {
+            var c = new Native.RECT { Left = Math.Max(fr.Left, slot.Left), Top = Math.Max(fr.Top, slot.Top), Right = Math.Min(fr.Right, slot.Right), Bottom = Math.Min(fr.Bottom, slot.Bottom) };
+            if (c.Right > c.Left && c.Bottom > c.Top) vis = c;
+        }
+        long key;
+        unchecked { key = (((((long)(fr.Right - fr.Left) * 31 + (fr.Bottom - fr.Top)) * 31 + (vis.Left - fr.Left)) * 31 + (vis.Top - fr.Top)) * 31 + (fr.Right - vis.Right)) * 31 + (fr.Bottom - vis.Bottom); }
         long prev;
         Native.RECT box;
         bool hasRgn = Native.GetWindowRgnBox(h, out box) != 0;
@@ -4284,8 +4310,8 @@ class Rounder
         }
         applied[h] = key;
 
-        int l = fr.Left - wr.Left, t = fr.Top - wr.Top;
-        int r = l + (fr.Right - fr.Left), b = t + (fr.Bottom - fr.Top);
+        int l = vis.Left - wr.Left, t = vis.Top - wr.Top;
+        int r = l + (vis.Right - vis.Left), b = t + (vis.Bottom - vis.Top);
         IntPtr rgn = Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
         if (Native.SetWindowRgn(h, rgn, true) == 0)
         {

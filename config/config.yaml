@@ -233,8 +233,7 @@ keybindings:
   # Hyprland togglesplit: pencerenin içinde olduğu bölme döner (yan yana <-> alt alta)
   - commands: ['toggle-tiling-direction']
     bindings: ['lwin+j']
-  - commands: ['toggle-minimized']
-    bindings: ['lwin+m']
+  # Küçültme yok (Hyprland / ii gibi): açık pencere ya bir workspace'te ya tray'dedir, "arkaya" düşmez
   - commands: ['wm-cycle-focus']
     bindings: ['lwin+space']
 
