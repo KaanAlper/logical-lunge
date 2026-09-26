@@ -74,8 +74,82 @@ function __ll_quote_winpaths
     test "$fixed" = "$line"; or commandline -r -- $fixed
 end
 
-# Enter: önce yolları düzelt, sonra her zamanki gibi çalıştır (eksik satırda yeni satır açar)
+# Enter: Windows yollarını tırnağa al, !! / !$'ı aç; fish'in anlamadığı satırı anlayan kabukla çalıştır (aşağıda).
+# Eksik satırda her zamanki gibi yeni satır açılır.
 function __ll_execute
     __ll_quote_winpaths
+    set -l line (commandline | string collect)
+    set -l h (__ll_history_line "$line" | string collect)
+    if test -n "$h"
+        commandline -r -- $h
+        set line $h
+    end
+    if string match -qr -- '\S' "$line"
+        commandline --is-valid
+        set -l valid $status
+        set -l fixed (__ll_foreign_line "$line" $valid | string collect)
+        test -n "$fixed"; and commandline -r -- $fixed
+    end
     commandline -f execute
 end
+
+# Fish'in anlamadığı satırlar (başka kabuktan kopyalanan / alışkanlıkla yazılan): fish'e göre doğruysa fish çalıştırır.
+# Değilse satır olduğu gibi, bulunduğun klasörde, anlayan kabukta çalışır (geçmişte de öyle görünür):
+#   - PowerShell: $env:X, fish'in bulamadığı Fiil-İsim komutu (Get-ChildItem ...)
+#   - bash: fish'e göre hatalı ya da yarım (for ...; do ...; done, if [ ]; then ... fi, $((1+2)), ${HOME}), bash'e göre
+#     tam ve geçerli. Yalnızca fish reddedince bash'e sorulur: normal komutlarda ek süreç yok.
+#   - "ADI=değer" tek başına: fish'in "set -g ADI değer"i (değişken bu oturumda kalsın)
+# Boş çıktı: satıra dokunma.
+function __ll_foreign_line -a line valid
+    # valid: commandline --is-valid çıkışı (0 doğru, 1 yarım, 2 hatalı)
+    set -l first (string match -r -- '^\s*([^\s;|&()<>]+)' $line)[2]
+    if string match -qr -- '\$env:[A-Za-z_]' $line
+        or begin
+            string match -qr -- '^[A-Za-z]+-[A-Za-z][A-Za-z0-9]*$' "$first"
+            and not type -q -- "$first"
+        end
+        printf 'pwsh-run %s' (string escape --style=script -- $line)
+        return
+    end
+    test "$valid" = 0; and return
+
+    set -l m (string match -r -- '^\s*([A-Za-z_][A-Za-z0-9_]*)=(\S*)\s*$' $line)
+    if test (count $m) -eq 3
+        printf 'set -g %s %s' $m[2] $m[3]
+        return
+    end
+
+    # yarım: yalnızca bash bloğunun sonu yazılmışsa (fish'in begin / switch / function'ı yarım kalmış olabilir)
+    if test "$valid" = 1
+        string match -qr -- '(^|[;\s])(then|fi|do|done|esac|elif)($|[;\s])' $line; or return
+    end
+    set -l bash (command -s bash)
+    test -n "$bash"; or return
+    if $bash -n -c $line 2>/dev/null
+        printf 'bash -c %s' (string escape --style=script -- $line)
+    end
+end
+
+# !! (son komut) ve !$ (son komutun son kelimesi), bash'teki gibi; tırnak içinde değilken
+function __ll_history_line -a line
+    string match -qr -- '!(!|\$)' $line; or return 1
+    set -l last $history[1]
+    test -n "$last"; or return 1
+    set -l words (string split -n ' ' -- $last)
+    set -l out (string replace -ar -- '(^|\s)!!(\s|$)' "\${1}$last\${2}" $line)
+    set out (string replace -ar -- '(^|\s)!\$(\s|$)' "\${1}$words[-1]\${2}" $out)
+    test "$out" != "$line"; or return 1
+    printf '%s' $out
+end
+
+# PowerShell'de çalıştır: varsa PowerShell 7 (hızlı açılır), yoksa Windows PowerShell. MSYS2 satırdaki /yolları Windows
+# yoluna çevirmesin.
+function pwsh-run
+    set -l ps (command -s pwsh; or command -s powershell.exe; or command -s powershell)
+    if test -z "$ps[1]"
+        echo "PowerShell bulunamadı" >&2
+        return 127
+    end
+    MSYS2_ARG_CONV_EXCL='*' $ps[1] -NoLogo -NoProfile -Command $argv
+end
+
