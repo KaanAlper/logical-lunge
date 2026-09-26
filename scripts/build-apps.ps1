@@ -7,9 +7,18 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 
 public static class ShellIcon
 {
+    [DllImport("shlwapi.dll", CharSet = CharSet.Unicode)] static extern int SHLoadIndirectString(string src, StringBuilder buf, int cch, IntPtr reserved);
+    // "@%SystemRoot%\system32\Taskmgr.exe,-32420" -> "Görev Yöneticisi" (kullanıcının arayüz dilinde)
+    public static string Indirect(string s)
+    {
+        var sb = new StringBuilder(512);
+        return SHLoadIndirectString(Environment.ExpandEnvironmentVariables(s), sb, sb.Capacity, IntPtr.Zero) == 0 && sb.Length > 0 ? sb.ToString() : null;
+    }
+
     [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IShellItemImageFactory { void GetImage(SIZE size, int flags, out IntPtr phbm); }
     [StructLayout(LayoutKind.Sequential)] struct SIZE { public int cx, cy; }
@@ -48,6 +57,24 @@ $out = Join-Path $env:LOCALAPPDATA 'LogicalLunge\state\apps.json'
 New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
 $skip = '(?i)(uninstall|kaldır|readme|beni oku|help|yardım|documentation|belgeler|release notes|license|lisans|website|web sitesi|manual|kılavuz|changelog|what''s new)'
 
+# Başlat menüsü kısayollarının yerelleştirilmiş adları (klasörlerindeki desktop.ini [LocalizedFileNames]). AppsFolder bazı
+# sistem kısayollarını dosya adıyla veriyor ("Task Manager"), Başlat menüsü ise bu kaynaktan çözüp Türkçe gösteriyor.
+$localized = @{}
+foreach ($root in @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$env:APPDATA\Microsoft\Windows\Start Menu\Programs")) {
+    foreach ($ini in (Get-ChildItem -LiteralPath $root -Recurse -Force -Filter desktop.ini -ErrorAction SilentlyContinue)) {
+        $inFiles = $false
+        try { $lines = [IO.File]::ReadAllLines($ini.FullName) } catch { continue }
+        foreach ($line in $lines) {
+            if ($line -match '^\s*\[(.+)\]') { $inFiles = $Matches[1] -eq 'LocalizedFileNames'; continue }
+            if ($inFiles -and $line -match '^(.+?)\.lnk=(.+)$') {
+                $val = $Matches[2].Trim()
+                $nm = if ($val.StartsWith('@')) { [ShellIcon]::Indirect($val) } else { $val }
+                if ($nm) { $localized[$Matches[1].Trim().ToLower()] = $nm }
+            }
+        }
+    }
+}
+
 $shell = New-Object -ComObject Shell.Application
 $items = $shell.NameSpace('shell:AppsFolder').Items()
 $apps = New-Object System.Collections.Generic.List[object]
@@ -55,6 +82,8 @@ $seen = @{}
 foreach ($it in $items) {
     $name = $it.Name
     $id = $it.Path
+    $also = $null
+    if ($name -and $localized.ContainsKey($name.ToLower())) { $also = $name; $name = $localized[$name.ToLower()] } # İngilizce adla da bulunur
     if (-not $name -or $name -match $skip) { continue }
     if ($id -match '^https?:' -or $id -match '\.(txt|pdf|html?|chm|url|md|rtf)$') { continue }
     $key = $name.ToLower()
@@ -70,6 +99,7 @@ foreach ($it in $items) {
         path = "shell:AppsFolder\$id"
         exe  = $exe
         alias = $alias
+        also = $also
         icon = [ShellIcon]::Png("shell:AppsFolder\$id", 48)
     })
 }

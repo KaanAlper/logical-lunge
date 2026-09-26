@@ -577,7 +577,7 @@ class RingTemplate : Form
                 g.Clear(Color.Transparent);
                 float o = bw / 2f;
                 using (var pen = new Pen(color, bw))
-                    g.DrawPath(pen, new GraphicsPathHelper(new RectangleF(o, o, S - bw, S - bw), Math.Max(1f, radius - o)).Path);
+                    using (var rp = new GraphicsPathHelper(new RectangleF(o, o, S - bw, S - bw), Math.Max(1f, radius - o))) g.DrawPath(pen, rp.Path);
             }
             IntPtr screenDc = GetDC(IntPtr.Zero), memDc = CreateCompatibleDC(screenDc), hbm = bmp.GetHbitmap(Color.FromArgb(0)), old = SelectObject(memDc, hbm);
             try
@@ -3349,6 +3349,13 @@ static class WidgetWindows
         return SHQueryUserNotificationState(out st) == 0 && (st == 2 || st == 3 || st == 4);
     }
 
+    // Özel (exclusive) tam ekran Direct3D uygulaması önde: ekranı doğrudan o çizer, bizim pencerelerimiz üstünde görünmez
+    public static bool ExclusiveFullscreen()
+    {
+        int st;
+        return SHQueryUserNotificationState(out st) == 0 && st == 3; // QUNS_RUNNING_D3D_FULL_SCREEN
+    }
+
     public static bool Set(string w, bool visible)
     {
         if (!Titles.ContainsKey(w)) return false;
@@ -5844,6 +5851,10 @@ static class RegionSearch
         }
         protected override void OnPaint(PaintEventArgs e)
         {
+            try { PaintBody(e); } catch (Exception ex) { PaintErrors.Report("alan seçimi", ex); }
+        }
+        void PaintBody(PaintEventArgs e)
+        {
             var g = e.Graphics;
             g.DrawImageUnscaled(shot, 0, 0);
             var r = Sel();
@@ -6237,6 +6248,10 @@ static class SnipTool
         }
 
         protected override void OnPaint(PaintEventArgs e)
+        {
+            try { PaintBody(e); } catch (Exception ex) { PaintErrors.Report("ekran alıntısı", ex); }
+        }
+        void PaintBody(PaintEventArgs e)
         {
             var g = e.Graphics;
             g.DrawImageUnscaled(shot, 0, 0);
@@ -7112,6 +7127,9 @@ class Switcher : Form
         {
             if (isDown && vk == VK_TAB && altDown && !winOrCtrl)
             {
+                // Özel tam ekran oyun önde: değiştirici oyunun arkasında açılıp görünmüyordu, Alt bırakılınca oyun ancak o
+                // zaman tam ekrandan çıkıyordu. Windows'un Alt+Tab'ı oyunu kendi yoluyla küçültür ve seçiciyi gösterir.
+                if (WidgetWindows.ExclusiveFullscreen()) { ThreadPool.QueueUserWorkItem(_ => Slider.Log("switcher: özel tam ekran uygulama önde, Alt+Tab Windows'a bırakıldı")); return false; }
                 Active = true;
                 bool rev = shift;
                 ui.BeginInvoke((Action)(() => inst.Open(rev)));
@@ -7187,7 +7205,7 @@ class Switcher : Form
             string path = Process.GetProcessById((int)pid).MainModule.FileName;
             Image img;
             if (iconCache.TryGetValue(path, out img)) return img;
-            using (var ic = Icon.ExtractAssociatedIcon(path)) img = new Bitmap(ic.ToBitmap(), new Size(22, 22));
+            using (var ic = Icon.ExtractAssociatedIcon(path)) using (var bm = ic.ToBitmap()) img = new Bitmap(bm, new Size(22, 22));
             iconCache[path] = img;
             return img;
         }
@@ -7319,29 +7337,35 @@ class Switcher : Form
     }
 
     // ---- çizim ----
-    static GraphicsPathHelper RoundPath(RectangleF r, float rad) { return new GraphicsPathHelper(r, rad); }
+    // Yuvarlak dikdörtgen: yol her çizimde serbest bırakılır (animasyonda karede birkaç GDI+ nesnesi birikiyordu)
+    static void FillRound(Graphics g, Brush b, RectangleF r, float rad) { using (var rp = new GraphicsPathHelper(r, rad)) g.FillPath(b, rp.Path); }
+    static void DrawRound(Graphics g, Pen p, RectangleF r, float rad) { using (var rp = new GraphicsPathHelper(r, rad)) g.DrawPath(p, rp.Path); }
 
     protected override void OnPaint(PaintEventArgs e)
+    {
+        try { PaintBody(e); } catch (Exception ex) { PaintErrors.Report("alt-tab", ex); }
+    }
+    void PaintBody(PaintEventArgs e)
     {
         var g = e.Graphics;
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
         g.Clear(Surface);
-        using (var bp = new Pen(Border, 1.5f)) g.DrawPath(bp, RoundPath(new RectangleF(0.75f, 0.75f, Width - 2f, Height - 2f), RADIUS).Path);
+        using (var bp = new Pen(Border, 1.5f)) DrawRound(g, bp, new RectangleF(0.75f, 0.75f, Width - 2f, Height - 2f), RADIUS);
         var hl = (Environment.TickCount - animStart < 170) ? drawHi : hiTarget;
         if (hl.Width > 0 && cards.Count > 0)
         {
-            using (var b = new SolidBrush(SelFill)) g.FillPath(b, RoundPath(hl, 18).Path);
-            using (var p = new Pen(SelBorder, 2f)) g.DrawPath(p, RoundPath(hl, 18).Path);
+            using (var b = new SolidBrush(SelFill)) FillRound(g, b, hl, 18);
+            using (var p = new Pen(SelBorder, 2f)) DrawRound(g, p, hl, 18);
         }
         for (int i = 0; i < cards.Count; i++)
         {
             var c = cards[i];
             var inner = new RectangleF(c.R.X, c.R.Y, c.R.Width, c.R.Height);
-            if (i != sel) using (var b = new SolidBrush(CardFill)) g.FillPath(b, RoundPath(inner, 16).Path);
+            if (i != sel) using (var b = new SolidBrush(CardFill)) FillRound(g, b, inner, 16);
             // önizleme yuvası
             var slot = new RectangleF(c.ThumbR.X, c.ThumbR.Y, c.ThumbR.Width, c.ThumbR.Height);
-            using (var b = new SolidBrush(Color.FromArgb(24, 22, 28))) g.FillPath(b, RoundPath(slot, 10).Path);
+            using (var b = new SolidBrush(Color.FromArgb(24, 22, 28))) FillRound(g, b, slot, 10);
             if (c.Min || c.Thumb == IntPtr.Zero)
             {
                 if (c.Icon != null) g.DrawImage(c.Icon, slot.X + slot.Width / 2 - 20, slot.Y + slot.Height / 2 - 20, 40, 40);
@@ -7396,18 +7420,40 @@ class Switcher : Form
 }
 
 // Yuvarlak köşeli dikdörtgen yolu (Graphics.FillPath için)
-class GraphicsPathHelper
+// Çizim hatası: pencere bozuk işaretlenmesin (WinForms, OnPaint'ten çıkan istisnadan sonra süreç kapanana kadar içerik
+// yerine beyaz zemin ve kırmızı X çizer). Hata yazılır (aynı yer için dakikada en fazla bir kez), sonraki çizim yeniden dener.
+static class PaintErrors
+{
+    static readonly Dictionary<string, int> last = new Dictionary<string, int>();
+    public static void Report(string who, Exception ex)
+    {
+        lock (last)
+        {
+            int t;
+            if (last.TryGetValue(who, out t) && Environment.TickCount - t < 60000) return;
+            last[who] = Environment.TickCount;
+        }
+        Slider.Log("çizim hatası (" + who + "): " + ex.GetType().Name + ": " + ex.Message);
+    }
+}
+
+class GraphicsPathHelper : IDisposable
 {
     public System.Drawing.Drawing2D.GraphicsPath Path = new System.Drawing.Drawing2D.GraphicsPath();
     public GraphicsPathHelper(RectangleF r, float rad)
     {
         float d = Math.Min(rad * 2, Math.Min(r.Width, r.Height));
+        // Boyutu 0 (henüz yerleşmemiş kart) ya da köşesiz: GDI+ 0 çaplı yayda hata fırlatıyordu, hata çizimden dışarı
+        // çıkınca WinForms pencereyi kalıcı olarak "bozuk" (beyaz zemin, kırmızı X) çiziyordu
+        if (r.Width <= 0 || r.Height <= 0) return;
+        if (d < 1) { Path.AddRectangle(r); return; }
         Path.AddArc(r.X, r.Y, d, d, 180, 90);
         Path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
         Path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
         Path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
         Path.CloseFigure();
     }
+    public void Dispose() { Path.Dispose(); }
 }
 
 // ---------------- Duvar kağıdı (sağ panel > Duvar kağıtları) ----------------
@@ -8376,6 +8422,10 @@ static class Splash
         }
         protected override bool ShowWithoutActivation { get { return true; } }
         protected override void OnPaint(PaintEventArgs e)
+        {
+            try { PaintBody(e); } catch (Exception ex) { PaintErrors.Report("duvar kağıdı", ex); }
+        }
+        void PaintBody(PaintEventArgs e)
         {
             if (img == null) return;
             e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;

@@ -517,7 +517,7 @@
           if (mathOnly) return out;
 
           if (term) {
-            apps.map(a => ({ a, s: a.alias && low(a.alias) === low(term) ? 2000 : fuzzyScore(a.name, term) }))
+            apps.map(a => ({ a, s: a.alias && low(a.alias) === low(term) ? 2000 : Math.max(fuzzyScore(a.name, term), a.also ? fuzzyScore(a.also, term) : 0) }))
               .filter(x => x.s >= 0)
               .sort((x, y) => y.s - x.s)
               .slice(0, 15)

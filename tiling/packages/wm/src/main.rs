@@ -17,8 +17,10 @@ use anyhow::{Context, Error};
 use tokio::{process::Command, signal};
 use tracing::Level;
 use tracing_subscriber::{
+  filter::Targets,
   fmt::{self, writer::MakeWriterExt},
   layer::SubscriberExt,
+  Layer as _,
 };
 use wm_common::{AppCommand, Verbosity, WmEvent};
 #[cfg(target_os = "macos")]
@@ -311,10 +313,15 @@ fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
         .with_writer(std::io::stdout.with_max_level(verbosity.level())),
     )
     .with(
-      // Output to the log file, without terminal colors.
+      // Output to the log file, without terminal colors. Warnings, plus
+      // one line per newly managed window (where it went and why).
       fmt::Layer::new()
         .with_ansi(false)
-        .with_writer(file_writer.with_max_level(Level::WARN)),
+        .with_writer(file_writer)
+        .with_filter(Targets::new().with_default(Level::WARN).with_target(
+          "lunge_tiling::commands::window::manage_window",
+          Level::INFO,
+        )),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;

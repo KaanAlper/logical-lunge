@@ -92,7 +92,17 @@ pub fn manage_window(
   )?;
 
   if let Some(window) = updated_window {
-    info!("New window managed: {window}");
+    // Logical Lunge: written to tiling.log (see `setup_logging`), so a
+    // window that lands on an unexpected workspace can be traced.
+    info!(
+      "New window managed: {window} -> workspace {} (focused workspace {}, controllable {controllable})",
+      window.workspace().map(|w| w.config().name).unwrap_or_default(),
+      state
+        .focused_container()
+        .and_then(|c| c.workspace())
+        .map(|w| w.config().name)
+        .unwrap_or_default(),
+    );
 
     state.emit_event(WmEvent::WindowManaged {
       managed_window: window.to_dto()?,
