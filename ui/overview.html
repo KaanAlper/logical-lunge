@@ -359,14 +359,14 @@
           try { const r = await withTimeout(lunge.shellExec(HELPER, ['--overview-mode']), 600, null); if (r) return (r.stdout || '').trim(); } catch {}
           return '';
         };
-        // Odak olayı ve görünürlük yoklaması aynı açılışı iki kez tetikleyebiliyor; ikincisi bayrağı boş bulup ";"yi siliyordu
-        const lastShow = useRef(0);
         // Açılış sırası: mod okunurken kapatıldıysa (blur, Esc) gecikmiş açılış pencereyi yeniden göstermesin (kapalı
         // sayfa boş, tıklamaları yutan tam ekran pencere olarak kalıyordu)
         const openSeq = useRef(0);
         const show = async () => {
-          if (Date.now() - lastShow.current < 400) return;
-          lastShow.current = Date.now();
+          // Aynı açılışın ikinci tetiklenişi (odak olayı + çekirdeğin sinyali). Önceden 400 ms'lik zaman engeli vardı:
+          // hızlı kapat-aç'ta ikinci açılış yutuluyor, pencere görünür ama boş kalıyordu.
+          if (openRef.current) return;
+          openRef.current = true;
           const my = ++openSeq.current;
           // Sayfa hemen görünür yapılır: çekirdek pencereyi saydam gösterip bu sayfa hazır olunca opak yapıyor, çizim
           // mod okunurken başlasın
@@ -380,14 +380,16 @@
           try { await win.show(); await win.setFocus(); } catch {}
           setTimeout(() => inputRef.current?.focus(), 30);
         };
-        const hide = () => { openSeq.current++; setOpen(false); lunge.hideWindow(win).catch(() => {}); };
+        const hide = () => { openSeq.current++; openRef.current = false; setOpen(false); lunge.hideWindow(win).catch(() => {}); };
 
         // Helper pencereyi Win32 ile gizleyip gösterir (Super / Super+V): bu, sayfaya blur/focus olayı göndermez ve
         // 'open' eski kalır. Helper gösterdiğini / gizlediğini uzun yoklamayla (/overview-wait) bildirir: gösterdiyse
         // (bizim show() çağrımız dışında) taze açılış gibi işle ve mod bayrağını oku, gizlediyse kapalı say. Eskiden
         // görünürlük 40 ms'de bir soruluyordu (gün boyu saniyede 25 IPC). Helper yoksa ya da cevap vermiyorsa
         // görünürlüğü saniyede bir yoklar ve tekrar dener.
-        const openRef = useRef(false); openRef.current = open;
+        // Açık mı: açma / kapama anında güncellenir (çizimde değil). Önceden çizimde güncelleniyordu: kapanıştan sonraki
+        // çizim gelmeden gelen "göster" sinyali sayfayı açık sanıyordu, pencere görünür ama boş kalıyordu.
+        const openRef = useRef(false);
         const showRef = useRef(null); showRef.current = show;
         useEffect(() => {
           let alive = true, seq = -1, was = false;
@@ -398,7 +400,7 @@
               if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
             });
           };
-          const hidden = () => { openSeq.current++; if (openRef.current) setOpen(false); lunge.markHidden(win); };
+          const hidden = () => { openSeq.current++; openRef.current = false; setOpen(false); lunge.markHidden(win); };
           (async () => {
             while (alive) {
               const ctl = new AbortController();

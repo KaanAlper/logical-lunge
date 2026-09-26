@@ -12,6 +12,13 @@ pub fn handle_window_destroyed(
   native_window_id: WindowId,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  // Logical Lunge: forget an ignored window when it closes. The list only
+  // grew (every PiP, Office popup and shell window stayed in it), each focus
+  // event searched it, and a reused handle made a new window "ignored".
+  state
+    .ignored_windows
+    .retain(|window| window.id() != native_window_id);
+
   let found_window = state
     .windows()
     .into_iter()

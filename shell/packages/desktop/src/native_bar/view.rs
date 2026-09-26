@@ -198,6 +198,10 @@ impl Painter<'_> {
       return Ok(b.clone());
     }
     let b = self.gfx.brush(c)?;
+    // Bounded: an animated colour would otherwise add a brush per frame.
+    if self.res.brushes.len() >= 256 {
+      self.res.brushes.clear();
+    }
     self.res.brushes.insert(key, b.clone());
     Ok(b)
   }

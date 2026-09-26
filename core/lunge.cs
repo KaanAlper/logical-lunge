@@ -59,6 +59,37 @@ static class Paths
     static string Dir(string d) { try { System.IO.Directory.CreateDirectory(d); } catch { } return d; }
 }
 
+// Süreç adı / yolu: OpenProcess + QueryFullProcessImageName + CloseHandle (mikrosaniyeler, iz bırakmaz). Önceden
+// Process.GetProcessById(pid).ProcessName her çağrıda sistemdeki tüm süreçlerin anlık görüntüsünü alıyordu (her yeni
+// pencerede); MainModule hedef sürecin tüm modüllerini sayıyor ve açtığı tutamacı çöp toplayıcıya kadar tutuyordu.
+static class ProcInfo
+{
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr h, int flags, StringBuilder name, ref int size);
+
+    public static string Path(uint pid)
+    {
+        if (pid == 0) return null;
+        IntPtr h = OpenProcess(0x1000, false, pid); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (h == IntPtr.Zero) return null;
+        try
+        {
+            var sb = new StringBuilder(1024); int n = sb.Capacity;
+            return QueryFullProcessImageName(h, 0, sb, ref n) ? sb.ToString(0, n) : null;
+        }
+        finally { CloseHandle(h); }
+    }
+
+    // Process.ProcessName biçiminde (uzantısız dosya adı); bulunamazsa ""
+    public static string Name(uint pid)
+    {
+        string p = Path(pid);
+        if (p != null) return System.IO.Path.GetFileNameWithoutExtension(p);
+        try { using (var pr = Process.GetProcessById((int)pid)) return pr.ProcessName; } catch { return ""; }
+    }
+}
+
 // Süreç adları ve widget pencere başlıkları (shell "Logical Lunge · <widget>" koyar)
 static class Names
 {
@@ -993,7 +1024,7 @@ class Slider
             {
                 if (!pinProcs.TryGetValue(pid, out pn))
                 {
-                    try { pn = Process.GetProcessById((int)pid).ProcessName; } catch { pn = ""; }
+                    pn = ProcInfo.Name(pid);
                     if (pinProcs.Count > 500) pinProcs.Clear();
                     pinProcs[pid] = pn;
                 }
@@ -2226,11 +2257,37 @@ class Dwindle
     Dictionary<long, string> monOf = new Dictionary<long, string>();              // pencere -> monitör id
     Dictionary<string, Rectangle> monRects = new Dictionary<string, Rectangle>();
 
+    // Önbellek yalnızca bir şey değişince tazelenir: pencere yöneticisinden bir olay ya da görünen bir pencerenin yer
+    // değiştirmesi (klavyeyle boyutlandırma vb.); olay yağmuru 30 ms'de birleşir, güvenlik için en geç 2 sn'de bir.
+    // Önceden 300 ms'de bir tüm ağaç sorgulanıp JSON'u ayrıştırılıyordu: boşta bile iki süreçte sürekli iş, çekirdekte
+    // sürekli çöp (kaymalarda çöp toplama duraklamaları).
+    static readonly AutoResetEvent cacheDirty = new AutoResetEvent(true);
+    static volatile Dwindle current;
+    public static void MarkDirty() { cacheDirty.Set(); }
+    // Köşe yuvarlayıcının konum olayından (kendi thread'i): görünen, yönetilen bir pencereyse
+    public static void WindowMoved(IntPtr h)
+    {
+        var d = current;
+        if (d == null) return;
+        bool known;
+        lock (d.cacheLock) known = d.rects.ContainsKey(h.ToInt64());
+        if (known) cacheDirty.Set();
+    }
+
     public Dwindle(TilingClient g, Control ui, Slider slider) : this(g)
     {
         this.ui = ui; this.slider = slider;
-        // Klavyeyle yeniden boyutlandırma vb. için hafızayı düzenli tazele
-        var t = new Thread(() => { while (true) { Thread.Sleep(300); if (Slider.Animating) continue; try { RefreshCache(); } catch { } } }) { IsBackground = true };
+        current = this;
+        var t = new Thread(() =>
+        {
+            while (true)
+            {
+                cacheDirty.WaitOne(2000);
+                Thread.Sleep(30);
+                while (Slider.Animating) Thread.Sleep(50); // animasyon bitince bir kez
+                try { RefreshCache(); } catch { }
+            }
+        }) { IsBackground = true, Name = "dwindle-cache" };
         t.Start();
     }
 
@@ -2283,7 +2340,7 @@ class Dwindle
         var v = Visual(r.Keys);
         lock (cacheLock)
         {
-            if (gen != Slider.Gen || Slider.Animating) return; // sorgu sürerken animasyon başladı: bu sonuç eski
+            if (gen != Slider.Gen || Slider.Animating) { cacheDirty.Set(); return; } // sorgu sürerken animasyon başladı: bu sonuç eski, sonra yine
             rects = r; monOf = m; monRects = mr; visual = v;
         }
     }
@@ -2329,7 +2386,7 @@ class Dwindle
             if (Native.GetWindow(hwnd, 4) != IntPtr.Zero) return; // sahibi olan (diyalog)
             uint pid; Native.GetWindowThreadProcessId(hwnd, out pid);
             string proc;
-            try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { return; }
+            proc = ProcInfo.Name(pid); if (proc.Length == 0) return;
             if (noFreezeProcs.Contains(proc)) return;
 
             // Yeni pencere farenin olduğu monitördeki odaktaki workspace'e gelir (LaunchQueue fare altını odaklar)
@@ -2623,7 +2680,9 @@ class Dwindle
                 var ws = new ClientWebSocket();
                 ws.Options.Proxy = null;
                 ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(3000);
-                var sub = Encoding.UTF8.GetBytes("sub --events focus_changed window_managed window_unmanaged");
+                var sub = Encoding.UTF8.GetBytes("sub --events focus_changed window_managed window_unmanaged focused_container_moved " +
+                    "workspace_activated workspace_deactivated workspace_updated monitor_added monitor_updated monitor_removed tiling_direction_changed");
+                cacheDirty.Set(); // yeniden bağlandı: aradaki değişiklikler
                 ws.SendAsync(new ArraySegment<byte>(sub), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1500);
                 var buf = new byte[1 << 16];
                 while (ws.State == WebSocketState.Open)
@@ -2649,6 +2708,7 @@ class Dwindle
     {
         var msg = json.DeserializeObject(text) as Dictionary<string, object>;
         if (msg == null || J.Str(msg, "messageType") != "event_subscription") return;
+        cacheDirty.Set(); // yerleşim değişti: önbellek tazelensin
         var data = msg["data"] as Dictionary<string, object>;
         if (data == null) return;
         if (J.Str(data, "eventType") == "window_unmanaged")
@@ -4124,7 +4184,7 @@ class DialogCatcher
             if (ClassOf(hwnd) != "#32770") return;
             uint pid; Native.GetWindowThreadProcessId(hwnd, out pid);
             string proc;
-            try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { return; }
+            proc = ProcInfo.Name(pid); if (proc.Length == 0) return;
             if (!owners.Contains(proc)) return;
 
             if (ev == 0x8000) { Hide(hwnd); return; } // EVENT_OBJECT_CREATE: henüz ekranda değil
@@ -4217,6 +4277,16 @@ class Rounder
                                                                   // ya da araç penceresi: aşağıdaki stil kuralları onları zaten dışarıda bırakır
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Native.RECT r);
     [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref Native.POINT p);
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromWindow(IntPtr h, uint flags);
+    [StructLayout(LayoutKind.Sequential)] struct MONITORINFO { public int cbSize; public Native.RECT rcMonitor, rcWork; public uint dwFlags; }
+    [DllImport("user32.dll")] static extern bool GetMonitorInfo(IntPtr mon, ref MONITORINFO mi);
+    // Pencerenin monitörü (Screen.FromHandle her çağrıda nesne ayırıyordu; bu her konum değişikliği olayında çalışır)
+    static Native.RECT MonitorOf(IntPtr h)
+    {
+        var mi = new MONITORINFO { cbSize = Marshal.SizeOf(typeof(MONITORINFO)) };
+        GetMonitorInfo(MonitorFromWindow(h, 2 /*MONITOR_DEFAULTTONEAREST*/), ref mi);
+        return mi.rcMonitor;
+    }
 
     // Başlığını Windows mu çiziyor: görünen üst kenar ile çizim alanının üstü arasındaki fark başlık (ve menü) çubuğudur.
     // Tarayıcılar, Electron, terminaller, Qt pencereleri başlığı kendileri çizer (0-1 px); Görev Yöneticisi, Not Defteri,
@@ -4229,7 +4299,9 @@ class Rounder
         if (!GetClientRect(h, out c) || !ClientToScreen(h, ref p)) return true; // bilinmiyor: dokunma
         return p.Y - frame.Top > 4;
     }
-    static readonly Dictionary<uint, string> procCache = new Dictionary<uint, string>();
+    // pid -> (ad, okunma anı). pid'ler yeniden kullanılır: kayıt 30 sn geçerli, sözlük sınırlı
+    static readonly Dictionary<uint, KeyValuePair<string, int>> procCache = new Dictionary<uint, KeyValuePair<string, int>>();
+    int ticks;
 
     public void Start()
     {
@@ -4237,13 +4309,46 @@ class Rounder
         Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
         Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, cb, 0, 0, 0x0002);
         Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, cb, 0, 0, 0x0002);
+        Native.SetWinEventHook(0x8001, 0x8001, IntPtr.Zero, cb, 0, 0, 0x0002); // EVENT_OBJECT_DESTROY: kapanan pencereyi unut
+        Native.SetWinEventHook(0x8018, 0x8018, IntPtr.Zero, cb, 0, 0, 0x0002); // EVENT_OBJECT_UNCLOAKED: workspace geçişinde görünen
         Native.EnumWindows(delegate (IntPtr h, IntPtr l) { Apply(h); return true; }, IntPtr.Zero);
 
-        // Aynı thread'de (mesaj döngüsü var) periyodik kontrol: sıfırlanan bölgeleri geri koy
+        // Aynı thread'de (mesaj döngüsü var) periyodik kontrol. Uygulamanın kendisi sıfırladığı bölge yalnızca köşesi
+        // yuvarlanmış pencerelerde olur: onlara 0,7 sn'de bir bakılır. Önceden her seferinde tüm üst düzey pencereler
+        // (yüzlerce, her birinde ~10 sistem çağrısı ve başlık okuma) geziliyordu. Tam tarama 5 sn'de bir güvenlik ağı;
+        // kapanmış pencerelerin kayıtları da o sırada silinir.
         var timer = new System.Windows.Forms.Timer { Interval = 700 };
-        timer.Tick += (s, e) => Native.EnumWindows(delegate (IntPtr h, IntPtr l) { Apply(h); MarkNoActivate(h); return true; }, IntPtr.Zero);
+        timer.Tick += (s, e) =>
+        {
+            if (++ticks % 7 == 0)
+            {
+                Prune();
+                Native.EnumWindows(delegate (IntPtr h, IntPtr l) { Apply(h); return true; }, IntPtr.Zero);
+            }
+            else foreach (var h in new List<IntPtr>(applied.Keys)) Apply(h);
+            MarkOurWindows();
+        };
         timer.Start();
-        Native.EnumWindows(delegate (IntPtr h, IntPtr l) { MarkNoActivate(h); return true; }, IntPtr.Zero);
+        MarkOurWindows();
+    }
+
+    // Kapanan pencerenin kayıtları (önceden hiç silinmiyordu)
+    void Forget(IntPtr h) { applied.Remove(h); resets.Remove(h); giveUp.Remove(h); }
+    void Prune()
+    {
+        foreach (var h in new List<IntPtr>(applied.Keys)) if (!Native.IsWindow(h)) Forget(h);
+        foreach (var h in new List<IntPtr>(resets.Keys)) if (!Native.IsWindow(h)) resets.Remove(h);
+        giveUp.RemoveWhere(h => !Native.IsWindow(h));
+    }
+
+    // Bar, bildirim ve ekran klavyesi pencereleri (başlıklarıyla, tüm pencereleri gezmeden)
+    static void MarkOurWindows()
+    {
+        foreach (var t in new[] { Names.Bar, Names.Toast, Names.Osk })
+        {
+            IntPtr h = IntPtr.Zero;
+            while ((h = Native.FindWindowEx(IntPtr.Zero, h, null, t)) != IntPtr.Zero) MarkNoActivate(h);
+        }
     }
 
     // Bar ve bildirim penceresi odak almasın: "fareyle üzerine gelince etkinleştir" açıkken
@@ -4261,6 +4366,8 @@ class Rounder
     void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
         if (idObject != 0 || hwnd == IntPtr.Zero) return; // OBJID_WINDOW
+        if (ev == 0x8001) { Forget(hwnd); return; }
+        if (ev == Native.EVENT_OBJECT_LOCATIONCHANGE) Dwindle.WindowMoved(hwnd);
         Apply(hwnd);
     }
 
@@ -4283,10 +4390,12 @@ class Rounder
     static string ProcName(IntPtr h)
     {
         uint pid; Native.GetWindowThreadProcessId(h, out pid);
-        string name;
-        if (procCache.TryGetValue(pid, out name)) return name;
-        try { name = Process.GetProcessById((int)pid).ProcessName; } catch { name = ""; }
-        procCache[pid] = name;
+        KeyValuePair<string, int> e;
+        int now = Environment.TickCount;
+        if (procCache.TryGetValue(pid, out e) && now - e.Value < 30000) return e.Key;
+        string name = ProcInfo.Name(pid);
+        if (procCache.Count > 512) procCache.Clear();
+        procCache[pid] = new KeyValuePair<string, int>(name, now);
         return name;
     }
 
@@ -4311,7 +4420,7 @@ class Rounder
         // Tam ekran / maximize: köşe yok (Hyprland'de de fullscreen'de rounding kalkar)
         var wp = new Native.WINDOWPLACEMENT { length = Marshal.SizeOf(typeof(Native.WINDOWPLACEMENT)) };
         Native.GetWindowPlacement(h, ref wp);
-        var screen = Screen.FromHandle(h).Bounds;
+        var screen = MonitorOf(h);
         bool full = wp.showCmd == 3 || (fr.Left <= screen.Left && fr.Top <= screen.Top && fr.Right >= screen.Right && fr.Bottom >= screen.Bottom);
 
         // Başlık ya da kalın çerçevesi olmayan pencere (tarayıcı video tam ekranı başlığı kaldırır) yuvarlanmaz. Önceden
@@ -4988,7 +5097,8 @@ class Keys2
         OverviewSignal("show");
         Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK);
         Native.SetForegroundWindow(h);
-        ThreadPool.QueueUserWorkItem(_ =>
+        // Kendi thread'inde: havuz uzun yoklamalarla doluyken iş yarım saniye bekleyebiliyordu (menü saydam kalıyordu)
+        new Thread(() =>
         {
             var sw = Stopwatch.StartNew();
             while (sw.ElapsedMilliseconds < 800 && System.IO.File.Exists(flag)) Thread.Sleep(6);
@@ -4996,7 +5106,7 @@ class Keys2
             Native.SetLayeredWindowAttributes(h, 0, 255, 0x2);
             int e2 = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
             Native.SetWindowLong(h, Native.GWL_EXSTYLE, e2 & ~0x00080000);
-        });
+        }) { IsBackground = true, Name = "overview-reveal" }.Start();
     }
 
     // Super+V: overview'u pano modunda (";" öneki) aç; açıkken tekrar basınca kapat
@@ -6520,8 +6630,7 @@ static class SnipTool
         try
         {
             int pid = int.Parse(System.IO.File.ReadAllText(PidFile).Trim());
-            var pr = Process.GetProcessById(pid);
-            if (!pr.ProcessName.Equals(Names.Core, StringComparison.OrdinalIgnoreCase)) return false;
+            if (!ProcInfo.Name((uint)pid).Equals(Names.Core, StringComparison.OrdinalIgnoreCase)) return false;
             bool visible = false;
             Native.EnumWindows(delegate (IntPtr h, IntPtr l)
             {
@@ -6534,7 +6643,7 @@ static class SnipTool
                 return true;
             }, IntPtr.Zero);
             if (visible) return false;
-            pr.Kill(); pr.WaitForExit(1500);
+            using (var pr = Process.GetProcessById(pid)) { pr.Kill(); pr.WaitForExit(1500); }
             return true;
         }
         catch { return false; }
@@ -7202,7 +7311,8 @@ class Switcher : Form
         try
         {
             uint pid; Native.GetWindowThreadProcessId(h, out pid);
-            string path = Process.GetProcessById((int)pid).MainModule.FileName;
+            string path = ProcInfo.Path(pid);
+            if (path == null) return null;
             Image img;
             if (iconCache.TryGetValue(path, out img)) return img;
             using (var ic = Icon.ExtractAssociatedIcon(path)) using (var bm = ic.ToBitmap()) img = new Bitmap(bm, new Size(22, 22));
@@ -7779,7 +7889,7 @@ static class WarmTerminal
     {
         foreach (var pr in Process.GetProcessesByName("wezterm-gui"))
         {
-            try { if (string.Equals(pr.MainModule.FileName, path, StringComparison.OrdinalIgnoreCase)) return true; }
+            try { if (string.Equals(ProcInfo.Path((uint)pr.Id), path, StringComparison.OrdinalIgnoreCase)) return true; }
             catch { }
             finally { pr.Dispose(); }
         }
@@ -8320,9 +8430,17 @@ static class TaskbarGuard
         }, IntPtr.Zero);
     }
 
+    // Yalnızca aranan sınıflar (görev çubukları, Başlat düğmesi, ses göstergesi): önceden 2 sn'de bir tüm pencerelerin sınıf
+    // adı okunuyordu
+    static readonly string[] sweepClasses = { "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Button", "NativeHWNDHost" };
     static void Sweep()
     {
-        Native.EnumWindows(delegate (IntPtr h, IntPtr l) { if (Native.IsWindowVisible(h)) Hide(h); return true; }, IntPtr.Zero);
+        foreach (var cls in sweepClasses)
+        {
+            IntPtr h = IntPtr.Zero;
+            while ((h = Native.FindWindowEx(IntPtr.Zero, h, cls, null)) != IntPtr.Zero)
+                if (Native.IsWindowVisible(h)) Hide(h);
+        }
     }
 
     static string Cls(IntPtr h)
@@ -9140,6 +9258,9 @@ static class Program
         // Arkada derleme / oyun / güncelleme CPU'yu doldursa da kayma ve odak gecikmesin: helper ve
         // tiling yüksek öncelikte (tiling yeniden başlarsa diye 10 sn'de bir yenilenir; yönetici gerekmez).
         try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { }
+        // Yerel HTTP sunucusu uzun yoklamaları havuz thread'lerinde bekletir: havuz dolunca .NET yeni thread'i saniyede
+        // ~2 tane ekliyor, kısa işler (tıklama, menü) bekliyordu. Alt sınır yükseltilir (thread'ler ancak gerekince açılır).
+        { int w, io; ThreadPool.GetMinThreads(out w, out io); ThreadPool.SetMinThreads(Math.Max(w, 32), io); }
         var prioThread = new Thread(() =>
         {
             while (true)

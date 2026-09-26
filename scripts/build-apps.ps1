@@ -83,7 +83,8 @@ foreach ($it in $items) {
     $name = $it.Name
     $id = $it.Path
     $also = $null
-    if ($name -and $localized.ContainsKey($name.ToLower())) { $also = $name; $name = $localized[$name.ToLower()] } # İngilizce adla da bulunur
+    # Sistem dilindeki ad (Windows'un arayüz dili); dosya adı farklıysa onunla da aranır
+    if ($name -and $localized.ContainsKey($name.ToLower()) -and $localized[$name.ToLower()] -ne $name) { $also = $name; $name = $localized[$name.ToLower()] }
     if (-not $name -or $name -match $skip) { continue }
     if ($id -match '^https?:' -or $id -match '\.(txt|pdf|html?|chm|url|md|rtf)$') { continue }
     $key = $name.ToLower()
