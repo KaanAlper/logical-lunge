@@ -76,36 +76,90 @@ function Step([string]$id, [string]$m) {
     Log ''; Log "==> $m"
     Progress 'running' $null
 }
-# Streams the download so the installer UI can draw a progress bar; cached in %TEMP%\ll-downloads
+# Streams the download so the installer UI can draw a progress bar; cached in %TEMP%\ll-downloads.
+# A dropped connection continues where it stopped (HTTP Range), a short or damaged file is fetched again, and only
+# a complete download (the .ok file next to it) is ever reused from the cache.
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 function Get-File([string]$url, [string]$name) {
-    $dst = Join-Path $DL $name
-    if (Test-Path $dst) { return $dst }
+    $dst = Join-Path $DL $name; $part = "$dst.part"; $ok = "$dst.ok"
+    if ((Test-Path $dst) -and (Test-Path $ok)) { return $dst }
+    Remove-Item $dst, $ok -Force -ErrorAction SilentlyContinue
     Log "    download $url"
-    $req = [Net.HttpWebRequest]::Create($url)
-    $req.UserAgent = 'LogicalLunge-Setup'; $req.Timeout = 30000; $req.ReadWriteTimeout = 60000
-    $res = $req.GetResponse()
-    try {
-        $total = $res.ContentLength
-        $in = $res.GetResponseStream(); $out = [IO.File]::Create("$dst.part")
+    $last = ''
+    for ($try = 1; $try -le 5; $try++) {
+        Assert-NotCancelled
         try {
-            $buf = New-Object byte[] 262144; $done = 0; $sw = [Diagnostics.Stopwatch]::StartNew()
-            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
-                $out.Write($buf, 0, $n); $done += $n
-                if ($sw.ElapsedMilliseconds -ge 150) { $sw.Restart(); Progress 'running' @{ file = $name; done = $done; size = $total }; Assert-NotCancelled }
+            $have = if (Test-Path $part) { (Get-Item $part).Length } else { 0 }
+            $req = [Net.HttpWebRequest]::Create($url)
+            $req.UserAgent = 'LogicalLunge-Setup'; $req.Timeout = 30000; $req.ReadWriteTimeout = 60000
+            if ($have -gt 0) { $req.AddRange([long]$have) }
+            $res = $req.GetResponse()
+            try {
+                # 206: the server continues the file; 200: it sends it from the start
+                if ([int]$res.StatusCode -ne 206) { $have = 0 }
+                $total = if ($res.ContentLength -gt 0) { $have + $res.ContentLength } else { -1 }
+                $in = $res.GetResponseStream()
+                $out = if ($have -gt 0) { New-Object IO.FileStream($part, [IO.FileMode]::Append) } else { [IO.File]::Create($part) }
+                try {
+                    $buf = New-Object byte[] 262144; $done = $have; $sw = [Diagnostics.Stopwatch]::StartNew()
+                    while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                        $out.Write($buf, 0, $n); $done += $n
+                        if ($sw.ElapsedMilliseconds -ge 150) { $sw.Restart(); Progress 'running' @{ file = $name; done = $done; size = $total }; Assert-NotCancelled }
+                    }
+                }
+                finally { $out.Dispose(); $in.Dispose() }
             }
+            finally { $res.Dispose() }
+            if ($total -gt 0 -and $done -lt $total) { throw "the connection closed at $done of $total bytes" }
+            if ($name -like '*.zip') {
+                try { [IO.Compression.ZipFile]::OpenRead($part).Dispose() }
+                catch { Remove-Item $part -Force -ErrorAction SilentlyContinue; throw "damaged zip ($($_.Exception.Message))" }
+            }
+            Move-Item $part $dst -Force
+            [IO.File]::WriteAllText($ok, $url)
+            Progress 'running' $null
+            return $dst
         }
-        finally { $out.Dispose(); $in.Dispose() }
+        catch [OperationCanceledException] { throw }
+        catch {
+            $last = $_.Exception.Message
+            Log "    attempt $try of 5 failed: $last"
+            # 416: the part on disk does not fit the file on the server; start over
+            for ($ex = $_.Exception; $ex; $ex = $ex.InnerException) {
+                if ($ex -is [Net.WebException] -and $ex.Response -and [int]$ex.Response.StatusCode -eq 416) { Remove-Item $part -Force -ErrorAction SilentlyContinue }
+                # 404 / 403: the file is not there; asking again does not help
+                if ($ex -is [Net.WebException] -and $ex.Response -and [int]$ex.Response.StatusCode -in 403, 404, 410) { $try = 5 }
+            }
+            if ($try -lt 5) { for ($w = 0; $w -lt 2 * $try; $w++) { Start-Sleep 1; Assert-NotCancelled } }
+        }
     }
-    finally { $res.Dispose() }
-    Move-Item "$dst.part" $dst -Force
-    Progress 'running' $null
-    return $dst
+    throw "download failed ($url): $last"
 }
-function Gh-Asset([string]$repo, [string]$tag, [string]$pattern) {
-    $rel = Invoke-RestMethod -UseBasicParsing -Headers @{ 'User-Agent' = 'LogicalLunge-Setup' } "https://api.github.com/repos/$repo/releases/tags/$tag"
-    $a = $rel.assets | Where-Object { $_.name -match $pattern } | Select-Object -First 1
-    if (-not $a) { throw "asset '$pattern' not found in $repo $tag" }
-    return Get-File $a.browser_download_url $a.name
+# A pinned release asset by its exact name: a plain download link, no GitHub API call (the API allows 60 calls an
+# hour per address; a few retried installs used to run out and fail with "asset not found")
+function Gh-Asset([string]$repo, [string]$tag, [string]$file) {
+    return Get-File "https://github.com/$repo/releases/download/$tag/$file" $file
+}
+# pacman of MSYS2. Its warnings go to stderr, which under ErrorActionPreference Stop used to abort (and roll back)
+# the whole install; a lock left behind by an interrupted run is cleared when no pacman is running; slow mirrors are
+# waited for instead of timing out.
+function Invoke-Pacman([string]$msys, [string]$arguments) {
+    $ErrorActionPreference = 'Continue'
+    $lock = "$msys\var\lib\pacman\db.lck"
+    if ((Test-Path $lock) -and -not (Get-Process pacman -ErrorAction SilentlyContinue)) { Remove-Item $lock -Force -ErrorAction SilentlyContinue; Log '    stale pacman lock removed' }
+    $lines = & "$msys\usr\bin\bash.exe" -lc "pacman $arguments --noconfirm --disable-download-timeout" 2>&1 | ForEach-Object { "$_" }
+    $code = $LASTEXITCODE
+    $lines | Select-Object -Last 6 | ForEach-Object { Log "    pacman: $_" }
+    Log "    pacman $arguments -> exit $code"
+    return $code
+}
+# Optional parts (monitor brightness tool, CPU temperature, terminal): a failure there is logged and reported at the
+# end instead of undoing the whole desktop; running the installer again completes what is missing
+$script:warnings = New-Object Collections.ArrayList
+function Optional([string]$what, [scriptblock]$sb) {
+    try { & $sb }
+    catch [OperationCanceledException] { throw }
+    catch { Log "WARNING: $what could not be installed: $($_.Exception.Message)"; [void]$script:warnings.Add($what) }
 }
 function Hash([string]$t) { $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($t))).Replace('-', '') } finally { $sha.Dispose() } }
 
@@ -364,87 +418,99 @@ try {
 
     # ------------------------------------------------------------ tools
     Step 'tools' 'Installing the brightness and sensor tools'
-    $cmm = Join-Path $APP 'tools\ControlMyMonitor.exe'
-    if (-not (Test-Path $cmm)) {
-        $cz = Get-File 'https://www.nirsoft.net/utils/controlmymonitor.zip' 'controlmymonitor.zip'
-        Expand-Archive $cz (Join-Path $DL 'cmm') -Force
-        Remember-Created $cmm
-        Copy-Item (Join-Path $DL 'cmm\ControlMyMonitor.exe') $cmm -Force
-    }
     $temps = Join-Path $APP 'tools\temps'
-    if (-not (Test-Path (Join-Path $temps 'LibreHardwareMonitorLib.dll'))) {
-        $lz = Gh-Asset 'LibreHardwareMonitor/LibreHardwareMonitor' $LHM_VER '^LibreHardwareMonitor\.zip$'
-        $tmp = Join-Path $DL 'lhm'; Expand-Archive $lz $tmp -Force
-        Get-ChildItem $tmp -Filter *.dll | ForEach-Object { Remember-Created (Join-Path $temps $_.Name); Copy-Item $_.FullName $temps -Force }
+    Optional 'brightness' {
+        $cmm = Join-Path $APP 'tools\ControlMyMonitor.exe'
+        if (-not (Test-Path $cmm)) {
+            $cz = Get-File 'https://www.nirsoft.net/utils/controlmymonitor.zip' 'controlmymonitor.zip'
+            Expand-Archive $cz (Join-Path $DL 'cmm') -Force
+            Remember-Created $cmm
+            Copy-Item (Join-Path $DL 'cmm\ControlMyMonitor.exe') $cmm -Force
+        }
     }
-    if (-not $NoSensors -and -not (Get-Service PawnIO -ErrorAction SilentlyContinue)) {
-        $pw = Gh-Asset 'namazso/PawnIO.Setup' $PAWNIO_VER 'PawnIO_setup\.exe$'
-        Copy-Item $pw (Join-Path $temps 'PawnIO_setup.exe') -Force
-        Start-Process $pw -ArgumentList '-install', '-silent' -Wait
-        Mark-Installed 'pawnio'
+    Optional 'sensors' {
+        if (-not (Test-Path (Join-Path $temps 'LibreHardwareMonitorLib.dll'))) {
+            $lz = Gh-Asset 'LibreHardwareMonitor/LibreHardwareMonitor' $LHM_VER 'LibreHardwareMonitor.zip'
+            $tmp = Join-Path $DL 'lhm'; Expand-Archive $lz $tmp -Force
+            Get-ChildItem $tmp -Filter *.dll | ForEach-Object { Remember-Created (Join-Path $temps $_.Name); Copy-Item $_.FullName $temps -Force }
+        }
+        if (-not $NoSensors -and -not (Get-Service PawnIO -ErrorAction SilentlyContinue)) {
+            $pw = Gh-Asset 'namazso/PawnIO.Setup' $PAWNIO_VER 'PawnIO_setup.exe'
+            Copy-Item $pw (Join-Path $temps 'PawnIO_setup.exe') -Force
+            Start-Process $pw -ArgumentList '-install', '-silent' -Wait
+            Mark-Installed 'pawnio'
+        }
     }
 
     # ------------------------------------------------------------ terminal
     if (-not $NoTerminal) {
         Step 'terminal' 'Installing the terminal (WezTerm, fish, starship)'
-        $wdst = Join-Path $APP 'tools\wezterm'
-        if (-not (Test-Path (Join-Path $wdst 'wezterm-gui.exe'))) {
-            $wz = Get-File 'https://github.com/wezterm/wezterm/releases/download/nightly/WezTerm-windows-nightly.zip' 'wezterm-nightly.zip'
-            $tmp = Join-Path $DL 'wez'; Expand-Archive $wz $tmp -Force
-            $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
-            Remember-Created $wdst; New-Item -ItemType Directory -Force $wdst | Out-Null
-            Copy-Item (Join-Path $inner.FullName '*') $wdst -Recurse -Force
-        }
-        $wl = Join-Path $UserProfile '.wezterm.lua'
-        if ((Test-Path $wl) -and -not (Test-Path "$wl.before-ll")) { Copy-Item $wl "$wl.before-ll" }
-        Copy-Item (Join-Path $Source 'config\wezterm\wezterm.lua') $wl -Force
-        New-Item -ItemType Directory -Force (Join-Path $UserProfile '.config\wezterm') | Out-Null
-
-        $fontsKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
-        $wfonts = Join-Path $UserProfile '.config\wezterm\fonts'
-        if (-not (Get-ChildItem $wfonts -Filter 'JetBrainsMonoNerdFont-*.ttf' -ErrorAction SilentlyContinue)) {
-            $fz = Gh-Asset 'ryanoasis/nerd-fonts' $NERDFONT_VER '^JetBrainsMono\.zip$'
-            $tmp = Join-Path $DL 'font'; Expand-Archive $fz $tmp -Force
-            # WezTerm yalnız kendi font klasörüne bakar (sistemdeki yüzlerce fontu taramak açılışı 1.6 s yavaşlatıyordu)
-            New-Item -ItemType Directory -Force $wfonts | Out-Null
-            Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | Copy-Item -Destination $wfonts -Force
-            Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | ForEach-Object {
-                $dst = Join-Path $env:WINDIR "Fonts\$($_.Name)"
-                if (-not (Test-Path $dst)) { Copy-Item $_.FullName $dst; Set-ItemProperty $fontsKey "$($_.BaseName) (TrueType)" $_.Name }
+        Optional 'terminal' {
+            $wdst = Join-Path $APP 'tools\wezterm'
+            if (-not (Test-Path (Join-Path $wdst 'wezterm-gui.exe'))) {
+                $wz = Get-File 'https://github.com/wezterm/wezterm/releases/download/nightly/WezTerm-windows-nightly.zip' 'wezterm-nightly.zip'
+                $tmp = Join-Path $DL 'wez'; Expand-Archive $wz $tmp -Force
+                $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
+                Remember-Created $wdst; New-Item -ItemType Directory -Force $wdst | Out-Null
+                Copy-Item (Join-Path $inner.FullName '*') $wdst -Recurse -Force
             }
-            Mark-Installed 'fonts'
-        }
+            $wl = Join-Path $UserProfile '.wezterm.lua'
+            if ((Test-Path $wl) -and -not (Test-Path "$wl.before-ll")) { Copy-Item $wl "$wl.before-ll" }
+            Copy-Item (Join-Path $Source 'config\wezterm\wezterm.lua') $wl -Force
+            New-Item -ItemType Directory -Force (Join-Path $UserProfile '.config\wezterm') | Out-Null
 
-        $msys = 'C:\msys64'
-        if (-not (Test-Path "$msys\usr\bin\bash.exe")) {
-            $sfx = Get-File 'https://github.com/msys2/msys2-installer/releases/latest/download/msys2-base-x86_64-latest.sfx.exe' 'msys2-base.sfx.exe'
-            Start-Process $sfx -ArgumentList '-y', '-oC:\' -Wait
-            & "$msys\usr\bin\bash.exe" -lc 'true' | Out-Null   # first run initialises keys
-            Mark-Installed 'msys2'
+            $fontsKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
+            $wfonts = Join-Path $UserProfile '.config\wezterm\fonts'
+            if (-not (Get-ChildItem $wfonts -Filter 'JetBrainsMonoNerdFont-*.ttf' -ErrorAction SilentlyContinue)) {
+                $fz = Gh-Asset 'ryanoasis/nerd-fonts' $NERDFONT_VER 'JetBrainsMono.zip'
+                $tmp = Join-Path $DL 'font'; Expand-Archive $fz $tmp -Force
+                # WezTerm yalnız kendi font klasörüne bakar (sistemdeki yüzlerce fontu taramak açılışı 1.6 s yavaşlatıyordu)
+                New-Item -ItemType Directory -Force $wfonts | Out-Null
+                Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | Copy-Item -Destination $wfonts -Force
+                Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | ForEach-Object {
+                    $dst = Join-Path $env:WINDIR "Fonts\$($_.Name)"
+                    if (-not (Test-Path $dst)) { Copy-Item $_.FullName $dst; Set-ItemProperty $fontsKey "$($_.BaseName) (TrueType)" $_.Name }
+                }
+                Mark-Installed 'fonts'
+            }
+
+            $bin = Join-Path $APP 'tools\bin'
+            if (-not (Test-Path $bin)) { Remember-Created $bin; New-Item -ItemType Directory -Force $bin | Out-Null }
+            if (-not (Test-Path (Join-Path $bin 'starship.exe'))) { Expand-Archive (Gh-Asset 'starship/starship' $STARSHIP_VER 'starship-x86_64-pc-windows-msvc.zip') $bin -Force }
+            if (-not (Test-Path (Join-Path $bin 'eza.exe'))) { Expand-Archive (Gh-Asset 'eza-community/eza' $EZA_VER 'eza.exe_x86_64-pc-windows-gnu.zip') $bin -Force }
+            if (-not (Test-Path (Join-Path $bin 'fzf.exe'))) { Expand-Archive (Gh-Asset 'junegunn/fzf' $FZF_VER "fzf-$($FZF_VER.TrimStart('v'))-windows_amd64.zip") $bin -Force }   # themecolor seçicisi
+            Add-UserPath $bin
+            New-Item -ItemType Directory -Force (Join-Path $UserProfile '.config\fish\functions') | Out-Null
+            Copy-Item (Join-Path $Source 'config\fish\functions\*.fish') (Join-Path $UserProfile '.config\fish\functions') -Force
+            foreach ($pair in @(@('config\fish\config.fish', '.config\fish\config.fish'), @('config\starship.toml', '.config\starship.toml'))) {
+                $dst = Join-Path $UserProfile $pair[1]
+                New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
+                if ((Test-Path $dst) -and -not (Test-Path "$dst.before-ll")) { Copy-Item $dst "$dst.before-ll" }
+                Copy-Item (Join-Path $Source $pair[0]) $dst -Force
+            }
+            Mark-Installed 'terminal'
+            # fish last: if its package mirrors fail, WezTerm opens PowerShell and everything above still works
+            $msys = 'C:\msys64'
+            $ownMsys = $false
+            if (-not (Test-Path "$msys\usr\bin\bash.exe")) {
+                $sfx = Get-File 'https://github.com/msys2/msys2-installer/releases/latest/download/msys2-base-x86_64-latest.sfx.exe' 'msys2-base.sfx.exe'
+                Start-Process $sfx -ArgumentList '-y', '-oC:\' -Wait
+                & "$msys\usr\bin\bash.exe" -lc 'true' | Out-Null   # first run initialises keys
+                Mark-Installed 'msys2'
+                $ownMsys = $true
+            }
+            # An MSYS2 we just unpacked is brought up to date first. One the user already had only gets its package list
+            # refreshed: a full upgrade that includes the MSYS2 core closes every MSYS2 program, the user's open terminals too.
+            for ($try = 1; $try -le 3 -and -not (Test-Path "$msys\usr\bin\fish.exe"); $try++) {
+                Assert-NotCancelled
+                if ($ownMsys) { [void](Invoke-Pacman $msys '-Syuu'); [void](Invoke-Pacman $msys '-Syuu') }
+                else { [void](Invoke-Pacman $msys '-Sy') }
+                [void](Invoke-Pacman $msys '-S --needed fish')
+            }
+            if (-not (Test-Path "$msys\usr\bin\fish.exe")) { throw 'fish could not be installed from the MSYS2 package mirrors' }
+            $ns = "$msys\etc\nsswitch.conf"
+            if (Test-Path $ns) { (Get-Content $ns) -replace '^db_home:.*$', 'db_home: windows' | Set-Content -Encoding ASCII $ns }
         }
-        if (-not (Test-Path "$msys\usr\bin\fish.exe")) {
-            Assert-NotCancelled
-            & "$msys\usr\bin\bash.exe" -lc 'pacman -Syu --noconfirm' 2>&1 | Out-Null
-            & "$msys\usr\bin\bash.exe" -lc 'pacman -Syu --noconfirm' 2>&1 | Out-Null
-            & "$msys\usr\bin\bash.exe" -lc 'pacman -S --noconfirm --needed fish' 2>&1 | Out-Null
-        }
-        $ns = "$msys\etc\nsswitch.conf"
-        if (Test-Path $ns) { (Get-Content $ns) -replace '^db_home:.*$', 'db_home: windows' | Set-Content -Encoding ASCII $ns }
-        $bin = Join-Path $APP 'tools\bin'
-        if (-not (Test-Path $bin)) { Remember-Created $bin; New-Item -ItemType Directory -Force $bin | Out-Null }
-        if (-not (Test-Path (Join-Path $bin 'starship.exe'))) { Expand-Archive (Gh-Asset 'starship/starship' $STARSHIP_VER 'starship-x86_64-pc-windows-msvc\.zip$') $bin -Force }
-        if (-not (Test-Path (Join-Path $bin 'eza.exe'))) { Expand-Archive (Gh-Asset 'eza-community/eza' $EZA_VER 'eza\.exe_x86_64-pc-windows-gnu\.zip$') $bin -Force }
-        if (-not (Test-Path (Join-Path $bin 'fzf.exe'))) { Expand-Archive (Gh-Asset 'junegunn/fzf' $FZF_VER 'fzf-.*-windows_amd64\.zip$') $bin -Force }   # themecolor seçicisi
-        Add-UserPath $bin
-        New-Item -ItemType Directory -Force (Join-Path $UserProfile '.config\fish\functions') | Out-Null
-        Copy-Item (Join-Path $Source 'config\fish\functions\*.fish') (Join-Path $UserProfile '.config\fish\functions') -Force
-        foreach ($pair in @(@('config\fish\config.fish', '.config\fish\config.fish'), @('config\starship.toml', '.config\starship.toml'))) {
-            $dst = Join-Path $UserProfile $pair[1]
-            New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null
-            if ((Test-Path $dst) -and -not (Test-Path "$dst.before-ll")) { Copy-Item $dst "$dst.before-ll" }
-            Copy-Item (Join-Path $Source $pair[0]) $dst -Force
-        }
-        Mark-Installed 'terminal'
     }
     else { $script:stepNo++ }
 
@@ -607,5 +673,5 @@ if (-not $NoSensors) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 
 # a 0.1.x updater covered the screen with its own splash that waits for the old bar: the new desktop has its own
 Start-Sleep -Milliseconds 1500
 Get-Process ll-update-splash, ll-restart-splash -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Progress 'done' $null
+if ($script:warnings.Count) { Progress 'done' @{ warn = @($script:warnings) } } else { Progress 'done' $null }
 exit 0

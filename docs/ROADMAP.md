@@ -23,17 +23,23 @@ processes, so a crash in one part never takes the others down:
   intentional exit hands the desktop back to Windows (taskbar and Start menu).
 - **Self-healing**: crashed or hung parts are restarted; while the bar is missing the Windows taskbar and Start
   menu come back; a black box logs what the machine was doing when the desktop slows down.
+- **Vendored UI runtime** (0.2): the widgets load their libraries and fonts from the app itself (no CDN, no
+  Babel); faster start, works offline, safe to run elevated.
+- **Elevated core and window manager** (0.2): hotkeys and window management keep working while an administrator
+  window such as Task Manager or an installer is focused; everything the user opens still starts unelevated.
+- **Settings window** (0.2, gear in the sidebar): focus color, language, clock, animations, touchpad gestures,
+  shortcuts, night light, health.
+- **Hyprland behaviour** (0.2): a real binary dwindle tree (movewindow, swap with the split partner,
+  `togglesplit`), config-defined animation curves, touchpad gestures (1:1 workspace swipe, overview, sidebar,
+  moving windows), hidden widgets that draw nothing.
 
 ## Next
 
-1. **Vendored UI runtime.** The widgets load their UI libraries from the app itself instead of a CDN (faster
-   start, works offline, safe to run elevated).
-2. **Elevated core and window manager** (after 1): hotkeys keep working while an administrator window such as
-   Task Manager is focused; apps are still started without elevation.
-3. **Settings window** (gear in the sidebar): focus color, animations, shortcuts, night light, health.
-4. **Core split into domain files** (input, animation, windows, shell, health) and dead code removed.
-5. **Maybe — one executable.** Weighed against crash isolation.
-6. **Screenshots + clean-machine tests** on Windows 10 and Windows 11 for every release.
+1. **Long-uptime smoothness**: animations slow down after 10–15 minutes and a desktop reload fixes it; find and
+   remove the cause (the black box and a resource log per part are in place).
+2. **Core split into domain files** (input, animation, windows, shell, health) and dead code removed.
+3. **Maybe — one executable.** Weighed against crash isolation.
+4. **Screenshots + clean-machine tests** on Windows 10 and Windows 11 for every release.
 
 ## Compatibility notes
 

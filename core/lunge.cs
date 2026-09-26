@@ -6857,30 +6857,57 @@ static class Updater
         if (IsReady(r)) { SetStatus("ready", ver, r.Size, r.Size, ""); return Status(); }
         try
         {
-            foreach (var f in System.IO.Directory.GetFiles(Dir, "LogicalLunge-*")) { try { System.IO.File.Delete(f); } catch { } }
+            // older downloads go; a half-finished one of this version stays so that it can continue
+            foreach (var f in System.IO.Directory.GetFiles(Dir, "LogicalLunge-*")) { if (f != part) try { System.IO.File.Delete(f); } catch { } }
             System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072;
-            var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(r.ZipUrl);
-            req.UserAgent = "LogicalLunge-Updater/1.0";
-            req.AllowAutoRedirect = true;
             long got = 0, total = r.Size;
             SetStatus("downloading", ver, 0, total, "");
-            using (var resp = req.GetResponse())
+            // A dropped connection continues where it stopped (HTTP Range); five tries with a growing pause
+            string failed = null;
+            for (int attempt = 1; attempt <= 5; attempt++)
             {
-                if (resp.ContentLength > 0) total = resp.ContentLength;
-                using (var s = resp.GetResponseStream())
-                using (var f = new System.IO.FileStream(part, System.IO.FileMode.Create))
+                try
                 {
-                    var buf = new byte[81920];
-                    int n;
-                    var sw = Stopwatch.StartNew();
-                    long lastWrite = 0;
-                    while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                    got = System.IO.File.Exists(part) ? new System.IO.FileInfo(part).Length : 0;
+                    var req = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(r.ZipUrl);
+                    req.UserAgent = "LogicalLunge-Updater/1.0";
+                    req.AllowAutoRedirect = true;
+                    req.Timeout = 30000; req.ReadWriteTimeout = 60000;
+                    if (got > 0) req.AddRange(got);
+                    using (var resp = (System.Net.HttpWebResponse)req.GetResponse())
                     {
-                        f.Write(buf, 0, n); got += n;
-                        if (sw.ElapsedMilliseconds - lastWrite > 150) { lastWrite = sw.ElapsedMilliseconds; SetStatus("downloading", ver, got, total, ""); }
+                        if (resp.StatusCode != System.Net.HttpStatusCode.PartialContent) got = 0;
+                        if (resp.ContentLength > 0) total = got + resp.ContentLength;
+                        using (var s = resp.GetResponseStream())
+                        using (var f = new System.IO.FileStream(part, got > 0 ? System.IO.FileMode.Append : System.IO.FileMode.Create))
+                        {
+                            var buf = new byte[81920];
+                            int n;
+                            var sw = Stopwatch.StartNew();
+                            long lastWrite = 0;
+                            while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                            {
+                                f.Write(buf, 0, n); got += n;
+                                if (sw.ElapsedMilliseconds - lastWrite > 150) { lastWrite = sw.ElapsedMilliseconds; SetStatus("downloading", ver, got, total, ""); }
+                            }
+                        }
                     }
+                    if (total > 0 && got < total) throw new System.IO.IOException("the connection closed at " + got + " of " + total + " bytes");
+                    failed = null;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    failed = ex.GetBaseException().Message;
+                    var wex = ex as System.Net.WebException;
+                    var code = wex != null && wex.Response is System.Net.HttpWebResponse ? (int)((System.Net.HttpWebResponse)wex.Response).StatusCode : 0;
+                    if (code == 416) { try { System.IO.File.Delete(part); } catch { } }
+                    if (code == 403 || code == 404 || code == 410 || attempt == 5) break;
+                    SetStatus("downloading", ver, got, total, "");
+                    System.Threading.Thread.Sleep(2000 * attempt);
                 }
             }
+            if (failed != null) throw new Exception(failed);
             if (r.ShaUrl != null)
             {
                 string raw = Client().DownloadString(r.ShaUrl);

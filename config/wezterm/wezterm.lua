@@ -47,7 +47,10 @@ config.tab_bar_at_bottom = true
 config.adjust_window_size_when_changing_font_size = false
 
 -- ---- kitty.conf: Use fish shell (MSYS2) ----
-config.default_prog = { 'C:\\msys64\\usr\\bin\\fish.exe' } -- login değil: MSYS2 msys2.fish ~130 ms; PATH config.fish'te
+-- fish kurulamadıysa (MSYS2 aynaları erişilemezdi) terminal yine açılır: PowerShell ile
+local fish = 'C:\\msys64\\usr\\bin\\fish.exe'
+local has_fish = (function() local f = io.open(fish, 'rb'); if f then f:close(); return true end; return false end)()
+config.default_prog = has_fish and { fish } or { 'powershell.exe', '-NoLogo' } -- login değil: MSYS2 msys2.fish ~130 ms; PATH config.fish'te
 config.set_environment_variables = {
   MSYS2_PATH_TYPE = 'inherit', -- Windows PATH'i (git, python, scoop...) fish'te de olsun
   MSYSTEM = 'UCRT64',
@@ -55,10 +58,10 @@ config.set_environment_variables = {
 }
 config.default_cwd = wezterm.home_dir
 config.launch_menu = {
-  { label = 'fish', args = { 'C:\\msys64\\usr\\bin\\fish.exe' } },
   { label = 'PowerShell', args = { 'powershell.exe', '-NoLogo' } },
   { label = 'cmd', args = { 'cmd.exe' } },
 }
+if has_fish then table.insert(config.launch_menu, 1, { label = 'fish', args = { fish } }) end
 
 -- ---- Renkler: ii kitty-theme.conf (duvar kağıdından Material You, starship indeksleri dahil) ----
 -- tools\termcolors\wezterm-colors.py ~/.config/wezterm/ll-colors.lua'yı üretir; dosya değişince WezTerm anında yeniler.
