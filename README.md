@@ -88,13 +88,13 @@ Every change is backed up first. If a step fails, or you cancel with Ctrl+C, the
 
 | Where | What |
 |---|---|
-| `%LOCALAPPDATA%\Programs\LogicalLunge` | The app (`lunge.exe`, `lunge-tiling.exe`, `lunge-shell.exe`, UI, tools) |
+| `%ProgramFiles%\LogicalLunge` | The app (`lunge.exe`, `lunge-tiling.exe`, `lunge-shell.exe`, UI, tools); protected, because the core and the window manager run with administrator rights so that shortcuts and window management also work over administrator windows (Task Manager, installers). The shell and every program you open run as you. |
 | `~\.config\logical-lunge` | Your settings: `config.yaml` (window manager, borders, focus color), `keybinds.json`, `prefs.json` (language, clock) |
 | `%LOCALAPPDATA%\LogicalLunge` | Data: `logs\` (one log folder for all parts), `state\`, clipboard history, widget storage |
 
 **Update:** the sidebar's update button, or run the one-liner again. Your `config.yaml` is replaced only if you never edited it (otherwise the new default is saved next to it as `config.default.yaml`). Installs of 0.1.x (`~\.glzr`) are moved to the new folders — settings, shortcuts, night light, clipboard history, to-dos — and removed.
 
-**Uninstall:** *Settings → Apps → Logical Lunge → Uninstall*, or run `%LOCALAPPDATA%\Programs\LogicalLunge\uninstall.ps1`. Every Windows setting goes back to what it was (taskbar, desktop icons, Snap, Win shortcuts, startup delay) and config files you had before the install come back. You're asked whether Logical Lunge's own settings and data (its configs, clipboard history, shortcuts, night light, downloaded wallpapers) should be deleted too; `-RemoveConfig` / `-KeepConfig` skip the question. Windows on other workspaces are brought back before anything is removed.
+**Uninstall:** *Settings → Apps → Logical Lunge → Uninstall*, or run `%ProgramFiles%\LogicalLunge\uninstall.ps1`. Every Windows setting goes back to what it was (taskbar, desktop icons, Snap, Win shortcuts, startup delay) and config files you had before the install come back. You're asked whether Logical Lunge's own settings and data (its configs, clipboard history, shortcuts, night light, downloaded wallpapers) should be deleted too; `-RemoveConfig` / `-KeepConfig` skip the question. Windows on other workspaces are brought back before anything is removed.
 
 ### Default keybinds
 
@@ -181,7 +181,7 @@ Hyprland üzerindeki **illogical-impulse** (`ii`) Quickshell kurulumunun Windows
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-Kısa bir sihirbaz odak rengini, arayüz dilini, 12/24 saati ve ek bileşenleri sorar; Windows **bir kez** izin ister, gerisini yükleyici yapar. Her değişiklik önce yedeklenir: bir adım başarısız olursa ya da Ctrl+C ile vazgeçersen önceki dosyalar, ayarlar, kayıt defteri değerleri ve görevler geri konur, önceki masaüstün yeniden açılır. Uygulama `%LOCALAPPDATA%\Programs\LogicalLunge`, ayarların `~\.config\logical-lunge`, veriler ve tek ortak log klasörü `%LOCALAPPDATA%\LogicalLunge` altında. **Güncelleme:** sağ paneldeki güncelle düğmesi ya da aynı komutu tekrar çalıştırmak; 0.1.x kurulumları (`~\.glzr`) yeni klasörlere taşınır ve kaldırılır. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
+Kısa bir sihirbaz odak rengini, arayüz dilini, 12/24 saati ve ek bileşenleri sorar; Windows **bir kez** izin ister, gerisini yükleyici yapar. Her değişiklik önce yedeklenir: bir adım başarısız olursa ya da Ctrl+C ile vazgeçersen önceki dosyalar, ayarlar, kayıt defteri değerleri ve görevler geri konur, önceki masaüstün yeniden açılır. Uygulama `%ProgramFiles%\LogicalLunge` (korumalı klasör: çekirdek ve pencere yöneticisi, kısayollar ve pencere yönetimi yönetici pencerelerinde de çalışsın diye yönetici haklarıyla çalışır; kabuk ve açtığın her program senin haklarınla), ayarların `~\.config\logical-lunge`, veriler ve tek ortak log klasörü `%LOCALAPPDATA%\LogicalLunge` altında. **Güncelleme:** sağ paneldeki güncelle düğmesi ya da aynı komutu tekrar çalıştırmak; 0.1.x kurulumları (`~\.glzr`) yeni klasörlere taşınır ve kaldırılır. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
 
 ### Uyumluluk
 

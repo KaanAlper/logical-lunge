@@ -7,7 +7,7 @@ param([string]$UserProfile = $env:USERPROFILE, [string]$UserSid = '', [switch]$E
 $ErrorActionPreference = 'Continue'
 
 $LOCAL = Join-Path $UserProfile 'AppData\Local'
-$APP = Join-Path $LOCAL 'Programs\LogicalLunge'
+$APP = Join-Path $env:ProgramFiles 'LogicalLunge'
 $DATA = Join-Path $LOCAL 'LogicalLunge'
 $STATE = Join-Path $DATA 'state'
 $CONF = Join-Path $UserProfile '.config\logical-lunge'
@@ -39,7 +39,7 @@ if (-not $isAdmin) {
     catch {
         # UAC declined: the desktop comes back
         Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
-        if ($wasRunning -and (Test-Path $core)) { Start-Process $core -WorkingDirectory $UserProfile }
+        if ($wasRunning) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue }
     }
     return
 }

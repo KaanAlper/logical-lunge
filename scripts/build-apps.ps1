@@ -43,7 +43,9 @@ public static class ShellIcon
 }
 '@
 
-$out = Join-Path $PSScriptRoot '..\ui\logical-lunge\apps.json'
+# Kurulum klasörü yönetici korumalı: liste kullanıcının veri klasöründe; widget'lar çekirdekten okur (/apps.json)
+$out = Join-Path $env:LOCALAPPDATA 'LogicalLunge\state\apps.json'
+New-Item -ItemType Directory -Force (Split-Path $out) | Out-Null
 $skip = '(?i)(uninstall|kaldır|readme|beni oku|help|yardım|documentation|belgeler|release notes|license|lisans|website|web sitesi|manual|kılavuz|changelog|what''s new)'
 
 $shell = New-Object -ComObject Shell.Application

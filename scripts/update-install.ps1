@@ -14,8 +14,8 @@ function Set-State($state, $err) {
 # Kurulum yapılmadan vazgeçilirse (UAC reddi, bozuk paket) masaüstünü geri aç
 function Start-Desktop {
     foreach ($m in 'LogicalLunge\state\maintenance', 'logical-lunge\maintenance') { Remove-Item (Join-Path $env:LOCALAPPDATA $m) -Force -ErrorAction SilentlyContinue }
-    $core = Join-Path $env:LOCALAPPDATA 'Programs\LogicalLunge\lunge.exe'
-    if (Test-Path $core) { Start-Process $core -WorkingDirectory $env:USERPROFILE }
+    # from its sign-in task: the core starts with its rights (elevated)
+    Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue
 }
 
 $splash = $null; $stopped = $false

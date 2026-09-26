@@ -122,6 +122,19 @@
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
 
+      // Super menüsünün uygulama listesi çekirdekten (kullanıcının veri klasöründe; kurulum klasörü korumalı).
+      // Çekirdek o an başlıyorsa birkaç kez yeniden denenir.
+      async function loadAppList(tries = 6) {
+        for (let i = 0; i < tries; i++) {
+          try {
+            const r = await fetch('http://127.0.0.1:6131/apps.json', { method: 'POST', cache: 'no-store' });
+            if (r.ok) return await r.json();
+          } catch {}
+          await new Promise(res => setTimeout(res, 1000 * (i + 1)));
+        }
+        return [];
+      }
+
       const win = lunge.currentWidget().tauriWindow;
       // Çekirdek (tek başına Super) pencereyi başlığından bulur
       win.setTitle('lunge-overview').catch(() => {});
@@ -324,7 +337,7 @@
 
         useEffect(() => { providers.onOutput(() => setTiling(providers.outputMap.tiling)); }, []);
 
-        const loadApps = () => fetch(`./apps.json?t=${Date.now()}`).then(r => r.json()).then(setApps).catch(() => {});
+        const loadApps = () => loadAppList().then(setApps).catch(() => {});
         window.__llLoadApps = loadApps;
         const songRunning = useSongRec();
         useEffect(() => { loadApps(); }, []);

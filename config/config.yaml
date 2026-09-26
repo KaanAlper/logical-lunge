@@ -11,7 +11,7 @@ general:
   # Çıkışta (wm-exit) kabuğu çekirdek kapatır ve Windows görev çubuğunu geri getirir; bu yedek, çekirdek o an
   # çalışmıyorsa da aynısını yapar.
   shutdown_commands:
-    - 'shell-exec %LOCALAPPDATA%\Programs\LogicalLunge\lunge.exe --shutdown'
+    - 'shell-exec %LUNGE_HOME%\lunge.exe --shutdown'
   config_reload_commands: []
 
   # Hyprland input.follow_mouse = 1 -> çekirdek (lunge.exe) yapıyor (yalnızca gerçek fare hareketinde).
@@ -233,7 +233,8 @@ keybindings:
   # Super+Enter/T (terminal), Super+W (Zen), E (Explorer), C (VS Code), X (Not Defteri) çekirdekte:
   # önce farenin altındaki pencereyi odaklıyor (Hyprland dwindle yeni pencereyi oraya açar).
   # Pencere yöneticisinin shell-exec'i boşluklu tırnaklı yolları da ayrıştıramıyordu.
-  - commands: ['shell-exec %LOCALAPPDATA%\Programs\LogicalLunge\tools\wezterm\wezterm-gui.exe']
+  # %LUNGE_HOME%: Logical Lunge'un kurulum klasörü (çekirdek pencere yöneticisini başlatırken verir)
+  - commands: ['shell-exec %LUNGE_HOME%\tools\wezterm\wezterm-gui.exe']
     bindings: ['ctrl+alt+t']
   - commands: ['shell-exec ms-settings:']
     bindings: ['lwin+i']

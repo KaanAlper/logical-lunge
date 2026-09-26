@@ -26,7 +26,8 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 // ---------------- Yollar ve adlar (tek yerde) ----------------
-// Kurulum: lunge.exe'nin klasörü (%LOCALAPPDATA%\Programs\LogicalLunge): exe'ler, ui, scripts, tools, VERSION.
+// Kurulum: lunge.exe'nin klasörü (%ProgramFiles%\LogicalLunge; yönetici korumalı, çünkü çekirdek ve pencere yöneticisi
+// yönetici haklarıyla çalışır): exe'ler, ui, scripts, tools, VERSION. Çalışırken yazılan her şey kullanıcının klasörlerinde.
 // Kullanıcının düzenlediği ayarlar: ~\.config\logical-lunge (config.yaml, keybinds.json).
 // Uygulama verisi: %LOCALAPPDATA%\LogicalLunge (state, logs, update; WebView verisi shell'de).
 static class Paths
@@ -50,6 +51,8 @@ static class Paths
     public static string ConfigFile { get { return System.IO.Path.Combine(ConfigDir, "config.yaml"); } }
     public static string StateDir { get { return Dir(System.IO.Path.Combine(DataRoot, "state")); } }
     public static string State(string name) { return System.IO.Path.Combine(StateDir, name); }
+    // Super menüsünün uygulama listesi (kurulum klasörü yönetici korumalı: kullanıcının yazdığı her şey veri klasöründe)
+    public static string AppsJson { get { return State("apps.json"); } }
     public static string LogsDir { get { return Dir(System.IO.Path.Combine(DataRoot, "logs")); } }
     public static string DataDir(string name) { return Dir(System.IO.Path.Combine(DataRoot, name)); }
 
@@ -2546,13 +2549,15 @@ static class ShellWatchdog
         return windows > 0 && alive < windows ? "bar yanıt vermiyordu (" + alive + "/" + windows + " canlı)" : null;
     }
 
-    // Kabuğu kurulum klasöründen, çekirdeğin alt süreci olarak başlatır (Görev Yöneticisi'nde tek uygulama).
-    // ShellExecute: çekirdeğin tutamaçları (tiling IPC bağlantısı vb.) shell'e miras kalmasın.
+    // Kabuğu kurulum klasöründen başlatır. Kabuk her zaman normal kullanıcı olarak çalışır (çekirdek yönetici olsa da):
+    // web içeriği yönetici olmaz ve kabuğun açtığı her şey (uygulamalar, komutlar) kullanıcı haklarıyla açılır.
+    // Oturum açılışında Gezgin henüz hazır değilse 20 sn'ye kadar bekler. (ShellExecute: çekirdeğin tutamaçları kabuğa
+    // miras kalmaz.)
     public static void StartShell(string why)
     {
         if (!System.IO.File.Exists(Paths.Shell)) { Slider.Log("shell nöbetçisi: " + why + ", " + Paths.Shell + " bulunamadı"); return; }
-        try { Process.Start(new ProcessStartInfo(Paths.Shell) { UseShellExecute = true, WorkingDirectory = Paths.Home }); Slider.Log("shell nöbetçisi: " + why + ", başlatıldı"); }
-        catch (Exception ex) { Slider.Log("shell nöbetçisi: başlatılamadı: " + ex.Message); }
+        if (UserLaunch.StartWhenReady(Paths.Shell, "", Paths.Home, 20000)) Slider.Log("shell nöbetçisi: " + why + ", başlatıldı");
+        else Slider.Log("shell nöbetçisi: " + why + ", başlatılamadı");
     }
 
     static void Restart(string why)
@@ -2592,6 +2597,126 @@ static class ShellWatchdog
                 catch (Exception ex) { Slider.Log("shell nöbetçisi: " + ex.Message); }
             }
         }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+    }
+}
+
+// ---------------- Kullanıcı olarak başlatma ----------------
+// Çekirdek ve pencere yöneticisi yönetici haklarıyla çalışır (kısayollar ve pencere yönetimi yönetici pencerelerinde de
+// çalışsın diye). Kullanıcının açtığı programlar ise (terminal, tarayıcı, uygulama kısayolları, kabuk) her zaman normal
+// kullanıcı olarak açılmalı: bunları Windows Gezgini'nin masaüstü kabuğu başlatır (IShellDispatch2.ShellExecute; Microsoft'un
+// önerdiği yol). Çekirdek yönetici değilse doğrudan başlatır.
+static class UserLaunch
+{
+    [ComImport, Guid("85CB6900-4D95-11CF-960C-0080C7F4EE85"), InterfaceType(ComInterfaceType.InterfaceIsDual)]
+    interface IShellWindows
+    {
+        void _Count(); void _Item(); void _NewEnum(); void _Register(); void _RegisterPending(); void _Revoke(); void _OnNavigate(); void _OnActivated();
+        [return: MarshalAs(UnmanagedType.IDispatch)]
+        object FindWindowSW([In] ref object pvarLoc, [In] ref object pvarLocRoot, int swClass, out int phwnd, int swfwOptions);
+    }
+
+    [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IServiceProvider
+    {
+        [PreserveSig] int QueryService(ref Guid guidService, ref Guid riid, [MarshalAs(UnmanagedType.Interface)] out object ppvObject);
+    }
+
+    [ComImport, Guid("000214E2-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellBrowser
+    {
+        void _GetWindow(); void _ContextSensitiveHelp(); void _InsertMenusSB(); void _SetMenuSB(); void _RemoveMenusSB(); void _SetStatusTextSB();
+        void _EnableModelessSB(); void _TranslateAcceleratorSB(); void _BrowseObject(); void _GetViewStateStream(); void _GetControlWindow(); void _SendControlMsg();
+        [PreserveSig] int QueryActiveShellView(out IShellView ppshv);
+    }
+
+    [ComImport, Guid("000214E3-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellView
+    {
+        void _GetWindow(); void _ContextSensitiveHelp(); void _TranslateAccelerator(); void _EnableModeless(); void _UIActivate(); void _Refresh();
+        void _CreateViewWindow(); void _DestroyViewWindow(); void _GetCurrentInfo(); void _AddPropertySheetPages(); void _SaveViewState(); void _SelectItem();
+        [PreserveSig] int GetItemObject(uint uItem, ref Guid riid, [MarshalAs(UnmanagedType.IDispatch)] out object ppv);
+    }
+
+    static readonly Guid CLSID_ShellWindows = new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39");
+    static readonly Guid SID_STopLevelBrowser = new Guid("4C96BE40-915C-11CF-99D3-00AA004AE837");
+    static readonly Guid IID_IShellBrowser = new Guid("000214E2-0000-0000-C000-000000000046");
+    static readonly Guid IID_IDispatch = new Guid("00020400-0000-0000-C000-000000000046");
+    const int SWC_DESKTOP = 8, SWFO_NEEDDISPATCH = 1, SVGIO_BACKGROUND = 0;
+
+    static readonly bool elevated = CheckElevated();
+    public static bool Elevated { get { return elevated; } }
+
+    static bool CheckElevated()
+    {
+        try
+        {
+            using (var id = System.Security.Principal.WindowsIdentity.GetCurrent())
+                return new System.Security.Principal.WindowsPrincipal(id).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch { return false; }
+    }
+
+    // hidden: pencere gizli açılır (terminal ön-ısıtması). false: masaüstü kabuğu yok (Gezgin açılmamış / çökmüş).
+    public static bool Start(string file, string args, string dir, bool hidden = false)
+    {
+        if (!elevated)
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo(file, args ?? "") { UseShellExecute = true, WorkingDirectory = dir ?? Paths.Home, WindowStyle = hidden ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal }).Dispose();
+                return true;
+            }
+            catch (Exception ex) { Slider.Log("başlatılamadı: " + file + ": " + ex.Message); return false; }
+        }
+        // COM nesneleri tek iş parçacıklı (STA) bir thread ister
+        bool ok = false;
+        var t = new Thread(() => ok = ViaDesktopShell(file, args ?? "", dir ?? Paths.Home, hidden ? 0 : 1)) { IsBackground = true, Name = "user-launch" };
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        if (!t.Join(15000)) { Slider.Log("kullanıcı olarak başlatma zaman aşımı: " + file); return false; }
+        return ok;
+    }
+
+    static bool ViaDesktopShell(string file, string args, string dir, int show)
+    {
+        object windows = null, desktop = null, view = null, folderView = null, app = null;
+        try
+        {
+            windows = Activator.CreateInstance(Type.GetTypeFromCLSID(CLSID_ShellWindows));
+            object loc = 0 /* CSIDL_DESKTOP */, root = Type.Missing;
+            int hwnd;
+            desktop = ((IShellWindows)windows).FindWindowSW(ref loc, ref root, SWC_DESKTOP, out hwnd, SWFO_NEEDDISPATCH);
+            if (desktop == null) return false;
+            object browserObj;
+            Guid sid = SID_STopLevelBrowser, iid = IID_IShellBrowser;
+            if (((IServiceProvider)desktop).QueryService(ref sid, ref iid, out browserObj) != 0 || browserObj == null) return false;
+            IShellView shellView;
+            if (((IShellBrowser)browserObj).QueryActiveShellView(out shellView) != 0 || shellView == null) return false;
+            view = shellView;
+            Guid disp = IID_IDispatch;
+            if (shellView.GetItemObject(SVGIO_BACKGROUND, ref disp, out folderView) != 0 || folderView == null) return false;
+            app = folderView.GetType().InvokeMember("Application", System.Reflection.BindingFlags.GetProperty, null, folderView, null);
+            app.GetType().InvokeMember("ShellExecute", System.Reflection.BindingFlags.InvokeMethod, null, app, new object[] { file, args, dir, "", show });
+            return true;
+        }
+        catch (Exception ex) { Slider.Log("kullanıcı olarak başlatılamadı (" + file + "): " + ex.Message); return false; }
+        finally
+        {
+            foreach (var o in new[] { app, folderView, view, desktop, windows })
+                if (o != null && Marshal.IsComObject(o)) try { Marshal.ReleaseComObject(o); } catch { }
+        }
+    }
+
+    // Masaüstü kabuğu hazır olana kadar bekleyerek (oturum açılışında Gezgin çekirdekten sonra gelebilir)
+    public static bool StartWhenReady(string file, string args, string dir, int waitMs)
+    {
+        var sw = Stopwatch.StartNew();
+        while (true)
+        {
+            if (Start(file, args, dir)) return true;
+            if (sw.ElapsedMilliseconds > waitMs) return false;
+            Thread.Sleep(1000);
+        }
     }
 }
 
@@ -2761,6 +2886,33 @@ static class Supervisor
 
     // "Masaüstünü yenile" (oturum menüsü, Başlat kısayolu; lunge.exe --restart-desktop): bütün parçaları kapatıp temiz
     // baştan açar. Açık pencereler kapanmaz, yeniden başlayan pencere yöneticisi onları yerleştirir; geçişi perde örter.
+    // Çalışan çekirdekten iste (yerel kanal /cmd?a=...): kabul ettiyse true. Kabuk ve kurulum normal kullanıcı olarak
+    // çalışır; yönetici haklarıyla çalışan çekirdeği ve pencere yöneticisini ancak çekirdeğin kendisi kapatabilir.
+    public static bool RequestFromCore(string act)
+    {
+        try
+        {
+            var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:6131/cmd?a=" + act);
+            rq.Method = "POST"; rq.ContentLength = 0; rq.Timeout = 2000; rq.Proxy = null;
+            using (var rs = (System.Net.HttpWebResponse)rq.GetResponse()) return (int)rs.StatusCode == 202;
+        }
+        catch { return false; }
+    }
+
+    // lunge.exe --stop-desktop: çalışan çekirdek her şeyi kapatıp çıkar (beklenir); kalanları (0.1.x parçaları, yanıt
+    // vermeyen bir çekirdek) bu süreç kapatır
+    public static void StopDesktopFromAnywhere()
+    {
+        var core = MainCore();
+        if (core != null)
+        {
+            try { if (RequestFromCore("stop-desktop")) core.WaitForExit(30000); }
+            catch { }
+            finally { core.Dispose(); }
+        }
+        StopDesktop();
+    }
+
     // Tutamaç devralmadan (ShellExecute): kabuğun başlattığı bu süreç kabuğun soketlerini (6124) miras almış olabilir;
     // onları taşıyan bir alt süreç yeni kabuğun sunucusunu açmasını engelliyordu. İş temiz bir kopyada yapılır.
     public static void RestartDesktopDetached()
@@ -3147,7 +3299,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -3193,6 +3345,12 @@ static class Toasts
                 Keys2.OverviewSignal(target.EndsWith("hide") ? "hide" : "show"); status = "204 No Content";
             }
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
+            else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
+            {
+                // Super menüsünün uygulama listesi (build-apps.ps1 kullanıcının veri klasörüne yazar)
+                try { body = System.IO.File.ReadAllText(Paths.AppsJson); status = "200 OK"; }
+                catch { body = "[]"; status = "200 OK"; }
+            }
             else if (target.StartsWith("/widget?"))
             {
                 // /widget?w=toast|update|osk&v=0|1: üstte duran widget penceresini odak çalmadan göster / gizle
@@ -3207,6 +3365,22 @@ static class Toasts
                 {
                     Keys2.Instance.Dispatch(act);
                     status = "204 No Content";
+                }
+                // Masaüstünü yenile / kapat: kabuk ve kurulum normal kullanıcı olarak çalışır, yönetici haklarıyla
+                // çalışan parçaları kapatamaz; işi çalışan çekirdek yapar (bkz. Supervisor.RequestFromCore)
+                else if (act == "restart-desktop" && SelfHeal.IsMain)
+                {
+                    ThreadPool.QueueUserWorkItem(_ => Supervisor.RestartDesktopDetached());
+                    status = "202 Accepted";
+                }
+                else if (act == "stop-desktop" && SelfHeal.IsMain)
+                {
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try { Supervisor.StopDesktop(); } catch (Exception ex) { Slider.Log("masaüstü kapatılamadı: " + ex.Message); }
+                        Environment.Exit(0);
+                    });
+                    status = "202 Accepted";
                 }
                 else status = "400 Bad Request";
             }
@@ -4657,8 +4831,10 @@ static class RegionSearch
         string url = new Uri(path).AbsoluteUri;
 
         string cmd = BrowserCommand();
+        bool launched = false;
         try
         {
+            // Tarayıcı kullanıcı olarak açılır (çekirdek yönetici olsa da)
             if (!string.IsNullOrEmpty(cmd))
             {
                 // "C:\...\zen.exe" -osint -url "%1"  ->  exe + argümanlar
@@ -4666,11 +4842,12 @@ static class RegionSearch
                 if (cmd.StartsWith("\"")) { int q = cmd.IndexOf('"', 1); exe = cmd.Substring(1, q - 1); rest = cmd.Substring(q + 1); }
                 else { int sp = cmd.IndexOf(' '); exe = sp < 0 ? cmd : cmd.Substring(0, sp); rest = sp < 0 ? "" : cmd.Substring(sp); }
                 rest = rest.Contains("%1") ? rest.Replace("%1", url) : rest + " \"" + url + "\"";
-                Process.Start(new ProcessStartInfo(exe, rest.Trim()) { UseShellExecute = true });
+                launched = UserLaunch.Start(exe, rest.Trim(), Paths.Home);
             }
-            else Process.Start(new ProcessStartInfo("msedge.exe", "\"" + url + "\"") { UseShellExecute = true });
+            else launched = UserLaunch.Start("msedge.exe", "\"" + url + "\"", Paths.Home);
         }
-        catch { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+        catch { }
+        if (!launched) UserLaunch.Start(url, "", Paths.Home);
         // Geçici sayfa: tarayıcı yükledikten bir dakika sonra kaldırılır
         Thread.Sleep(60000);
         try { System.IO.File.Delete(path); } catch { }
@@ -6434,18 +6611,26 @@ static class WarmTerminal
         if (!IsWezterm(path) || !System.IO.File.Exists(path) || Resident(path)) return;
         try
         {
-            var pr = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true, WorkingDirectory = Home });
+            // Terminal kullanıcı olarak açılır (çekirdek yönetici olsa da): yeni süreç, öncekilerde olmayan kimliğinden bulunur
+            string name = System.IO.Path.GetFileNameWithoutExtension(path);
+            var before = new HashSet<int>();
+            foreach (var p in Process.GetProcessesByName(name)) { before.Add(p.Id); p.Dispose(); }
             var sw = Stopwatch.StartNew();
+            if (!UserLaunch.Start(path, "", Home)) return;
             while (sw.ElapsedMilliseconds < 8000)
             {
                 Thread.Sleep(50);
-                pr.Refresh();
-                IntPtr h = pr.MainWindowHandle;
-                if (h != IntPtr.Zero)
+                foreach (var p in Process.GetProcessesByName(name))
                 {
-                    Native.PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
-                    Slider.Log("terminal: ön-ısıtıldı " + sw.ElapsedMilliseconds + "ms");
-                    return;
+                    using (p)
+                    {
+                        if (before.Contains(p.Id)) continue;
+                        IntPtr h = p.MainWindowHandle;
+                        if (h == IntPtr.Zero) continue;
+                        Native.PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero); // WM_CLOSE
+                        Slider.Log("terminal: ön-ısıtıldı " + sw.ElapsedMilliseconds + "ms");
+                        return;
+                    }
                 }
             }
         }
@@ -7036,12 +7221,9 @@ static class LaunchQueue
                 {
                     // WezTerm arka planda hazırsa yeni süreç başlatma: istek dosyası yaz, pencere o süreçte açılır
                     // (~0.23 s; soğuk açılış ~0.6 s). Bkz. ~/.wezterm.lua "Anında yeni pencere".
-                    if (!WarmTerminal.TrySpawn(path))
-                        Process.Start(new ProcessStartInfo(path)
-                        {
-                            UseShellExecute = true,
-                            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
-                        });
+                    // Kullanıcı olarak (çekirdek yönetici olsa da)
+                    if (!WarmTerminal.TrySpawn(path) && !UserLaunch.Start(path, "", Paths.Home))
+                        throw new Exception("başlatılamadı");
                 }
                 catch (Exception ex)
                 {
@@ -7286,8 +7468,16 @@ static class Program
         // verilen adres "&" içerince klasör açıyordu; ShellExecute doğrudan protokol işleyicisine gider.
         if (args.Length == 2 && args[0] == "--open" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^(https?|spotify|mailto):", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
         {
-            try { Process.Start(new ProcessStartInfo(args[1]) { UseShellExecute = true }); } catch { }
+            UserLaunch.Start(args[1], "", Paths.Home);
             return;
+        }
+        // lunge.exe --launch <program> [argümanlar]: programı normal kullanıcı olarak başlatır. Yönetici olarak çalışan
+        // pencere yöneticisinin shell-exec komutları (config'deki kısayollar) bunu kullanır.
+        if (args.Length >= 2 && (args[0] == "--launch" || args[0] == "--launch-hidden"))
+        {
+            var la = new StringBuilder();
+            for (int i = 2; i < args.Length; i++) la.Append(QuoteArg(args[i])).Append(' ');
+            Environment.Exit(UserLaunch.Start(args[1], la.ToString().TrimEnd(), Paths.Home, args[0] == "--launch-hidden") ? 0 : 1);
         }        // lunge.exe --lens: ii "region search" — alan seç, Google Lens'te aç
         if (args.Length == 1 && args[0] == "--lens")
         {
@@ -7327,7 +7517,11 @@ static class Program
                         bool alive = System.Threading.Mutex.TryOpenExisting("LogicalLunge.Core", out existing);
                         if (existing != null) existing.Dispose();
                         if (!alive && Maint.Running(Names.Tiling) && !Maint.Quiet() && Maint.Allow("helper-restarts"))
-                            Process.Start(new ProcessStartInfo(Maint.CoreExe) { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
+                        {
+                            // Oturum görevinden: çekirdek kurulumdaki haklarıyla (yönetici) başlar; görev yoksa doğrudan
+                            if (Maint.RunHidden("schtasks.exe", "/run /tn \"\\LogicalLunge\\Start\"", 10000) != 0)
+                                Process.Start(new ProcessStartInfo(Maint.CoreExe) { UseShellExecute = true, WorkingDirectory = Paths.Home });
+                        }
                     }
                     using (var c = new System.Net.Sockets.TcpClient("127.0.0.1", 6131))
                     using (var s = c.GetStream())
@@ -7494,10 +7688,10 @@ static class Program
         }
 
         // lunge.exe --restart-desktop: "Masaüstünü yenile" (oturum menüsü, Başlat kısayolu)
-        if (args.Length == 1 && args[0] == "--restart-desktop") { Supervisor.RestartDesktopDetached(); return; }
+        if (args.Length == 1 && args[0] == "--restart-desktop") { if (!Supervisor.RequestFromCore("restart-desktop")) Supervisor.RestartDesktopDetached(); return; }
         if (args.Length == 1 && args[0] == "--restart-desktop-now") { Supervisor.RestartDesktop(); return; }
         // lunge.exe --stop-desktop: kurulum / güncelleme / kaldırma öncesi masaüstünü kapatır (bakım işareti kalır)
-        if (args.Length == 1 && args[0] == "--stop-desktop") { Supervisor.StopDesktop(); return; }
+        if (args.Length == 1 && args[0] == "--stop-desktop") { Supervisor.StopDesktopFromAnywhere(); return; }
         // lunge.exe --shutdown: tiling kapanırken (config'deki shutdown_commands) çalışır. Asıl işi çekirdek yapar;
         // bu yedek çekirdek yoksa da shell'in kapanıp Windows görev çubuğunun geri gelmesini sağlar.
         if (args.Length == 1 && args[0] == "--shutdown") { if (!Maint.Quiet()) Supervisor.Shutdown("çıkış komutu", false); return; }
@@ -7522,6 +7716,9 @@ static class Program
         if (!created) return;
         SelfHeal.IsMain = true;
         try { System.IO.File.WriteAllText(Supervisor.PidFile, Process.GetCurrentProcess().Id.ToString()); } catch { }
+        // Pencere yöneticisinin config'i kurulum klasörüne %LUNGE_HOME% ile başvurur (shell-exec komutları); başlattığı
+        // alt süreçlere bu ortam değişkeni geçer
+        Environment.SetEnvironmentVariable("LUNGE_HOME", Paths.Install);
         // Kök süreç: eksik parçaları (perde, tiling, shell) kendi alt süreçleri olarak aç. Çekirdeğin kendi kurulumunu
         // beklemez; perde hemen gelsin.
         new Thread(() => { try { Supervisor.BringUp(true); } catch (Exception ex) { Slider.Log("kök: " + ex.Message); } }) { IsBackground = true, Name = "bring-up" }.Start();
@@ -7594,7 +7791,7 @@ static class Program
             try
             {
                 string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                string apps = Paths.UiPack("apps.json");
+                string apps = Paths.AppsJson;
                 string build = Paths.Script("build-apps.ps1");
                 if (!System.IO.File.Exists(apps) && System.IO.File.Exists(build))
                     Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + build + "\"") { UseShellExecute = false, CreateNoWindow = true });

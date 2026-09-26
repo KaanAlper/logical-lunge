@@ -253,8 +253,8 @@ function Poll-CtrlC {
 # The desktop we stopped comes back when nothing was installed (cancel before setup, UAC declined)
 function Start-Desktop-Again {
     foreach ($m in 'LogicalLunge\state\maintenance', 'logical-lunge\maintenance') { Remove-Item (Join-Path $env:LOCALAPPDATA $m) -Force -ErrorAction SilentlyContinue }
-    $core = Join-Path $env:LOCALAPPDATA 'Programs\LogicalLunge\lunge.exe'
-    if (Test-Path $core) { Start-Process $core -WorkingDirectory $env:USERPROFILE }
+    # from its sign-in task: the core starts with its rights (elevated); 0.1.x had its own task
+    if (Get-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' }
     else { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue }
 }
 

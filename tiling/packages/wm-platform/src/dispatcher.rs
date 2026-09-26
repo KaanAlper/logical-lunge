@@ -25,8 +25,14 @@ use objc2_foundation::NSString;
 use windows::{
   core::PCWSTR,
   Win32::{
-    Foundation::POINT,
-    System::Environment::ExpandEnvironmentStringsW,
+    Foundation::{CloseHandle, HANDLE, POINT},
+    Security::{
+      GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    },
+    System::{
+      Environment::ExpandEnvironmentStringsW,
+      Threading::{GetCurrentProcess, OpenProcessToken},
+    },
     UI::{
       Input::KeyboardAndMouse::{
         GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
@@ -302,6 +308,48 @@ impl DispatcherExtWindows for Dispatcher {
     unsafe { ShellExecuteExW(&raw mut exec_info) }
       .map_err(crate::Error::from)
   }
+}
+
+/// Whether the current process runs elevated (with administrator
+/// rights).
+///
+/// # Platform-specific
+///
+/// This function is only available on Windows.
+#[cfg(target_os = "windows")]
+#[must_use]
+pub fn is_process_elevated() -> bool {
+  let mut token = HANDLE::default();
+
+  // SAFETY: `GetCurrentProcess` returns a pseudo handle, and the token
+  // handle is closed below.
+  if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token) }
+    .is_err()
+  {
+    return false;
+  }
+
+  let mut elevation = TOKEN_ELEVATION::default();
+  let mut size = 0u32;
+
+  // SAFETY: The buffer is a `TOKEN_ELEVATION` of the given size.
+  let result = unsafe {
+    GetTokenInformation(
+      token,
+      TokenElevation,
+      Some((&raw mut elevation).cast()),
+      #[allow(clippy::cast_possible_truncation)]
+      {
+        std::mem::size_of::<TOKEN_ELEVATION>() as u32
+      },
+      &raw mut size,
+    )
+  };
+
+  // SAFETY: The token handle was opened above.
+  let _ = unsafe { CloseHandle(token) };
+
+  result.is_ok() && elevation.TokenIsElevated != 0
 }
 
 /// A thread-safe dispatcher for cross-platform window management

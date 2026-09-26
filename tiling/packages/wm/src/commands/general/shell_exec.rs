@@ -41,16 +41,45 @@ pub fn shell_exec(
       let home_dir =
         home::home_dir().context("Unable to get home directory.")?;
 
-      // TODO: Use `Shell::spawn` instead. `ShellExecuteExW` is still used
-      // to be able to launch programs from the App Paths registry
-      // (`HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths`), like
-      // `chrome` without it being in $PATH.
-      state.dispatcher.shell_execute_ex(
-        &program,
-        &args,
-        &home_dir,
-        hide_window,
-      )
+      // Logical Lunge: the window manager runs elevated (so that hotkeys
+      // and window management also work over elevated windows), but the
+      // programs it starts for the user must not. These are started through
+      // the core (`lunge.exe --launch`), which has the desktop shell
+      // (Explorer) launch them as the normal user. The core's own commands
+      // (e.g. `lunge.exe --shutdown`) run directly.
+      let core = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("lunge.exe")))
+        .filter(|core| core.is_file());
+
+      match core {
+        Some(core)
+          if wm_platform::is_process_elevated()
+            && !is_same_file(&program, &core) =>
+        {
+          let launch_args = format!(
+            "{} {} {}",
+            if hide_window { "--launch-hidden" } else { "--launch" },
+            quote_arg(&program),
+            args
+          );
+
+          state.dispatcher.shell_execute_ex(
+            &core.to_string_lossy(),
+            launch_args.trim_end(),
+            &home_dir,
+            true,
+          )
+        }
+        // `ShellExecuteExW` is used to be able to launch programs from the
+        // App Paths registry (e.g. `chrome` without it being in $PATH).
+        _ => state.dispatcher.shell_execute_ex(
+          &program,
+          &args,
+          &home_dir,
+          hide_window,
+        ),
+      }
     }
   };
 
@@ -62,6 +91,30 @@ pub fn shell_exec(
   })?;
 
   Ok(())
+}
+
+/// Whether `program` names the given file (case-insensitive path
+/// comparison, as on Windows).
+#[cfg(target_os = "windows")]
+fn is_same_file(program: &str, file: &Path) -> bool {
+  let program = Path::new(program);
+
+  match (program.canonicalize(), file.canonicalize()) {
+    (Ok(a), Ok(b)) => {
+      a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    }
+    _ => false,
+  }
+}
+
+/// Quotes a program path for a command line if it contains spaces.
+#[cfg(target_os = "windows")]
+fn quote_arg(arg: &str) -> String {
+  if arg.contains(' ') && !arg.starts_with('"') {
+    format!("\"{arg}\"")
+  } else {
+    arg.to_string()
+  }
 }
 
 /// Parses a command string into a program name/path and arguments. This
