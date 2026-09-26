@@ -2767,7 +2767,8 @@ class MouseFocus
 
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && wParam.ToInt32() == 0x200) // WM_MOUSEMOVE
+        int msg = wParam.ToInt32();
+        if (nCode >= 0 && msg == 0x200) // WM_MOUSEMOVE
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
             if ((m.flags & 1) == 0 && (m.pt.X != lastX || m.pt.Y != lastY)) // LLMHF_INJECTED değil
@@ -2776,7 +2777,38 @@ class MouseFocus
                 moved.Set();
             }
         }
+        else if (nCode >= 0 && (msg == 0x201 || msg == 0x204 || msg == 0x207)) // sol / sağ / orta basış
+        {
+            var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
+            clickX = m.pt.X; clickY = m.pt.Y;
+            clicked.Set(); // kanca hızlı kalsın: pencereye bakmak işçinin işi
+        }
         return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+    }
+
+    // Kabuğun dışına (bir pencereye, masaüstüne) tıklandı: açık menüler (tepsi, sağ panel) kapansın. Bar odak almadığı
+    // için onlar "odak kaybı" olayını hiç görmüyordu. Kabuğun kendi pencerelerine tıklamak (sürükleme dahil) sayılmaz.
+    readonly AutoResetEvent clicked = new AutoResetEvent(false);
+    volatile int clickX, clickY;
+    public void StartClickWorker()
+    {
+        new Thread(() =>
+        {
+            while (true)
+            {
+                clicked.WaitOne();
+                try
+                {
+                    IntPtr under = Native.WindowFromPoint(new Point(clickX, clickY));
+                    IntPtr root = under == IntPtr.Zero ? IntPtr.Zero : Native.GetAncestor(under, 2);
+                    uint pid = 0;
+                    if (root != IntPtr.Zero) Native.GetWindowThreadProcessId(root, out pid);
+                    if (pid != 0 && ProcInfo.Name(pid).Equals(Names.Shell, StringComparison.OrdinalIgnoreCase)) continue;
+                    Toasts.Emit("ll:outside-click");
+                }
+                catch (Exception ex) { Slider.Log("dış tıklama: " + ex.Message); }
+            }
+        }) { IsBackground = true, Name = "outside-click" }.Start();
     }
 
     public void StartWorker()
@@ -9214,6 +9246,7 @@ static class Program
             var mouse = new MouseFocus(new TilingClient());
             mouse.InstallHook();
             mouse.StartWorker();
+            mouse.StartClickWorker();
             // Windows kancayı bir şekilde sökse bile geri gelsin
             var re = new System.Windows.Forms.Timer { Interval = 15000 };
             re.Tick += (s, e) => { keys.Reinstall(); mouse.Reinstall(); };

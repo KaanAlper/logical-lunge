@@ -69,6 +69,11 @@ pub struct Theme {
   pub subtext: Rgba,
   pub inactive: Rgba,
   pub occupied: Rgba,
+  /// ii StyledToolTip: inverse surface
+  pub tip_bg: Rgba,
+  pub tip_fg: Rgba,
+  /// popups: `border: 1px solid rgba(73 69 79 / 60%)`
+  pub border: Rgba,
 }
 
 /// Material You dark, purple seed (styles.css `:root`).
@@ -86,6 +91,9 @@ pub const DARK: Theme = Theme {
   subtext: Rgba::hex(0x938f99),
   inactive: Rgba::hex(0x8a8591),
   occupied: Rgba(74, 68, 88, 0.6),
+  tip_bg: Rgba::hex(0xe6e0e9),
+  tip_fg: Rgba::hex(0x322f35),
+  border: Rgba(73, 69, 79, 0.6),
 };
 
 /// styles.css `:root[data-theme="light"]`.
@@ -103,6 +111,9 @@ pub const LIGHT: Theme = Theme {
   subtext: Rgba::hex(0x79747e),
   inactive: Rgba::hex(0x9e98a3),
   occupied: Rgba(232, 222, 248, 0.9),
+  tip_bg: Rgba::hex(0x322f35),
+  tip_fg: Rgba::hex(0xf5eff7),
+  border: Rgba(121, 116, 126, 0.35),
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -120,6 +131,8 @@ pub enum HitKind {
   Indicators,
   TrayMore,
   TrayIcon(String),
+  /// tooltip only
+  Battery(i32),
 }
 
 pub struct Hit {
@@ -138,6 +151,8 @@ pub struct Frame {
   pub ws_base: u32,
   /// Focused workspace's slot (None: window manager not connected).
   pub ws_idx: Option<usize>,
+  /// The arrow and the pinned tray icons: dropping a dragged icon here pins it.
+  pub tray_zone: Rect,
 }
 
 impl Frame {
@@ -186,7 +201,7 @@ pub struct Painter<'a> {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Align {
+pub(super) enum Align {
   Left,
   Center,
 }
@@ -206,19 +221,27 @@ impl Painter<'_> {
     Ok(b)
   }
 
-  fn fill(&mut self, r: Rect, c: Rgba) -> Result<()> {
+  pub(super) fn fill(&mut self, r: Rect, c: Rgba) -> Result<()> {
     let b = self.brush(c)?;
     unsafe { self.dc.FillRectangle(&r.d2d(), &b) };
     Ok(())
   }
 
-  fn fill_round(&mut self, r: Rect, radius: f32, c: Rgba) -> Result<()> {
+  pub(super) fn stroke_round(&mut self, r: Rect, radius: f32, c: Rgba, width: f32) -> Result<()> {
+    let b = self.brush(c)?;
+    let half = width / 2.0;
+    let r = r.inset(half, half);
+    unsafe { self.dc.DrawRoundedRectangle(&r.rounded(radius.min(r.h / 2.0).min(r.w / 2.0)), &b, width, None) };
+    Ok(())
+  }
+
+  pub(super) fn fill_round(&mut self, r: Rect, radius: f32, c: Rgba) -> Result<()> {
     let b = self.brush(c)?;
     unsafe { self.dc.FillRoundedRectangle(&r.rounded(radius.min(r.h / 2.0).min(r.w / 2.0)), &b) };
     Ok(())
   }
 
-  fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, c: Rgba) -> Result<()> {
+  pub(super) fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, c: Rgba) -> Result<()> {
     let b = self.brush(c)?;
     unsafe { self.dc.FillEllipse(&ellipse(cx, cy, r), &b) };
     Ok(())
@@ -248,18 +271,18 @@ impl Painter<'_> {
   }
 
   /// Measures single-line text.
-  fn measure(&mut self, s: &str, style: TextStyle) -> anyhow::Result<f32> {
+  pub(super) fn measure(&mut self, s: &str, style: TextStyle) -> anyhow::Result<f32> {
     self.measure_with(s, style, false)
   }
 
   /// Measures with tabular figures (as drawn for numbers that tick).
-  fn measure_with(&mut self, s: &str, style: TextStyle, tabular: bool) -> anyhow::Result<f32> {
+  pub(super) fn measure_with(&mut self, s: &str, style: TextStyle, tabular: bool) -> anyhow::Result<f32> {
     let l = self.layout(s, style, 10000.0, 100.0, tabular)?;
     Ok(Self::width_of(&l))
   }
 
   /// Draws text vertically centred in `r` (ellipsis when it does not fit).
-  fn text(&mut self, s: &str, r: Rect, style: TextStyle, c: Rgba, align: Align, tabular: bool) -> anyhow::Result<f32> {
+  pub(super) fn text(&mut self, s: &str, r: Rect, style: TextStyle, c: Rgba, align: Align, tabular: bool) -> anyhow::Result<f32> {
     let layout = self.layout(s, style, r.w, r.h, tabular)?;
     let w = Self::width_of(&layout).min(r.w);
     let x = if align == Align::Center { r.x + (r.w - w) / 2.0 } else { r.x };
@@ -269,7 +292,7 @@ impl Painter<'_> {
   }
 
   /// Material Symbols icon (a ligature) centred on (cx, cy).
-  fn icon(&mut self, name: &str, cx: f32, cy: f32, size: f32, fill: bool, c: Rgba) -> anyhow::Result<()> {
+  pub(super) fn icon(&mut self, name: &str, cx: f32, cy: f32, size: f32, fill: bool, c: Rgba) -> anyhow::Result<()> {
     let format = self.fonts.icon(size, fill)?;
     let wide: Vec<u16> = name.encode_utf16().collect();
     let box_ = size * 1.5;
@@ -283,10 +306,40 @@ impl Painter<'_> {
   }
 
   /// A bitmap scaled into `r` (tray icons).
-  fn image(&mut self, bmp: &ID2D1Bitmap1, r: Rect) {
+  pub(super) fn image(&mut self, bmp: &ID2D1Bitmap1, r: Rect) {
     unsafe {
       self.dc.DrawBitmap(bmp, Some(&r.d2d()), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None);
     }
+  }
+
+  /// A bitmap filling a rounded rectangle (`object-fit: cover`), `opacity` 0..1.
+  pub(super) fn image_round(&mut self, bmp: &ID2D1Image, src_w: f32, src_h: f32, r: Rect, radius: f32, opacity: f32) -> Result<()> {
+    unsafe {
+      let (bw, bh) = (src_w.max(1.0), src_h.max(1.0));
+      let k = (r.w / bw).max(r.h / bh);
+      let brush = self.dc.CreateImageBrush(
+        bmp,
+        &D2D1_IMAGE_BRUSH_PROPERTIES {
+          sourceRectangle: Rect::new(0.0, 0.0, bw, bh).d2d(),
+          extendModeX: D2D1_EXTEND_MODE_CLAMP,
+          extendModeY: D2D1_EXTEND_MODE_CLAMP,
+          interpolationMode: D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+        },
+        Some(&D2D1_BRUSH_PROPERTIES {
+          opacity,
+          transform: Matrix3x2 {
+            M11: k,
+            M12: 0.0,
+            M21: 0.0,
+            M22: k,
+            M31: r.x + (r.w - bw * k) / 2.0,
+            M32: r.y + (r.h - bh * k) / 2.0,
+          },
+        }),
+      )?;
+      self.dc.FillRoundedRectangle(&r.rounded(radius), &brush);
+    }
+    Ok(())
   }
 
   /// A bitmap cut to a circle (`object-fit: cover`), optionally desaturated
@@ -361,7 +414,7 @@ impl Painter<'_> {
   }
 }
 
-const fn style(size: f32) -> TextStyle {
+pub(super) const fn style(size: f32) -> TextStyle {
   TextStyle { size, weight: 450.0 }
 }
 
@@ -499,6 +552,7 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
       right_edge -= 4.0;
       let r = Rect::new(right_edge - 38.0, 11.0, 38.0, 18.0);
       battery(p, t, r, bat.charge_percent, bat.is_charging)?;
+      f.hits.push(Hit { rect: r, kind: HitKind::Battery(bat.charge_percent.round() as i32) });
       right_edge -= 38.0 + 4.0 + 4.0;
     }
   }
@@ -583,8 +637,9 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
     if hovered(&HitKind::TrayMore) {
       p.fill_round(more, 13.0, t.layer1_hover)?;
     }
-    p.icon("expand_more", more.x + 13.0, 20.0, 20.0, false, t.on_layer0)?;
+    p.icon(if m.tray_open { "expand_less" } else { "expand_more" }, more.x + 13.0, 20.0, 20.0, false, t.on_layer0)?;
     f.hits.push(Hit { rect: more, kind: HitKind::TrayMore });
+    f.tray_zone = Rect::new(more.x - 4.0, 0.0, ind.x - 5.0 - more.x + 8.0, BAR_H);
   }
   scroll_hint(p, t, w - 4.0 - 14.0, "volume_up", hover_right)?;
 

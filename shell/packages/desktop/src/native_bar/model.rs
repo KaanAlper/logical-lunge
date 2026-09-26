@@ -34,6 +34,8 @@ pub struct Model {
   pub light: bool,
   /// Tray icons shown in the bar, by `pin_key` (None: not chosen yet).
   pub pins: Option<Vec<String>>,
+  /// The tray panel is open (the arrow points up).
+  pub tray_open: bool,
   hour12: bool,
   /// Language of the date and of `tr()`: prefs.json, else the Windows UI language.
   locale: String,
@@ -164,13 +166,24 @@ impl Model {
       (&ic.id, &ic.icon_hash).hash(&mut h);
     }
     self.tray_count().hash(&mut h);
-    (&self.time, &self.date, self.light, &self.pins).hash(&mut h);
+    (&self.time, &self.date, self.light, &self.pins, self.tray_open).hash(&mut h);
     h.finish()
   }
 
   pub fn pinned_icons(&self) -> Vec<&SystrayOutputIcon> {
     let (Some(tray), Some(pins)) = (&self.systray, &self.pins) else { return Vec::new() };
     pins.iter().filter_map(|k| tray.icons.iter().find(|ic| &pin_key(ic) == k)).collect()
+  }
+
+  /// Tray icons in the panel (everything not pinned).
+  pub fn unpinned_icons(&self) -> Vec<&SystrayOutputIcon> {
+    let Some(tray) = &self.systray else { return Vec::new() };
+    let pins = self.pins.as_deref().unwrap_or(&[]);
+    tray.icons.iter().filter(|ic| !pins.contains(&pin_key(ic))).collect()
+  }
+
+  pub fn tray_icon(&self, id: &str) -> Option<&SystrayOutputIcon> {
+    self.systray.as_ref()?.icons.iter().find(|ic| ic.id == id)
   }
 }
 

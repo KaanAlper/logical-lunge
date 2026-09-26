@@ -12,6 +12,8 @@ mod fonts;
 mod gfx;
 mod icons;
 mod model;
+mod popup;
+mod pops;
 mod view;
 mod wm;
 
@@ -66,12 +68,14 @@ use self::{
 use crate::providers::{
   AudioFunction, MediaControlArgs, MediaFunction, ProviderConfig,
   ProviderEmission, ProviderFunction, ProviderManager, ProviderOutput, SetMuteArgs,
-  SetVolumeArgs, SystrayFunction, SystrayIconArgs,
+  SetVolumeArgs,
 };
 
 const HASH_PREFIX: &str = "native-bar:";
 const WM_APP_WAKE: u32 = WM_APP + 1;
 const WM_APP_REBUILD: u32 = WM_APP + 2;
+/// the tray panel's click-away hooks: close it
+const WM_APP_TRAY_CLOSE: u32 = WM_APP + 3;
 const TIMER_CLOCK: usize = 1;
 const TIMER_REBUILD: usize = 2;
 const TIMER_OSD: usize = 3;
@@ -79,6 +83,12 @@ const TIMER_ALIVE: usize = 4;
 const TIMER_RECOVER: usize = 5;
 /// demo only (`LL_NATIVE_BAR_CYCLE=1`): fakes workspace switches to measure the pill animation
 const TIMER_CYCLE: usize = 6;
+const TIMER_POP_CLOSE: usize = 7;
+const TIMER_POP_HIDE: usize = 8;
+/// open popup: media clock (1 s) / temperatures (2 s)
+const TIMER_POP_TICK: usize = 9;
+const TIMER_TRAY_HIDE: usize = 10;
+const TIMER_TIP: usize = 11;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -90,6 +100,9 @@ enum Msg {
   Apps(Vec<icons::App>),
   WinIcon(i64, Option<Vec<u8>>),
   Display(brightness::Update),
+  Temps(Option<popup::Temps>),
+  /// song title, cover (PNG / JPEG bytes)
+  Art(String, Option<Vec<u8>>),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -251,6 +264,7 @@ struct Ui {
   last_key: u64,
   /// device loss: recovery attempts in a row
   recover_tries: u32,
+  pops: pops::PopState,
 }
 
 thread_local! {
@@ -337,6 +351,7 @@ fn ui_thread(
         last_mic: None,
         last_key: 0,
         recover_tries: 0,
+        pops: Default::default(),
       })
     });
     WAKE.store(msg_hwnd.0 as isize, Ordering::Release);
@@ -431,6 +446,12 @@ impl Ui {
           }
         }
         WM_TIMER if wp.0 == TIMER_ALIVE => self.alive(),
+        WM_TIMER if wp.0 == TIMER_POP_CLOSE => self.pop_close_now(),
+        WM_TIMER if wp.0 == TIMER_POP_HIDE => self.pop_hidden(),
+        WM_TIMER if wp.0 == TIMER_POP_TICK => self.pop_tick(),
+        WM_TIMER if wp.0 == TIMER_TRAY_HIDE => self.tray_hidden(),
+        WM_TIMER if wp.0 == TIMER_TIP => self.tip_show(),
+        WM_APP_TRAY_CLOSE => self.tray_close(),
         WM_TIMER if wp.0 == TIMER_CYCLE => self.fake_switch(),
         WM_TIMER if wp.0 == TIMER_RECOVER => {
           unsafe {
@@ -442,6 +463,39 @@ impl Ui {
           // monitors / DPI change in bursts: rebuild once they settle
           unsafe { SetTimer(self.msg_hwnd, TIMER_REBUILD, 400, None) };
         }
+        _ => return None,
+      }
+      return Some(LRESULT(0));
+    }
+    let [hover_w, tray_w, tip_w, ghost_w] = self.pop_windows();
+    if Some(hwnd) == hover_w || Some(hwnd) == tray_w || Some(hwnd) == tip_w || Some(hwnd) == ghost_w {
+      if msg == WM_PAINT {
+        unsafe {
+          let _ = windows::Win32::Graphics::Gdi::ValidateRect(hwnd, None);
+        }
+        return Some(LRESULT(0));
+      }
+      let (x, y) = lparam_point(lp);
+      let tray = Some(hwnd) == tray_w;
+      let hover = Some(hwnd) == hover_w;
+      match msg {
+        WM_MOUSEMOVE => {
+          track_leave(hwnd);
+          if tray {
+            self.tray_mouse(x, y);
+          } else if hover {
+            self.pop_mouse(x, y);
+          }
+        }
+        WM_MOUSELEAVE if tray => self.tray_leave(),
+        WM_MOUSELEAVE if hover => self.pop_leave(),
+        WM_LBUTTONDOWN if tray => self.tray_button_down(x, y),
+        WM_LBUTTONUP if tray => self.tray_button_up(x, y, 0),
+        WM_RBUTTONUP if tray => self.tray_button_up(x, y, 1),
+        WM_MBUTTONUP if tray => self.tray_button_up(x, y, 2),
+        WM_LBUTTONDBLCLK if tray => self.tray_button_up(x, y, 3),
+        WM_LBUTTONUP if hover => self.pop_click(x, y),
+        WM_CAPTURECHANGED if self.dragging() => self.drag_cancel(),
         _ => return None,
       }
       return Some(LRESULT(0));
@@ -466,18 +520,41 @@ impl Ui {
         Some(LRESULT(0))
       }
       WM_MOUSELEAVE => {
+        self.bars[i].tracking = false;
+        if self.dragging() {
+          return Some(LRESULT(0));
+        }
         let b = &mut self.bars[i];
-        b.tracking = false;
         if b.hover.is_some() || b.hover_left || b.hover_right {
           b.hover = None;
           b.hover_left = false;
           b.hover_right = false;
           self.redraw(i);
         }
+        self.pop_schedule_close();
+        self.tip_hide();
+        Some(LRESULT(0))
+      }
+      WM_LBUTTONDOWN => {
+        // a tray icon may be dragged (to pin / unpin it)
+        let (x, y) = lparam_point(lp);
+        let (dx, dy) = self.dip(i, x, y);
+        if let Some(HitKind::TrayIcon(id)) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) {
+          self.drag_begin(id, hwnd);
+        }
+        Some(LRESULT(0))
+      }
+      WM_CAPTURECHANGED => {
+        if self.dragging() {
+          self.drag_cancel();
+        }
         Some(LRESULT(0))
       }
       WM_LBUTTONUP | WM_RBUTTONUP | WM_MBUTTONUP | WM_LBUTTONDBLCLK => {
         let (x, y) = lparam_point(lp);
+        if msg == WM_LBUTTONUP && self.drag_end() {
+          return Some(LRESULT(0));
+        }
         let button = match msg {
           WM_LBUTTONUP => 0,
           WM_RBUTTONUP => 1,
@@ -513,15 +590,26 @@ impl Ui {
           if let Ok(output) = e.result {
             let tray = matches!(output, ProviderOutput::Systray(_));
             let audio = matches!(output, ProviderOutput::Audio(_));
+            let media = matches!(output, ProviderOutput::Media(_));
             self.model.apply(output);
             if tray {
               self.init_pins();
+              if self.model.tray_open {
+                self.tray_render();
+              }
             }
             if audio {
               self.audio_osd();
             }
+            if media {
+              self.media_seen();
+              self.ask_art();
+              self.pop_render_media();
+            }
           }
         }
+        Msg::Temps(t) => self.got_temps(t),
+        Msg::Art(title, bytes) => self.got_art(title, bytes),
         Msg::Wm(state) => self.model.wm = state,
         Msg::Apps(apps) => self.icons.set_apps(apps),
         Msg::WinIcon(h, png) => self.icons.set_win_icon(h, png),
@@ -621,6 +709,7 @@ impl Ui {
   }
 
   fn create_bars(&mut self) {
+    self.pops_reset();
     for b in self.bars.drain(..) {
       unsafe {
         let _ = DestroyWindow(b.hwnd);
@@ -858,6 +947,7 @@ impl Ui {
         self.gfx = gfx;
         self.res = res;
         self.icons.clear_bitmaps();
+        self.pops_reset();
         if let Some(o) = self.osd.take() {
           unsafe {
             let _ = DestroyWindow(o.hwnd);
@@ -991,11 +1081,17 @@ impl Ui {
       }
     }
     if hover != bar.hover || left != bar.hover_left || right != bar.hover_right {
-      bar.hover = hover;
+      bar.hover = hover.clone();
       bar.hover_left = left;
       bar.hover_right = right;
       self.redraw(i);
     }
+    if self.dragging() {
+      self.drag_move();
+      return;
+    }
+    self.pop_follow_hover(i, hover.as_ref());
+    self.tip_bar_hover(i, hover.as_ref());
   }
 
   fn wm_command(&self, command: String) {
@@ -1027,7 +1123,14 @@ impl Ui {
   /// button: 0 left, 1 right, 2 middle, 3 left double
   fn click(&mut self, i: usize, x: i32, y: i32, button: u8) {
     let (dx, dy) = self.dip(i, x, y);
-    let Some(kind) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) else { return };
+    self.tip_hide();
+    let Some(kind) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) else {
+      self.tray_close();
+      return;
+    };
+    if !matches!(kind, HitKind::TrayMore | HitKind::TrayIcon(_)) {
+      self.tray_close();
+    }
     let media = |f: fn(MediaControlArgs) -> MediaFunction| ProviderFunction::Media(f(MediaControlArgs { session_id: None }));
     match (kind, button) {
       (HitKind::Search, 0) => core_api::post_async("/cmd?a=overview".into()),
@@ -1046,16 +1149,8 @@ impl Ui {
         self.redraw_all();
       }
       (HitKind::Indicators, 0) => core_api::post_async("/cmd?a=sidebar".into()),
-      (HitKind::TrayIcon(id), b) => {
-        let args = SystrayIconArgs { icon_id: id };
-        let f = match b {
-          0 => SystrayFunction::IconLeftClick(args),
-          1 => SystrayFunction::IconRightClick(args),
-          2 => SystrayFunction::IconMiddleClick(args),
-          _ => SystrayFunction::IconLeftDoubleClick(args),
-        };
-        self.provider("systray", ProviderFunction::Systray(f));
-      }
+      (HitKind::TrayMore, 0) => self.tray_toggle(i),
+      (HitKind::TrayIcon(id), b) => self.tray_action(id, b),
       _ => {}
     }
   }
@@ -1115,4 +1210,17 @@ fn device_lost(err: &windows::core::Error) -> bool {
       | 0x887A_0020 // DXGI_ERROR_DRIVER_INTERNAL_ERROR
       | 0x8899_000C // D2DERR_RECREATE_TARGET
   )
+}
+
+/// Asks for WM_MOUSELEAVE (again) on a popup window.
+fn track_leave(hwnd: HWND) {
+  let mut t = TRACKMOUSEEVENT {
+    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+    dwFlags: TME_LEAVE,
+    hwndTrack: hwnd,
+    dwHoverTime: 0,
+  };
+  unsafe {
+    let _ = TrackMouseEvent(&mut t);
+  }
 }

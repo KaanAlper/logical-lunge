@@ -186,11 +186,13 @@
           const un2 = listen('ll:overview-toggle', () => { if (open) hide(); });
           // Ayarlar penceresinden: paneli bir sayfasıyla aç (ör. kısayol düzenleyicisi)
           const un3 = listen('ll:sidebar-open-page', e => { setPage(e.payload); if (!open) show(); });
+          // Kabuğun dışına tıklandı (çekirdeğin fare kancası): panel odak almadan açıldıysa "blur" hiç gelmiyordu
+          const un4 = listen('ll:outside-click', () => { if (open) hide(); });
           const onBlur = () => { if (open) hide(); };
           const onKey = e => { if (e.key === 'Escape') hide(); };
           window.addEventListener('blur', onBlur);
           window.addEventListener('keydown', onKey);
-          return () => { un1.then(f => f()); un2.then(f => f()); un3.then(f => f()); window.removeEventListener('blur', onBlur); window.removeEventListener('keydown', onKey); };
+          return () => { un1.then(f => f()); un2.then(f => f()); un3.then(f => f()); un4.then(f => f()); window.removeEventListener('blur', onBlur); window.removeEventListener('keydown', onKey); };
         }, [open]);
 
         // Panel her zaman odak almayabiliyor (blur hiç gelmez): başka pencereye odak geçince

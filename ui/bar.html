@@ -867,7 +867,10 @@
         useEffect(() => {
           const onBlur = () => { if (!dragKey) setOpen(false); };
           window.addEventListener('blur', onBlur);
-          return () => window.removeEventListener('blur', onBlur);
+          // Bir pencereye / masaüstüne tıklandı (çekirdeğin fare kancası): bar odak almadığı için blur gelmiyordu.
+          // Sürüklerken kapanmaz.
+          const un = listen('ll:outside-click', () => { if (!dragKey) setOpen(false); });
+          return () => { window.removeEventListener('blur', onBlur); un.then(f => f()); };
         }, [dragKey]);
 
         const list = pins ?? [];
