@@ -4184,10 +4184,23 @@ class Rounder
     readonly Dictionary<IntPtr, List<long>> resets = new Dictionary<IntPtr, List<long>>();
     readonly HashSet<IntPtr> giveUp = new HashSet<IntPtr>();
     Native.WinEventDelegate cb;
-    // Görev Yöneticisi de: başlığını kendisi çiziyor; bölge verilince içi boş kaldı, kapat düğmesi tıklamayı almadı
-    // (çekirdek yönetici olunca ilk kez ona da uygulanabildi)
     static readonly HashSet<string> skipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { Names.Shell, Names.Tiling, Names.Core, "explorer", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost", "LockApp", "Taskmgr" };
+        { Names.Shell, Names.Tiling, Names.Core, "explorer" }; // Başlat / arama / kilit ekranı gibi kabuk yüzeyleri başlıksız
+                                                                  // ya da araç penceresi: aşağıdaki stil kuralları onları zaten dışarıda bırakır
+    [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Native.RECT r);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref Native.POINT p);
+
+    // Başlığını Windows mu çiziyor: görünen üst kenar ile çizim alanının üstü arasındaki fark başlık (ve menü) çubuğudur.
+    // Tarayıcılar, Electron, terminaller, Qt pencereleri başlığı kendileri çizer (0-1 px); Görev Yöneticisi, Not Defteri,
+    // ayar pencereleri Windows'a çizdirir (30+ px). Bölge verilen pencerede Windows başlığı ve düğmeleri yönetmeyi bırakır:
+    // öyle pencerelerde içi boş kaldı, X tıklamayı almadı. Onlara hiç bölge verilmez (köşeleri düz kalır).
+    static bool SystemCaption(IntPtr h, Native.RECT frame)
+    {
+        var p = new Native.POINT();
+        Native.RECT c;
+        if (!GetClientRect(h, out c) || !ClientToScreen(h, ref p)) return true; // bilinmiyor: dokunma
+        return p.Y - frame.Top > 4;
+    }
     static readonly Dictionary<uint, string> procCache = new Dictionary<uint, string>();
 
     public void Start()
@@ -4276,9 +4289,12 @@ class Rounder
         // Başlık ya da kalın çerçevesi olmayan pencere (tarayıcı video tam ekranı başlığı kaldırır) yuvarlanmaz. Önceden
         // yuvarladıysak bölgeyi kaldır: eski (döşeme boyutundaki) bölge kalınca monitörü kaplayan tam ekran video
         // döşeme boyutunda kırpılıyordu.
-        if (full || ((style & Native.WS_CAPTION) != Native.WS_CAPTION && (style & 0x00040000) == 0))
+        bool sysCaption = SystemCaption(h, fr);
+        if (full || ((style & Native.WS_CAPTION) != Native.WS_CAPTION && (style & 0x00040000) == 0) || sysCaption)
         {
-            if (applied.ContainsKey(h)) { applied.Remove(h); Native.SetWindowRgn(h, IntPtr.Zero, true); }
+            // bizim koyduğumuz; başlığı Windows'un çizdiği pencerede önceki çekirdeğin koyup bıraktığı bölge de kalkar
+            Native.RECT rb;
+            if (applied.Remove(h) || (sysCaption && Native.GetWindowRgnBox(h, out rb) != 0)) Native.SetWindowRgn(h, IntPtr.Zero, true);
             return;
         }
 
@@ -8151,6 +8167,9 @@ static class TaskbarGuard
     static void Hide(IntPtr h)
     {
         if (released || (FailOpen && !ShellState.Up)) return;
+        // Yalnızca üst düzey pencereler: kanca uygulamaların iç pencerelerinin gösterilişini de getirir; Görev Yöneticisi'nin
+        // içerik paneli de bir NativeHWNDHost > DirectUIHWND ve küçültülünce pencere boş kalıyordu ("TaskManagerMain")
+        if (Native.GetAncestor(h, 2) != h) return; // GA_ROOT
         string cs = Cls(h);
         // Başlat düğmesi: görev çubuğunun sahip olduğu ayrı bir üst pencere (Button)
         if (cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd" || (cs == "Button" && Cls(Native.GetWindow(h, 4)).StartsWith("Shell_")))
