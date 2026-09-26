@@ -80,6 +80,15 @@ impl WindowManager {
   ) -> anyhow::Result<()> {
     let state = &mut self.state;
 
+    // Logical Lunge: Windows raises a newly activated window after the
+    // WM's sync (activation of another process's window is asynchronous),
+    // and a focus event for the window the WM already focused changes
+    // nothing to sync. The foreground event comes once the stacking is
+    // final: floating windows are put back on top there too.
+    #[cfg(target_os = "windows")]
+    let is_focus_event =
+      matches!(&event, PlatformEvent::Window(WindowEvent::Focused { .. }));
+
     match event {
       PlatformEvent::DisplaySettingsChanged => {
         handle_display_settings_changed(state, config)
@@ -145,6 +154,15 @@ impl WindowManager {
 
     if !state.is_paused && state.pending_sync.has_changes() {
       platform_sync(state, config)?;
+    }
+
+    #[cfg(target_os = "windows")]
+    if is_focus_event && !state.is_paused {
+      if let Err(err) =
+        crate::commands::general::keep_floating_above_tiling(state)
+      {
+        tracing::warn!("Failed to keep floating windows on top: {}", err);
+      }
     }
 
     Ok(())

@@ -184,7 +184,10 @@ $oldBackup = Join-Path $OLD_STATE 'install-backup.json'
 if (-not (Test-Path $backupFile) -and (Test-Path $oldBackup)) { Copy-Item $oldBackup $backupFile }
 $backup = @{ registry = @(); installed = @(); version = $null }
 if (Test-Path $backupFile) { $backup = Get-Content $backupFile -Raw | ConvertFrom-Json | ForEach-Object { @{ registry = @($_.registry); installed = @($_.installed); version = $_.version } } }
-$backup.version = (Get-Content (Join-Path $Source 'VERSION') -ErrorAction SilentlyContinue)  # an update must not keep the old version number
+# an update must not keep the old version number. Plain text: a string from Get-Content carries PowerShell's
+# PSPath / PSDrive / PSProvider notes, which ConvertTo-Json expanded into a 110 MB backup file -- rewritten on every
+# setting, the Windows settings step took minutes.
+$backup.version = try { [IO.File]::ReadAllText((Join-Path $Source 'VERSION')).Trim() } catch { $null }
 function Save-Backup { $backup | ConvertTo-Json -Depth 6 | Set-Content -Encoding UTF8 $backupFile }
 function Set-Reg([string]$path, [string]$name, $value, [string]$type = 'DWord') {
     if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }

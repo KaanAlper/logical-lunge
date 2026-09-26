@@ -237,7 +237,7 @@ fn windows_to_bring_to_front(
 /// window (the app, a click, a restart). Checked after every redraw; a
 /// floating window found under one is raised again, without taking focus.
 #[cfg(target_os = "windows")]
-fn keep_floating_above_tiling(state: &WmState) -> anyhow::Result<()> {
+pub fn keep_floating_above_tiling(state: &WmState) -> anyhow::Result<()> {
   let mut floating = Vec::new();
   let mut tiling = Vec::new();
 

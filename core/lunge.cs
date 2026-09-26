@@ -4184,8 +4184,10 @@ class Rounder
     readonly Dictionary<IntPtr, List<long>> resets = new Dictionary<IntPtr, List<long>>();
     readonly HashSet<IntPtr> giveUp = new HashSet<IntPtr>();
     Native.WinEventDelegate cb;
+    // Görev Yöneticisi de: başlığını kendisi çiziyor; bölge verilince içi boş kaldı, kapat düğmesi tıklamayı almadı
+    // (çekirdek yönetici olunca ilk kez ona da uygulanabildi)
     static readonly HashSet<string> skipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { Names.Shell, Names.Tiling, Names.Core, "explorer", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost", "LockApp" };
+        { Names.Shell, Names.Tiling, Names.Core, "explorer", "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost", "LockApp", "Taskmgr" };
     static readonly Dictionary<uint, string> procCache = new Dictionary<uint, string>();
 
     public void Start()
@@ -4306,7 +4308,8 @@ class Rounder
             if (!resets.TryGetValue(h, out hits)) resets[h] = hits = new List<long>();
             hits.Add(now);
             hits.RemoveAll(x => now - x > 3000);
-            if (hits.Count > 4) { giveUp.Add(h); Slider.Log("gave up rounding " + ProcName(h)); return; }
+            // Vazgeçerken bizim koyduğumuz bölge de kalkar: eski (belki küçük) bir bölge pencereyi kesik bırakıyordu
+            if (hits.Count > 4) { giveUp.Add(h); applied.Remove(h); Native.SetWindowRgn(h, IntPtr.Zero, true); Slider.Log("gave up rounding " + ProcName(h)); return; }
         }
         applied[h] = key;
 

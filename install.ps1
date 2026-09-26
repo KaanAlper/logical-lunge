@@ -344,7 +344,7 @@ try {
 
     # the release to install
     $src = $env:LL_SOURCE; $zipUrl = $null; $shaUrl = $null; $zipSize = 0; $ver = $null
-    if ($src) { $ver = (Get-Content (Join-Path $src 'VERSION') -ErrorAction SilentlyContinue) }
+    if ($src) { $ver = try { [IO.File]::ReadAllText((Join-Path $src 'VERSION')).Trim() } catch { '?' } }
     else {
         try {
             $rel = With-Spinner $T.release { Invoke-RestMethod -UseBasicParsing -Headers @{ 'User-Agent' = 'LogicalLunge-Install' } "https://api.github.com/repos/$repo/releases/latest" }
