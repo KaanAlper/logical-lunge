@@ -59,6 +59,9 @@ pub struct WmState {
   /// that keeps taking the whole screen back is let go (no fight).
   pub fake_fullscreen: std::collections::HashMap<isize, (Instant, u32)>,
 
+  /// Logical Lunge: where every window is, kept for a restart.
+  pub layout_memory: crate::layout_memory::LayoutMemory,
+
   /// Configs of currently enabled binding modes.
   pub binding_modes: Vec<BindingModeConfig>,
 
@@ -96,6 +99,7 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       fake_fullscreen: std::collections::HashMap::new(),
+      layout_memory: crate::layout_memory::LayoutMemory::default(),
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       is_paused: false,
@@ -129,20 +133,71 @@ impl WmState {
 
     // Manage windows in reverse z-order (bottom to top). This helps to
     // preserve the original stacking order.
-    for native_window in
-      self.dispatcher.visible_windows()?.into_iter().rev()
-    {
-      let nearest_workspace = self
-        .nearest_monitor(&native_window)
-        .and_then(|m| m.displayed_workspace());
+    //
+    // Logical Lunge: windows the last run remembers go back to their
+    // workspace (created on their monitor if needed), managed in their old
+    // order so that each dwindle is rebuilt the same way; the others go to
+    // the shown workspace of their monitor as before.
+    let memory = crate::layout_memory::LayoutMemory::load();
+    let mut windows = self
+      .dispatcher
+      .visible_windows()?
+      .into_iter()
+      .rev()
+      .map(|w| {
+        let placement = memory.as_ref().and_then(|m| m.placement(&w));
+        (w, placement)
+      })
+      .collect::<Vec<_>>();
+    // remembered ones first, in their saved order (stable for the rest)
+    windows.sort_by_key(|(_, p)| p.as_ref().map_or((1, 0, 0), |p| (0, p.order.0, p.order.1)));
 
-      if let Some(workspace) = nearest_workspace {
+    for (native_window, placement) in windows {
+      let remembered = placement
+        .as_ref()
+        .and_then(|p| self.workspace_for_restore(&p.workspace, &p.monitor, config));
+
+      let target = remembered.or_else(|| {
+        self
+          .nearest_monitor(&native_window)
+          .and_then(|m| m.displayed_workspace())
+      });
+
+      if let Some(workspace) = target {
         manage_window(
-          native_window,
+          native_window.clone(),
           Some(workspace.into()),
           self,
           config,
         )?;
+
+        // a floating window stays floating
+        if placement.is_some_and(|p| p.floating) {
+          if let Some(window) = self.window_from_native(&native_window) {
+            if window.state() == wm_common::WindowState::Tiling {
+              let floating = wm_common::WindowState::Floating(
+                config.value.window_behavior.state_defaults.floating.clone(),
+              );
+              let _ = crate::commands::window::update_window_state(
+                window, floating, self, config,
+              );
+            }
+          }
+        }
+      }
+    }
+
+    // each monitor shows what it showed before (the focused one last)
+    for (_, name) in memory.map(|m| m.displayed()).unwrap_or_default() {
+      let shown = self
+        .workspace_by_name(&name)
+        .is_some_and(|ws| ws.is_displayed());
+      if !shown && self.workspace_by_name(&name).is_some() {
+        let _ = crate::commands::workspace::focus_workspace(
+          crate::models::WorkspaceTarget::Name(name),
+          self,
+          config,
+        );
       }
     }
 
@@ -170,6 +225,27 @@ impl WmState {
     self.has_initialized = true;
 
     Ok(())
+  }
+
+  /// Logical Lunge: the workspace `name` for a window put back after a
+  /// restart -- existing, or created on the monitor it was on (else the
+  /// nearest one the config allows).
+  fn workspace_for_restore(
+    &mut self,
+    name: &str,
+    monitor_device: &str,
+    config: &UserConfig,
+  ) -> Option<Workspace> {
+    if let Some(ws) = self.workspace_by_name(name) {
+      return Some(ws);
+    }
+    let monitor = self
+      .monitors()
+      .into_iter()
+      .find(|m| m.native_properties().device_name == monitor_device);
+    crate::commands::workspace::activate_workspace(Some(name), monitor, self, config)
+      .ok()?;
+    self.workspace_by_name(name)
   }
 
   pub fn monitors(&self) -> Vec<Monitor> {

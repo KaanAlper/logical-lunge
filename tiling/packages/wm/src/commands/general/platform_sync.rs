@@ -125,6 +125,11 @@ pub fn platform_sync(
 
   state.pending_sync.clear();
 
+  // Logical Lunge: remember where every window is (for a restart).
+  let mut memory = std::mem::take(&mut state.layout_memory);
+  memory.save(state);
+  state.layout_memory = memory;
+
   Ok(())
 }
 

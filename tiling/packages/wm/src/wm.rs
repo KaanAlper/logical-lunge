@@ -787,6 +787,11 @@ impl WindowManager {
   ) {
     self.state.emit_event(WmEvent::ApplicationExiting);
 
+    // Logical Lunge: where every window is, for the next start.
+    let mut memory = std::mem::take(&mut self.state.layout_memory);
+    memory.save_now(&self.state);
+    self.state.layout_memory = memory;
+
     // Remove the window borders drawn by the WM.
     #[cfg(target_os = "windows")]
     wm_borders::stop();
