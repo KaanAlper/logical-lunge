@@ -6,8 +6,7 @@ use crate::{
   commands::container::{
     attach_container, detach_container, flatten_child_split_containers,
     flatten_split_container, move_container_within_tree,
-    normalize_split_containers, resize_tiling_container, set_focused_descendant,
-    wrap_in_split_container,
+    normalize_split_containers, set_focused_descendant, wrap_in_split_container,
   },
   models::{
     Monitor, NonTilingWindow, SplitContainer, TilingContainer,
@@ -22,6 +21,11 @@ use crate::{
 
 /// The distance in pixels to snap the window to the monitor's edge.
 const SNAP_DISTANCE: i32 = 15;
+
+/// How far (in pixels) a window may be from the focal point across the
+/// move to count as the window in that direction: the focal point can
+/// land in the gap between two windows.
+const GAP_TOLERANCE: i32 = 50;
 
 pub fn move_window_in_direction(
   window: WindowContainer,
@@ -64,11 +68,15 @@ pub fn move_window_in_direction(
 /// Moves a tiling window like Hyprland's dwindle layout (`movewindow`).
 ///
 /// A focal point is taken 1px outside the window's edge in the given
-/// direction. The window is removed from the tree, and the window at the
-/// focal point is split along its longer side; the moved window takes the
-/// half that the focal point falls into. For example, in the layout
-/// H[1 V[2 3]] where container 2 is moved left, this results in
-/// H[V[2 1] 3].
+/// direction. The window is removed from the tree (its split partner
+/// takes its place), and the window at the focal point is split along
+/// its longer side; the moved window takes the half that the focal point
+/// falls into. For example, in the layout H[1 V[2 3]] where container 2
+/// is moved left, this results in H[V[2 1] 3].
+///
+/// Moving straight toward the nearest split divider when the split
+/// partner is a single window swaps the two instead (Hyprland's
+/// direction override), e.g. H[1 2] where 1 is moved right gives H[2 1].
 ///
 /// Without a window in the given direction, the window takes that half of
 /// the workspace (see `move_tiling_window_fallback`).
@@ -98,29 +106,37 @@ fn move_tiling_window(
     },
   };
 
-  let Some(target) =
-    window_in_direction(&window_to_move, &focal_point, direction)?
-  else {
-    return move_tiling_window_fallback(
-      window_to_move,
-      direction,
-      state,
-      config,
-    );
-  };
-
   let workspace = window_to_move.workspace().context("No workspace.")?;
   let had_focus = window_to_move.has_focus(None);
 
-  // The focal point lies in a gap or at the target's edge, so it's
-  // clamped into the target.
-  dwindle_split(
-    &window_to_move,
-    &target,
-    &focal_point,
-    Some(direction),
-    config,
-  )?;
+  if let Some(partner) = partner_to_swap_with(&window_to_move, direction) {
+    dwindle_split(
+      &window_to_move,
+      &partner,
+      &focal_point,
+      DwindlePlacement::Swap(direction),
+      config,
+    )?;
+  } else {
+    let Some(target) =
+      window_in_direction(&window_to_move, &focal_point, direction)?
+    else {
+      return move_tiling_window_fallback(
+        window_to_move,
+        direction,
+        state,
+        config,
+      );
+    };
+
+    dwindle_split(
+      &window_to_move,
+      &target,
+      &focal_point,
+      DwindlePlacement::Moved,
+      config,
+    )?;
+  }
 
   if had_focus {
     set_focused_descendant(&window_to_move.clone().into(), None);
@@ -137,26 +153,79 @@ fn move_tiling_window(
   Ok(())
 }
 
-/// Re-inserts `window` by splitting `target` (Hyprland's dwindle
+/// The window's split partner, if moving in the given direction swaps
+/// the two (Hyprland's `movewindow` direction override): the split is
+/// along the move axis, the window moves toward the divider, and the
+/// partner is a single window rather than a split.
+fn partner_to_swap_with(
+  window: &TilingWindow,
+  direction: &Direction,
+) -> Option<TilingWindow> {
+  let parent = window.direction_container()?;
+
+  if parent.tiling_direction() != TilingDirection::from_direction(direction)
+  {
+    return None;
+  }
+
+  let children = parent.tiling_children().collect::<Vec<_>>();
+  let [first, second] = children.as_slice() else {
+    return None;
+  };
+
+  let (partner, window_is_first) = if first.id() == window.id() {
+    (second, true)
+  } else if second.id() == window.id() {
+    (first, false)
+  } else {
+    return None;
+  };
+
+  let toward_partner = match direction {
+    Direction::Up | Direction::Left => !window_is_first,
+    Direction::Down | Direction::Right => window_is_first,
+  };
+
+  match partner {
+    TilingContainer::TilingWindow(partner) if toward_partner => {
+      Some(partner.clone())
+    }
+    _ => None,
+  }
+}
+
+/// Where `dwindle_split` puts the window in the split target.
+#[derive(Clone, Copy, Debug)]
+pub enum DwindlePlacement<'a> {
+  /// A new (or re-tiled) window: the half under the point if the point
+  /// is inside the target, otherwise the second half, which builds
+  /// Hyprland's spiral when windows are opened one after another.
+  New,
+  /// `movewindow`: the half the focal point falls into (as in Hyprland,
+  /// that's the half next to where the window came from).
+  Moved,
+  /// `movewindow` toward the window's split partner: the split is along
+  /// the move axis and the window takes the far side, which swaps the
+  /// two.
+  Swap(&'a Direction),
+}
+
+/// Inserts `window` by splitting `target` (Hyprland's dwindle
 /// `onWindowRemovedTiling` + `onWindowCreatedTiling`).
 ///
-/// The window is removed first, so that the target is measured the way
-/// it'll be split. The target is split along its longer side, and the
-/// window takes the half that `point` falls into; a point outside the
-/// target selects the second half, as in Hyprland.
-///
-/// With `move_direction` (`movewindow`), a split along the move axis puts
-/// the window on the side it moves towards (e.g. moving the bottom one of
-/// two stacked windows up makes it the top one). Across the move axis, the
-/// point (which may lie in a gap) is clamped into the target.
+/// The window is removed first (its split partner takes its place), so
+/// that the target is measured the way it'll be split. The target is
+/// split along its longer side, and the window takes a half as described
+/// by `placement`.
 pub fn dwindle_split(
   window: &TilingWindow,
   target: &TilingWindow,
   point: &Point,
-  move_direction: Option<&Direction>,
+  placement: DwindlePlacement,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let workspace = target.workspace().context("No workspace.")?;
+  let old_workspace = window.workspace();
   let window_to_move = window.clone();
 
   // The window may already be detached (e.g. a new window).
@@ -171,48 +240,46 @@ pub fn dwindle_split(
   }
 
   let target_rect = target.to_rect()?;
-  let side_by_side = target_rect.width() > target_rect.height();
 
-  let split_direction = if side_by_side {
-    TilingDirection::Horizontal
-  } else {
-    TilingDirection::Vertical
-  };
+  let (split_direction, is_first) = match placement {
+    DwindlePlacement::Swap(direction) => (
+      TilingDirection::from_direction(direction),
+      matches!(direction, Direction::Up | Direction::Left),
+    ),
+    DwindlePlacement::New | DwindlePlacement::Moved => {
+      let side_by_side = target_rect.width() > target_rect.height();
 
-  tracing::debug!(
-    "dwindle_split: target_id={} rect={:?} width={} height={} side_by_side={} split_dir={:?}",
-    target.id(),
-    target_rect,
-    target_rect.width(),
-    target_rect.height(),
-    side_by_side,
-    split_direction
-  );
-
-  let is_first = if let Some(direction) = move_direction {
-    if split_direction == TilingDirection::from_direction(direction) {
-      matches!(direction, Direction::Up | Direction::Left)
-    } else if side_by_side {
-      point.x.clamp(target_rect.left, target_rect.right)
-        < target_rect.left + target_rect.width() / 2
-    } else {
-      point.y.clamp(target_rect.top, target_rect.bottom)
-        < target_rect.top + target_rect.height() / 2
-    }
-  } else {
-    target_rect.contains_point(point)
-      && if side_by_side {
+      let in_first_half = if side_by_side {
         point.x < target_rect.left + target_rect.width() / 2
       } else {
         point.y < target_rect.top + target_rect.height() / 2
-      }
+      };
+
+      let is_first = match placement {
+        DwindlePlacement::New => {
+          target_rect.contains_point(point) && in_first_half
+        }
+        _ => in_first_half,
+      };
+
+      let split_direction = if side_by_side {
+        TilingDirection::Horizontal
+      } else {
+        TilingDirection::Vertical
+      };
+
+      (split_direction, is_first)
+    }
   };
 
   tracing::debug!(
-    "dwindle_split: is_first={} move_direction={:?} point={:?}",
-    is_first,
-    move_direction,
-    point
+    "dwindle_split: target_id={} rect={:?} placement={:?} point={:?} split_dir={:?} is_first={}",
+    target.id(),
+    target_rect,
+    placement,
+    point,
+    split_direction,
+    is_first
   );
 
   let target_parent = target
@@ -220,8 +287,8 @@ pub fn dwindle_split(
     .context("No direction container.")?;
 
   if target.tiling_siblings().count() == 0 {
-    // Target fills its parent (e.g. alone on the workspace), so split the
-    // parent itself.
+    // Target fills its parent (i.e. it's alone on the workspace), so the
+    // workspace itself is split.
     target_parent.set_tiling_direction(split_direction);
 
     attach_container(
@@ -246,24 +313,31 @@ pub fn dwindle_split(
     )?;
   }
 
-  flatten_child_split_containers(&target_parent.into())?;
-  flatten_child_split_containers(&workspace.into())?;
+  flatten_child_split_containers(&workspace.clone().into())?;
+
+  if let Some(old_workspace) = old_workspace {
+    if old_workspace.id() != workspace.id() {
+      flatten_child_split_containers(&old_workspace.into())?;
+    }
+  }
 
   Ok(())
 }
 
 /// Gets the tiling window on the same workspace at the focal point.
 ///
-/// Since the focal point may land in the gap between windows, the nearest
-/// window in the given direction that spans the focal point is used
-/// instead when none contains it.
+/// The focal point may land in the gap between windows (e.g. moving the
+/// left one of `H[1 V[2 3]]` right, where the focal point is at the
+/// height of the gap between 2 and 3). The nearest window lying in the
+/// given direction is used then; Hyprland finds one there through the
+/// windows' enlarged input areas.
 fn window_in_direction(
   window: &TilingWindow,
   focal_point: &Point,
   direction: &Direction,
 ) -> anyhow::Result<Option<TilingWindow>> {
   let workspace = window.workspace().context("No workspace.")?;
-  let mut nearest: Option<(i32, TilingWindow)> = None;
+  let mut nearest: Option<(i64, TilingWindow)> = None;
 
   for other in workspace.descendants() {
     let Ok(TilingContainer::TilingWindow(other)) =
@@ -282,24 +356,37 @@ fn window_in_direction(
       return Ok(Some(other));
     }
 
-    let distance = match direction {
-      Direction::Left if (r.top..=r.bottom).contains(&focal_point.y) => {
-        focal_point.x - r.right
-      }
-      Direction::Right if (r.top..=r.bottom).contains(&focal_point.y) => {
-        r.left - focal_point.x
-      }
-      Direction::Up if (r.left..=r.right).contains(&focal_point.x) => {
-        focal_point.y - r.bottom
-      }
-      Direction::Down if (r.left..=r.right).contains(&focal_point.x) => {
-        r.top - focal_point.y
-      }
-      _ => continue,
+    // Distance along the move (the window must lie beyond the focal
+    // point) and across it (0 when the window spans the focal point).
+    let (along, across) = match direction {
+      Direction::Left => (
+        focal_point.x - r.right,
+        (r.top - focal_point.y).max(focal_point.y - r.bottom),
+      ),
+      Direction::Right => (
+        r.left - focal_point.x,
+        (r.top - focal_point.y).max(focal_point.y - r.bottom),
+      ),
+      Direction::Up => (
+        focal_point.y - r.bottom,
+        (r.left - focal_point.x).max(focal_point.x - r.right),
+      ),
+      Direction::Down => (
+        r.top - focal_point.y,
+        (r.left - focal_point.x).max(focal_point.x - r.right),
+      ),
     };
 
-    if distance >= 0 && nearest.as_ref().is_none_or(|(d, _)| distance < *d)
-    {
+    // Only across the gap between windows, not a window off to the side.
+    if along < 0 || across > GAP_TOLERANCE {
+      continue;
+    }
+
+    let along = i64::from(along);
+    let across = i64::from(across.max(0));
+    let distance = along * along + across * across;
+
+    if nearest.as_ref().is_none_or(|(d, _)| distance < *d) {
       nearest = Some((distance, other));
     }
   }
@@ -307,26 +394,19 @@ fn window_in_direction(
   Ok(nearest.map(|(_, window)| window))
 }
 
-
-/// The upstream tiling move, used when there's no window in the
-/// given direction (e.g. two side-by-side windows where one is moved up
-/// becomes the full-width top half).
+/// Moves a tiling window that has no window in the given direction, i.e.
+/// it's at the workspace's edge on that side.
+///
+/// If the window already is the workspace's half on that side (or alone
+/// on the workspace), it goes to the workspace of the monitor in that
+/// direction, as upstream. Otherwise it takes that half of the workspace
+/// and the rest of the layout keeps its shape in the other half.
 fn move_tiling_window_fallback(
   window_to_move: TilingWindow,
   direction: &Direction,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  // Flatten the parent split container if it only contains the window.
-  if let Some(split_parent) = window_to_move
-    .parent()
-    .and_then(|parent| parent.as_split().cloned())
-  {
-    if split_parent.child_count() == 1 {
-      flatten_split_container(split_parent)?;
-    }
-  }
-
   let parent = window_to_move
     .direction_container()
     .context("No direction container.")?;
@@ -334,24 +414,9 @@ fn move_tiling_window_fallback(
   let has_matching_tiling_direction = parent.tiling_direction()
     == TilingDirection::from_direction(direction);
 
-  // Attempt to swap or move the window into a sibling container.
-  if has_matching_tiling_direction {
-    if let Some(sibling) =
-      tiling_sibling_in_direction(&window_to_move, direction)
-    {
-      return move_to_sibling_container(
-        window_to_move,
-        sibling,
-        direction,
-        state,
-      );
-    }
-  }
-
-  // Attempt to move the window to workspace in given direction.
-  if (has_matching_tiling_direction
-    || window_to_move.tiling_siblings().count() == 0)
-    && parent.is_workspace()
+  if parent.is_workspace()
+    && (has_matching_tiling_direction
+      || window_to_move.tiling_siblings().count() == 0)
   {
     return move_to_workspace_in_direction(
       &window_to_move.into(),
@@ -360,160 +425,32 @@ fn move_tiling_window_fallback(
     );
   }
 
-  // Logical Lunge: there's no window in the given direction, so the window
-  // is at the workspace's edge on that side. Like Hyprland's dwindle
-  // `movetoroot`, it takes that half of the workspace and the rest of the
-  // layout keeps its shape in the other half. Upstream inserted it into the
-  // nearest ancestor with the move's axis instead, which added a column
-  // (e.g. a 2x2 grid became three columns).
   let workspace = window_to_move.workspace().context("No workspace.")?;
-
-  if workspace.tiling_direction() == TilingDirection::from_direction(direction)
-  {
-    move_to_workspace_edge(window_to_move, &workspace, direction, state)
-  } else {
-    invert_workspace_tiling_direction(window_to_move, direction, state, config)
-  }
+  move_to_workspace_edge(window_to_move, &workspace, direction, state, config)
 }
 
 /// Moves a tiling window to the workspace's edge in the given direction,
-/// where it takes half of the workspace.
-///
-/// The workspace must already tile along the move axis. Its other children
-/// keep their order and relative sizes in the remaining half. For example,
-/// in the layout H[V[1 2] V[3 4]] where container 3 is moved right, this
-/// results in H[V[1 2] 4 3] with sizes 0.25, 0.25 and 0.5.
+/// where it takes half of the workspace; the rest of the layout keeps its
+/// shape in the other half (the root of the binary dwindle tree is split
+/// again). For example, in V[1 H[2 3]] where container 3 is moved right,
+/// this results in H[V[1 2] 3], and a 2x2 grid H[V[1 2] V[3 4]] where 3
+/// is moved right results in H[H[V[1 2] 4] 3].
 fn move_to_workspace_edge(
   window_to_move: TilingWindow,
   workspace: &Workspace,
   direction: &Direction,
   state: &mut WmState,
-) -> anyhow::Result<()> {
-  let target_index = match direction {
-    Direction::Left | Direction::Up => 0,
-    _ => workspace.child_count(),
-  };
-
-  move_container_within_tree(
-    &window_to_move.clone().into(),
-    &workspace.clone().into(),
-    target_index,
-    state,
-  )?;
-
-  // A split left with a single child (e.g. V[4]) or with the workspace's
-  // direction is merged into the workspace.
-  flatten_child_split_containers(&workspace.clone().into())?;
-  resize_tiling_container(&window_to_move.into(), 0.5);
-
-  state
-    .pending_sync
-    .queue_containers_to_redraw(workspace.tiling_children());
-
-  Ok(())
-}
-
-
-/// Gets the next sibling `TilingWindow` or `SplitContainer` in the given
-/// direction.
-fn tiling_sibling_in_direction(
-  window: &TilingWindow,
-  direction: &Direction,
-) -> Option<TilingContainer> {
-  match direction {
-    Direction::Up | Direction::Left => window
-      .prev_siblings()
-      .find_map(|sibling| sibling.as_tiling_container().ok()),
-    _ => window
-      .next_siblings()
-      .find_map(|sibling| sibling.as_tiling_container().ok()),
-  }
-}
-
-fn move_to_sibling_container(
-  window_to_move: TilingWindow,
-  target_sibling: TilingContainer,
-  direction: &Direction,
-  state: &mut WmState,
-) -> anyhow::Result<()> {
-  let parent = window_to_move.parent().context("No parent.")?;
-
-  match target_sibling {
-    TilingContainer::TilingWindow(sibling_window) => {
-      // Swap the window with sibling in given direction.
-      move_container_within_tree(
-        &window_to_move.clone().into(),
-        &parent,
-        sibling_window.index(),
-        state,
-      )?;
-
-      state
-        .pending_sync
-        .queue_container_to_redraw(sibling_window)
-        .queue_container_to_redraw(window_to_move);
-    }
-    TilingContainer::Split(sibling_split) => {
-      let sibling_descendant =
-        sibling_split.descendant_in_direction(&direction.inverse());
-
-      // Move the window into the sibling split container.
-      if let Some(sibling_descendant) = sibling_descendant {
-        let target_parent = sibling_descendant
-          .direction_container()
-          .context("No direction container.")?;
-
-        let has_matching_tiling_direction =
-          TilingDirection::from_direction(direction)
-            == target_parent.tiling_direction();
-
-        let target_index = match direction {
-          Direction::Down | Direction::Right
-            if has_matching_tiling_direction =>
-          {
-            sibling_descendant.index()
-          }
-          _ => sibling_descendant.index() + 1,
-        };
-
-        move_container_within_tree(
-          &window_to_move.into(),
-          &target_parent.clone().into(),
-          target_index,
-          state,
-        )?;
-
-        state
-          .pending_sync
-          .queue_container_to_redraw(target_parent)
-          .queue_containers_to_redraw(parent.tiling_children());
-      }
-    }
-  }
-
-  Ok(())
-}
-
-
-fn invert_workspace_tiling_direction(
-  window_to_move: TilingWindow,
-  direction: &Direction,
-  state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
-  let workspace = window_to_move.workspace().context("No workspace.")?;
+  let had_focus = window_to_move.has_focus(None);
 
-  // Get top-level tiling children of the workspace.
-  let workspace_children = workspace
-    .tiling_children()
-    .filter(|container| container.id() != window_to_move.id())
-    .collect::<Vec<_>>();
+  // Its split partner takes its place.
+  detach_container(window_to_move.clone().into())?;
+  flatten_child_split_containers(&workspace.clone().into())?;
 
-  // Create a new split container to wrap the window's siblings. For
-  // example, in the layout H[1 V[2 3]] where container 3 is moved down,
-  // we create a split container around 1 and 2. This results in
-  // H[H[1 V[2 3]]], and V[H[1 V[2]] 3] after the tiling direction change.
-  if workspace_children.len() > 1 {
+  let rest = workspace.tiling_children().collect::<Vec<_>>();
+
+  if rest.len() > 1 {
     let split_container = SplitContainer::new(
       workspace.tiling_direction(),
       config.value.gaps.clone(),
@@ -522,46 +459,36 @@ fn invert_workspace_tiling_direction(
     wrap_in_split_container(
       &split_container,
       &workspace.clone().into(),
-      &workspace_children,
+      &rest,
     )?;
-  } else if let [TilingContainer::Split(split)] = workspace_children.as_slice()
-  {
-    // A lone split sibling rotates along with the workspace (dwindle), so
-    // it isn't flattened into the workspace afterwards. For example, in
-    // V[1 H[2 3]] where container 1 is moved left, this results in
-    // H[1 V[2 3]] instead of H[1 2 3].
-    split.set_tiling_direction(split.tiling_direction().inverse());
   }
 
-  // Invert the tiling direction of the workspace.
-  workspace.set_tiling_direction(workspace.tiling_direction().inverse());
+  workspace.set_tiling_direction(TilingDirection::from_direction(direction));
 
   let target_index = match direction {
     Direction::Left | Direction::Up => 0,
     _ => workspace.child_count(),
   };
 
-  // Depending on the direction, place the window either before or after
-  // the split container.
-  move_container_within_tree(
+  attach_container(
     &window_to_move.clone().into(),
     &workspace.clone().into(),
-    target_index,
-    state,
+    Some(target_index),
   )?;
 
-  // Workspace might have redundant split containers after the tiling
-  // direction change. For example, V[H[1 2] 3] where container 3 is moved
-  // up results in H[3 H[1 2]], and needs to be flattened to H[3 1 2].
   flatten_child_split_containers(&workspace.clone().into())?;
 
-  // Resize the window such that the split container and window are each
-  // 0.5.
-  resize_tiling_container(&window_to_move.into(), 0.5);
+  if had_focus {
+    set_focused_descendant(&window_to_move.clone().into(), None);
+    state.emit_event(WmEvent::FocusedContainerMoved {
+      focused_container: window_to_move.to_dto()?,
+    });
+  }
 
   state
     .pending_sync
-    .queue_containers_to_redraw(workspace.tiling_children());
+    .queue_containers_to_redraw(workspace.tiling_children())
+    .queue_cursor_jump();
 
   Ok(())
 }

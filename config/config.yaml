@@ -230,6 +230,7 @@ keybindings:
     bindings: ['lwin+f']
   - commands: ['toggle-floating --centered']
     bindings: ['lwin+alt+space']
+  # Hyprland togglesplit: pencerenin içinde olduğu bölme döner (yan yana <-> alt alta)
   - commands: ['toggle-tiling-direction']
     bindings: ['lwin+j']
   - commands: ['toggle-minimized']

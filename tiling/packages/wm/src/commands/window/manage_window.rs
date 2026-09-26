@@ -9,7 +9,7 @@ use crate::{
       attach_container, detach_container, normalize_split_containers,
       set_focused_descendant,
     },
-    window::{dwindle_split, run_window_rules},
+    window::{dwindle_split, run_window_rules, DwindlePlacement},
   },
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
@@ -463,7 +463,7 @@ pub fn dwindle_place(
         y: i32::MAX,
       });
 
-      dwindle_split(window, &target, &point, None, config)
+      dwindle_split(window, &target, &point, DwindlePlacement::New, config)
     }
     // First tiling window on the workspace: it fills the workspace.
     None => attach_container(

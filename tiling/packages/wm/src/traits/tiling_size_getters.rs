@@ -5,7 +5,7 @@ use anyhow::Context;
 use wm_common::{GapsConfig, TilingDirection};
 
 use super::{CommonGetters, TilingDirectionGetters};
-use crate::models::{Container, DirectionContainer, TilingContainer};
+use crate::models::{DirectionContainer, TilingContainer};
 
 pub const MIN_TILING_SIZE: f32 = 0.01;
 
@@ -42,43 +42,46 @@ pub trait TilingSizeGetters: CommonGetters {
   }
 
   /// Gets the container to resize when resizing a tiling window.
+  ///
+  /// Logical Lunge: like Hyprland's dwindle layout, that's the window or
+  /// the nearest ancestor that sits in a split along the resize axis
+  /// (next to its split partner). Between the window and that container
+  /// there are only splits across the axis, so both have the same length
+  /// along it. Upstream only looked at the parent and grandparent, which
+  /// assumed that nested splits alternate direction; in the binary
+  /// dwindle tree a split can have its parent's direction (e.g. in
+  /// `V[4 V[H[2 3] 1]]`, a width resize of 1 resized the inner `V` inside
+  /// the outer `V`, i.e. its height). `None` when no split runs along the
+  /// axis (nothing to resize, as in Hyprland).
   fn container_to_resize(
     &self,
     is_width_resize: bool,
   ) -> anyhow::Result<Option<TilingContainer>> {
-    let parent = self.direction_container().context("No parent.")?;
-
-    let tiling_direction = parent.tiling_direction();
-
-    // Whether the resize is in the inverse of its tiling direction.
-    let is_inverse_resize = match tiling_direction {
-      TilingDirection::Horizontal => !is_width_resize,
-      TilingDirection::Vertical => is_width_resize,
-    };
-
-    let container_to_resize = if is_inverse_resize {
-      match parent {
-        // Prevent workspaces from being resized.
-        DirectionContainer::Split(parent) => Some(parent.into()),
-        DirectionContainer::Workspace(_) => None,
-      }
+    let axis = if is_width_resize {
+      TilingDirection::Horizontal
     } else {
-      let grandparent = parent.parent().context("No grandparent.")?;
-
-      if self.tiling_siblings().count() > 0 {
-        // Window can only be resized if it has siblings.
-        Some(self.as_tiling_container()?)
-      } else {
-        // Resize grandparent in layouts like H[1 V[2 H[3]]], where
-        // container 3 is resized horizontally.
-        match grandparent {
-          Container::Split(grandparent) => Some(grandparent.into()),
-          _ => None,
-        }
-      }
+      TilingDirection::Vertical
     };
 
-    Ok(container_to_resize)
+    let mut current: TilingContainer = self.as_tiling_container()?;
+
+    loop {
+      let parent = current
+        .parent()
+        .context("No parent.")?
+        .as_direction_container()?;
+
+      if parent.tiling_direction() == axis
+        && current.tiling_siblings().count() > 0
+      {
+        return Ok(Some(current));
+      }
+
+      match parent {
+        DirectionContainer::Split(split) => current = split.into(),
+        DirectionContainer::Workspace(_) => return Ok(None),
+      }
+    }
   }
 }
 

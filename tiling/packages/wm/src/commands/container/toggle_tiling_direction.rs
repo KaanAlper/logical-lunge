@@ -1,9 +1,9 @@
 use anyhow::Context;
 use wm_common::{TilingDirection, WmEvent};
 
-use super::{flatten_split_container, wrap_in_split_container};
+use super::flatten_child_split_containers;
 use crate::{
-  models::{Container, DirectionContainer, SplitContainer, TilingWindow},
+  models::{Container, DirectionContainer, TilingWindow},
   traits::{CommonGetters, TilingDirectionGetters},
   user_config::UserConfig,
   wm_state::WmState,
@@ -28,6 +28,13 @@ pub fn toggle_tiling_direction(
     _ => return Ok(()),
   }?;
 
+  // The split turned: its windows move.
+  if let Some(workspace) = direction_container.workspace() {
+    state
+      .pending_sync
+      .queue_containers_to_redraw(workspace.tiling_children());
+  }
+
   state.emit_event(WmEvent::TilingDirectionChanged {
     direction_container: direction_container.to_dto()?,
     new_tiling_direction: direction_container.tiling_direction(),
@@ -36,48 +43,26 @@ pub fn toggle_tiling_direction(
   Ok(())
 }
 
+/// Logical Lunge: Hyprland's dwindle `togglesplit` (Super+J in ii). The
+/// split that the window is in turns the other way, e.g. two windows side
+/// by side become stacked. Upstream wrapped the window in a new split
+/// container with the other direction instead; in the binary dwindle
+/// layout that's a split with a single child, which is removed right away.
 fn toggle_window_direction(
   tiling_window: TilingWindow,
-  config: &UserConfig,
+  _config: &UserConfig,
 ) -> anyhow::Result<DirectionContainer> {
   let parent = tiling_window
     .direction_container()
     .context("No direction container.")?;
 
-  // If the window is an only child, then either change the tiling
-  // direction of its parent workspace or flatten its parent split
-  // container.
-  if tiling_window.tiling_siblings().count() == 0 {
-    return match parent {
-      DirectionContainer::Workspace(workspace) => {
-        workspace
-          .set_tiling_direction(workspace.tiling_direction().inverse());
+  parent.set_tiling_direction(parent.tiling_direction().inverse());
 
-        Ok(workspace.into())
-      }
-      DirectionContainer::Split(split_container) => {
-        flatten_split_container(split_container.clone())?;
-
-        tiling_window
-          .direction_container()
-          .context("No direction container.")
-      }
-    };
+  if let Some(workspace) = tiling_window.workspace() {
+    flatten_child_split_containers(&workspace.into())?;
   }
 
-  // Create a new split container to wrap the window.
-  let split_container = SplitContainer::new(
-    parent.tiling_direction().inverse(),
-    config.value.gaps.clone(),
-  );
-
-  wrap_in_split_container(
-    &split_container,
-    &parent.into(),
-    &[tiling_window.into()],
-  )?;
-
-  Ok(split_container.into())
+  Ok(parent)
 }
 
 pub fn set_tiling_direction(

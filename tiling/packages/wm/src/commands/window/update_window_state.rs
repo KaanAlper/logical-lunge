@@ -6,11 +6,11 @@ use crate::{
   commands::{
     container::{
       move_container_within_tree, normalize_split_containers,
-      replace_container, resize_tiling_container,
+      replace_container,
     },
     window::dwindle_place,
   },
-  models::{Container, InsertionTarget, WindowContainer},
+  models::{InsertionTarget, WindowContainer},
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
