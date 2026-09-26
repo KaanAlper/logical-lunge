@@ -14,7 +14,7 @@
             "zOrder": "normal",
             "shownInTaskbar": false,
             "focused": false,
-            "resizable": true,
+            "resizable": false,
             "transparent": true,
             "includeFiles": [
                 "*.html",

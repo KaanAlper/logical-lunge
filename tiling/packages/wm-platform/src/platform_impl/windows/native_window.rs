@@ -935,6 +935,20 @@ pub(crate) fn reset_focus(_dispatcher: &Dispatcher) -> crate::Result<()> {
 /// the wallpaper window.
 #[must_use]
 fn desktop_window() -> NativeWindow {
+  // Logical Lunge: an empty workspace gives the keyboard to the core's
+  // invisible focus window (it swallows keys). The desktop took keys to its
+  // icons, and when focusing it failed, keys went on to a hidden window of
+  // another workspace. Without the core, the desktop as before.
+  let sink = unsafe {
+    windows::Win32::UI::WindowsAndMessaging::FindWindowW(
+      w!("LogicalLunge.FocusSink"),
+      PCWSTR::null(),
+    )
+  };
+  if sink.0 != 0 {
+    return NativeWindow::new(sink.0);
+  }
+
   let handle = match unsafe { GetShellWindow() } {
     HWND(0) => unsafe { GetDesktopWindow() },
     handle => handle,

@@ -1518,6 +1518,18 @@ class Slider
         Cursor.Position = new Point(J.Int(w, "x") + J.Int(w, "width") / 2, J.Int(w, "y") + J.Int(w, "height") / 2);
     }
 
+    // Workspace'in odaklı penceresinin (yoksa ilk penceresinin, o da yoksa monitörün) ortasına imleci götür
+    static void WarpInto(Dictionary<string, object> monitor, Dictionary<string, object> ws)
+    {
+        var tw = new List<Dictionary<string, object>>();
+        J.WindowNodes(ws, tw);
+        Dictionary<string, object> fw = null;
+        foreach (var x in tw) if (J.Bool(x, "hasFocus")) fw = x;
+        if (fw == null && tw.Count > 0) fw = tw[0];
+        if (fw != null) WarpTo(fw);
+        else Cursor.Position = new Point(J.Int(monitor, "x") + J.Int(monitor, "width") / 2, J.Int(monitor, "y") + J.Int(monitor, "height") / 2);
+    }
+
     // Hyprland'deki gibi pencere taşımaları da animasyonlu olsun: UI thread'inde AnimateLayout
     public static Control Ui;
 
@@ -1719,24 +1731,30 @@ class Slider
                 else if (lastCmd == "focus --prev-workspace") otherTarget = ((cur0 + MAX_WS - 2) % MAX_WS + 1).ToString();
             }
         }
+        Dictionary<string, object> otherMon = null, otherWs = null, warpMon = null, warpWs = null;
         if (otherTarget != null)
             foreach (var m in mons)
                 if (J.Str(m, "id") != J.Str(mon, "id"))
                     foreach (Dictionary<string, object> w in J.Children(m))
-                        if (J.Str(w, "name") == otherTarget && J.Bool(w, "isDisplayed"))
-                        {
-                            foreach (var c in commands) glaze.Command(c);
-                            // Odaklanan pencerenin (yoksa monitörün) ortasına imleci götür
-                            var tw = new List<Dictionary<string, object>>();
-                            J.WindowNodes(w, tw);
-                            Dictionary<string, object> fw = null;
-                            foreach (var x in tw) if (J.Bool(x, "hasFocus")) fw = x;
-                            if (fw == null && tw.Count > 0) fw = tw[0];
-                            if (fw != null) WarpTo(fw);
-                            else Cursor.Position = new Point(J.Int(m, "x") + J.Int(m, "width") / 2, J.Int(m, "y") + J.Int(m, "height") / 2);
-                            Log("slide: hedef diğer monitörde, animasyonsuz");
-                            return;
-                        }
+                        if (J.Str(w, "name") == otherTarget) { otherMon = m; otherWs = w; }
+        if (otherMon != null)
+        {
+            // Workspace, bulunduğu monitörde gösterilir; kayma da orada olmalı. Önceden odaktaki monitörde oynuyordu:
+            // ekran kayıp eski workspace'e dönüyor, hedef yandaki monitörde beliriyordu.
+            Dictionary<string, object> shown = null;
+            foreach (Dictionary<string, object> w in J.Children(otherMon)) if (J.Bool(w, "isDisplayed")) shown = w;
+            if (J.Bool(otherWs, "isDisplayed") || shown == null || commands.Length != 1)
+            {
+                // Zaten orada gösteriliyor (yandaki ekrana geçiş) ya da pencere taşınıp takip ediliyor: animasyonsuz
+                foreach (var c in commands) glaze.Command(c);
+                WarpInto(otherMon, otherWs); // imleç odağın geçtiği monitöre (Hyprland gibi)
+                Log("slide: hedef diğer monitörde, animasyonsuz");
+                return;
+            }
+            mon = otherMon; oldWs = shown; oldName = J.Str(shown, "name");
+            warpMon = otherMon; warpWs = otherWs;
+            Log("slide: hedef diğer monitörde gizli, kayma orada " + oldName + " -> " + otherTarget);
+        }
 
         int mx = J.Int(mon, "x"), my = J.Int(mon, "y"), mw = J.Int(mon, "width"), mh = J.Int(mon, "height");
         int barH = BarPx(mx + mw / 2, my + mh / 2);
@@ -1925,6 +1943,7 @@ class Slider
             foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
             Animating = false;
             Log("fast done " + clock.ElapsedMilliseconds + "ms (animasyon " + dur0 + "ms, bitti " + animEnd + "ms, " + (viaState ? "pencereler hazır" : "komut " + (task.IsCompleted ? "bitti" : "sürüyor")) + ")");
+            if (warpMon != null) WarpInto(warpMon, warpWs); // odak yandaki monitöre geçti
             return;
         }
 
@@ -1990,14 +2009,15 @@ class Slider
         overlay.Conceal(); RingsClear(); PinsClear();
         foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
         Log("done " + clock.ElapsedMilliseconds + "ms new=" + newThumbs.Count);
+        if (warpMon != null) WarpInto(warpMon, warpWs);
     }
 
     // ---- Parmakla kaydırma (dokunmatik yüzey; Hyprland workspace_swipe) ----
     // Workspace parmakla birlikte kayar. İki komşu workspace'in önizlemeleri de baştan hazırlanır: parmak hangi yöne
     // giderse o yan görünür, yön ortada değişebilir. Her dokunma raporunda yalnızca konumlar güncellenir (bekleme
     // yok, DWM kendi hızında birleştirir). Bırakınca yolun %30'unu geçtiyse ya da parmak o yöne hızlıysa geçiş
-    // tamamlanır, değilse geri döner. Komşu: bir önceki / sonraki numara; başka monitörde gösterilen workspace
-    // buraya çekilmez (kenar sayılır). UI thread'inde çalışır (dokunma girdisi de orada gelir).
+    // tamamlanır, değilse geri döner. Komşu: bir önceki / sonraki numara; başka monitördeki workspace
+    // (gizli olsa da) buraya çekilmez (kenar sayılır). UI thread'inde çalışır (dokunma girdisi de orada gelir).
     sealed class SwipeScene
     {
         public string OldName, PrevName, NextName;
@@ -2008,12 +2028,13 @@ class Slider
     SwipeScene swipe;
     public bool Swiping { get { return swipe != null; } }
 
-    static bool DisplayedElsewhere(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string name)
+    // Başka monitördeki workspace (gösterilsin ya da gizli olsun): WM onu kendi monitöründe açar, bu monitörde kaydırılamaz
+    static bool LivesElsewhere(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string name)
     {
         foreach (var m in mons)
             if (J.Str(m, "id") != J.Str(mon, "id"))
                 foreach (Dictionary<string, object> w in J.Children(m))
-                    if (J.Str(w, "name") == name && J.Bool(w, "isDisplayed")) return true;
+                    if (J.Str(w, "name") == name) return true;
         return false;
     }
 
@@ -2035,8 +2056,8 @@ class Slider
         var mon = FocusedMonitor(mons, out oldWs);
         int cur;
         if (mon == null || oldWs == null || !int.TryParse(J.Str(oldWs, "name"), out cur)) return false;
-        string prevName = cur > 1 && !DisplayedElsewhere(mons, mon, (cur - 1).ToString()) ? (cur - 1).ToString() : null;
-        string nextName = cur < MAX_WS && !DisplayedElsewhere(mons, mon, (cur + 1).ToString()) ? (cur + 1).ToString() : null;
+        string prevName = cur > 1 && !LivesElsewhere(mons, mon, (cur - 1).ToString()) ? (cur - 1).ToString() : null;
+        string nextName = cur < MAX_WS && !LivesElsewhere(mons, mon, (cur + 1).ToString()) ? (cur + 1).ToString() : null;
 
         int mx = J.Int(mon, "x"), my = J.Int(mon, "y"), mw = J.Int(mon, "width"), mh = J.Int(mon, "height");
         int barH = BarPx(mx + mw / 2, my + mh / 2);
@@ -4942,6 +4963,7 @@ class Keys2
     {
         Native.ShowWindow(h, 0);
         OverviewSignal("hide");
+        FocusGuard.Kick(); // gizlenen overview önde kalıyordu: boş workspace'te yazılanlar görünmeyen arama kutusuna gidiyordu
     }
 
     public static void ShowOverviewInMode(IntPtr h, string mode)
@@ -7967,6 +7989,88 @@ static class PerfGuard
     }
 }
 
+// ---------------- Odak penceresi ----------------
+// Hyprland'de boş workspace'te klavye hiçbir yere gitmez. Windows'ta ön planda hep bir pencere vardır: tiling boş workspace'te
+// masaüstünü (Progman) odaklıyordu, bu da tutmazsa odak başka workspace'teki gizli pencerede kalıyordu; boş workspace'te
+// yazılan tuşlar görünmeyen tarayıcıya gidiyordu (YouTube'da "i" mini oynatıcıyı açıyordu). Bu pencere görünmez, ekran
+// dışında, tıklanamaz ve tuşları yutar. Tiling boş workspace'te odağı buna verir (sınıf adıyla bulur, yoksa masaüstüne),
+// odak bekçisi de odak gizli bir pencereye düşerse ve workspace boşsa buraya alır.
+static class FocusSink
+{
+    public const string ClassName = "LogicalLunge.FocusSink";
+    public static IntPtr Handle { get { return handle; } }
+    static volatile IntPtr handle;
+    static WndProcDelegate proc; // çöpe gitmesin
+
+    delegate IntPtr WndProcDelegate(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct WNDCLASSEX
+    {
+        public int cbSize; public uint style; public WndProcDelegate lpfnWndProc; public int cbClsExtra, cbWndExtra;
+        public IntPtr hInstance, hIcon, hCursor, hbrBackground; public string lpszMenuName, lpszClassName; public IntPtr hIconSm;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int x, y; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern ushort RegisterClassEx(ref WNDCLASSEX c);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateWindowEx(uint ex, string cls, string title, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr inst, IntPtr param);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr DefWindowProc(IntPtr h, uint msg, IntPtr w, IntPtr l);
+    [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, uint min, uint max);
+    [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
+    [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG m);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+
+    public static void Start()
+    {
+        var t = new Thread(Run) { IsBackground = true, Name = "focus-sink" };
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+    }
+
+    static IntPtr WndProc(IntPtr h, uint msg, IntPtr w, IntPtr l)
+    {
+        switch (msg)
+        {
+            case 0x0100: case 0x0101: case 0x0102: case 0x0103: // WM_KEYDOWN / KEYUP / CHAR / DEADCHAR
+            case 0x0104: case 0x0105: case 0x0106: case 0x0107: // WM_SYSKEYDOWN / SYSKEYUP / SYSCHAR / SYSDEADCHAR
+                return IntPtr.Zero; // yut (Alt+F4 de bu pencereyi kapatmasın)
+            case 0x0010: return IntPtr.Zero; // WM_CLOSE: yalnızca süreçle birlikte gider
+            case 0x0021: return new IntPtr(3); // WM_MOUSEACTIVATE: MA_NOACTIVATE
+        }
+        return DefWindowProc(h, msg, w, l);
+    }
+
+    static void Run()
+    {
+        try
+        {
+            proc = WndProc;
+            var wc = new WNDCLASSEX { cbSize = Marshal.SizeOf(typeof(WNDCLASSEX)), lpfnWndProc = proc, hInstance = GetModuleHandle(null), lpszClassName = ClassName };
+            if (RegisterClassEx(ref wc) == 0) { Slider.Log("odak penceresi: sınıf kaydedilemedi " + Marshal.GetLastWin32Error()); return; }
+            // Ekran dışı 1x1, tamamen saydam, tıklama geçirgen araç penceresi (görev çubuğu / alt-tab / tiling onu görmez)
+            var vs = SystemInformation.VirtualScreen;
+            IntPtr h = CreateWindowEx(0x80 | 0x80000 | 0x20, ClassName, Names.TitlePrefix + " odak", 0x80000000 | 0x10000000,
+                vs.Left - 64, vs.Top - 64, 1, 1, IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
+            if (h == IntPtr.Zero) { Slider.Log("odak penceresi: açılamadı " + Marshal.GetLastWin32Error()); return; }
+            Native.SetLayeredWindowAttributes(h, 0, 0, 0x2);
+            handle = h;
+            MSG m;
+            while (GetMessage(out m, IntPtr.Zero, 0, 0) > 0) { TranslateMessage(ref m); DispatchMessage(ref m); }
+        }
+        catch (Exception ex) { Slider.Log("odak penceresi: " + ex.Message); }
+        handle = IntPtr.Zero;
+    }
+
+    // Klavyeyi bu pencereye ver (boş workspace). Ön plan kilidi için önce kendi sürecimize sahte bir tuş.
+    public static bool Focus()
+    {
+        IntPtr h = handle;
+        if (h == IntPtr.Zero) return false;
+        Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
+        Native.SetForegroundWindow(h);
+        return Native.GetForegroundWindow() == h;
+    }
+}
+
 // ---------------- Odak bekçisi ----------------
 // Hyprland'de odak hiç boşta kalmaz. Windows'ta ise odaktaki pencere kapanınca ya da ekran alıntısı, bir iletişim kutusu,
 // bildirim kapanınca ön plan masaüstüne, bar'a, gizli (başka workspace'teki) bir pencereye ya da hiçbir şeye düşebiliyordu:
@@ -8001,7 +8105,7 @@ static class FocusGuard
                 if (now - lostSince < 750 || now - waitUntil < 0) continue;
                 int r = Refocus(why);
                 if (r > 0) { lostSince = -1; fails = 0; }
-                else if (r == 0) waitUntil = now + 1500;          // boş workspace: masaüstü odağı olağan, arada bir bak
+                else if (r == 0) waitUntil = now + (why == SinkReason ? 5000 : 1500); // boş workspace: arada bir bak
                 else if (++fails >= 3) { waitUntil = now + 15000; fails = 0; Slider.Log("odak bekçisi: odak verilemedi, 15 sn bekleniyor"); }
                 else lostSince = now;
             }
@@ -8035,6 +8139,7 @@ static class FocusGuard
         if (fg == IntPtr.Zero) return "ön plan yok";
         IntPtr root = Native.GetAncestor(fg, 2);
         if (root == IntPtr.Zero) root = fg;
+        if (root == FocusSink.Handle) return SinkReason; // boş workspace'te olağan; workspace doluysa pencereye verilir
         var cls = new StringBuilder(64); Native.GetClassName(root, cls, 64);
         string c = cls.ToString();
         if (c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || c == "Shell_SecondaryTrayWnd") return "masaüstü";
@@ -8055,7 +8160,19 @@ static class FocusGuard
         return null;
     }
 
-    // 1: odak verildi, 0: verilecek pencere yok (boş workspace), -1: verilemedi
+    const string SinkReason = "odak penceresi";
+
+    // Overview kapandı vb.: bekçinin 0,75 sn'lik sabrını beklemeden bak (o arada yazılan tuşlar gizli pencereye gidiyordu)
+    public static void Kick()
+    {
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try { Thread.Sleep(90); string why = Lost(); if (why != null && why != SinkReason) Refocus(why); }
+            catch (Exception ex) { Slider.Log("odak bekçisi: " + ex.GetBaseException().Message); }
+        });
+    }
+
+    // 1: odak verildi, 0: verilecek pencere yok (boş workspace: klavye odak penceresine), -1: verilemedi
     static int Refocus(string why)
     {
         Dictionary<string, object> ws = null;
@@ -8080,7 +8197,12 @@ static class FocusGuard
             if (first == null) first = w;
         }
         var pick = focused ?? under ?? first;
-        if (pick == null) return 0;
+        if (pick == null)
+        {
+            // Boş workspace: tuşlar gizli bir pencereye / masaüstüne gitmesin
+            if (why != SinkReason && FocusSink.Focus()) Slider.Log("odak boştaydı (" + why + "): boş workspace, odak penceresine verildi");
+            return 0;
+        }
         var hw = new IntPtr(Convert.ToInt64(pick["handle"]));
         // Önce tiling üzerinden (durumu da güncel kalsın); o pencereyi zaten odaklı sayıyorsa ön plana getirmeyebilir
         glaze.Command("focus --container-id " + J.Str(pick, "id"));
@@ -8988,6 +9110,7 @@ static class Program
 
         ShellWatchdog.Start();
         TilingWatchdog.Start();
+        FocusSink.Start();
         FocusGuard.Start();
         PerfGuard.Start();
         SelfHeal.WatchUi(ui);

@@ -324,7 +324,13 @@ impl WidgetFactory {
       .transparent(widget_config.transparent)
       .shadow(false)
       .decorations(false)
-      .resizable(widget_config.resizable)
+      // Logical Lunge: never user-resizable (size is set from code). On a
+      // resizable undecorated window, tao and tauri-runtime-wry hit-test
+      // with `hwnd_dpi`, which takes a DC with `GetDC` and never releases
+      // it: with the cursor resting on the bar's top edge the shell leaked
+      // ~9 DCs a second (thousands in an evening) until the desktop was
+      // restarted. `widget_config.resizable` is ignored for that reason.
+      .resizable(false)
       .initialization_script(&self.initialization_script(&state)?)
       // Widgets from the same pack share their browser cache (i.e.
       // `localStorage`, `sessionStorage`, SW cache, etc.).
