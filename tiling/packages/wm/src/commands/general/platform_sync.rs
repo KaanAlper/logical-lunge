@@ -78,11 +78,14 @@ pub fn platform_sync(
     || !state.pending_sync.workspaces_to_reorder().is_empty()
   {
     redraw_containers(&focused_container, state, config)?;
+  }
 
-    #[cfg(target_os = "windows")]
-    if let Err(err) = keep_floating_above_tiling(state) {
-      tracing::warn!("Failed to keep floating windows on top: {}", err);
-    }
+  // After any sync (a click on a tile often only changes focus): no
+  // floating window stays under a tile. Nothing to do without floating
+  // windows on the shown workspaces.
+  #[cfg(target_os = "windows")]
+  if let Err(err) = keep_floating_above_tiling(state) {
+    tracing::warn!("Failed to keep floating windows on top: {}", err);
   }
 
   if state.pending_sync.needs_cursor_jump()
@@ -281,9 +284,31 @@ fn keep_floating_above_tiling(state: &WmState) -> anyhow::Result<()> {
           .is_ok_and(|rect| rect.intersection_area(&float_rect) > 0)
     });
 
-    if covered {
+    if !covered {
+      continue;
+    }
+
+    if float.native().is_controllable() {
       tracing::info!("Raising floating window above tiling: {float}");
-      float.native().set_z_order(&WindowZOrder::Normal)?;
+      if let Err(err) = float.native().set_z_order(&WindowZOrder::Normal) {
+        tracing::warn!("Failed to raise floating window: {}", err);
+      }
+    } else {
+      // A window of an app run as administrator (Task Manager) can't be
+      // raised by a WM that isn't: the tiles above it go right under it.
+      for tile in tiling.iter().filter(|tile| {
+        rank(tile).is_some_and(|tile_rank| tile_rank < float_rank)
+          && tile
+            .to_rect()
+            .is_ok_and(|rect| rect.intersection_area(&float_rect) > 0)
+      }) {
+        if let Err(err) = tile
+          .native()
+          .set_z_order(&WindowZOrder::AfterWindow(float.native().id()))
+        {
+          tracing::warn!("Failed to lower tiling window: {}", err);
+        }
+      }
     }
   }
 
@@ -413,7 +438,10 @@ fn redraw_containers(
     // NOTE: macOS doesn't have a robust public API for setting the z-order
     // of a window. See `NativeWindow::raise` for more details.
     #[cfg(target_os = "windows")]
-    if should_bring_to_front && !windows_to_redraw.contains(window) {
+    if should_bring_to_front
+      && !windows_to_redraw.contains(window)
+      && window.native().is_controllable()
+    {
       tracing::info!("Updating window z-order: {window}");
 
       if let Err(err) = window.native().set_z_order(&z_order) {

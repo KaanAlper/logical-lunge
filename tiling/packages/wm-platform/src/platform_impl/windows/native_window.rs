@@ -553,19 +553,42 @@ impl NativeWindow {
     Ok(())
   }
 
-  /// Implements [`NativeWindowWindowsExt::is_controllable`].
+  /// Implements [`NativeWindowWindowsExt::is_controllable`]. Cached per
+  /// process (a process's level does not change); checked on every redraw.
   pub(crate) fn is_controllable(&self) -> bool {
+    use std::{collections::HashMap, sync::Mutex};
+
+    static CACHE: Mutex<Option<HashMap<u32, bool>>> = Mutex::new(None);
+
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(self.hwnd(), Some(&raw mut pid)) };
+    if pid == 0 {
+      return true;
+    }
+    if let Ok(cache) = CACHE.lock() {
+      if let Some(known) = cache.as_ref().and_then(|c| c.get(&pid)) {
+        return *known;
+      }
+    }
+    let controllable = Self::process_controllable(pid);
+    if let Ok(mut cache) = CACHE.lock() {
+      let map = cache.get_or_insert_with(HashMap::new);
+      // pids are reused: keep it small
+      if map.len() > 256 {
+        map.clear();
+      }
+      map.insert(pid, controllable);
+    }
+    controllable
+  }
+
+  fn process_controllable(pid: u32) -> bool {
     use windows::Win32::{
       Security::TOKEN_QUERY,
       System::Threading::OpenProcessToken,
     };
 
     let ours = own_integrity();
-    let mut pid = 0u32;
-    unsafe { GetWindowThreadProcessId(self.hwnd(), Some(&raw mut pid)) };
-    if pid == 0 {
-      return true;
-    }
     // unknown: assume yes (as before this check existed)
     let Ok(process) = (unsafe {
       OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
