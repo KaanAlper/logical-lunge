@@ -32,12 +32,23 @@ pub fn manage_window(
     return Ok(());
   };
 
+  // Logical Lunge: a window this process may not move (an app run as
+  // administrator while the WM is not) gets no tile: its tile stayed empty
+  // while the window sat elsewhere, minimized or not.
+  #[cfg(target_os = "windows")]
+  let controllable = {
+    use wm_platform::NativeWindowWindowsExt;
+    native_window.is_controllable()
+  };
+  #[cfg(not(target_os = "windows"))]
+  let controllable = true;
+
   // Logical Lunge: an open window is never "minimized" in the layout (on
   // startup, windows left minimized by an app or before a restart). It is
   // managed like a shown one, with the frame it had before minimizing, and
   // the platform sync shows it again in its place without taking focus.
   #[cfg(target_os = "windows")]
-  if native_properties.is_minimized {
+  if native_properties.is_minimized && controllable {
     use wm_platform::NativeWindowWindowsExt;
     if let Ok(frame) = native_window.restored_frame() {
       native_properties.frame = frame;
@@ -55,6 +66,7 @@ pub fn manage_window(
     native_window,
     native_properties,
     target_parent,
+    controllable,
     state,
     config
   ));
@@ -217,6 +229,7 @@ fn create_window(
   native_window: NativeWindow,
   native_properties: NativeWindowProperties,
   target_parent: Option<Container>,
+  controllable: bool,
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<WindowContainer> {
@@ -229,8 +242,15 @@ fn create_window(
     .context("No nearest workspace.")?;
 
   let gaps_config = config.value.gaps.clone();
-  let window_state =
-    window_state_to_create(&native_properties, &nearest_monitor, config)?;
+  let window_state = if controllable {
+    window_state_to_create(&native_properties, &nearest_monitor, config)?
+  } else if native_properties.is_minimized {
+    WindowState::Minimized
+  } else {
+    WindowState::Floating(
+      config.value.window_behavior.state_defaults.floating.clone(),
+    )
+  };
 
   // Attach the new window as the first child of the target parent (if
   // provided), otherwise, add as a sibling of the focused container.
@@ -254,7 +274,8 @@ fn create_window(
   // the center of the workspace.
   let is_same_workspace = nearest_workspace.id() == target_workspace.id();
   let floating_placement = {
-    let placement = if !is_same_workspace || prefers_centered {
+    // a window we may not move is floating where it already is
+    let placement = if controllable && (!is_same_workspace || prefers_centered) {
       native_properties
         .frame
         .translate_to_center(&target_workspace.to_rect()?)

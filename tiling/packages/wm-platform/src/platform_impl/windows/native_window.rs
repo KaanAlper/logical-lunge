@@ -553,6 +553,37 @@ impl NativeWindow {
     Ok(())
   }
 
+  /// Implements [`NativeWindowWindowsExt::is_controllable`].
+  pub(crate) fn is_controllable(&self) -> bool {
+    use windows::Win32::{
+      Security::TOKEN_QUERY,
+      System::Threading::OpenProcessToken,
+    };
+
+    let ours = own_integrity();
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(self.hwnd(), Some(&raw mut pid)) };
+    if pid == 0 {
+      return true;
+    }
+    // unknown: assume yes (as before this check existed)
+    let Ok(process) = (unsafe {
+      OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+    }) else {
+      return true;
+    };
+    let mut token = HANDLE::default();
+    let opened = unsafe { OpenProcessToken(process, TOKEN_QUERY, &raw mut token) };
+    let _ = unsafe { CloseHandle(process) };
+    if opened.is_err() {
+      // a token we may not read belongs to a higher level
+      return ours >= INTEGRITY_HIGH;
+    }
+    let level = token_integrity(token);
+    let _ = unsafe { CloseHandle(token) };
+    level.map_or(true, |level| level <= ours)
+  }
+
   /// Implements [`NativeWindowWindowsExt::restored_frame`].
   pub(crate) fn restored_frame(&self) -> crate::Result<Rect> {
     let mut placement = WINDOWPLACEMENT {
@@ -901,4 +932,60 @@ fn pack_slot(a: i32, b: i32) -> isize {
   {
     packed as isize
   }
+}
+
+const INTEGRITY_MEDIUM: u32 = 0x2000;
+const INTEGRITY_HIGH: u32 = 0x3000;
+
+/// Integrity level of a token (Low 0x1000, Medium 0x2000, High 0x3000,
+/// System 0x4000).
+fn token_integrity(token: HANDLE) -> Option<u32> {
+  use windows::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation,
+    TokenIntegrityLevel, TOKEN_MANDATORY_LABEL,
+  };
+
+  unsafe {
+    let mut len = 0u32;
+    let _ = GetTokenInformation(token, TokenIntegrityLevel, None, 0, &raw mut len);
+    if len == 0 {
+      return None;
+    }
+    let mut buf = vec![0u8; len as usize];
+    GetTokenInformation(
+      token,
+      TokenIntegrityLevel,
+      Some(buf.as_mut_ptr().cast()),
+      len,
+      &raw mut len,
+    )
+    .ok()?;
+    let label = &*(buf.as_ptr().cast::<TOKEN_MANDATORY_LABEL>());
+    let sid = label.Label.Sid;
+    let count = *GetSidSubAuthorityCount(sid);
+    if count == 0 {
+      return None;
+    }
+    Some(*GetSidSubAuthority(sid, u32::from(count - 1)))
+  }
+}
+
+/// This process's integrity level (read once).
+fn own_integrity() -> u32 {
+  use std::sync::OnceLock;
+  use windows::Win32::{
+    Security::TOKEN_QUERY,
+    System::Threading::{GetCurrentProcess, OpenProcessToken},
+  };
+
+  static LEVEL: OnceLock<u32> = OnceLock::new();
+  *LEVEL.get_or_init(|| unsafe {
+    let mut token = HANDLE::default();
+    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw mut token).is_err() {
+      return INTEGRITY_MEDIUM;
+    }
+    let level = token_integrity(token).unwrap_or(INTEGRITY_MEDIUM);
+    let _ = CloseHandle(token);
+    level
+  })
 }

@@ -37,6 +37,10 @@ pub fn handle_window_minimized(
     #[cfg(target_os = "windows")]
     if is_minimized
       && matches!(window.state(), WindowState::Tiling | WindowState::Floating(_))
+      && {
+        use wm_platform::NativeWindowWindowsExt;
+        window.native().is_controllable()
+      }
     {
       use wm_platform::NativeWindowWindowsExt;
 

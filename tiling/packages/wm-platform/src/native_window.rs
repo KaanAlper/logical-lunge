@@ -296,6 +296,15 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn restored_frame(&self) -> crate::Result<Rect>;
 
+  /// Whether this process may move, show and minimize the window. Windows
+  /// (UIPI) refuses that for a window of a process at a higher integrity
+  /// level: an app run as administrator while the WM is not.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_controllable(&self) -> bool;
+
   /// Logical Lunge: publishes the window's slot in the layout (its visible
   /// frame, screen coordinates) as window properties. The core cuts a window
   /// that stays bigger than its slot (a minimum size) to it, and the border
@@ -432,6 +441,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn restored_frame(&self) -> crate::Result<Rect> {
     self.inner.restored_frame()
+  }
+
+  fn is_controllable(&self) -> bool {
+    self.inner.is_controllable()
   }
 
   fn set_slot(&self, slot: Option<&Rect>) -> crate::Result<()> {
