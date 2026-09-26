@@ -1,21 +1,21 @@
 // Logical Lunge: only the providers the shell uses (disk, ip, keyboard,
 // komorebi and weather were removed).
 #[cfg(windows)]
-mod audio;
-mod battery;
-mod cpu;
+pub mod audio;
+pub mod battery;
+pub mod cpu;
 mod host;
 #[cfg(windows)]
-mod media;
-mod memory;
-mod network;
+pub mod media;
+pub mod memory;
+pub mod network;
 mod provider;
 mod provider_config;
 mod provider_function;
 mod provider_manager;
 mod provider_output;
 #[cfg(windows)]
-mod systray;
+pub mod systray;
 
 pub use provider::*;
 pub use provider_config::*;

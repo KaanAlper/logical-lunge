@@ -36,6 +36,8 @@ mod cli;
 mod commands;
 mod common;
 mod monitor_state;
+#[cfg(windows)]
+mod native_bar;
 mod providers;
 mod shell_state;
 mod widget_factory;
@@ -181,13 +183,21 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
   ));
   app.manage(widget_factory.clone());
 
+  // Logical Lunge: `LL_NATIVE_BAR=demo` runs only the native bar, as a
+  // second instance next to the running shell (for testing): no single
+  // instance handoff, no asset server, no web widgets.
+  let native_bar = std::env::var("LL_NATIVE_BAR").unwrap_or_default();
+  let demo = native_bar == "demo";
+
   // If this is not the first instance of the app, this will emit within
   // the original instance and exit immediately. The CLI command is
   // guaranteed to be one of the open commands here.
-  setup_single_instance(app, widget_factory.clone())?;
+  if !demo {
+    setup_single_instance(app, widget_factory.clone())?;
 
-  // Start the asset server.
-  setup_asset_server().await?;
+    // Start the asset server.
+    setup_asset_server().await?;
+  }
 
   // Prevent windows from showing up in the dock on MacOS.
   #[cfg(target_os = "macos")]
@@ -206,8 +216,21 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
   let (manager, emit_rx) = ProviderManager::new(app.handle());
   app.manage(manager.clone());
 
+  #[cfg(windows)]
+  if demo || native_bar == "on" {
+    let pack_dir = app_settings.config_dir.join("logical-lunge");
+    if let Err(err) = native_bar::start(
+      manager.clone(),
+      native_bar::Options { pack_dir, demo },
+    ) {
+      error!("Native bar: {:?}", err);
+    }
+  }
+
   // Open widgets based on CLI command.
-  open_widgets_by_cli_command(cli, widget_factory.clone()).await?;
+  if !demo {
+    open_widgets_by_cli_command(cli, widget_factory.clone()).await?;
+  }
 
   // Logical Lunge: no tray icon, widget manager / settings window or
   // marketplace -- the shell starts its own widget pack and is the only UI.
@@ -248,6 +271,8 @@ fn listen_events(
         },
         Some(provider_emission) = emit_rx.recv() => {
           info!("Provider emission: {:?}", provider_emission);
+          #[cfg(windows)]
+          native_bar::forward(&provider_emission);
           let _ = app_handle.emit("provider-emit", provider_emission.clone());
           manager.update_cache(provider_emission).await;
           Ok(())
