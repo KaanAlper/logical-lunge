@@ -170,10 +170,20 @@ impl Icons {
     (None, None)
   }
 
+  /// Device-bound bitmaps die with the graphics device.
+  pub fn clear_bitmaps(&mut self) {
+    self.bitmaps.clear();
+  }
+
   /// The core answered for a window (None: it had none; asked again later).
   pub fn set_win_icon(&mut self, handle: i64, png: Option<Vec<u8>>) {
     match png {
       Some(b) => {
+        // closed windows' icons do not pile up over a long session
+        if self.win_icons.len() > 200 {
+          self.win_icons.clear();
+          self.bitmaps.retain(|k, _| !k.starts_with("win:"));
+        }
         self.win_icons.insert(handle, b);
       }
       None => {

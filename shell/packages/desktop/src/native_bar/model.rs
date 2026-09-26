@@ -140,6 +140,34 @@ impl Model {
     self.systray.as_ref().map_or(0, |s| s.icons.len())
   }
 
+  /// Everything the bar draws, as it is drawn (rounded like the labels): two
+  /// equal keys paint the same pixels.
+  pub fn visible_key(&self) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    format!("{:?}", self.wm).hash(&mut h);
+    self.cpu.as_ref().map(|c| c.usage.round() as i32).hash(&mut h);
+    self
+      .memory
+      .as_ref()
+      .map(|m| {
+        let swap = if m.total_swap > 0 { (m.used_swap as f64 / m.total_swap as f64 * 100.0).round() as i32 } else { -1 };
+        (m.usage.round() as i32, swap)
+      })
+      .hash(&mut h);
+    self.battery.as_ref().map(|b| (b.charge_percent.round() as i32, b.is_charging)).hash(&mut h);
+    self.network_icon().hash(&mut h);
+    (self.volume_muted(), self.mic_muted()).hash(&mut h);
+    // the ring is ~60 px round: finer steps are invisible
+    self.media_title().map(|(t, p, playing)| (t, (p * 240.0) as i32, playing)).hash(&mut h);
+    for ic in self.pinned_icons() {
+      (&ic.id, &ic.icon_hash).hash(&mut h);
+    }
+    self.tray_count().hash(&mut h);
+    (&self.time, &self.date, self.light, &self.pins).hash(&mut h);
+    h.finish()
+  }
+
   pub fn pinned_icons(&self) -> Vec<&SystrayOutputIcon> {
     let (Some(tray), Some(pins)) = (&self.systray, &self.pins) else { return Vec::new() };
     pins.iter().filter_map(|k| tray.icons.iter().find(|ic| &pin_key(ic) == k)).collect()

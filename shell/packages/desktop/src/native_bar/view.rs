@@ -136,6 +136,8 @@ pub struct Frame {
   pub ws_track: Rect,
   /// First workspace shown (pages of 10).
   pub ws_base: u32,
+  /// Focused workspace's slot (None: window manager not connected).
+  pub ws_idx: Option<usize>,
 }
 
 impl Frame {
@@ -481,7 +483,7 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
   p.fill_round(ws_group, GROUP_R, t.layer1)?;
   let track = Rect::new(x + 3.0, gy + (GROUP_H - WS) / 2.0, track_w, WS);
   f.ws_track = track;
-  workspaces(p, m, t, track, hover, &mut f)?;
+  workspaces(p, m, t, track, &mut f)?;
   x += track_w + 6.0 + 4.0;
 
   // right side group: clock, utils, battery
@@ -614,41 +616,66 @@ fn media(p: &mut Painter, m: &Model, t: &Theme, r: Rect) -> anyhow::Result<()> {
   Ok(())
 }
 
-/// ii Workspaces.qml: merged occupied background, active pill, app icons / dots.
-fn workspaces(p: &mut Painter, m: &Model, t: &Theme, track: Rect, hover: Option<&HitKind>, f: &mut Frame) -> anyhow::Result<()> {
+/// (first workspace shown, index of the focused one) -- pages of 10.
+fn ws_page(m: &Model) -> (u32, usize) {
   let current: u32 = m.wm.focused_workspace().and_then(|w| w.name.parse().ok()).unwrap_or(1).max(1);
   let base = (current - 1) / SHOWN as u32 * SHOWN as u32;
-  f.ws_base = base;
-  let idx = (current - base - 1) as usize;
-  let occupied: Vec<bool> = (0..SHOWN)
+  (base, (current - base - 1) as usize)
+}
+
+fn occupied(m: &Model, base: u32) -> Vec<bool> {
+  (0..SHOWN)
     .map(|i| {
       let n = (base + i as u32 + 1).to_string();
       m.wm.all_workspaces().any(|w| w.name == n && w.biggest.is_some())
     })
-    .collect();
+    .collect()
+}
 
-  // occupied runs
+/// ii Workspaces.qml, bottom layer: the merged "occupied" background. The
+/// active pill is its own visual (animated in the compositor) and the icons /
+/// dots are a layer above it (`paint_ws`).
+fn workspaces(p: &mut Painter, m: &Model, t: &Theme, track: Rect, f: &mut Frame) -> anyhow::Result<()> {
+  let (base, idx) = ws_page(m);
+  f.ws_base = base;
+  f.ws_idx = m.wm.connected.then_some(idx);
+  let occ = occupied(m, base);
   let mut i = 0;
   while i < SHOWN {
-    if !occupied[i] {
+    if !occ[i] {
       i += 1;
       continue;
     }
     let start = i;
-    while i + 1 < SHOWN && occupied[i + 1] {
+    while i + 1 < SHOWN && occ[i + 1] {
       i += 1;
     }
     let r = Rect::new(track.x + start as f32 * WS, track.y, (i - start + 1) as f32 * WS, WS);
     p.fill_round(r, WS / 2.0, t.occupied)?;
     i += 1;
   }
-  if m.wm.connected {
-    let r = Rect::new(track.x + idx as f32 * WS + MARGIN, track.y + MARGIN, WS - 2.0 * MARGIN, WS - 2.0 * MARGIN);
-    p.fill_round(r, r.h / 2.0, t.primary)?;
+  for i in 0..SHOWN {
+    let cell = Rect::new(track.x + i as f32 * WS, track.y, WS, WS);
+    f.hits.push(Hit { rect: cell, kind: HitKind::Workspace(base + i as u32 + 1) });
   }
+  Ok(())
+}
+
+/// Workspace track size in DIPs (the layers above the bar are this big).
+pub const TRACK_W: f32 = SHOWN as f32 * WS;
+pub const TRACK_H: f32 = WS;
+pub const PILL: f32 = WS - 2.0 * MARGIN;
+pub const PILL_MARGIN: f32 = MARGIN;
+pub const CELL: f32 = WS;
+
+/// Top layer of the workspaces, in track coordinates: hover, app icons / dots.
+pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>) -> anyhow::Result<()> {
+  let (base, idx) = ws_page(m);
+  let occ = occupied(m, base);
+  let active = |i: usize| m.wm.connected && i == idx;
   for i in 0..SHOWN {
     let n = base + i as u32 + 1;
-    let cell = Rect::new(track.x + i as f32 * WS, track.y, WS, WS);
+    let cell = Rect::new(i as f32 * WS, 0.0, WS, WS);
     let (cx, cy) = (cell.x + WS / 2.0, cell.y + WS / 2.0);
     if hover == Some(&HitKind::Workspace(n)) {
       p.fill_round(cell.inset(2.0, 2.0), WS, t.primary.alpha(0.10))?;
@@ -662,23 +689,21 @@ fn workspaces(p: &mut Painter, m: &Model, t: &Theme, track: Rect, hover: Option<
         p.requests.push(h);
       }
       if let Some(bmp) = bmp {
-        let active = i == idx;
-        let d = if active { 18.0 * 1.05 } else { 18.0 };
-        p.image_circle(&bmp, cx, cy, d, if active { None } else { Some(0.7) })?;
+        let d = if active(i) { 18.0 * 1.05 } else { 18.0 };
+        p.image_circle(&bmp, cx, cy, d, if active(i) { None } else { Some(0.7) })?;
         drawn = true;
       }
     }
     if !drawn {
-      let c = if i == idx {
+      let c = if active(i) {
         t.on_primary
-      } else if occupied[i] {
+      } else if occ[i] {
         t.on_sec_container
       } else {
         t.inactive
       };
       p.fill_circle(cx, cy, 4.7 / 2.0, c)?;
     }
-    f.hits.push(Hit { rect: cell, kind: HitKind::Workspace(n) });
   }
   Ok(())
 }

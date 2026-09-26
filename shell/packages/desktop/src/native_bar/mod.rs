@@ -5,6 +5,7 @@
 //! shell's providers (forwarded from main.rs) and from the window manager's
 //! IPC; actions go to the providers, the window manager and the core.
 
+mod anim;
 mod brightness;
 mod core_api;
 mod fonts;
@@ -32,7 +33,9 @@ use windows::{
   Win32::{
     Foundation::{BOOL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::{
-      DirectComposition::{IDCompositionSurface, IDCompositionTarget, IDCompositionVisual2},
+      DirectComposition::{
+        IDCompositionRectangleClip, IDCompositionSurface, IDCompositionTarget, IDCompositionVisual2,
+      },
       Gdi::{EnumDisplayMonitors, GetMonitorInfoW, ScreenToClient, HDC, HMONITOR, MONITORINFOEXW},
     },
     System::{
@@ -52,9 +55,10 @@ use windows::{
 };
 
 use self::{
+  anim::{Animated, OUT_SINE},
   brightness::{Display, Step},
   fonts::Fonts,
-  gfx::Gfx,
+  gfx::{Gfx, Rgba},
   icons::Icons,
   model::{pin_key, Model},
   view::{HitKind, OsdKind, Painter, Res},
@@ -71,7 +75,10 @@ const WM_APP_REBUILD: u32 = WM_APP + 2;
 const TIMER_CLOCK: usize = 1;
 const TIMER_REBUILD: usize = 2;
 const TIMER_OSD: usize = 3;
-const TIMER_BRIGHTNESS: usize = 4;
+const TIMER_ALIVE: usize = 4;
+const TIMER_RECOVER: usize = 5;
+/// demo only (`LL_NATIVE_BAR_CYCLE=1`): fakes workspace switches to measure the pill animation
+const TIMER_CYCLE: usize = 6;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -164,6 +171,23 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
   Ok(())
 }
 
+/// A DirectComposition visual with its own surface.
+struct Layer {
+  visual: IDCompositionVisual2,
+  surface: IDCompositionSurface,
+}
+
+impl Layer {
+  fn new(gfx: &Gfx, w: u32, h: u32) -> windows::core::Result<Self> {
+    unsafe {
+      let visual = gfx.dcomp.CreateVisual()?;
+      let surface = gfx.surface(w, h)?;
+      visual.SetContent(&surface)?;
+      Ok(Self { visual, surface })
+    }
+  }
+}
+
 struct Bar {
   hwnd: HWND,
   /// `\\.\DISPLAY1`
@@ -172,8 +196,21 @@ struct Bar {
   scale: f32,
   width: f32,
   _target: IDCompositionTarget,
-  _visual: IDCompositionVisual2,
-  surface: IDCompositionSurface,
+  _root: IDCompositionVisual2,
+  /// everything but the workspace pill and icons
+  bg: Layer,
+  /// the active workspace pill: a primary-coloured strip cut by `pill_clip`,
+  /// whose edges the compositor animates (ii: leading edge 100 ms, trailing 300 ms)
+  pill: Layer,
+  pill_clip: IDCompositionRectangleClip,
+  pill_left: Animated,
+  pill_right: Animated,
+  pill_color: Option<Rgba>,
+  pill_idx: Option<usize>,
+  /// workspace icons / dots above the pill
+  fg: Layer,
+  /// this bar's "alive" id for the core's watchdog
+  alive_id: String,
   frame: view::Frame,
   hover: Option<HitKind>,
   hover_left: bool,
@@ -185,8 +222,7 @@ struct OsdWin {
   hwnd: HWND,
   scale: f32,
   _target: IDCompositionTarget,
-  _visual: IDCompositionVisual2,
-  surface: IDCompositionSurface,
+  layer: Layer,
 }
 
 struct Ui {
@@ -211,6 +247,10 @@ struct Ui {
   volume_wheel: Option<(String, Instant)>,
   last_volume: Option<(u32, bool)>,
   last_mic: Option<bool>,
+  /// what the bars showed last (skip repaints that would draw the same)
+  last_key: u64,
+  /// device loss: recovery attempts in a row
+  recover_tries: u32,
 }
 
 thread_local! {
@@ -295,6 +335,8 @@ fn ui_thread(
         volume_wheel: None,
         last_volume: None,
         last_mic: None,
+        last_key: 0,
+        recover_tries: 0,
       })
     });
     WAKE.store(msg_hwnd.0 as isize, Ordering::Release);
@@ -303,7 +345,11 @@ fn ui_thread(
       ui.drain();
     });
     SetTimer(msg_hwnd, TIMER_CLOCK, ms_to_next_minute(), None);
-    SetTimer(msg_hwnd, TIMER_BRIGHTNESS, 30_000, None);
+    if !opts.demo {
+      SetTimer(msg_hwnd, TIMER_ALIVE, 30_000, None);
+    } else if std::env::var_os("LL_NATIVE_BAR_CYCLE").is_some() {
+      SetTimer(msg_hwnd, TIMER_CYCLE, 1500, None);
+    }
 
     let mut msg = MSG::default();
     while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -384,13 +430,13 @@ impl Ui {
             }
           }
         }
-        WM_TIMER if wp.0 == TIMER_BRIGHTNESS => {
-          // changed elsewhere (another app, the monitor's buttons): stay current
-          for d in self.displays.values() {
-            if d.last_set.elapsed() > Duration::from_secs(5) {
-              d.read(|u| send(Msg::Display(u)));
-            }
+        WM_TIMER if wp.0 == TIMER_ALIVE => self.alive(),
+        WM_TIMER if wp.0 == TIMER_CYCLE => self.fake_switch(),
+        WM_TIMER if wp.0 == TIMER_RECOVER => {
+          unsafe {
+            let _ = KillTimer(self.msg_hwnd, TIMER_RECOVER);
           }
+          self.recover();
         }
         WM_APP_REBUILD => {
           // monitors / DPI change in bursts: rebuild once they settle
@@ -456,9 +502,12 @@ impl Ui {
   }
 
   fn drain(&mut self) {
-    let mut changed = false;
+    // icons arriving must repaint even when the data did not change
+    let mut force = false;
     while let Ok(msg) = self.rx.try_recv() {
-      changed = true;
+      if matches!(msg, Msg::Apps(_) | Msg::WinIcon(..)) {
+        force = true;
+      }
       match msg {
         Msg::Provider(e) => {
           if let Ok(output) = e.result {
@@ -493,8 +542,35 @@ impl Ui {
         },
       }
     }
-    if changed {
+    // providers report every few seconds; most reports change nothing visible
+    // (CPU 12.3 % -> 12.4 % still reads 12): those draw nothing
+    let key = self.model.visible_key();
+    if force || key != self.last_key {
+      self.last_key = key;
       self.redraw_all();
+    }
+  }
+
+  /// Demo only: moves the focus 1 -> 4 -> 2 -> 6 -> 1 without touching the WM.
+  fn fake_switch(&mut self) {
+    let order = ["1", "4", "2", "6"];
+    let Some(mon) = self.model.wm.monitors.iter_mut().find(|m| m.has_focus) else { return };
+    let cur = mon.workspaces.iter().find(|w| w.has_focus).map(|w| w.name.clone()).unwrap_or_default();
+    let next = order[(order.iter().position(|n| *n == cur).map_or(0, |i| i + 1)) % order.len()];
+    for w in mon.workspaces.iter_mut() {
+      w.has_focus = w.name == next;
+    }
+    if !mon.workspaces.iter().any(|w| w.name == next) {
+      mon.workspaces.push(wm::WmWorkspace { name: next.into(), has_focus: true, ..Default::default() });
+    }
+    self.redraw_all();
+  }
+
+  /// The core restarts the shell when fewer bars say "alive" than there are
+  /// bar windows: sent from this (UI) thread, a hung bar goes quiet.
+  fn alive(&self) {
+    for b in &self.bars {
+      core_api::post_async(format!("/bar-alive?id={}", b.alive_id));
     }
   }
 
@@ -603,11 +679,37 @@ impl Ui {
         None,
       )?;
       let target = self.gfx.dcomp.CreateTargetForHwnd(hwnd, true)?;
-      let visual = self.gfx.dcomp.CreateVisual()?;
-      let surface = self.gfx.surface(w as u32, h as u32)?;
-      visual.SetContent(&surface)?;
-      target.SetRoot(&visual)?;
+      let root = self.gfx.dcomp.CreateVisual()?;
+      let px = |dip: f32| (dip * scale).round().max(1.0) as u32;
+      let bg = Layer::new(&self.gfx, w as u32, h as u32)?;
+      let pill = Layer::new(&self.gfx, px(view::TRACK_W), px(view::PILL))?;
+      let fg = Layer::new(&self.gfx, px(view::TRACK_W), px(view::TRACK_H))?;
+      let pill_clip = self.gfx.dcomp.CreateRectangleClip()?;
+      let radius = view::PILL / 2.0 * scale;
+      pill_clip.SetTop2(0.0)?;
+      pill_clip.SetBottom2(view::PILL * scale)?;
+      pill_clip.SetLeft2(0.0)?;
+      pill_clip.SetRight2(0.0)?;
+      pill_clip.SetTopLeftRadiusX2(radius)?;
+      pill_clip.SetTopLeftRadiusY2(radius)?;
+      pill_clip.SetTopRightRadiusX2(radius)?;
+      pill_clip.SetTopRightRadiusY2(radius)?;
+      pill_clip.SetBottomLeftRadiusX2(radius)?;
+      pill_clip.SetBottomLeftRadiusY2(radius)?;
+      pill_clip.SetBottomRightRadiusX2(radius)?;
+      pill_clip.SetBottomRightRadiusY2(radius)?;
+      pill.visual.SetClip(&pill_clip)?;
+      // with no reference visual, insertAbove = FALSE puts the child on top
+      // (TRUE would put it at the bottom): bg, then the pill, then the icons
+      for layer in [&bg, &pill, &fg] {
+        root.AddVisual(&layer.visual, false, None)?;
+      }
+      target.SetRoot(&root)?;
       let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+      let alive_id = uuid::Uuid::new_v4().to_string();
+      if !self.demo {
+        core_api::post_async(format!("/bar-alive?id={}", alive_id));
+      }
       Ok(Bar {
         hwnd,
         device: monitor_device(mon),
@@ -615,8 +717,16 @@ impl Ui {
         scale,
         width: w as f32 / scale,
         _target: target,
-        _visual: visual,
-        surface,
+        _root: root,
+        bg,
+        pill,
+        pill_clip,
+        pill_left: Animated::new(0.0),
+        pill_right: Animated::new(0.0),
+        pill_color: None,
+        pill_idx: None,
+        fg,
+        alive_id,
         frame: view::Frame::default(),
         hover: None,
         hover_left: false,
@@ -635,29 +745,92 @@ impl Ui {
   }
 
   fn redraw(&mut self, i: usize) {
+    if let Err(err) = self.redraw_inner(i) {
+      if device_lost(&err) {
+        tracing::warn!("Native bar: graphics device lost ({:?}), rebuilding", err);
+        unsafe { SetTimer(self.msg_hwnd, TIMER_RECOVER, 50, None) };
+      } else {
+        tracing::warn!("Native bar draw: {:?}", err);
+      }
+    }
+  }
+
+  fn redraw_inner(&mut self, i: usize) -> windows::core::Result<()> {
     let theme = self.theme();
     let mut requests = Vec::new();
     {
       let Ui { gfx, fonts, res, icons, model, bars, .. } = self;
       let bar = &mut bars[i];
+      let s = bar.scale;
       let mut frame = None;
-      let res = gfx::draw_surface(&bar.surface, bar.scale, |dc| {
+      gfx::draw_surface(&bar.bg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
         match view::paint(&mut p, model, theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
           Ok(f) => frame = Some(f),
           Err(err) => tracing::warn!("Native bar paint: {:?}", err),
         }
         Ok(())
-      });
-      if let Err(err) = res {
-        tracing::warn!("Native bar draw: {:?}", err);
-      }
+      })?;
       if let Some(f) = frame {
         bar.frame = f;
       }
+      let track = bar.frame.ws_track;
       unsafe {
-        let _ = gfx.dcomp.Commit();
+        bar.fg.visual.SetOffsetX2((track.x * s).round())?;
+        bar.fg.visual.SetOffsetY2((track.y * s).round())?;
+        bar.pill.visual.SetOffsetX2((track.x * s).round())?;
+        bar.pill.visual.SetOffsetY2(((track.y + view::PILL_MARGIN) * s).round())?;
       }
+      gfx::draw_surface(&bar.fg.surface, s, |dc| {
+        let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
+        if let Err(err) = view::paint_ws(&mut p, model, theme, bar.hover.as_ref()) {
+          tracing::warn!("Native bar paint (workspaces): {:?}", err);
+        }
+        Ok(())
+      })?;
+
+      // the pill: repaint its colour only when the theme changes
+      if bar.pill_color != Some(theme.primary) {
+        let color = theme.primary;
+        gfx::draw_surface(&bar.pill.surface, s, |dc| unsafe {
+          let brush = gfx.brush(color)?;
+          dc.FillRectangle(&gfx::Rect::new(0.0, 0.0, view::TRACK_W, view::PILL).d2d(), &brush);
+          Ok(())
+        })?;
+        bar.pill_color = Some(color);
+      }
+      let idx = bar.frame.ws_idx;
+      if idx != bar.pill_idx {
+        let (left, right) = match idx {
+          Some(k) => {
+            let l = (k as f32 * view::CELL + view::PILL_MARGIN) * s;
+            (l, l + view::PILL * s)
+          }
+          None => (0.0, 0.0),
+        };
+        match (bar.pill_idx, idx) {
+          // first position, or the WM (dis)connected: no animation
+          (None, _) | (_, None) => unsafe {
+            bar.pill_left.set(left);
+            bar.pill_right.set(right);
+            bar.pill_clip.SetLeft2(left)?;
+            bar.pill_clip.SetRight2(right)?;
+          },
+          (Some(old), Some(new)) => {
+            // ii AnimatedTabIndexPair: the edge in front moves in 100 ms, the one behind in 300 ms
+            let forward = new > old;
+            let (left_ms, right_ms) = if forward { (300.0, 100.0) } else { (100.0, 300.0) };
+            if let Some(a) = bar.pill_left.to(&gfx.dcomp, left, left_ms, OUT_SINE)? {
+              unsafe { bar.pill_clip.SetLeft(&a)? };
+            }
+            if let Some(a) = bar.pill_right.to(&gfx.dcomp, right, right_ms, OUT_SINE)? {
+              unsafe { bar.pill_clip.SetRight(&a)? };
+            }
+          }
+        }
+        bar.pill_idx = idx;
+      }
+      unsafe { gfx.dcomp.Commit()? };
     }
     for h in requests {
       // the window's own icon (Git Bash, game clients, installers); asked
@@ -672,6 +845,33 @@ impl Ui {
         }
         send(Msg::WinIcon(h, png));
       });
+    }
+    Ok(())
+  }
+
+  /// The graphics device went away (driver update / reset, GPU removed):
+  /// new device, new windows, same state. Retries with a growing pause.
+  fn recover(&mut self) {
+    match Gfx::new().and_then(|g| Res::new(&g).map(|r| (g, r))) {
+      Ok((gfx, res)) => {
+        tracing::info!("Native bar: graphics device rebuilt ({})", if gfx.warp { "WARP" } else { "GPU" });
+        self.gfx = gfx;
+        self.res = res;
+        self.icons.clear_bitmaps();
+        if let Some(o) = self.osd.take() {
+          unsafe {
+            let _ = DestroyWindow(o.hwnd);
+          }
+        }
+        self.recover_tries = 0;
+        self.create_bars();
+      }
+      Err(err) => {
+        self.recover_tries += 1;
+        let wait = (500 * self.recover_tries).min(10_000);
+        tracing::warn!("Native bar: device rebuild failed ({:?}), again in {} ms", err, wait);
+        unsafe { SetTimer(self.msg_hwnd, TIMER_RECOVER, wait, None) };
+      }
     }
   }
 
@@ -714,14 +914,17 @@ impl Ui {
     let Ui { gfx, fonts, res, icons, model, osd, .. } = self;
     let Some(osd) = osd else { return };
     let mut requests = Vec::new();
-    let drawn = gfx::draw_surface(&osd.surface, scale, |dc| {
+    let drawn = gfx::draw_surface(&osd.layer.surface, scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
       if let Err(err) = view::paint_osd(&mut p, model, theme, kind, value) {
         tracing::warn!("Native bar OSD paint: {:?}", err);
       }
       Ok(())
     });
-    if drawn.is_err() {
+    if let Err(err) = drawn {
+      if device_lost(&err) {
+        unsafe { SetTimer(self.msg_hwnd, TIMER_RECOVER, 50, None) };
+      }
       return;
     }
     unsafe {
@@ -748,11 +951,9 @@ impl Ui {
         None,
       )?;
       let target = self.gfx.dcomp.CreateTargetForHwnd(hwnd, true)?;
-      let visual = self.gfx.dcomp.CreateVisual()?;
-      let surface = self.gfx.surface(w as u32, h as u32)?;
-      visual.SetContent(&surface)?;
-      target.SetRoot(&visual)?;
-      Ok(OsdWin { hwnd, scale, _target: target, _visual: visual, surface })
+      let layer = Layer::new(&self.gfx, w as u32, h as u32)?;
+      target.SetRoot(&layer.visual)?;
+      Ok(OsdWin { hwnd, scale, _target: target, layer })
     }
   }
 
@@ -779,6 +980,16 @@ impl Ui {
     let hover = bar.frame.hit(dx, dy).map(|h| h.kind.clone());
     let left = bar.frame.left_zone.contains(dx, dy);
     let right = bar.frame.right_zone.contains(dx, dy);
+    if left && !bar.hover_left {
+      // brightness may have changed elsewhere (monitor buttons, another app):
+      // re-read when the pointer comes to the edge, not on a timer (a
+      // PowerShell every 30 s per monitor while nobody looks is wasted work)
+      if let Some(d) = self.displays.get(&bar.device) {
+        if d.stale() {
+          d.read(|u| send(Msg::Display(u)));
+        }
+      }
+    }
     if hover != bar.hover || left != bar.hover_left || right != bar.hover_right {
       bar.hover = hover;
       bar.hover_left = left;
@@ -893,4 +1104,15 @@ impl Ui {
       );
     }
   }
+}
+
+/// Errors that mean the graphics device must be rebuilt.
+fn device_lost(err: &windows::core::Error) -> bool {
+  matches!(
+    err.code().0 as u32,
+    0x887A_0005 // DXGI_ERROR_DEVICE_REMOVED
+      | 0x887A_0007 // DXGI_ERROR_DEVICE_RESET
+      | 0x887A_0020 // DXGI_ERROR_DRIVER_INTERNAL_ERROR
+      | 0x8899_000C // D2DERR_RECREATE_TARGET
+  )
 }

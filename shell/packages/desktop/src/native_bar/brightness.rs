@@ -24,6 +24,7 @@ pub struct Display {
   pub read_done: bool,
   pub gamma: i32,
   pub last_set: Instant,
+  last_read: std::cell::Cell<Instant>,
   brightness_gen: Arc<AtomicU64>,
   gamma_gen: Arc<AtomicU64>,
 }
@@ -58,13 +59,20 @@ impl Display {
       read_done: false,
       gamma: 100,
       last_set: Instant::now() - Duration::from_secs(60),
+      last_read: std::cell::Cell::new(Instant::now()),
       brightness_gen: Arc::default(),
       gamma_gen: Arc::default(),
     }
   }
 
+  /// Worth reading again: not read for 30 s and not just set by us.
+  pub fn stale(&self) -> bool {
+    self.last_read.get().elapsed() > Duration::from_secs(30) && self.last_set.elapsed() > Duration::from_secs(5)
+  }
+
   /// Reads both values (DDC takes ~0.5 s: done ahead of the first wheel).
   pub fn read(&self, send: impl Fn(Update) + Send + Clone + 'static) {
+    self.last_read.set(Instant::now());
     let device = self.device.clone();
     let send2 = send.clone();
     let dev2 = device.clone();
