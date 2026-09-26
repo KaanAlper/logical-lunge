@@ -2919,7 +2919,7 @@ static class Toasts
             // Widget'lar POST kullanır: Zebar'ın service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/shell?") || verbless.StartsWith("/shell-wait")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -2963,6 +2963,20 @@ static class Toasts
             else if (target.StartsWith("/overview-signal?w=show") || target.StartsWith("/overview-signal?w=hide"))
             {
                 Keys2.OverviewSignal(target.EndsWith("hide") ? "hide" : "show"); status = "204 No Content";
+            }
+            else if (target.StartsWith("/shell-wait"))
+            {
+                // Native bar'dan widget'lara (sağ panel, ekran klavyesi...): sidebar.html uzun yoklamayla bekler
+                int q = target.IndexOf("since="), since;
+                if (q < 0 || !int.TryParse(target.Substring(q + 6).Split('&')[0], out since)) since = -1;
+                body = LLShell.WaitSignal(since, 25000); status = "200 OK";
+            }
+            else if (target.StartsWith("/shell?a="))
+            {
+                string act = Uri.UnescapeDataString(target.Substring(9).Split('&')[0]);
+                if (act == "overview" && Slider.Ui != null) { Slider.Ui.BeginInvoke((Action)Keys2.ToggleOverview); status = "204 No Content"; }
+                else if (Array.IndexOf(LLShell.Signals, act) >= 0) { LLShell.Signal(act); status = "204 No Content"; }
+                else status = "400 Bad Request";
             }
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             else
@@ -3181,7 +3195,7 @@ class Rounder
         var sb = new StringBuilder(64);
         if (Native.GetWindowText(h, sb, 64) == 0) return;
         string t = sb.ToString();
-        if (t != "Zebar - logical-lunge / bar" && t != "Zebar - logical-lunge / toast" && t != "Zebar - logical-lunge / osk") return;
+        if (!LLShell.IsBarTitle(t) && t != "Zebar - logical-lunge / toast" && t != "Zebar - logical-lunge / osk") return;
         int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
         if ((ex & Native.WS_EX_NOACTIVATE) == 0) Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex | Native.WS_EX_NOACTIVATE);
     }
@@ -3897,7 +3911,7 @@ class Keys2
         ShowOverviewInMode(h, ";");
     }
 
-    static void ToggleOverview()
+    public static void ToggleOverview()
     {
         IntPtr h = Native.FindWindow(null, "ll-overview");
         if (h == IntPtr.Zero) return;
@@ -4475,7 +4489,7 @@ static class SnipTool
             var t = new StringBuilder(64); Native.GetWindowText(fg, t, 64);
             string c = cls.ToString();
             bool emptyFocus = pid == (uint)Process.GetCurrentProcess().Id || c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd"
-                || t.ToString().StartsWith("Zebar - logical-lunge / bar") || !Native.IsWindowVisible(fg);
+                || LLShell.IsBarTitle(t.ToString()) || !Native.IsWindowVisible(fg);
             if (!emptyFocus) return;
         }
         Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // odak kilidi
@@ -6231,7 +6245,8 @@ static class ShellState
     // Durum değiştiyse true (TaskbarGuard'ın 2 sn'lik zamanlayıcısından)
     public static bool Update()
     {
-        bool bar = Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, "Zebar - logical-lunge / bar") != IntPtr.Zero;
+        bool bar = Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, "Zebar - logical-lunge / bar") != IntPtr.Zero
+            || Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, LLShell.BarTitle) != IntPtr.Zero;
         if (bar)
         {
             missingSince = -1;
@@ -6326,7 +6341,7 @@ static class FocusGuard
         // kullanıcı onlarla uğraşıyordur.
         var t = new StringBuilder(128); Native.GetWindowText(root, t, 128);
         string title = t.ToString();
-        if (title == "Zebar - logical-lunge / bar" || title == "Zebar - logical-lunge / toast" || title == "Zebar - logical-lunge / update")
+        if (LLShell.IsBarTitle(title) || title == "Zebar - logical-lunge / toast" || title == "Zebar - logical-lunge / update")
         {
             Native.RECT r;
             var p = Cursor.Position;
@@ -6452,7 +6467,7 @@ static class Splash
         // GlazeWM IPC portu açık ve Zebar bar penceresi var mı
         try { using (var c = new System.Net.Sockets.TcpClient()) { if (!c.ConnectAsync("127.0.0.1", 6123).Wait(150)) return false; } }
         catch { return false; }
-        return FindWindow(null, "Zebar - logical-lunge / bar") != IntPtr.Zero;
+        return FindWindow(null, "Zebar - logical-lunge / bar") != IntPtr.Zero || FindWindow(null, LLShell.BarTitle) != IntPtr.Zero;
     }
 
     // Kilitli olabilir (Superpaper gibi araçlar dosyayı yeniden yazarken) -> paylaşımlı aç; olmazsa son iyi kopya.
@@ -6690,6 +6705,8 @@ static class Program
         // ll-helper.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // GlazeWM ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
+        // ll-helper.exe --shell: Windows'un kabuğu (Winlogon\Shell, scripts\shell-mode.ps1): native bar, tray, açılış programları
+        if (args.Length == 1 && args[0] == "--shell") { LLShell.Run(); return; }
         // ll-helper.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
         if (args.Length == 2 && args[0] == "--audio-default")
         {
@@ -7194,6 +7211,7 @@ static class Program
 
         ZebarWatchdog.Start();
         WmWatchdog.Start();
+        LLShell.StartWatch();
         FocusGuard.Start();
         SelfHeal.WatchUi(ui);
 

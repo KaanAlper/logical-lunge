@@ -30,7 +30,25 @@ foreign tray icons or settings windows, but under the hood it runs three coopera
 frozen UI, and is restarted by Zebar's notification bridge if it dies; falls back to the Windows taskbar and Start
 menu while the bar is missing; *Reload desktop* in the session screen, sidebar and Start menu.
 
-## Plan
+## In progress: Logical Lunge as the Windows shell (no Explorer, no WebView2 bar)
+
+`ll-helper.exe --shell` can replace `explorer.exe` as the Windows shell (`Winlogon\Shell`), so Explorer's
+taskbar, Start menu, desktop and search never start. Turn it on or off with `scripts\shell-mode.ps1 on|off`
+(`-Machine` for every account on a lab PC; it takes effect at the next sign-in).
+
+- **Native bar** (`src/helper/ll-bar.cs`): the ii bar drawn with Win32 + GDI+, no WebView2: search, active window,
+  RAM / swap / CPU rings, media, workspaces with app icons, clock, snip / keyboard buttons, battery, indicators, tray,
+  brightness (DDC/CI or WMI, gamma below 0) and volume on the edges with an OSD, resources and media popups. Data comes
+  from Win32 APIs and GlazeWM events, not PowerShell. The Zebar bar widget is left out of Zebar's startup; the sidebar,
+  overview, toasts and the rest stay in Zebar for now.
+- **Shell duties** (`src/helper/ll-shell.cs`): the `Shell_TrayWnd` tray host, Run keys and Startup folders (honouring
+  Task Manager's disabled entries), volume / media keys (`HSHELL_APPCOMMAND`), the shell-ready event, starting GlazeWM
+  for accounts without the scheduled task.
+- **Safety**: hold Shift while signing in, create `%LOCALAPPDATA%\logical-lunge\use-explorer`, or let the shell crash
+  3 times in 2 minutes, and Explorer starts instead. The main helper restarts a missing shell process.
+- **Not tested on real hardware yet.** Known gaps: `IDesktopWallpaper` (per-monitor wallpapers) may need Explorer;
+  balloon notifications from tray icons are ignored; Win+R / Win+E / Win+I belonged to Explorer.
+
 
 1. **Done — single installer.** `install.ps1` → one UAC prompt, pinned upstream versions, every Windows
    setting backed up, clean uninstaller, no Python needed on the target (PyInstaller-packed helpers).

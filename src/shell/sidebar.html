@@ -1300,6 +1300,23 @@
       }
 
       createRoot(document.getElementById('root')).render(<App />);
+
+      // Native bar (ll-helper --shell, WebView2'siz) Tauri olayı yollayamaz: helper'ın /shell-wait uzun yoklamasıyla gelen
+      // olayları (sağ panel, ekran klavyesi, oturum ekranı) diğer widget'lara "ll:" önekiyle yayınla. Zebar bar'ında hiç olay
+      // gelmez; helper yoksa yavaşça tekrar dener.
+      (async function shellSignals() {
+        const OK = ['sidebar-right-toggle', 'osk-toggle', 'session-toggle', 'update-check'];
+        let since = -1;
+        while (true) {
+          try {
+            const r = await fetch(`http://127.0.0.1:6131/shell-wait?since=${since}`, { method: 'POST', cache: 'no-store' });
+            const [seq, what] = (await r.text()).split(' ');
+            since = parseInt(seq, 10);
+            if (isNaN(since)) since = -1;
+            if (OK.includes(what)) emit(`ll:${what}`).catch(() => {});
+          } catch { await new Promise(res => setTimeout(res, 5000)); }
+        }
+      })();
     </script>
   </body>
 </html>

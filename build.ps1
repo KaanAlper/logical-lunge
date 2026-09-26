@@ -22,8 +22,18 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $fx = "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.8"
 
 Step 'll-helper.exe'
-& $csc /nologo /target:winexe /optimize+ "/out:$ll\helper\ll-helper.exe" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:Accessibility.dll "$root\src\helper\ll-helper.cs"
+# ll-shell.cs + ll-bar.cs: kabuk modu (ll-helper --shell) ve WebView2'siz native bar
+& $csc /nologo /target:winexe /optimize+ "/out:$ll\helper\ll-helper.exe" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:Accessibility.dll /r:System.Management.dll "$root\src\helper\ll-helper.cs" "$root\src\helper\ll-shell.cs" "$root\src\helper\ll-bar.cs"
 if ($LASTEXITCODE) { throw 'll-helper build failed' }
+
+Step 'Material Symbols Rounded (native bar icons, Apache-2.0)'
+$msr = Join-Path $cache 'MaterialSymbolsRounded.ttf'
+$msrSha = 'c2182b6337495e64cc9e2311c52522567ac277d25a842bd027f9c9e3a5cc6d86'
+if (-not (Test-Path $msr) -or (Get-FileHash $msr -Algorithm SHA256).Hash -ne $msrSha) {
+    Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/google/material-design-icons/bd8cb85bd4bad964fe6918f79665bb40c3a8efef/variablefont/MaterialSymbolsRounded%5BFILL%2CGRAD%2Copsz%2Cwght%5D.ttf' -OutFile $msr
+    if ((Get-FileHash $msr -Algorithm SHA256).Hash -ne $msrSha) { throw 'Material Symbols font checksum mismatch' }
+}
+Copy-Item $msr "$ll\helper\MaterialSymbolsRounded.ttf"
 
 Step 'media-art.exe (album art + seek, WinRT)'
 $winmd = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" -Recurse -Filter Windows.winmd -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\Facade\\' } | Sort-Object { [version]$_.Directory.Name } -Descending | Select-Object -First 1
