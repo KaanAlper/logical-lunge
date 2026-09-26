@@ -64,7 +64,8 @@ static class Names
 {
     public const string Core = "lunge", Tiling = "lunge-tiling", Shell = "lunge-shell";
     public const string Bar = "Logical Lunge · bar", Toast = "Logical Lunge · toast", Update = "Logical Lunge · update",
-        Osk = "Logical Lunge · osk", Sidebar = "Logical Lunge · sidebar-right", TitlePrefix = "Logical Lunge ·";
+        Osk = "Logical Lunge · osk", Sidebar = "Logical Lunge · sidebar-right", Settings = "Logical Lunge · settings",
+        TitlePrefix = "Logical Lunge ·";
 }
 
 static class Native
@@ -430,6 +431,107 @@ static class BorderStyle
     }
 }
 
+// ---------------- Hareket eğrileri ve süreleri (Hyprland'deki bezier / animation satırları) ----------------
+// config.yaml'daki üst düzey animations: bölümünden okunur, dosya değişince yeniden okunur. Bölüm yoksa ya da bir değer
+// hatalıysa o değer için varsayılan kalır (bugüne dek sabit olan değerler; eğri adları ii'nin Hyprland ayarındaki gibi).
+//   animations:
+//     beziers:
+//       benim_egrim: [0.2, 0.9, 0.1, 1]
+//     workspaces: { duration: 520, curve: menu_decel }
+static class Anims
+{
+    public sealed class Curve
+    {
+        public readonly string Name; public readonly double X1, Y1, X2, Y2;
+        public Curve(string name, double x1, double y1, double x2, double y2)
+        {
+            // x değerleri [0,1] dışında eğri geriye döner (zaman ters akar): Hyprland gibi sınırla; y serbest (taşma)
+            Name = name; X1 = Math.Max(0, Math.Min(1, x1)); Y1 = y1; X2 = Math.Max(0, Math.Min(1, x2)); Y2 = y2;
+        }
+        public double At(double t) { return t <= 0 ? 0 : t >= 1 ? 1 : Slider.Bezier(X1, Y1, X2, Y2, t); }
+    }
+    public sealed class Spec
+    {
+        public readonly int Ms; public readonly Curve Curve; public readonly int Popin;
+        public Spec(int ms, Curve curve, int popin = 0) { Ms = ms; Curve = curve; Popin = popin; }
+    }
+
+    static Dictionary<string, Curve> Defaults()
+    {
+        var d = new Dictionary<string, Curve>(StringComparer.OrdinalIgnoreCase);
+        Action<string, double, double, double, double> add = (n, a, b, c, e) => d[n] = new Curve(n, a, b, c, e);
+        add("expressiveFastSpatial", 0.42, 1.67, 0.21, 0.90);
+        add("expressiveSlowSpatial", 0.39, 1.29, 0.35, 0.98);
+        add("expressiveDefaultSpatial", 0.38, 1.21, 0.22, 1.00);
+        add("emphasizedDecel", 0.05, 0.7, 0.1, 1);
+        add("emphasizedAccel", 0.3, 0, 0.8, 0.15);
+        add("standardDecel", 0, 0, 0, 1);
+        add("menu_decel", 0.1, 1, 0, 1);
+        add("menu_accel", 0.52, 0.03, 0.72, 0.08);
+        add("linear", 0, 0, 1, 1);
+        return d;
+    }
+
+    // Kaydırma (Super+sayı, Super+Ctrl+←/→), taşı+takip et (Super+Ctrl+Shift+←/→: pencereyi yanında götürür),
+    // pencerelerin yer değiştirmesi (açma / kapama / taşıma), yeni pencerenin büyüyerek belirmesi (popin: başlangıç boyu %)
+    public static volatile Spec Workspaces, Carry, WindowsMove, WindowsIn;
+    static Anims() { Apply(Defaults(), null); }
+
+    static void Apply(Dictionary<string, Curve> curves, Dictionary<string, string> specs)
+    {
+        Func<string, int, string, int, Spec> make = (key, ms, curve, popin) =>
+        {
+            string body;
+            if (specs != null && specs.TryGetValue(key, out body))
+            {
+                var d = System.Text.RegularExpressions.Regex.Match(body, @"(?:^|[,\s])duration\s*:\s*(\d+)");
+                if (d.Success) ms = Math.Min(5000, int.Parse(d.Groups[1].Value));
+                var c = System.Text.RegularExpressions.Regex.Match(body, @"(?:^|[,\s])curve\s*:\s*[""']?([A-Za-z_][\w-]*)");
+                if (c.Success)
+                {
+                    if (curves.ContainsKey(c.Groups[1].Value)) curve = c.Groups[1].Value;
+                    else Slider.Log("hareketler: " + key + " için bilinmeyen eğri '" + c.Groups[1].Value + "', " + curve + " kullanılıyor");
+                }
+                var p = System.Text.RegularExpressions.Regex.Match(body, @"(?:^|[,\s])popin\s*:\s*(\d+)");
+                if (p.Success) popin = Math.Max(10, Math.Min(100, int.Parse(p.Groups[1].Value)));
+            }
+            return new Spec(ms, curves[curve], popin);
+        };
+        Workspaces = make("workspaces", 520, "menu_decel", 0);
+        Carry = make("workspacescarry", 340, "menu_decel", 0);
+        WindowsMove = make("windowsmove", 300, "emphasizedDecel", 0);
+        WindowsIn = make("windowsin", 300, "emphasizedDecel", 80);
+    }
+
+    public static void Load()
+    {
+        try
+        {
+            var curves = Defaults();
+            var specs = new Dictionary<string, string>();
+            string cfg = System.IO.File.Exists(Paths.ConfigFile) ? System.IO.File.ReadAllText(Paths.ConfigFile) : "";
+            // Yalnızca üst düzey bölüm (kenarlıkların borders: altında kendi animations: anahtarı var)
+            var blk = System.Text.RegularExpressions.Regex.Match(cfg, @"(?m)^animations:[ \t]*(?:#.*)?\r?\n((?:(?:[ \t]+[^\r\n]*|[ \t]*)(?:\r?\n|$))*)");
+            if (blk.Success)
+            {
+                string b = blk.Groups[1].Value;
+                var inv = System.Globalization.CultureInfo.InvariantCulture;
+                const string num = @"\s*(-?\d+(?:\.\d+)?)\s*";
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(b, @"(?m)^[ \t]+([A-Za-z_][\w-]*)[ \t]*:[ \t]*\[" + num + "," + num + "," + num + "," + num + @"\]"))
+                    curves[m.Groups[1].Value] = new Curve(m.Groups[1].Value, double.Parse(m.Groups[2].Value, inv), double.Parse(m.Groups[3].Value, inv), double.Parse(m.Groups[4].Value, inv), double.Parse(m.Groups[5].Value, inv));
+                // workspaces_carry / workspacesCarry / windows-move: aynı ad
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(b, @"(?m)^[ \t]+([A-Za-z_][\w-]*)[ \t]*:[ \t]*\{([^}\r\n]*)\}"))
+                    specs[m.Groups[1].Value.Replace("_", "").Replace("-", "").ToLowerInvariant()] = m.Groups[2].Value;
+            }
+            Apply(curves, specs);
+            Slider.Log("hareketler: kayma " + Workspaces.Ms + " ms " + Workspaces.Curve.Name + ", taşı+takip " + Carry.Ms + " ms " + Carry.Curve.Name
+                + ", yer değiştirme " + WindowsMove.Ms + " ms " + WindowsMove.Curve.Name + ", açılış " + WindowsIn.Ms + " ms " + WindowsIn.Curve.Name + " %" + WindowsIn.Popin
+                + (blk.Success ? "" : " (varsayılan)"));
+        }
+        catch (Exception ex) { Slider.Log("hareketler: " + ex.Message + " (varsayılanlar kaldı)"); }
+    }
+}
+
 class RingTemplate : Form
 {
     [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }
@@ -602,7 +704,8 @@ class Slider
         return BAR_H;
     }
     const int BAR_H = 40;             // ii baseBarHeight — bar sabit kalır, altı kayar
-    const int DURATION_MS = 520;       // Hyprland workspaces speed 7 (~700ms), menu_decel kuyruğu kısaltıldı
+    // Süreler ve eğriler config.yaml'dan (Anims): kayma 520 ms menu_decel (Hyprland workspaces speed 7 ~700 ms, kuyruğu
+    // kısaltıldı), taşı+takip 340 ms, pencere hareketi 300 ms emphasizedDecel, açılış popin %80
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
     const int MAX_WS = 30;             // tiling config'deki workspace sayısı (next/prev sarması için)
 
@@ -827,7 +930,10 @@ class Slider
     static IntPtr FocusedTop() { return Native.GetAncestor(Native.GetForegroundWindow(), 2); }
 
     // Hyprland bezier "menu_decel" = (0.1, 1), (0, 1)
-    static double Bezier(double x1, double y1, double x2, double y2, double t)
+    // İlerleme 0..1; süre 0 ise (hareket kapalı) hemen son kare (0/0 sonsuz döngüye sokardı)
+    static double Prog(double at, int ms) { return ms <= 0 ? 1.0 : Math.Min(1.0, at / ms); }
+
+    internal static double Bezier(double x1, double y1, double x2, double y2, double t)
     {
         double lo = 0, hi = 1, u = t;
         for (int i = 0; i < 24; i++)
@@ -843,7 +949,7 @@ class Slider
 
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
-    static readonly string[] Pinned = { Names.Osk, Names.Sidebar, Names.Toast, Names.Update };
+    static readonly string[] Pinned = { Names.Osk, Names.Sidebar, Names.Toast, Names.Update, Names.Settings };
     // PiP gibi her workspace'te sabit duran, en üstte tutulan ve tiling'in yönetmediği pencereler animasyon katmanının
     // altında kalıp geçiş boyunca kayboluyor, sonra "yapıştırılmış resim" gibi geri geliyordu. Canlı önizlemeleri kenarlık
     // katmanının en üstüne, kendi yerlerine konur: katman açıldığı karede görünürler, geçiş boyunca sabit kalırlar.
@@ -864,13 +970,18 @@ class Slider
             // Bizim yapışık pencerelerimiz (bildirim, güncelleme kartı, ekran klavyesi, sağ panel) de PiP gibi: yalnızca
             // RaisePinned ile öne alınınca katman açıldığı an altında kalıyor, kaydırmanın başında kaybolup geri geliyorlardı
             title.Length = 0; Native.GetWindowText(h, title, 64);
-            bool ours = Array.IndexOf(Pinned, title.ToString()) >= 0;
+            string tt = title.ToString();
+            // Bar'ın açılır menüleri (tepsi oku, takvim, ses...) bar penceresinin içinde: pencere menü kadar aşağı uzar ve
+            // uzayan kısmı katmanın altında kalıp kaydırma boyunca kayboluyordu. Uzamışsa bar da yapışık.
+            bool bar = tt == Names.Bar;
+            bool ours = bar || Array.IndexOf(Pinned, tt) >= 0;
             if (!ours && (Native.GetWindowLong(h, Native.GWL_EXSTYLE) & 0x8) == 0) return true; // WS_EX_TOPMOST
             int cl;
             if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0) return true;
             Native.RECT r; Native.GetWindowRect(h, out r);
             if (r.Right - r.Left < 40 || r.Bottom - r.Top < 40) return true; // boş bildirim penceresi (içerik yok) de burada elenir
             if (!monArea.IntersectsWith(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom))) return true;
+            if (bar && r.Bottom <= monArea.Top + 2) return true; // menü kapalı: bar katmanın üstünde, önizleme gerekmez
             if (ours) { found.Add(new KeyValuePair<IntPtr, Native.RECT>(h, r)); return true; }
             uint pid; Native.GetWindowThreadProcessId(h, out pid);
             string pn;
@@ -1166,6 +1277,8 @@ class Slider
     public void Finish(Frozen f, IEnumerable<long> endHandles, long popin, int durationMs, Dictionary<long, Native.RECT> targetFrames = null)
     {
         if (f.Ov != null) overlay = f.Ov;
+        // Yer değiştiren pencereler windows_move eğrisiyle (durationMs), yeni pencere windows_in süresi ve eğrisiyle
+        var inSpec = Anims.WindowsIn; var moveCurve = Anims.WindowsMove.Curve;
         var items = new List<Anim>();
         Thumb pop = null;
         var keep = new HashSet<long>();
@@ -1186,7 +1299,8 @@ class Slider
             if (isNew || h == popin)
             {
                 int cx = (end.Left + end.Right) / 2, cy = (end.Top + end.Bottom) / 2;
-                int hw2 = (int)((end.Right - end.Left) * 0.4), hh = (int)((end.Bottom - end.Top) * 0.4);
+                double half = inSpec.Popin / 200.0; // popin %80: yarı genişlik 0.4
+                int hw2 = (int)((end.Right - end.Left) * half), hh = (int)((end.Bottom - end.Top) * half);
                 a.Start = new Native.RECT { Left = cx - hw2, Top = cy - hh, Right = cx + hw2, Bottom = cy + hh };
                 pop = t;
             }
@@ -1218,8 +1332,9 @@ class Slider
             long nowMs = sw.ElapsedMilliseconds;
             if (frames > 0 && nowMs - lastFrame > maxGap) maxGap = nowMs - lastFrame;
             lastFrame = nowMs; frames++;
-            double p = Math.Min(1.0, pc.Ms() / durationMs);
-            double e = Bezier(0.05, 0.7, 0.1, 1, p); // Hyprland emphasizedDecel
+            double at = pc.Ms();
+            double p = Prog(at, durationMs), pIn = pop != null ? Prog(at, inSpec.Ms) : 1.0;
+            double e = moveCurve.At(p), eIn = inSpec.Curve.At(pIn);
             foreach (var a in items)
             {
                 if (!a.Moved)
@@ -1228,12 +1343,12 @@ class Slider
                     if (!SameRect(live, a.Before)) { a.Moved = true; a.End = live; }
                 }
                 else a.End = VisualDest(a.H, IntPtr.Zero, f.Ox, f.Oy);
-                var r = Lerp(a.Start, a.End, e);
+                var r = Lerp(a.Start, a.End, a.T == pop ? eIn : e);
                 byte op = 255;
                 if (a.T == pop)
                 {
                     // Hyprland windowsIn "popin 80%": ölçekli büyüyerek ve belirerek
-                    op = (byte)Math.Min(255, (int)(255 * Math.Min(1.0, p * 2.5)));
+                    op = (byte)Math.Min(255, (int)(255 * Math.Min(1.0, pIn * 2.5)));
                     var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_OPACITY, rcDestination = r, opacity = op };
                     Native.DwmUpdateThumbnailProperties(a.T.Id, ref pr);
                 }
@@ -1247,7 +1362,7 @@ class Slider
             fs.Updated();
             Native.DwmFlush();
             fs.Flushed();
-            if (p >= 1.0) break;
+            if (p >= 1.0 && pIn >= 1.0) break;
         }
         var sb = new StringBuilder();
         foreach (var a in items) if (a.Resizes && a.T != pop) sb.Append(" | içerik " + a.Cx0 + "x" + a.Cy0 + "->" + a.T.Cx + "x" + a.T.Cy + (a.SrcAt >= 0 ? " @" + a.SrcAt + "ms" : " (değişmedi)"));
@@ -1329,8 +1444,7 @@ class Slider
     // ---- Pencere aç/kapa animasyonu (Hyprland windowsMove: speed 3 ≈ 300ms emphasizedDecel,
     // windowsIn: popin 80%). tiling pencereleri anında yerleştirir; biz eski yerleşimden yenisine
     // canlı DWM önizlemelerini kaydırıp ölçekleyerek geçiş yapıyoruz, sonra gerçek pencereler görünür.
-    const int MOVE_MS = 300;
-    public static int MoveMs { get { return MOVE_MS; } }
+    public static int MoveMs { get { return Anims.WindowsMove.Ms; } }
 
     static Native.RECT Lerp(Native.RECT a, Native.RECT b, double e)
     {
@@ -1472,7 +1586,7 @@ class Slider
         var sw = Stopwatch.StartNew();
         var f = Freeze(monRect, hs, null);
         Log("selftest: donma " + sw.ElapsedMilliseconds + " ms");
-        Finish(f, hs, 0, MOVE_MS, targets);
+        Finish(f, hs, 0, MoveMs, targets);
     }
 
     void InWorkspace(string dir, bool move)
@@ -1504,7 +1618,7 @@ class Slider
             if (par0 == null || wins.Count < 2) return;
             if (J.Str(par0, "type") == "workspace" && J.Str(par0, "tilingDirection") == axis) return;
         }
-        if (!Prefs.Animations) { glaze.Command("move --direction " + dir); return; } // animasyonlar kapalı (ayarlar)
+        if (!Prefs.Animations || MoveMs <= 0) { glaze.Command("move --direction " + dir); return; } // animasyonlar kapalı (ayarlar / config.yaml)
         // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), tiling arkada yerleştirsin
         var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
         var hs = new List<long>(Rects(wins).Keys);
@@ -1533,7 +1647,7 @@ class Slider
         }
         if (frozen != null)
         {
-            int dur = Adaptive(ref lastMoveStart, MOVE_MS);
+            int dur = Adaptive(ref lastMoveStart, MoveMs);
             Ui.BeginInvoke((Action)(() =>
             {
                 try { Finish(frozen, endHs, 0, dur, targets); } catch (Exception ex) { Log("move anim: " + ex.Message); }
@@ -1572,8 +1686,9 @@ class Slider
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
-        // Animasyonlar kapalı (ayarlar): workspace doğrudan değişir
-        if (!Prefs.Animations) { foreach (var c in commands) glaze.Command(c); return; }
+        // Animasyonlar kapalı (ayarlar) ya da bu hareketin süresi 0 (config.yaml): workspace doğrudan değişir
+        bool carry0 = commands.Length == 2 && commands[0].StartsWith("move --") && commands[1].StartsWith("focus --");
+        if (!Prefs.Animations || (carry0 ? Anims.Carry : Anims.Workspaces).Ms <= 0) { foreach (var c in commands) glaze.Command(c); return; }
         var clock = Stopwatch.StartNew();
         Interrupt = false;
         var mons = glaze.Monitors();
@@ -1717,7 +1832,9 @@ class Slider
 
             var cmdsAll = (string[])commands.Clone();
             var task = Task.Factory.StartNew(() => { foreach (var cm in cmdsAll) glaze.Command(cm); });
-            int dur0 = Adaptive(ref lastSlideStart, moveFollow ? 340 : DURATION_MS); // taşıma daha kısa: pencere beklemeden yerine geçsin
+            var slide = moveFollow ? Anims.Carry : Anims.Workspaces; // taşıma daha kısa: pencere beklemeden yerine geçsin
+            var settle = Anims.WindowsMove.Curve;
+            int dur0 = Adaptive(ref lastSlideStart, slide.Ms);
             Animating = true;
 
             // Taşı+takip et: tiling komutu bittiği an (genelde kaymanın ilk ~50 ms'i) hedef workspace'teki pencereler
@@ -1749,8 +1866,8 @@ class Slider
                 mfLast = nowMs0; mfFrames++;
                 if (cmdDoneAt < 0 && task.IsCompleted) cmdDoneAt = nowMs0;
                 if (movedAt < 0 && moveFollow && WindowsMoved()) movedAt = nowMs0;
-                double p = Math.Min(1.0, at / dur0);
-                double e = Bezier(0.1, 1, 0, 1, p);
+                double p = Prog(at, dur0);
+                double e = slide.Curve.At(p);
                 int shift = (int)Math.Round(e * (mw + GAP));
                 if (moveFollow && swR == null && (task.IsCompleted || WindowsMoved()))
                 {
@@ -1759,8 +1876,8 @@ class Slider
                     rStart = at;
                     durR = Math.Max(200, (int)(dur0 - at));
                 }
-                double pR = swR == null ? 0 : Math.Min(1.0, (at - rStart) / durR);
-                double eR = Bezier(0.05, 0.7, 0.1, 1, pR);
+                double pR = swR == null ? 0 : Prog(at - rStart, durR);
+                double eR = settle.At(pR);
                 foreach (var t in oldThumbs) Move(t, -fdir * shift);
                 foreach (var t in newThumbs)
                 {
@@ -1854,8 +1971,8 @@ class Slider
             var pc = new PresentClock();
             while (!Interrupt)
             {
-                double p = Math.Min(1.0, pc.Ms() / DURATION_MS);
-                double e = Bezier(0.1, 1, 0, 1, p);
+                double p = Prog(pc.Ms(), Anims.Workspaces.Ms);
+                double e = Anims.Workspaces.Curve.At(p);
                 int shift = (int)Math.Round(e * (mw + GAP));
                 foreach (var t in oldThumbs) Move(t, -dir * shift);
                 foreach (var t in newThumbs) Move(t, dir * (mw + GAP) - dir * shift);
@@ -2139,8 +2256,20 @@ class Dwindle
         if (f == null)
         {
             slider.Interrupt = true;
-            // Kapanma kancası bu arada dondurmuş olabilir (ikisi de UI thread'inde sırayla çalışır): iki katman olmasın
-            try { f = (Slider.Frozen)ui.Invoke((Func<Slider.Frozen>)(() => TakePending(anchorHandle) ?? slider.Freeze(mon, hs, start, pop))); }
+            // Kapanma kancası bu arada dondurmuş olabilir (ikisi de UI thread'inde sırayla çalışır): iki katman olmasın.
+            // Açılış / kapanış kancası dondururken (UI thread'i ~50 ms meşgul) buraya gelindiyse bekleyen katman ancak
+            // Invoke içinde bulunur: o zaman Freeze çalışmaz ve yukarıdaki Interrupt kalkık kalıp animasyonu 0 karede
+            // bitiriyordu (yeni pencere hiç büyüyerek açılmıyordu). Burada UI thread'indeyiz, süren animasyon yok: indir.
+            try
+            {
+                f = (Slider.Frozen)ui.Invoke((Func<Slider.Frozen>)(() =>
+                {
+                    var pending = TakePending(anchorHandle);
+                    if (pending == null) return slider.Freeze(mon, hs, start, pop);
+                    slider.Interrupt = false;
+                    return pending;
+                }));
+            }
             catch (Exception ex) { Slider.Log("freeze: " + ex.Message); }
         }
 
@@ -2827,6 +2956,7 @@ static class ConfigWatch
     public static void Start(Control ui)
     {
         Prefs.Load();
+        Anims.Load();
         try
         {
             watcher = new System.IO.FileSystemWatcher(Paths.ConfigDir) { NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.Size };
@@ -2834,6 +2964,7 @@ static class ConfigWatch
             configTimer = new System.Threading.Timer(_ =>
             {
                 BorderStyle.Load();
+                Anims.Load();
                 try { ui.BeginInvoke((Action)Slider.RepaintRings); } catch { }
             }, null, Timeout.Infinite, Timeout.Infinite);
             System.IO.FileSystemEventHandler on = (s, e) =>

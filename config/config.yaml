@@ -63,6 +63,24 @@ window_effects:
       enabled: false
       opacity: '100%'
 
+# Hareketler (Hyprland'deki bezier = / animation = satırları). Çekirdek (lunge.exe) çizer; kaydedince hemen geçerli.
+# duration: ms (Hyprland hızı 1 = 100 ms; 0 = o hareket kapalı). curve: aşağıdaki eğrilerden ya da hazır olanlardan biri:
+#   emphasizedDecel, emphasizedAccel, standardDecel, menu_decel, menu_accel, expressiveFastSpatial,
+#   expressiveDefaultSpatial, expressiveSlowSpatial, linear (ii'nin Hyprland ayarındaki eğriler)
+# Hepsini kapatmak için: Ayarlar > Görünüm > Hareket > Animasyonlar.
+animations:
+  beziers:
+    # ad: [x1, y1, x2, y2] (cubic-bezier; x 0..1 arası, y 1'i aşarsa hedefi geçip geri döner)
+    # benim_egrim: [0.2, 0.9, 0.1, 1]
+  # Workspace kayması (Super+sayı, Super+Ctrl+←/→)
+  workspaces: { duration: 520, curve: menu_decel }
+  # Pencereyi yanında götürerek kayma (Super+Ctrl+Shift+←/→)
+  workspaces_carry: { duration: 340, curve: menu_decel }
+  # Pencerelerin yer değiştirmesi (açma / kapama / taşıma)
+  windows_move: { duration: 300, curve: emphasizedDecel }
+  # Yeni pencere: popin boyutundan (%) büyüyerek belirir
+  windows_in: { duration: 300, curve: emphasizedDecel, popin: 80 }
+
 window_behavior:
   initial_state: 'tiling'
   state_defaults:
