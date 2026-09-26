@@ -120,6 +120,7 @@
       import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
+      import { appIconFor } from 'lunge/apps';
       import { emit, listen } from '@tauri-apps/api/event';
 
       // Super menüsünün uygulama listesi çekirdekten (kullanıcının veri klasöründe; kurulum klasörü korumalı).
@@ -272,15 +273,7 @@
         // ---- Uygulama ikonları (overview'ün listesi): workspace noktalarında gösterilir ----
         const [apps, setApps] = useState([]);
         useEffect(() => { loadAppList().then(setApps).catch(() => {}); }, []);
-        const iconFor = useCallback(proc => {
-          const p = (proc || '').toLowerCase();
-          if (!p) return null;
-          const flat = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-          const a = apps.find(x => x.icon && x.exe === p)
-            || apps.find(x => x.icon && flat(x.name) === flat(p))
-            || apps.find(x => x.icon && (flat(x.name).includes(flat(p)) || flat(p).includes(flat(x.name))));
-          return a?.icon ?? null;
-        }, [apps]);
+        const iconFor = useCallback(proc => appIconFor(apps, proc), [apps]);
 
         useEffect(() => { providers.onOutput(() => setO({ ...providers.outputMap })); }, []);
         const devName = o.tiling?.currentMonitor?.deviceName;

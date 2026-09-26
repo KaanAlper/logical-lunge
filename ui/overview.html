@@ -120,6 +120,7 @@
       import React, { useState, useEffect, useRef, useMemo } from 'react';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
+      import { appIconFor } from 'lunge/apps';
       import { listen, emit } from '@tauri-apps/api/event';
 
       // Super menüsünün uygulama listesi çekirdekten (kullanıcının veri klasöründe; kurulum klasörü korumalı).
@@ -647,15 +648,7 @@
         const current = parseInt(tiling.focusedWorkspace?.name ?? '1', 10) || 1;
         const base = Math.floor((current - 1) / (rows * cols)) * rows * cols;
 
-        const iconFor = proc => {
-          const p = (proc || '').toLowerCase();
-          const flat = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-          const withIcon = apps.filter(x => x.icon);
-          const a = withIcon.find(x => x.exe === p)
-            || withIcon.find(x => flat(x.name) === flat(p))
-            || withIcon.find(x => flat(x.name).includes(flat(p)) || flat(p).includes(flat(x.name)));
-          return a?.icon;
-        };
+        const iconFor = proc => appIconFor(apps, proc) ?? undefined;
 
         // Her workspace kendi monitörüne göre ölçeklenir (eskiden hepsi odaktaki monitöre göre çiziliyor,
         // diğer monitördeki pencereler kutunun dışına düşüp görünmüyordu). Simge durumundakiler gösterilmez.

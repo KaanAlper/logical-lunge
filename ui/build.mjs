@@ -61,7 +61,7 @@ const result = await esbuild.build({
   jsx: 'transform',
   jsxFactory: 'React.createElement',
   jsxFragment: 'React.Fragment',
-  alias: { 'lunge/shell': path.join(here, 'lib', 'shell-client.js') },
+  alias: { 'lunge/shell': path.join(here, 'lib', 'shell-client.js'), 'lunge/apps': path.join(here, 'lib', 'app-icons.js') },
   nodePaths: [path.join(here, 'node_modules')],
   define: { 'process.env.NODE_ENV': '"production"' },
   target: 'chrome120',

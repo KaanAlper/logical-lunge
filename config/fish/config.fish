@@ -44,4 +44,8 @@ if status is-interactive
     # Windows'ta sık lazım olanlar
     alias open 'cygstart'
     alias e. 'explorer.exe .'
+
+    # Enter: tırnaksız Windows yollarını (C:\..., \\sunucu\..., .\...) tek tırnağa alıp çalıştırır; fish \ işaretini
+    # kaçış sanıp "Invalid token" veriyor ya da \n'yi satır sonuna çeviriyordu (functions/__ll_execute.fish)
+    bind enter __ll_execute
 end
