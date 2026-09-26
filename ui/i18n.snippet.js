@@ -4,13 +4,23 @@
 // Kurulumda seçilen dil ve saat prefs.json'da ({"language": "system" | "tr" | "en" ..., "clock": "24" | "12"}):
 // dil "system" değilse sistem dilinin yerine geçer; window.LL_HOUR12 saatlerin 12 saatlik (AM/PM) çizilmesi içindir.
 (function () {
-  var prefs = {};
-  try {
-    var px = new XMLHttpRequest(); px.open('GET', './prefs.json', false); px.send();
-    if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
-  } catch (e) {}
+  function readPrefs(url) {
+    try {
+      var px = new XMLHttpRequest(); px.open('GET', url, false); px.send();
+      if (px.status === 200) return JSON.parse(px.responseText) || null;
+    } catch (e) {}
+    return null;
+  }
+  // Tercihler çekirdekten (kullanıcının ayar klasöründe; ayarlar penceresi değiştirir), çekirdek yoksa kurulumun kopyası
+  var prefs = readPrefs('http://127.0.0.1:6131/prefs.json') || readPrefs('./prefs.json') || {};
   window.LL_PREFS = prefs;
   window.LL_HOUR12 = prefs.clock === '12';
+  // Animasyonlar kapalı (ayarlar): geçişler anında biter. "none" değil: kartları kaldıran animationend olayları yine gelsin
+  if (prefs.animations === false) {
+    var rm = document.createElement('style');
+    rm.textContent = '*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}';
+    document.head.appendChild(rm);
+  }
   var lang = prefs.language && prefs.language !== 'system' ? prefs.language
     : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
   window.LL_LOCALE = lang;

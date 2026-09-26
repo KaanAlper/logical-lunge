@@ -282,7 +282,7 @@ try {
         if ($n -ne $t) { [IO.File]::WriteAllText($_.FullName, $n, $UTF8) }
     }
     # The shell starts only our widgets (no BOM: serde_json rejects it)
-    $zsettings = [ordered]@{ startupConfigs = @(foreach ($w in 'bar', 'overview', 'sidebar-right', 'toast', 'osk', 'update', 'session') { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
+    $zsettings = [ordered]@{ startupConfigs = @(foreach ($w in 'bar', 'overview', 'sidebar-right', 'settings', 'toast', 'osk', 'update', 'session') { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
     [IO.File]::WriteAllText((Join-Path $APP 'ui\settings.json'), ($zsettings | ConvertTo-Json -Depth 5), $UTF8)
 
     # ------------------------------------------------------------ settings (config, keybinds, prefs)

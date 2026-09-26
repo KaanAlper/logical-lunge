@@ -109,6 +109,7 @@ impl AppSettings {
         "bar",
         "overview",
         "sidebar-right",
+        "settings",
         "toast",
         "osk",
         "update",

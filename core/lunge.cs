@@ -402,12 +402,14 @@ static class BorderStyle
 {
     public static Color Active = Color.FromArgb(0xcc, 0xb6, 0x9d, 0xf8), Inactive = Color.FromArgb(0x99, 0x3a, 0x3a, 0x40);
     public static int Width = 2, Radius = 14;
-    static BorderStyle()
+    static BorderStyle() { Load(); }
+
+    // config.yaml değişince yeniden okunur (ayarlar penceresinden odak rengi ya da elle düzenleme; bkz. ConfigWatch)
+    public static void Load()
     {
         try
         {
-            string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            // Kenarlıkları tiling çiziyor: ayarları config.yaml'daki borders: bölümünde (eski kurulumda kenarlık motoru ayarı)
+            // Kenarlıkları pencere yöneticisi çiziyor: ayarları config.yaml'daki borders: bölümünde
             string cfg = System.IO.File.ReadAllText(Paths.ConfigFile);
             Active = Parse(cfg, "active_color", Active);
             Inactive = Parse(cfg, "inactive_color", Inactive);
@@ -448,10 +450,18 @@ class RingTemplate : Form
     {
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
         Text = "lunge-ring-src";
-        Bw = bw; C = radius + bw + 1; S = 2 * C + 9; M = S / 2;
+        Bw = bw; Radius = radius; C = radius + bw + 1; S = 2 * C + 9; M = S / 2;
         Bounds = new Rectangle(X, Y, S, S);
         CreateControl(); Hwnd = Handle;
         Show();
+        Paint(color);
+    }
+    readonly int Radius;
+
+    // Halkayı bu renkle yeniden çizer; şablondan alınan DWM önizlemeleri (animasyon kenarlıkları) anında yeni rengi alır
+    public void Paint(Color color)
+    {
+        int bw = Bw, radius = Radius;
         using (var bmp = new Bitmap(S, S, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
         {
             using (var g = Graphics.FromImage(bmp))
@@ -644,6 +654,18 @@ class Slider
     }
 
     static RingTemplate ringSrc, ringSrcInactive;
+
+    // Odak rengi değişti: animasyon kenarlıklarının şablonlarını yeniden çiz (UI thread'inde)
+    public static void RepaintRings()
+    {
+        try
+        {
+            if (ringSrc != null) ringSrc.Paint(BorderStyle.Active);
+            if (ringSrcInactive != null && BorderStyle.Inactive.A > 0) ringSrcInactive.Paint(BorderStyle.Inactive);
+        }
+        catch (Exception ex) { Log("halka rengi: " + ex.Message); }
+    }
+
     public Slider(TilingClient g)
     {
         glaze = g; spare = overlay;
@@ -1482,6 +1504,7 @@ class Slider
             if (par0 == null || wins.Count < 2) return;
             if (J.Str(par0, "type") == "workspace" && J.Str(par0, "tilingDirection") == axis) return;
         }
+        if (!Prefs.Animations) { glaze.Command("move --direction " + dir); return; } // animasyonlar kapalı (ayarlar)
         // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), tiling arkada yerleştirsin
         var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
         var hs = new List<long>(Rects(wins).Keys);
@@ -1549,6 +1572,8 @@ class Slider
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
+        // Animasyonlar kapalı (ayarlar): workspace doğrudan değişir
+        if (!Prefs.Animations) { foreach (var c in commands) glaze.Command(c); return; }
         var clock = Stopwatch.StartNew();
         Interrupt = false;
         var mons = glaze.Monitors();
@@ -1959,7 +1984,7 @@ class Dwindle
             if (idObject != 0 || hwnd == IntPtr.Zero) return;
             if (Native.GetAncestor(hwnd, 2) != hwnd || !Native.IsWindowVisible(hwnd)) return;
             long h = hwnd.ToInt64();
-            if (Slider.Animating) return;
+            if (Slider.Animating || !Prefs.Animations) return;
             lock (cacheLock) if (rects.ContainsKey(h)) return;               // zaten yönetilen pencere (workspace dönüşü vb.)
             lock (pendLock) if (pendFrozen != null) return;
             int style = Native.GetWindowLong(hwnd, Native.GWL_STYLE), ex = Native.GetWindowLong(hwnd, Native.GWL_EXSTYLE);
@@ -2021,7 +2046,7 @@ class Dwindle
     void OnWindowGone(IntPtr hwnd)
     {
         long h = hwnd.ToInt64();
-        if (Slider.Animating) return;
+        if (Slider.Animating || !Prefs.Animations) return;
         string mid; Rectangle mon;
         Dictionary<long, Native.RECT> vis; Dictionary<long, string> mo; HashSet<long> tl;
         lock (cacheLock)
@@ -2072,7 +2097,7 @@ class Dwindle
     void AnimateChange(long anchorHandle, bool opened, Dictionary<string, object> win)
     {
         var clk = Stopwatch.StartNew();
-        if (ui == null) return;
+        if (ui == null || !Prefs.Animations) return;
         Dictionary<long, Native.RECT> beforeVis; Dictionary<long, string> beforeMon;
         lock (cacheLock) { beforeVis = visual; beforeMon = monOf; }
 
@@ -2560,7 +2585,7 @@ static class ShellWatchdog
         else Slider.Log("shell nöbetçisi: " + why + ", başlatılamadı");
     }
 
-    static void Restart(string why)
+    public static void Restart(string why)
     {
         foreach (var p in Shells()) { try { p.Kill(); p.WaitForExit(3000); } catch { } finally { p.Dispose(); } }
         // Önceki süreç portu bırakana kadar bekle (yoksa yeni shell da sunucusuz açılabiliyor)
@@ -2597,6 +2622,230 @@ static class ShellWatchdog
                 catch (Exception ex) { Slider.Log("shell nöbetçisi: " + ex.Message); }
             }
         }) { IsBackground = true, Priority = ThreadPriority.BelowNormal }.Start();
+    }
+}
+
+// ---------------- Arayüz tercihleri ve config izleme ----------------
+// ~\.config\logical-lunge\prefs.json: {"language": "system" | "tr" | ..., "clock": "24" | "12", "animations": true,
+// "focusColor": "#rrggbb"}. Widget'lar /prefs.json'dan okur (kurulum klasörü yönetici korumalı, yazılamaz); çekirdek
+// animasyon tercihini kullanır. config.yaml değişince (ayarlar penceresi ya da elle) animasyon kenarlıklarının rengi
+// yenilenir.
+static class Prefs
+{
+    static volatile bool animations = true;
+    public static bool Animations { get { return animations; } }
+    public static string FilePath { get { return System.IO.Path.Combine(Paths.ConfigDir, "prefs.json"); } }
+    static readonly object gate = new object();
+
+    public static Dictionary<string, object> Read()
+    {
+        try
+        {
+            var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(FilePath));
+            if (d != null) return d;
+        }
+        catch { }
+        return new Dictionary<string, object>();
+    }
+
+    public static void Load()
+    {
+        object v;
+        animations = !(Read().TryGetValue("animations", out v) && v is bool && !(bool)v);
+    }
+
+    public static string Json()
+    {
+        return new JavaScriptSerializer().Serialize(Read());
+    }
+
+    // key: language | clock | animations | focusColor; değer doğrulanır
+    public static bool Set(string key, string value)
+    {
+        object val;
+        switch (key)
+        {
+            case "language":
+                if (!System.Text.RegularExpressions.Regex.IsMatch(value, "^(system|[a-z]{2})$")) return false;
+                val = value; break;
+            case "clock":
+                if (value != "24" && value != "12") return false;
+                val = value; break;
+            case "animations":
+                if (value != "true" && value != "false") return false;
+                val = value == "true"; break;
+            case "focusColor":
+                if (!System.Text.RegularExpressions.Regex.IsMatch(value, "^#[0-9a-fA-F]{6}$")) return false;
+                val = value.ToLowerInvariant(); break;
+            default: return false;
+        }
+        lock (gate)
+        {
+            var d = Read();
+            d[key] = val;
+            System.IO.File.WriteAllText(FilePath, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
+        }
+        Load();
+        return true;
+    }
+}
+
+// Ayarlar penceresinin (ui/settings.html) çekirdek komutları
+static class Settings
+{
+    static readonly JavaScriptSerializer Js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+
+    public static string Cli(string[] a)
+    {
+        switch (a[0])
+        {
+            case "--settings-get": return Js.Serialize(Get());
+            case "--set-focus-color": return Js.Serialize(SetFocusColor(a.Length > 1 ? a[1] : ""));
+            case "--set-pref": return Js.Serialize(Result(a.Length > 2 && Prefs.Set(a[1], a[2])));
+            case "--health": return Js.Serialize(Health());
+            case "--edit-config": return Js.Serialize(Result(UserLaunch.Start(Keys2.CodeEditor, "\"" + Paths.ConfigFile + "\"", Paths.ConfigDir)));
+            case "--wm":
+                // yalnızca ayar yenileme / yeniden çizme (ayarlar penceresinin düğmeleri)
+                string cmd = a.Length > 1 ? a[1] : "";
+                if (cmd != "wm-reload-config" && cmd != "wm-redraw") return Js.Serialize(Result(false));
+                new TilingClient().Command(cmd);
+                return Js.Serialize(Result(true));
+        }
+        return Js.Serialize(Result(false));
+    }
+
+    static Dictionary<string, object> Result(bool ok) { return new Dictionary<string, object> { { "ok", ok } }; }
+
+    static string Sha256(string text)
+    {
+        using (var sha = System.Security.Cryptography.SHA256.Create())
+            return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(text))).Replace("-", "");
+    }
+
+    static Dictionary<string, object> Get()
+    {
+        var p = Prefs.Read();
+        string cfg = "";
+        try { cfg = System.IO.File.ReadAllText(Paths.ConfigFile); } catch { }
+        var m = System.Text.RegularExpressions.Regex.Match(cfg, @"(?m)^\s*active_color:\s*""(#[0-9a-fA-F]{6})");
+        object lang, clock;
+        return new Dictionary<string, object>
+        {
+            { "focusColor", m.Success ? m.Groups[1].Value.ToLowerInvariant() : "#b69df8" },
+            { "language", p.TryGetValue("language", out lang) ? lang : "system" },
+            { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
+            { "animations", Prefs.Animations },
+            { "version", Updater.Installed() },
+            { "configDir", Paths.ConfigDir },
+            { "configFile", Paths.ConfigFile },
+            { "logsDir", Paths.LogsDir },
+        };
+    }
+
+    // config.yaml'daki borders.active_color (saydamlık korunur) + pencere yöneticisine yeniden yükle. Kurulumdan beri
+    // elle değiştirilmemiş config bu değişiklikten sonra da "bizim" sayılır: güncellemeler yeni sürümünü yazabilir, renk
+    // tercihten (prefs.json focusColor) yeniden uygulanır.
+    static Dictionary<string, object> SetFocusColor(string hex)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(hex, "^#[0-9a-fA-F]{6}$")) return Result(false);
+        hex = hex.ToLowerInvariant();
+        string cfg = System.IO.File.ReadAllText(Paths.ConfigFile);
+        string hashFile = Paths.State("config.sha256");
+        bool ours = false;
+        try { ours = System.IO.File.Exists(hashFile) && System.IO.File.ReadAllText(hashFile).Trim() == Sha256(cfg); } catch { }
+        var re = new System.Text.RegularExpressions.Regex(@"(?m)^(\s*active_color:\s*"")#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?("")");
+        if (!re.IsMatch(cfg)) return Result(false);
+        string next = re.Replace(cfg, x => x.Groups[1].Value + hex + x.Groups[2].Value + x.Groups[3].Value, 1);
+        System.IO.File.WriteAllText(Paths.ConfigFile, next, new UTF8Encoding(false));
+        if (ours) System.IO.File.WriteAllText(hashFile, Sha256(next));
+        Prefs.Set("focusColor", hex);
+        try { new TilingClient().Command("wm-reload-config"); } catch { }
+        var r = Result(true);
+        r["focusColor"] = hex;
+        return r;
+    }
+
+    static Dictionary<string, object> Part(string key, Process p)
+    {
+        var d = new Dictionary<string, object> { { "key", key }, { "running", p != null } };
+        if (p == null) return d;
+        try { d["pid"] = p.Id; } catch { }
+        try { d["uptime"] = (int)(DateTime.Now - p.StartTime).TotalSeconds; } catch { }
+        try { d["memMB"] = (int)(p.PrivateMemorySize64 / (1024 * 1024)); } catch { }
+        try { d["handles"] = p.HandleCount; } catch { }
+        return d;
+    }
+
+    static Process Oldest(string name)
+    {
+        Process best = null;
+        foreach (var p in Process.GetProcessesByName(name))
+        {
+            try { if (best == null || p.StartTime < best.StartTime) { if (best != null) best.Dispose(); best = p; continue; } } catch { }
+            p.Dispose();
+        }
+        return best;
+    }
+
+    // Parçaların durumu, son kara kutu kaydı ve nöbetçilerin son işleri (core.log'dan)
+    static Dictionary<string, object> Health()
+    {
+        Process core = null;
+        try { core = Process.GetProcessById(int.Parse(System.IO.File.ReadAllText(Supervisor.PidFile).Trim())); if (!core.ProcessName.Equals(Names.Core, StringComparison.OrdinalIgnoreCase)) { core.Dispose(); core = null; } } catch { core = null; }
+        var parts = new List<object> { Part("core", core), Part("tiling", Oldest(Names.Tiling)), Part("shell", Oldest(Names.Shell)) };
+        var events = new List<string>();
+        string blackBox = null;
+        try
+        {
+            string log = System.IO.Path.Combine(Paths.LogsDir, "core.log");
+            var lines = new List<string>();
+            using (var fs = new System.IO.FileStream(log, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite))
+            {
+                long start = Math.Max(0, fs.Length - 400000);
+                fs.Seek(start, System.IO.SeekOrigin.Begin);
+                using (var sr = new System.IO.StreamReader(fs, Encoding.UTF8)) { string l; while ((l = sr.ReadLine()) != null) lines.Add(l); }
+            }
+            foreach (var l in lines)
+            {
+                if (l.Contains("KARA KUTU")) blackBox = l;
+                else if (l.Contains("nöbetçisi") || l.Contains("masaüstü") || l.Contains("CRASH")) events.Add(l);
+            }
+        }
+        catch { }
+        if (events.Count > 6) events = events.GetRange(events.Count - 6, 6);
+        object elevated = null;
+        try { var cj = Js.Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(Paths.State("core.json"))); cj.TryGetValue("elevated", out elevated); } catch { }
+        return new Dictionary<string, object> { { "parts", parts }, { "elevated", elevated }, { "blackBox", blackBox }, { "events", events }, { "logsDir", Paths.LogsDir } };
+    }
+}
+
+static class ConfigWatch
+{
+    static System.IO.FileSystemWatcher watcher;
+    static System.Threading.Timer configTimer;
+
+    public static void Start(Control ui)
+    {
+        Prefs.Load();
+        try
+        {
+            watcher = new System.IO.FileSystemWatcher(Paths.ConfigDir) { NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.Size };
+            // Kaydederken dosya birkaç kez yazılır: son değişiklikten 300 ms sonra bir kez oku
+            configTimer = new System.Threading.Timer(_ =>
+            {
+                BorderStyle.Load();
+                try { ui.BeginInvoke((Action)Slider.RepaintRings); } catch { }
+            }, null, Timeout.Infinite, Timeout.Infinite);
+            System.IO.FileSystemEventHandler on = (s, e) =>
+            {
+                if (e.Name.Equals("prefs.json", StringComparison.OrdinalIgnoreCase)) Prefs.Load();
+                else if (e.Name.Equals("config.yaml", StringComparison.OrdinalIgnoreCase)) configTimer.Change(300, Timeout.Infinite);
+            };
+            watcher.Changed += on; watcher.Created += on;
+            watcher.Renamed += (s, e) => on(s, e);
+            watcher.EnableRaisingEvents = true;
+        }
+        catch (Exception ex) { Slider.Log("ayar izleme: " + ex.Message); }
     }
 }
 
@@ -3299,7 +3548,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -3345,6 +3594,8 @@ static class Toasts
                 Keys2.OverviewSignal(target.EndsWith("hide") ? "hide" : "show"); status = "204 No Content";
             }
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
+            // Arayüz tercihleri (dil, saat, animasyon): widget'lar sayfa çizilmeden önce okur
+            else if (target == "/prefs.json" || target.StartsWith("/prefs.json?")) { body = Prefs.Json(); status = "200 OK"; }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {
                 // Super menüsünün uygulama listesi (build-apps.ps1 kullanıcının veri klasörüne yazar)
@@ -3371,6 +3622,12 @@ static class Toasts
                 else if (act == "restart-desktop" && SelfHeal.IsMain)
                 {
                     ThreadPool.QueueUserWorkItem(_ => Supervisor.RestartDesktopDetached());
+                    status = "202 Accepted";
+                }
+                // Ayarlar penceresi: dil / saat biçimi / animasyon tercihi widget'lar yeniden açılınca uygulanır
+                else if (act == "restart-shell" && SelfHeal.IsMain)
+                {
+                    ThreadPool.QueueUserWorkItem(_ => ShellWatchdog.Restart("tercihler değişti"));
                     status = "202 Accepted";
                 }
                 else if (act == "stop-desktop" && SelfHeal.IsMain)
@@ -4177,6 +4434,8 @@ class Keys2
                                 @"%LOCALAPPDATA%\Programs\cursor\Cursor.exe", @"%LOCALAPPDATA%\Programs\Windsurf\Windsurf.exe", @"%ProgramFiles%\Notepad++\notepad++.exe") ?? "notepad.exe" },
         { "editor", "notepad.exe" },
     };
+    // Ayarlar penceresinin "config'i düzenle"si için (VS Code / Cursor / Windsurf / Notepad++, yoksa Not Defteri)
+    public static string CodeEditor { get { return Apps["code"]; } }
     static string FirstExisting(params string[] paths)
     {
         foreach (var p in paths) { var e = Environment.ExpandEnvironmentVariables(p); if (System.IO.File.Exists(e)) return e; }
@@ -5672,7 +5931,7 @@ static class Updater
     }
     static string StatusPath { get { return System.IO.Path.Combine(Dir, "status.json"); } }
 
-    static string Installed()
+    public static string Installed()
     {
         try { string f = Paths.Version; if (System.IO.File.Exists(f)) return System.IO.File.ReadAllText(f).Trim(); } catch { }
         try
@@ -7492,15 +7751,13 @@ static class Program
         {
             // shell (ebeveyn) kapanınca bu kopya da kapansın: yoksa shell'den miras aldığı sunucu
             // soketini tutarak yeni shell'in açılmasını engelliyor.
+            // Kabuğun kapanması beklenir (yoklama değil): kopya hemen çıkar, kurulum klasöründeki lunge.exe'yi de açık tutmaz
             int parent = ParentPid();
             new Thread(() =>
             {
-                while (true)
-                {
-                    Thread.Sleep(1500);
-                    try { if (parent <= 0 || Process.GetProcessById(parent).HasExited) Environment.Exit(0); }
-                    catch { Environment.Exit(0); }
-                }
+                try { using (var p = Process.GetProcessById(parent)) p.WaitForExit(); }
+                catch { }
+                Environment.Exit(0);
             }) { IsBackground = true }.Start();
             var stdout = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
             // Helper'ın koruyucusu: asıl helper (Super, animasyonlar, pano...) tamamen kapanmışsa ve ~10 sn içinde geri
@@ -7692,9 +7949,30 @@ static class Program
         if (args.Length == 1 && args[0] == "--restart-desktop-now") { Supervisor.RestartDesktop(); return; }
         // lunge.exe --stop-desktop: kurulum / güncelleme / kaldırma öncesi masaüstünü kapatır (bakım işareti kalır)
         if (args.Length == 1 && args[0] == "--stop-desktop") { Supervisor.StopDesktopFromAnywhere(); return; }
+        // lunge.exe --restart-shell: kabuğu yeniden aç (ayarlar penceresi, tercihler değişince)
+        if (args.Length == 1 && args[0] == "--restart-shell") { Supervisor.RequestFromCore("restart-shell"); return; }
+        // Ayarlar penceresi: --settings-get | --set-focus-color #rrggbb | --set-pref <anahtar> <değer> | --health |
+        //                    --edit-config | --wm wm-reload-config|wm-redraw   -> JSON
+        if (args.Length >= 1 && (args[0] == "--settings-get" || args[0] == "--set-focus-color" || args[0] == "--set-pref" || args[0] == "--health" || args[0] == "--edit-config" || args[0] == "--wm"))
+        {
+            string st;
+            try { st = Settings.Cli(args); }
+            catch (Exception ex) { st = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "ok", false }, { "error", ex.GetBaseException().Message } }); }
+            var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            so.Write(st); so.Flush();
+            return;
+        }
         // lunge.exe --shutdown: tiling kapanırken (config'deki shutdown_commands) çalışır. Asıl işi çekirdek yapar;
         // bu yedek çekirdek yoksa da shell'in kapanıp Windows görev çubuğunun geri gelmesini sağlar.
         if (args.Length == 1 && args[0] == "--shutdown") { if (!Maint.Quiet()) Supervisor.Shutdown("çıkış komutu", false); return; }
+
+        // Tanınmayan bir komut (ör. eski bir çekirdeğe yeni bir sürümün komutu) asıl çekirdek gibi açılıp masaüstünü
+        // başlatmasın: yalnızca argümansız ya da --respawn ile açılan süreç asıl çekirdektir
+        if (args.Length > 0 && !(args.Length == 1 && args[0] == "--respawn"))
+        {
+            Slider.Log("bilinmeyen komut: " + string.Join(" ", args));
+            Environment.Exit(2);
+        }
 
         // Yakalanmayan her hatayı yığın iziyle log'a yaz (sessiz çökme olmasın)
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
@@ -7719,6 +7997,13 @@ static class Program
         // Pencere yöneticisinin config'i kurulum klasörüne %LUNGE_HOME% ile başvurur (shell-exec komutları); başlattığı
         // alt süreçlere bu ortam değişkeni geçer
         Environment.SetEnvironmentVariable("LUNGE_HOME", Paths.Install);
+        // Ayarlar penceresinin sağlık sayfası için (yönetici mi, sürüm, ne zamandan beri)
+        try
+        {
+            System.IO.File.WriteAllText(Paths.State("core.json"), new JavaScriptSerializer().Serialize(new Dictionary<string, object> {
+                { "pid", Process.GetCurrentProcess().Id }, { "elevated", UserLaunch.Elevated }, { "started", DateTime.Now.ToString("o") }, { "version", Updater.Installed() } }));
+        }
+        catch { }
         // Kök süreç: eksik parçaları (perde, tiling, shell) kendi alt süreçleri olarak aç. Çekirdeğin kendi kurulumunu
         // beklemez; perde hemen gelsin.
         new Thread(() => { try { Supervisor.BringUp(true); } catch (Exception ex) { Slider.Log("kök: " + ex.Message); } }) { IsBackground = true, Name = "bring-up" }.Start();
@@ -7736,6 +8021,7 @@ static class Program
         // Monitör takıldı/çıkarıldı ya da çözünürlük değişti: yeni dikdörtgenlerin katmanı da hazır beklesin
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s0, e0) => { try { ui.BeginInvoke((Action)slider.Warm); } catch { } };
         Slider.Ui = ui;
+        ConfigWatch.Start(ui); // prefs.json (animasyonlar) ve config.yaml (odak rengi) değişince
         var dwindle = new Dwindle(new TilingClient(), ui, slider);
         dwindle.Start(); // kendi IPC bağlantısıyla: slide'ı beklemesin
         dwindle.HookNewWindows();

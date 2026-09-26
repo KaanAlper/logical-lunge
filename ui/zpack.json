@@ -233,6 +233,62 @@
             ]
         },
         {
+            "name": "settings",
+            "htmlPath": "./settings.html",
+            "zOrder": "top_most",
+            "shownInTaskbar": false,
+            "focused": false,
+            "resizable": false,
+            "transparent": true,
+            "includeFiles": [
+                "*.html",
+                "*.css",
+                "*.json",
+                "*.js",
+                "lib/*.js",
+                "fonts/*.woff2"
+            ],
+            "caching": {
+                "rules": [
+                    {
+                        "urlRegex": "apps\\.json",
+                        "duration": 0
+                    }
+                ],
+                "defaultDuration": 604800
+            },
+            "privileges": {
+                "shellCommands": [
+                    {
+                        "program": "explorer",
+                        "argsRegex": ".*"
+                    },
+                    {
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
+                        "argsRegex": ".*"
+                    }
+                ]
+            },
+            "presets": [
+                {
+                    "name": "default",
+                    "anchor": "center",
+                    "offsetX": "0px",
+                    "offsetY": "0px",
+                    "width": "880px",
+                    "height": "620px",
+                    "monitorSelection": {
+                        "type": "primary"
+                    },
+                    "dockToEdge": {
+                        "edge": null,
+                        "windowMargin": "0px",
+                        "enabled": false
+                    }
+                }
+            ]
+        },
+        {
             "name": "toast",
             "htmlPath": "./toast.html",
             "zOrder": "top_most",

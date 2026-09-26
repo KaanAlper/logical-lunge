@@ -168,11 +168,13 @@
         useEffect(() => {
           const un1 = listen('ll:sidebar-right-toggle', () => (open ? hide() : show()));
           const un2 = listen('ll:overview-toggle', () => { if (open) hide(); });
+          // Ayarlar penceresinden: paneli bir sayfasıyla aç (ör. kısayol düzenleyicisi)
+          const un3 = listen('ll:sidebar-open-page', e => { setPage(e.payload); if (!open) show(); });
           const onBlur = () => { if (open) hide(); };
           const onKey = e => { if (e.key === 'Escape') hide(); };
           window.addEventListener('blur', onBlur);
           window.addEventListener('keydown', onKey);
-          return () => { un1.then(f => f()); un2.then(f => f()); window.removeEventListener('blur', onBlur); window.removeEventListener('keydown', onKey); };
+          return () => { un1.then(f => f()); un2.then(f => f()); un3.then(f => f()); window.removeEventListener('blur', onBlur); window.removeEventListener('keydown', onKey); };
         }, [open]);
 
         // Panel her zaman odak almayabiliyor (blur hiç gelmez): başka pencereye odak geçince
@@ -497,7 +499,7 @@
                 <button className="qbtn" title="Kısayollar" onClick={() => onPage('keys')}>
                   <Icon name="keyboard" />
                 </button>
-                <button className="qbtn" title="Ayarlar klasörü" onClick={() => lunge.shellSpawn('explorer', ['{{USERPROFILE_ESC}}\\.config\\logical-lunge'])}>
+                <button className="qbtn" title="Ayarlar" onClick={() => { emit('ll:sidebar-right-toggle').catch(() => {}); setTimeout(() => emit('ll:settings-toggle').catch(() => {}), 150); }}>
                   <Icon name="settings" />
                 </button>
                 <button className="qbtn" title="Oturum" onClick={() => { emit('ll:sidebar-right-toggle').catch(() => {}); setTimeout(() => emit('ll:session-toggle').catch(() => {}), 150); }}>

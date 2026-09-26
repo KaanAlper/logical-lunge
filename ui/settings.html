@@ -1,0 +1,467 @@
+﻿<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) aynı dilde. Yeni dil / metin: i18n.src.js.
+// Kurulumda seçilen dil ve saat prefs.json'da ({"language": "system" | "tr" | "en" ..., "clock": "24" | "12"}):
+// dil "system" değilse sistem dilinin yerine geçer; window.LL_HOUR12 saatlerin 12 saatlik (AM/PM) çizilmesi içindir.
+(function () {
+  var prefs = {};
+  try {
+    var px = new XMLHttpRequest(); px.open('GET', './prefs.json', false); px.send();
+    if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
+  } catch (e) {}
+  window.LL_PREFS = prefs;
+  window.LL_HOUR12 = prefs.clock === '12';
+  var lang = prefs.language && prefs.language !== 'system' ? prefs.language
+    : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel kabuk sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
+// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
+// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      apply();
+      return next;
+    }
+  };
+})();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="./settings.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      // Logical Lunge ayarlar penceresi: sağ paneldeki dişliyle ekranın ortasında açılır (ll:settings-toggle).
+      // Görünüm (tema, odak rengi, animasyonlar), dil ve saat, kısayollar, gece ışığı, sistem sağlığı, gelişmiş, hakkında.
+      // Değişiklikleri çekirdek yapar (lunge.exe --set-focus-color / --set-pref / ...); dil ve saat gibi arayüz tercihleri
+      // kabuk yeniden açılınca uygulanır.
+      import React, { useState, useEffect, useRef, useCallback } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import * as lunge from 'lunge/shell';
+      import { listen, emit } from '@tauri-apps/api/event';
+
+      const win = lunge.currentWidget().tauriWindow;
+      const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
+      const helper = args => lunge.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
+      const json = s => { try { return JSON.parse(s); } catch { return null; } };
+      const Icon = ({ name, fill, style }) => <span className={`icon ${fill ? 'fill' : ''}`} style={style}>{name}</span>;
+
+      const COLORS = [['Mor', '#b69df8'], ['Mavi', '#8ab4f8'], ['Camgöbeği', '#7fd4c9'], ['Yeşil', '#a6d189'], ['Pembe', '#f5a3c7'], ['Turuncu', '#ffb77c'], ['Kırmızı', '#f28b82']];
+      const LANGS = [['system', 'Sistem dili'], ['tr', 'Türkçe'], ['en', 'English'], ['de', 'Deutsch'], ['fr', 'Français'], ['es', 'Español'], ['it', 'Italiano'], ['pt', 'Português'],
+        ['ru', 'Русский'], ['uk', 'Українська'], ['pl', 'Polski'], ['ja', '日本語'], ['zh', '中文'], ['ko', '한국어'], ['ar', 'العربية']];
+      const SECTIONS = [['look', 'palette', 'Görünüm'], ['lang', 'translate', 'Dil ve saat'], ['keys', 'keyboard', 'Kısayollar'], ['night', 'nightlight', 'Gece ışığı'],
+        ['health', 'monitor_heart', 'Sistem sağlığı'], ['adv', 'tune', 'Gelişmiş'], ['about', 'info', 'Hakkında']];
+
+      function formatUptime(sec) {
+        if (sec == null) return '—';
+        const d = Math.floor(sec / 86400), h = Math.floor(sec % 86400 / 3600), m = Math.floor(sec % 3600 / 60);
+        return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+      }
+
+      function Switch({ on, onChange }) {
+        return <button className={`switch ${on ? 'on' : ''}`} onClick={() => onChange(!on)} aria-label="Aç / kapat"><span /></button>;
+      }
+      function Seg({ items, value, onChange }) {
+        return (
+          <div className="seg">
+            {items.map(([k, label, icon]) => (
+              <button key={k} className={value === k ? 'sel' : ''} onClick={() => onChange(k)}>{icon && <Icon name={icon} />}{label}</button>
+            ))}
+          </div>
+        );
+      }
+      function Row({ icon, label, sub, children, onClick }) {
+        return (
+          <div className={`row ${onClick ? 'click' : ''}`} onClick={onClick}>
+            {icon && <Icon name={icon} />}
+            <div className="txt"><span className="lbl">{label}</span>{sub && <span className="sub">{sub}</span>}</div>
+            {children}
+          </div>
+        );
+      }
+
+      // ---------------------------------------------------------------- Görünüm
+      function LookPage({ s, update }) {
+        const [theme, setTheme] = useState(window.llTheme?.get?.() ?? 'dark');
+        const [hex, setHex] = useState('');
+        const [bad, setBad] = useState(false);
+        const setThemeTo = t => { if (window.llTheme && window.llTheme.get() !== t) window.llTheme.toggle(); setTheme(t); };
+        const setColor = c => helper(['--set-focus-color', c]).then(o => { const r = json(o); if (r?.ok) update({ focusColor: r.focusColor }); }).catch(() => {});
+        const applyHex = () => {
+          const v = (hex.startsWith('#') ? hex : '#' + hex).toLowerCase();
+          if (/^#[0-9a-f]{6}$/.test(v)) { setBad(false); setColor(v); } else setBad(true);
+        };
+        const custom = !COLORS.some(([, c]) => c === s.focusColor);
+        return (
+          <>
+            <div className="sec-title">Tema</div>
+            <div className="card">
+              <Row icon={theme === 'light' ? 'light_mode' : 'dark_mode'} label="Kabuk teması" sub="Yalnızca Logical Lunge'u değiştirir, Windows temasına dokunmaz">
+                <Seg items={[['dark', 'Koyu', 'dark_mode'], ['light', 'Aydınlık', 'light_mode']]} value={theme} onChange={setThemeTo} />
+              </Row>
+            </div>
+            <div className="sec-title">Odak rengi</div>
+            <div className="card">
+              <Row icon="border_style" label="Etkin pencerenin kenarlığı" sub="Pencere yöneticisi hemen yeni renge geçer" />
+              <div className="swatches">
+                {COLORS.map(([name, c]) => (
+                  <button key={c} title={name} className={`sw ${s.focusColor === c ? 'sel' : ''}`} style={{ background: c }} onClick={() => setColor(c)} />
+                ))}
+              </div>
+              <div className="hexrow">
+                <span className="dot" style={{ background: s.focusColor }} />
+                <input value={hex} placeholder={custom ? s.focusColor : '#rrggbb'} maxLength={7} spellCheck={false}
+                  onChange={e => { setHex(e.target.value.trim()); setBad(false); }} onKeyDown={e => e.key === 'Enter' && applyHex()} />
+                <button className="btn tonal" onClick={applyHex}><Icon name="colorize" />Özel rengi uygula</button>
+                {bad && <span className="err">Renk kodu #rrggbb biçiminde olmalı</span>}
+              </div>
+            </div>
+            <div className="sec-title">Hareket</div>
+            <div className="card">
+              <Row icon="animation" label="Animasyonlar" sub="Workspace kaymaları, pencere açma / kapama / taşıma ve menü geçişleri">
+                <Switch on={s.animations !== false} onChange={v => helper(['--set-pref', 'animations', String(v)]).then(() => update({ animations: v, dirty: true })).catch(() => {})} />
+              </Row>
+            </div>
+            {s.dirty && <ApplyNote />}
+          </>
+        );
+      }
+
+      // Arayüz tercihleri kabuk yeniden açılınca uygulanır (pencere yöneticisi ve animasyonlar hemen)
+      function ApplyNote() {
+        return (
+          <div className="note">
+            <Icon name="info" />
+            <span style={{ flex: 1 }}>Arayüzdeki değişiklikler kabuk yeniden açılınca uygulanır.</span>
+            <button className="btn" onClick={() => helper(['--restart-shell']).catch(() => {})}><Icon name="refresh" />Şimdi uygula</button>
+          </div>
+        );
+      }
+
+      // ---------------------------------------------------------------- Dil ve saat
+      function LangPage({ s, update }) {
+        const now = new Date();
+        const t24 = now.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', hour12: false });
+        const t12 = now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+        const set = (k, v) => helper(['--set-pref', k, v]).then(o => { if (json(o)?.ok) update({ [k]: v, dirty: true }); }).catch(() => {});
+        return (
+          <>
+            <div className="sec-title">Dil</div>
+            <div className="card">
+              <Row icon="translate" label="Arayüz dili" sub="Sistem dili seçiliyse Windows'un dili kullanılır">
+                <select value={s.language || 'system'} onChange={e => set('language', e.target.value)}>
+                  {LANGS.map(([k, name]) => <option key={k} value={k}>{name}</option>)}
+                </select>
+              </Row>
+            </div>
+            <div className="sec-title">Saat</div>
+            <div className="card">
+              <Row icon="schedule" label="Saat biçimi" sub="Bar, bildirimler ve pano geçmişi">
+                <Seg items={[['24', `24 saat · ${t24}`], ['12', `12 saat · ${t12}`]]} value={s.clock || '24'} onChange={v => set('clock', v)} />
+              </Row>
+            </div>
+            {s.dirty && <ApplyNote />}
+          </>
+        );
+      }
+
+      // ---------------------------------------------------------------- Kısayollar
+      function KeysPage({ close }) {
+        const openEditor = () => { close(); setTimeout(() => emit('ll:sidebar-open-page', 'keys').catch(() => {}), 180); };
+        return (
+          <>
+            <div className="sec-title">Logical Lunge kısayolları</div>
+            <div className="card">
+              <Row icon="keyboard" label="Kısayolları düzenle" sub="Super, workspace geçişleri, pencere taşıma, uygulamalar: sağ paneldeki düzenleyicide" onClick={openEditor}>
+                <Icon name="chevron_right" />
+              </Row>
+            </div>
+            <div className="sec-title">Pencere yöneticisi</div>
+            <div className="card">
+              <Row icon="data_object" label="Pencere yöneticisi kısayolları" sub="config.yaml dosyasının keybindings bölümünde; kaydedince hemen uygulanır" onClick={() => helper(['--edit-config']).catch(() => {})}>
+                <Icon name="open_in_new" />
+              </Row>
+            </div>
+          </>
+        );
+      }
+
+      // ---------------------------------------------------------------- Gece ışığı
+      function NightPage() {
+        const [n, setN] = useState(null);
+        const [level, setLevel] = useState(50);
+        const timer = useRef(null);
+        const apply = o => { const r = json(o); if (r) { setN(r); setLevel(r.level ?? 50); } };
+        useEffect(() => { helper(['--nightlight', 'status']).then(apply).catch(() => {}); }, []);
+        const set = (k, v) => helper(['--nightlight-set', k, String(v)]).then(apply).catch(() => {});
+        const slide = v => { setLevel(v); clearTimeout(timer.current); timer.current = setTimeout(() => set('level', v), 60); };
+        if (!n) return null;
+        const mode = n.mode || 'manual';
+        const kelvin = Math.round((6500 - 46 * level) / 100) * 100;
+        return (
+          <>
+            <div className="sec-title">Gece ışığı</div>
+            <div className="card">
+              <Row icon="nightlight" label="Gece ışığı" sub="Ekranın mavi ışığını azaltır (tüm monitörler)">
+                <Switch on={!!n.on} onChange={() => helper(['--nightlight', 'toggle']).then(apply).catch(() => {})} />
+              </Row>
+              <Row icon="schedule" label="Zamanlama">
+                <Seg items={[['manual', 'Her zaman', 'wb_sunny'], ['after', 'Saatten sonra', 'bedtime'], ['range', 'Saat aralığı', 'schedule']]} value={mode} onChange={v => set('mode', v)} />
+              </Row>
+              {mode !== 'manual' && (
+                <Row icon="more_time" label="Saatler" sub={mode === 'after' ? "Sabah 07:00'de kapanır" : null}>
+                  <input type="time" value={n.from || '20:00'} onChange={e => e.target.value && set('from', e.target.value)} />
+                  {mode === 'range' && <input type="time" value={n.to || '07:00'} onChange={e => e.target.value && set('to', e.target.value)} />}
+                </Row>
+              )}
+              <Row icon="tonality" label="Yoğunluk">
+                <div className="slider">
+                  <input type="range" min="0" max="100" step="5" value={level} onChange={e => slide(+e.target.value)} />
+                  <span className="val">%{level} · {kelvin}K</span>
+                </div>
+              </Row>
+            </div>
+          </>
+        );
+      }
+
+      // ---------------------------------------------------------------- Sistem sağlığı
+      const PART_NAMES = { core: ['Çekirdek', 'memory'], tiling: ['Pencere yöneticisi', 'grid_view'], shell: ['Kabuk', 'web_asset'] };
+      function HealthPage({ open, s }) {
+        const [h, setH] = useState(null);
+        const load = useCallback(() => helper(['--health']).then(o => { const r = json(o); if (r) setH(r); }).catch(() => {}), []);
+        useEffect(() => {
+          if (!open) return;
+          load();
+          const t = setInterval(load, 3000);
+          return () => clearInterval(t);
+        }, [open]);
+        if (!h) return null;
+        return (
+          <>
+            <div className="sec-title">Parçalar</div>
+            <div className="parts">
+              {h.parts.map(p => {
+                const [name, icon] = PART_NAMES[p.key] || [p.key, 'widgets'];
+                return (
+                  <div key={p.key} className="part">
+                    <div className="ph"><Icon name={icon} />{name}</div>
+                    <span className={`state ${p.running ? '' : 'bad'}`}>{p.running ? 'Çalışıyor' : 'Çalışmıyor'}</span>
+                    {p.running && <div className="stat"><span>Açık süre</span><span>{formatUptime(p.uptime)}</span></div>}
+                    {p.running && <div className="stat"><span>Bellek</span><span>{p.memMB ?? '—'} MB</span></div>}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="sec-title">Durum</div>
+            <div className="card">
+              <Row icon="admin_panel_settings" label="Yönetici haklarıyla" sub="Kısayollar ve pencere yönetimi Görev Yöneticisi gibi yönetici pencerelerinde de çalışır">
+                <span className={`state ${h.elevated ? '' : 'bad'}`}>{h.elevated ? 'Evet' : 'Hayır'}</span>
+              </Row>
+              <Row icon="flight" label="Kara kutu" sub={h.blackBox ? h.blackBox.replace(/^(\S+) KARA KUTU: /, '$1 · ') : 'Yavaşlama kaydı yok'} />
+            </div>
+            {h.events?.length > 0 && (
+              <>
+                <div className="sec-title">Son olaylar</div>
+                <div className="card"><div className="log">{h.events.join('\n')}</div></div>
+              </>
+            )}
+            <div className="sec-title">İşlemler</div>
+            <div className="btns">
+              <button className="btn" onClick={() => helper(['--restart-desktop']).catch(() => {})}><Icon name="restart_alt" />Masaüstünü yenile</button>
+              <button className="btn tonal" onClick={() => helper(['--black-box']).then(load).catch(() => {})}><Icon name="flight" />Kara kutu kaydı al</button>
+              <button className="btn outline" onClick={() => lunge.shellSpawn('explorer', [h.logsDir]).catch(() => {})}><Icon name="folder_open" />Log klasörünü aç</button>
+            </div>
+          </>
+        );
+      }
+
+      // ---------------------------------------------------------------- Gelişmiş
+      function AdvancedPage({ s }) {
+        return (
+          <>
+            <div className="sec-title">Ayar dosyaları</div>
+            <div className="card">
+              <Row icon="folder_open" label="Ayar klasörünü aç" sub={s.configDir} onClick={() => lunge.shellSpawn('explorer', [s.configDir]).catch(() => {})}><Icon name="open_in_new" /></Row>
+              <Row icon="edit_document" label="config.yaml'ı düzenle" sub="Pencere yöneticisi, kenarlıklar, kurallar ve kısayollar" onClick={() => helper(['--edit-config']).catch(() => {})}><Icon name="open_in_new" /></Row>
+            </div>
+            <div className="sec-title">Pencere yöneticisi</div>
+            <div className="card">
+              <Row icon="sync" label="Pencere yöneticisi ayarlarını yenile" sub="config.yaml'daki değişiklikleri yeniden okur" onClick={() => helper(['--wm', 'wm-reload-config']).catch(() => {})}><Icon name="chevron_right" /></Row>
+              <Row icon="refresh" label="Pencereleri yeniden çiz" sub="Yerleşim bozulduysa pencereleri yeniden yerleştirir" onClick={() => helper(['--wm', 'wm-redraw']).catch(() => {})}><Icon name="chevron_right" /></Row>
+            </div>
+          </>
+        );
+      }
+
+      // ---------------------------------------------------------------- Hakkında
+      function AboutPage({ s, close }) {
+        return (
+          <>
+            <div className="card">
+              <div className="about">
+                <div className="logo">
+                  <i style={{ left: 15, top: 13, width: 11, height: 38 }} />
+                  <i style={{ left: 15, top: 40, width: 34, height: 11 }} />
+                  <i style={{ left: 31, top: 13, width: 18, height: 22, background: '#7f67be' }} />
+                </div>
+                <div className="txt">
+                  <h2>Logical Lunge</h2>
+                  <span className="sub">{`Sürüm ${s.version || '—'} · GPL-3.0`}</span>
+                </div>
+              </div>
+            </div>
+            <div className="sec-title">Güncellemeler</div>
+            <div className="card">
+              <Row icon="system_update_alt" label="Güncellemeleri denetle" sub="Yeni sürüm varsa sağ üstte bir kart çıkar" onClick={() => { close(); emit('ll:update-check').catch(() => {}); }}><Icon name="chevron_right" /></Row>
+              <Row icon="code" label="Kaynak kodu" sub="github.com/KaanAlper/logical-lunge" onClick={() => helper(['--open', 'https://github.com/KaanAlper/logical-lunge']).catch(() => {})}><Icon name="open_in_new" /></Row>
+            </div>
+          </>
+        );
+      }
+
+      function App() {
+        const [open, setOpen] = useState(false);
+        const [page, setPage] = useState('look');
+        const [s, setS] = useState({});
+        const update = useCallback(patch => setS(x => ({ ...x, ...patch })), []);
+        const load = useCallback(() => helper(['--settings-get']).then(o => { const r = json(o); if (r) setS(x => ({ ...r, dirty: x.dirty })); }).catch(() => {}), []);
+
+        const hide = useCallback(() => {
+          setOpen(false);
+          setTimeout(() => win.hide().catch(() => {}), 220);
+        }, []);
+        const show = useCallback(async () => {
+          load();
+          try { await win.show(); } catch {}
+          // en üste al ve odakla (kabuğun setAlwaysOnTop'u gizle/göster sonrası etkisiz kalabiliyor)
+          helper(['--raise', 'Logical Lunge · settings']).catch(() => {});
+          requestAnimationFrame(() => setOpen(true));
+        }, []);
+
+        useEffect(() => { win.hide().catch(() => {}); }, []);
+        useEffect(() => {
+          const un1 = listen('ll:settings-toggle', () => (open ? hide() : show()));
+          const un2 = listen('ll:overview-toggle', () => { if (open) hide(); });
+          const onKey = e => { if (e.key === 'Escape') hide(); };
+          window.addEventListener('keydown', onKey);
+          return () => { un1.then(f => f()); un2.then(f => f()); window.removeEventListener('keydown', onKey); };
+        }, [open]);
+
+        const title = SECTIONS.find(x => x[0] === page)?.[2];
+        return (
+          <div className={`win ${open ? 'open' : ''}`}>
+            <nav className="nav">
+              <div className="nav-title"><Icon name="settings" fill />Ayarlar</div>
+              {SECTIONS.map(([k, icon, label]) => (
+                <button key={k} className={page === k ? 'sel' : ''} onClick={() => setPage(k)}><Icon name={icon} />{label}</button>
+              ))}
+            </nav>
+            <div className="main">
+              <div className="head">
+                <h1>{title}</h1>
+                <button className="qbtn" title="Ayarları kapat" onClick={hide}><Icon name="close" /></button>
+              </div>
+              <div className="body">
+                {page === 'look' && <LookPage s={s} update={update} />}
+                {page === 'lang' && <LangPage s={s} update={update} />}
+                {page === 'keys' && <KeysPage close={hide} />}
+                {page === 'night' && <NightPage />}
+                {page === 'health' && <HealthPage open={open} s={s} />}
+                {page === 'adv' && <AdvancedPage s={s} />}
+                {page === 'about' && <AboutPage s={s} close={hide} />}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
