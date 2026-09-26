@@ -3,3 +3,5 @@
 *.cs text eol=crlf
 *.exe binary
 *.png binary
+*.fish text eol=lf
+*.sh text eol=lf
