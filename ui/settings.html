@@ -206,6 +206,12 @@
               <Row icon="animation" label="Animasyonlar" sub="Workspace kaymaları, pencere açma / kapama / taşıma ve menü geçişleri">
                 <Switch on={s.animations !== false} onChange={v => helper(['--set-pref', 'animations', String(v)]).then(() => update({ animations: v, dirty: true })).catch(() => {})} />
               </Row>
+              {/* Yalnızca dokunmatik yüzeyli bilgisayarlarda; çekirdek hemen uygular */}
+              {s.touchpad && (
+                <Row icon="swipe" label="Dokunmatik yüzey hareketleri" sub="3 parmak: yana workspace kaydırır, yukarı overview, aşağı sağ panel; 4 parmak: pencereyi taşır">
+                  <Switch on={s.gestures !== false} onChange={v => helper(['--set-pref', 'gestures', String(v)]).then(() => update({ gestures: v })).catch(() => {})} />
+                </Row>
+              )}
             </div>
             {s.dirty && <ApplyNote />}
           </>

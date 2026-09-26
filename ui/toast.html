@@ -338,7 +338,15 @@
             buf += chunk;
             const lines = buf.split(/\r?\n/);
             buf = lines.pop();
-            for (const l of lines) { if (l.trim()) { try { show(JSON.parse(l)); } catch {} } }
+            for (const l of lines) {
+              if (!l.trim()) continue;
+              try {
+                const m = JSON.parse(l);
+                // Çekirdekten kabuğa olay (ör. parmak hareketiyle sağ panel): yalnızca ll: olayları
+                if (m.emit) { if (/^ll:[a-z-]+$/.test(m.emit)) emit(m.emit).catch(() => {}); }
+                else show(m);
+              } catch {}
+            }
           });
           p.onExit(() => setTimeout(stream, 3000));
         } catch (e) {

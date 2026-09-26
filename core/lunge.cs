@@ -1215,6 +1215,7 @@ class Slider
 
     public Frozen Freeze(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden = 0)
     {
+        SwipeAbort(); // aynı katman: süren parmak kaydırması bitsin
         Interrupt = false;
         Interlocked.Increment(ref Gen);
         var fz = Stopwatch.StartNew();
@@ -1686,6 +1687,7 @@ class Slider
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
+        SwipeAbort();
         // Animasyonlar kapalı (ayarlar) ya da bu hareketin süresi 0 (config.yaml): workspace doğrudan değişir
         bool carry0 = commands.Length == 2 && commands[0].StartsWith("move --") && commands[1].StartsWith("focus --");
         if (!Prefs.Animations || (carry0 ? Anims.Carry : Anims.Workspaces).Ms <= 0) { foreach (var c in commands) glaze.Command(c); return; }
@@ -1984,6 +1986,197 @@ class Slider
         overlay.Conceal(); RingsClear(); PinsClear();
         foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
         Log("done " + clock.ElapsedMilliseconds + "ms new=" + newThumbs.Count);
+    }
+
+    // ---- Parmakla kaydırma (dokunmatik yüzey; Hyprland workspace_swipe) ----
+    // Workspace parmakla birlikte kayar. İki komşu workspace'in önizlemeleri de baştan hazırlanır: parmak hangi yöne
+    // giderse o yan görünür, yön ortada değişebilir. Her dokunma raporunda yalnızca konumlar güncellenir (bekleme
+    // yok, DWM kendi hızında birleştirir). Bırakınca yolun %30'unu geçtiyse ya da parmak o yöne hızlıysa geçiş
+    // tamamlanır, değilse geri döner. Komşu: bir önceki / sonraki numara; başka monitörde gösterilen workspace
+    // buraya çekilmez (kenar sayılır). UI thread'inde çalışır (dokunma girdisi de orada gelir).
+    sealed class SwipeScene
+    {
+        public string OldName, PrevName, NextName;
+        public int Mw;
+        public readonly List<Thumb> All = new List<Thumb>(), Old = new List<Thumb>(), Prev = new List<Thumb>(), Next = new List<Thumb>();
+        public double Progress;
+    }
+    SwipeScene swipe;
+    public bool Swiping { get { return swipe != null; } }
+
+    static bool DisplayedElsewhere(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string name)
+    {
+        foreach (var m in mons)
+            if (J.Str(m, "id") != J.Str(mon, "id"))
+                foreach (Dictionary<string, object> w in J.Children(m))
+                    if (J.Str(w, "name") == name && J.Bool(w, "isDisplayed")) return true;
+        return false;
+    }
+
+    static Dictionary<string, object> WorkspaceNode(List<Dictionary<string, object>> mons, string name)
+    {
+        foreach (var m in mons)
+            foreach (Dictionary<string, object> w in J.Children(m))
+                if (J.Str(w, "name") == name) return w;
+        return null;
+    }
+
+    public bool SwipeBegin()
+    {
+        if (swipe != null) return true;
+        if (!Prefs.Animations || Anims.Workspaces.Ms <= 0) return false;
+        var clock = Stopwatch.StartNew();
+        var mons = glaze.Monitors();
+        Dictionary<string, object> oldWs;
+        var mon = FocusedMonitor(mons, out oldWs);
+        int cur;
+        if (mon == null || oldWs == null || !int.TryParse(J.Str(oldWs, "name"), out cur)) return false;
+        string prevName = cur > 1 && !DisplayedElsewhere(mons, mon, (cur - 1).ToString()) ? (cur - 1).ToString() : null;
+        string nextName = cur < MAX_WS && !DisplayedElsewhere(mons, mon, (cur + 1).ToString()) ? (cur + 1).ToString() : null;
+
+        int mx = J.Int(mon, "x"), my = J.Int(mon, "y"), mw = J.Int(mon, "width"), mh = J.Int(mon, "height");
+        int barH = BarPx(mx + mw / 2, my + mh / 2);
+        Interlocked.Increment(ref Gen);
+        UseOverlay(new Rectangle(mx, my + barH, mw, mh - barH));
+        int ox = mx, oy = my + barH;
+        var s = new SwipeScene { OldName = cur.ToString(), PrevName = prevName, NextName = nextName, Mw = mw };
+
+        // Duvar kağıdı (sabit)
+        Native.RECT wsrc;
+        IntPtr wall = WallpaperSource(out wsrc);
+        if (wall != IntPtr.Zero)
+        {
+            var src = new Native.RECT { Left = mx - wsrc.Left, Top = oy - wsrc.Top, Right = mx - wsrc.Left + mw, Bottom = oy - wsrc.Top + mh - barH };
+            var t = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mw, Bottom = mh - barH }, src);
+            if (t != null) s.All.Add(t);
+        }
+        var oldWins = new List<IntPtr>();
+        J.Windows(oldWs, oldWins);
+        foreach (var h in oldWins)
+        {
+            Native.RECT r;
+            if (!Native.IsWindowVisible(h) || !Native.GetWindowRect(h, out r)) continue;
+            var t = RegisterWindow(h, ox, oy);
+            if (t != null) { s.All.Add(t); s.Old.Add(t); }
+        }
+        foreach (int side in new[] { -1, 1 })
+        {
+            string name = side < 0 ? prevName : nextName;
+            var target = name == null ? null : WorkspaceNode(mons, name);
+            if (target == null) continue; // henüz yok: boş workspace, yalnızca duvar kağıdı
+            var tw = new List<Dictionary<string, object>>();
+            J.WindowNodes(target, tw);
+            foreach (var w in tw)
+            {
+                object st; var state = w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
+                if (state != null && J.Str(state, "type") == "minimized") continue;
+                var t = RegisterWindow(new IntPtr(Convert.ToInt64(w["handle"])), ox, oy);
+                if (t != null) { s.All.Add(t); (side < 0 ? s.Prev : s.Next).Add(t); }
+            }
+        }
+        swipe = s;
+        RingsAttach(s.All, FocusedTop());
+        SwipePlace(0);
+        PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, s.All);
+        overlay.Reveal();
+        RaisePinned();
+        Animating = true;
+        Log("parmakla kaydırma: hazır " + clock.ElapsedMilliseconds + " ms, önceki " + (prevName ?? "-") + ", sonraki " + (nextName ?? "-") + ", " + s.All.Count + " önizleme");
+        return true;
+    }
+
+    void SwipePlace(double p)
+    {
+        var s = swipe;
+        if (s == null) return;
+        int span = s.Mw + GAP;
+        int shift = (int)Math.Round(p * span);
+        foreach (var t in s.Old) Move(t, -shift);
+        foreach (var t in s.Next) Move(t, span - shift);
+        foreach (var t in s.Prev) Move(t, -span - shift);
+    }
+
+    // p: -1 (önceki workspace) .. +1 (sonraki). O yönde komşu yoksa lastik gibi biraz kayıp durur.
+    public void SwipeUpdate(double p)
+    {
+        var s = swipe;
+        if (s == null || double.IsNaN(p)) return;
+        const double RUBBER = 0.06;
+        if (p > 0 && s.NextName == null) p = RUBBER * (1 - Math.Exp(-p / RUBBER));
+        else if (p < 0 && s.PrevName == null) p = -RUBBER * (1 - Math.Exp(p / RUBBER));
+        p = Math.Max(-1, Math.Min(1, p));
+        s.Progress = p;
+        SwipePlace(p);
+    }
+
+    // Parmaklar kalktı. velocity: ilerleme / ms (+ sonrakine doğru).
+    public void SwipeEnd(double velocity)
+    {
+        var s = swipe;
+        if (s == null) return;
+        const double COMMIT = 0.3, FLICK = 0.0015; // hızlı fiske: ~0.7 sn'de bir workspace boyu
+        if (double.IsNaN(velocity)) velocity = 0;
+        double p = s.Progress;
+        int target = 0;
+        if (s.NextName != null && ((p > COMMIT && velocity > -FLICK) || (p > 0 && velocity > FLICK))) target = 1;
+        else if (s.PrevName != null && ((p < -COMMIT && velocity < FLICK) || (p < 0 && velocity < -FLICK))) target = -1;
+        string name = target > 0 ? s.NextName : target < 0 ? s.PrevName : null;
+        Task task = null;
+        if (name != null) task = Task.Factory.StartNew(() => glaze.Command("focus --workspace " + name));
+
+        // Kalan yol workspace hareketinin eğrisiyle; süre kalan yolla orantılı (en az 120 ms)
+        var spec = Anims.Workspaces;
+        double from = p, to = target;
+        int dur = spec.Ms <= 0 ? 0 : Math.Max(120, (int)(Math.Abs(to - from) * spec.Ms));
+        var pc = new PresentClock();
+        var fs = new FrameStats();
+        int frames = 0;
+        while (dur > 0)
+        {
+            fs.Begin(); frames++;
+            double q = Prog(pc.Ms(), dur);
+            SwipePlace(from + (to - from) * spec.Curve.At(q));
+            fs.Updated();
+            Native.DwmFlush();
+            fs.Flushed();
+            if (q >= 1.0) break;
+        }
+        // Katmanı gerçek durum hazır olunca kaldır (Run'daki gibi): eski workspace'in pencereleri gizlenmiş, yenininkiler
+        // görünür olduğu an
+        if (task != null)
+        {
+            var arriving = target > 0 ? s.Next : s.Prev;
+            Func<IntPtr, bool> cloaked = hw => { int cv; return Native.DwmGetWindowAttribute(hw, Native.DWMWA_CLOAKED, out cv, 4) == 0 && cv != 0; };
+            var waitSw = Stopwatch.StartNew();
+            while (!task.IsCompleted && waitSw.ElapsedMilliseconds < 1500)
+            {
+                bool done = s.Old.Count + arriving.Count > 0;
+                foreach (var t in s.Old) if (!cloaked(t.Src)) { done = false; break; }
+                if (done) foreach (var t in arriving) if (cloaked(t.Src)) { done = false; break; }
+                if (done) break;
+                Thread.Sleep(4);
+            }
+        }
+        SwipeClear();
+        Log("parmakla kaydırma: " + (name == null ? "geri döndü" : "-> " + name) + ", bırakılan yer " + p.ToString("0.00") + ", hız " + (velocity * 1000).ToString("0.00") + "/sn, " + frames + " kare " + fs.Report());
+    }
+
+    // Klavyeyle kaydırma ya da taşıma başlarken süren parmak kaydırması hemen kapanır
+    public void SwipeAbort()
+    {
+        if (swipe == null) return;
+        SwipeClear();
+        Log("parmakla kaydırma: yarıda bırakıldı");
+    }
+
+    void SwipeClear()
+    {
+        var s = swipe;
+        if (s == null) return;
+        swipe = null;
+        overlay.Conceal(); RingsClear(); PinsClear();
+        foreach (var t in s.All) Native.DwmUnregisterThumbnail(t.Id);
+        Animating = false;
     }
 }
 
@@ -2761,8 +2954,10 @@ static class ShellWatchdog
 // yenilenir.
 static class Prefs
 {
-    static volatile bool animations = true;
+    static volatile bool animations = true, gestures = true;
     public static bool Animations { get { return animations; } }
+    // Dokunmatik yüzey hareketleri (3/4 parmak); dokunmatik yüzey yoksa etkisiz
+    public static bool Gestures { get { return gestures; } }
     public static string FilePath { get { return System.IO.Path.Combine(Paths.ConfigDir, "prefs.json"); } }
     static readonly object gate = new object();
 
@@ -2780,7 +2975,9 @@ static class Prefs
     public static void Load()
     {
         object v;
-        animations = !(Read().TryGetValue("animations", out v) && v is bool && !(bool)v);
+        var d = Read();
+        animations = !(d.TryGetValue("animations", out v) && v is bool && !(bool)v);
+        gestures = !(d.TryGetValue("gestures", out v) && v is bool && !(bool)v);
     }
 
     public static string Json()
@@ -2788,7 +2985,7 @@ static class Prefs
         return new JavaScriptSerializer().Serialize(Read());
     }
 
-    // key: language | clock | animations | focusColor; değer doğrulanır
+    // key: language | clock | animations | gestures | focusColor; değer doğrulanır
     public static bool Set(string key, string value)
     {
         object val;
@@ -2801,6 +2998,7 @@ static class Prefs
                 if (value != "24" && value != "12") return false;
                 val = value; break;
             case "animations":
+            case "gestures":
                 if (value != "true" && value != "false") return false;
                 val = value == "true"; break;
             case "focusColor":
@@ -2857,13 +3055,16 @@ static class Settings
         string cfg = "";
         try { cfg = System.IO.File.ReadAllText(Paths.ConfigFile); } catch { }
         var m = System.Text.RegularExpressions.Regex.Match(cfg, @"(?m)^\s*active_color:\s*""(#[0-9a-fA-F]{6})");
-        object lang, clock;
+        object lang, clock, anim, gest;
+        // Bu komut ayrı bir süreçte çalışır: Prefs yüklenmemiştir (animasyonlar kapalıyken de "açık" görünüyordu)
         return new Dictionary<string, object>
         {
             { "focusColor", m.Success ? m.Groups[1].Value.ToLowerInvariant() : "#b69df8" },
             { "language", p.TryGetValue("language", out lang) ? lang : "system" },
             { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
-            { "animations", Prefs.Animations },
+            { "animations", !(p.TryGetValue("animations", out anim) && anim is bool && !(bool)anim) },
+            { "gestures", !(p.TryGetValue("gestures", out gest) && gest is bool && !(bool)gest) },
+            { "touchpad", Touchpad.Present() },
             { "version", Updater.Installed() },
             { "configDir", Paths.ConfigDir },
             { "configFile", Paths.ConfigFile },
@@ -3748,6 +3949,17 @@ static class Toasts
                     Keys2.Instance.Dispatch(act);
                     status = "204 No Content";
                 }
+                // Test: dokunmatik yüzey olmadan parmak hareketi (/cmd?a=gesture&f=3&dx=-45&dy=0&ms=260; mm)
+                else if (act == "gesture" && SelfHeal.IsMain && Slider.Ui != null)
+                {
+                    var g = System.Text.RegularExpressions.Regex.Match(target, @"[?&]f=([3-5])&dx=(-?\d{1,3})&dy=(-?\d{1,3})&ms=(\d{2,4})");
+                    if (g.Success)
+                    {
+                        Touchpad.Simulate(Slider.Ui, int.Parse(g.Groups[1].Value), int.Parse(g.Groups[2].Value), int.Parse(g.Groups[3].Value), Math.Min(3000, int.Parse(g.Groups[4].Value)));
+                        status = "202 Accepted";
+                    }
+                    else status = "400 Bad Request";
+                }
                 // Masaüstünü yenile / kapat: kabuk ve kurulum normal kullanıcı olarak çalışır, yönetici haklarıyla
                 // çalışan parçaları kapatamaz; işi çalışan çekirdek yapar (bkz. Supervisor.RequestFromCore)
                 else if (act == "restart-desktop" && SelfHeal.IsMain)
@@ -3791,6 +4003,12 @@ static class Toasts
                 catch { return true; }
             });
         }
+    }
+
+    // Kabuğa olay: bildirim widget'ı akıştaki {"emit": ...} satırlarını Tauri olayı olarak yayınlar (ör. sağ panel)
+    public static void Emit(string evt)
+    {
+        Write("data: " + json.Serialize(new Dictionary<string, object> { { "emit", evt } }) + "\n\n");
     }
 
     public static void Send(string kind, string title, string body, string icon)
@@ -4488,6 +4706,9 @@ class Keys2
             if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) HideOverview(ov);
         }
         if (act == "clipboard") { ui.BeginInvoke((Action)ToggleClipboard); return true; }
+        // Parmak hareketleri (dokunmatik yüzey): overview ve sağ panel (panel kabukta: olay bildirim akışıyla gider)
+        if (act == "overview") { ui.BeginInvoke((Action)ToggleOverview); return true; }
+        if (act == "sidebar") { Toasts.Emit("ll:sidebar-right-toggle"); return true; }
         string[] dirs = { "left", "right", "up", "down" };
         foreach (var d0 in dirs)
         {
@@ -4705,6 +4926,373 @@ class Keys2
         if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { HideOverview(h); return; }
         // Mod bayrağı: "s" = düz arama (pano modunun bayrağı ";"); widget taze açılmış gibi davransın
         ShowOverviewInMode(h, "s");
+    }
+}
+
+// ---------------- Dokunmatik yüzey hareketleri (Hyprland gestures) ----------------
+// Hassas dokunmatik yüzeyin (Windows Precision Touchpad) ham HID raporları okunur (Raw Input; çekirdek odakta olmasa
+// da gelir):
+//   - 3 parmak sağa / sola: workspace parmakla birlikte kayar (Hyprland workspace_swipe, bkz. Slider.SwipeBegin)
+//   - 3 parmak yukarı: overview, aşağı: sağ panel
+//   - 4 parmak: odaktaki pencereyi o yöne taşır (Super+Shift+ok)
+// Windows'un kendi 3/4 parmak hareketleri kurulumda kapatılır (ikisi birden çalışmasın). Dokunmatik yüzey yoksa ya da
+// raporları çözülemezse hiçbir şey yapmaz (nedeni log'a yazılır). Her şey UI thread'inde: girdi mesajı da orada gelir.
+static class Touchpad
+{
+    [StructLayout(LayoutKind.Sequential)] struct RAWINPUTDEVICE { public ushort UsagePage, Usage; public uint Flags; public IntPtr Target; }
+    [StructLayout(LayoutKind.Sequential)] struct RAWINPUTHEADER { public uint Type, Size; public IntPtr Device, WParam; }
+    [StructLayout(LayoutKind.Sequential)] struct RAWINPUTDEVICELIST { public IntPtr Device; public uint Type; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct HIDP_CAPS
+    {
+        public ushort Usage, UsagePage, InputReportByteLength, OutputReportByteLength, FeatureReportByteLength;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 17)] public ushort[] Reserved;
+        public ushort NumberLinkCollectionNodes, NumberInputButtonCaps, NumberInputValueCaps, NumberInputDataIndices,
+            NumberOutputButtonCaps, NumberOutputValueCaps, NumberOutputDataIndices, NumberFeatureButtonCaps,
+            NumberFeatureValueCaps, NumberFeatureDataIndices;
+    }
+    // HIDP_VALUE_CAPS ve HIDP_BUTTON_CAPS: 72 bayt; yalnızca kullanılan alanlar (NotRange.Usage / Range.UsageMin 56'da)
+    [StructLayout(LayoutKind.Explicit, Size = 72)]
+    struct HIDP_CAPS72
+    {
+        [FieldOffset(0)] public ushort UsagePage;
+        [FieldOffset(6)] public ushort LinkCollection;
+        [FieldOffset(12)] public byte IsRange;
+        [FieldOffset(32)] public uint UnitsExp;
+        [FieldOffset(36)] public uint Units;
+        [FieldOffset(40)] public int LogicalMin;
+        [FieldOffset(44)] public int LogicalMax;
+        [FieldOffset(48)] public int PhysicalMin;
+        [FieldOffset(52)] public int PhysicalMax;
+        [FieldOffset(56)] public ushort Usage;
+        [FieldOffset(58)] public ushort UsageMax;
+    }
+    [DllImport("user32.dll", SetLastError = true)] static extern bool RegisterRawInputDevices(RAWINPUTDEVICE[] devices, uint count, uint size);
+    [DllImport("user32.dll")] static extern uint GetRawInputData(IntPtr raw, uint command, IntPtr data, ref uint size, uint headerSize);
+    [DllImport("user32.dll")] static extern uint GetRawInputDeviceInfo(IntPtr device, uint command, IntPtr data, ref uint size);
+    [DllImport("user32.dll")] static extern uint GetRawInputDeviceList([Out] RAWINPUTDEVICELIST[] list, ref uint count, uint size);
+    [DllImport("hid.dll")] static extern int HidP_GetCaps(IntPtr preparsed, out HIDP_CAPS caps);
+    [DllImport("hid.dll")] static extern int HidP_GetValueCaps(int reportType, [Out] HIDP_CAPS72[] caps, ref ushort length, IntPtr preparsed);
+    [DllImport("hid.dll")] static extern int HidP_GetButtonCaps(int reportType, [Out] HIDP_CAPS72[] caps, ref ushort length, IntPtr preparsed);
+    [DllImport("hid.dll")] static extern int HidP_GetUsageValue(int reportType, ushort usagePage, ushort link, ushort usage, out uint value, IntPtr preparsed, byte[] report, uint length);
+    [DllImport("hid.dll")] static extern int HidP_GetUsages(int reportType, ushort usagePage, ushort link, [Out] ushort[] usages, ref uint length, IntPtr preparsed, byte[] report, uint reportLength);
+    const int HIDP_OK = 0x00110000, WM_INPUT = 0x00FF;
+    const uint RIDEV_INPUTSINK = 0x100, RID_INPUT = 0x10000003, RIDI_PREPARSEDDATA = 0x20000005, RIDI_DEVICEINFO = 0x2000000b, RIM_TYPEHID = 2;
+    const ushort PAGE_DIGITIZER = 0x0D, PAGE_DESKTOP = 0x01, USAGE_TOUCHPAD = 0x05, USAGE_TIP = 0x42, USAGE_COUNT = 0x54, USAGE_X = 0x30, USAGE_Y = 0x31;
+
+    // Bir dokunmatik yüzey: parmak başına bir "link collection" (X, Y, değme anahtarı), kare başında parmak sayısı
+    sealed class Pad
+    {
+        public IntPtr Preparsed;
+        public readonly List<ushort> Links = new List<ushort>();
+        public bool HasCount, HasTip, Ok;
+        public ushort CountLink;
+        public int XMin, YMin;
+        public double MmPerX, MmPerY;
+        // Hibrit raporlama: parmaklar birkaç rapora bölünebilir; sayı yalnızca karenin ilk raporunda gelir
+        public int Expected, Slots;
+        public double SumX, SumY;
+        public int Touching;
+    }
+    static readonly Dictionary<IntPtr, Pad> pads = new Dictionary<IntPtr, Pad>();
+    static readonly ushort[] usageBuf = new ushort[64];
+
+    sealed class Sink : NativeWindow
+    {
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_INPUT) { try { OnInput(m.LParam); } catch (Exception ex) { Fail(ex); } }
+            base.WndProc(ref m);
+        }
+    }
+    static Sink sink;
+    static Slider slider;
+    static System.Windows.Forms.Timer lift;
+    static int failures;
+
+    static void Fail(Exception ex)
+    {
+        if (++failures <= 5) Slider.Log("dokunmatik yüzey: " + ex.GetBaseException().Message);
+    }
+
+    // Sistemde hassas dokunmatik yüzey var mı (ayarlar penceresi anahtarı yalnızca o zaman gösterir)
+    public static bool Present()
+    {
+        try
+        {
+            uint n = 0, sz = (uint)Marshal.SizeOf(typeof(RAWINPUTDEVICELIST));
+            GetRawInputDeviceList(null, ref n, sz);
+            if (n == 0) return false;
+            var list = new RAWINPUTDEVICELIST[n];
+            if (GetRawInputDeviceList(list, ref n, sz) == unchecked((uint)-1)) return false;
+            // RID_DEVICE_INFO: cbSize, dwType, sonra hid: dwVendorId, dwProductId, dwVersionNumber, usUsagePage, usUsage
+            IntPtr info = Marshal.AllocHGlobal(32);
+            try
+            {
+                foreach (var d in list)
+                {
+                    if (d.Type != RIM_TYPEHID) continue;
+                    Marshal.WriteInt32(info, 0, 32);
+                    uint size = 32;
+                    if (GetRawInputDeviceInfo(d.Device, RIDI_DEVICEINFO, info, ref size) == unchecked((uint)-1)) continue;
+                    if ((ushort)Marshal.ReadInt16(info, 20) == PAGE_DIGITIZER && (ushort)Marshal.ReadInt16(info, 22) == USAGE_TOUCHPAD) return true;
+                }
+            }
+            finally { Marshal.FreeHGlobal(info); }
+        }
+        catch { }
+        return false;
+    }
+
+    public static void Start(Slider s)
+    {
+        slider = s;
+        try
+        {
+            sink = new Sink();
+            sink.CreateHandle(new CreateParams { Parent = new IntPtr(-3) }); // HWND_MESSAGE: görünmez, yalnızca mesaj alır
+            var dev = new[] { new RAWINPUTDEVICE { UsagePage = PAGE_DIGITIZER, Usage = USAGE_TOUCHPAD, Flags = RIDEV_INPUTSINK, Target = sink.Handle } };
+            if (!RegisterRawInputDevices(dev, 1, (uint)Marshal.SizeOf(typeof(RAWINPUTDEVICE))))
+            {
+                Slider.Log("dokunmatik yüzey: kayıt olmadı (" + Marshal.GetLastWin32Error() + ")");
+                return;
+            }
+            // Parmaklar kalkarken son rapor gelmezse (cihaz sessizce keser) hareket takılı kalmasın
+            lift = new System.Windows.Forms.Timer { Interval = 180 };
+            lift.Tick += (o, e) => { lift.Stop(); Frame(0, 0, 0, Environment.TickCount); };
+            Slider.Log("dokunmatik yüzey: " + (Present() ? "bulundu, hareketler hazır" : "yok (takılırsa hareketler çalışır)"));
+        }
+        catch (Exception ex) { Slider.Log("dokunmatik yüzey: " + ex.Message); }
+    }
+
+    static void OnInput(IntPtr raw)
+    {
+        uint size = 0, hs = (uint)Marshal.SizeOf(typeof(RAWINPUTHEADER));
+        GetRawInputData(raw, RID_INPUT, IntPtr.Zero, ref size, hs);
+        if (size == 0 || size > 65536) return;
+        IntPtr buf = Marshal.AllocHGlobal((int)size);
+        try
+        {
+            if (GetRawInputData(raw, RID_INPUT, buf, ref size, hs) != size) return;
+            var head = (RAWINPUTHEADER)Marshal.PtrToStructure(buf, typeof(RAWINPUTHEADER));
+            if (head.Type != RIM_TYPEHID) return;
+            var pad = PadFor(head.Device);
+            if (pad == null || !pad.Ok) return;
+            int sizeHid = Marshal.ReadInt32(buf, (int)hs), count = Marshal.ReadInt32(buf, (int)hs + 4);
+            if (sizeHid <= 0 || count <= 0 || hs + 8 + (long)sizeHid * count > size) return;
+            var report = new byte[sizeHid];
+            for (int i = 0; i < count; i++)
+            {
+                Marshal.Copy(IntPtr.Add(buf, (int)hs + 8 + i * sizeHid), report, 0, sizeHid);
+                Report(pad, report);
+            }
+        }
+        finally { Marshal.FreeHGlobal(buf); }
+    }
+
+    static Pad PadFor(IntPtr device)
+    {
+        Pad pad;
+        if (pads.TryGetValue(device, out pad)) return pad;
+        pad = new Pad();
+        pads[device] = pad;
+        uint size = 0;
+        GetRawInputDeviceInfo(device, RIDI_PREPARSEDDATA, IntPtr.Zero, ref size);
+        if (size == 0 || size > 1 << 20) { Slider.Log("dokunmatik yüzey: HID tanımı okunamadı"); return pad; }
+        pad.Preparsed = Marshal.AllocHGlobal((int)size); // cihaz yaşadıkça kullanılır
+        if (GetRawInputDeviceInfo(device, RIDI_PREPARSEDDATA, pad.Preparsed, ref size) == unchecked((uint)-1)) { Slider.Log("dokunmatik yüzey: HID tanımı okunamadı"); return pad; }
+        HIDP_CAPS caps;
+        if (HidP_GetCaps(pad.Preparsed, out caps) != HIDP_OK) { Slider.Log("dokunmatik yüzey: HidP_GetCaps"); return pad; }
+
+        ushort nv = caps.NumberInputValueCaps;
+        var vc = new HIDP_CAPS72[nv];
+        if (nv == 0 || HidP_GetValueCaps(0, vc, ref nv, pad.Preparsed) != HIDP_OK) { Slider.Log("dokunmatik yüzey: değer tanımları yok"); return pad; }
+        var xs = new Dictionary<ushort, HIDP_CAPS72>();
+        var ys = new Dictionary<ushort, HIDP_CAPS72>();
+        for (int i = 0; i < nv; i++)
+        {
+            var c = vc[i];
+            if (c.IsRange != 0) continue;
+            if (c.UsagePage == PAGE_DIGITIZER && c.Usage == USAGE_COUNT) { pad.HasCount = true; pad.CountLink = c.LinkCollection; }
+            else if (c.UsagePage == PAGE_DESKTOP && c.Usage == USAGE_X) xs[c.LinkCollection] = c;
+            else if (c.UsagePage == PAGE_DESKTOP && c.Usage == USAGE_Y) ys[c.LinkCollection] = c;
+        }
+        foreach (var l in xs.Keys) if (ys.ContainsKey(l)) pad.Links.Add(l);
+        pad.Links.Sort();
+
+        ushort nb = caps.NumberInputButtonCaps;
+        if (nb > 0)
+        {
+            var bc = new HIDP_CAPS72[nb];
+            if (HidP_GetButtonCaps(0, bc, ref nb, pad.Preparsed) == HIDP_OK)
+                for (int i = 0; i < nb; i++)
+                    if (bc[i].UsagePage == PAGE_DIGITIZER && (bc[i].IsRange != 0 ? bc[i].Usage <= USAGE_TIP && USAGE_TIP <= bc[i].UsageMax : bc[i].Usage == USAGE_TIP))
+                        pad.HasTip = true;
+        }
+
+        if (pad.Links.Count > 0)
+        {
+            var x = xs[pad.Links[0]]; var y = ys[pad.Links[0]];
+            pad.XMin = x.LogicalMin; pad.YMin = y.LogicalMin;
+            double mx = Mm(x), my = Mm(y);
+            // Birim bilinmiyorsa yüzey ~100 mm genişlikte sayılır; Y, X ile aynı ölçekte
+            pad.MmPerX = mx > 0 ? mx : (x.LogicalMax > x.LogicalMin ? 100.0 / (x.LogicalMax - x.LogicalMin) : 0);
+            pad.MmPerY = my > 0 ? my : pad.MmPerX;
+        }
+        pad.Ok = pad.Links.Count > 0 && pad.MmPerX > 0;
+        Slider.Log("dokunmatik yüzey: " + pad.Links.Count + " parmak yuvası" + (pad.HasCount ? "" : ", parmak sayısı alanı yok")
+            + (pad.HasTip ? "" : ", değme anahtarı yok") + ", " + (pad.MmPerX * 1000).ToString("0.0") + " µm/birim"
+            + (pad.Ok ? "" : " — çözülemedi, hareketler kapalı"));
+        return pad;
+    }
+
+    // HID fiziksel birimi -> birim başına mm (cm ya da inç, üs ile)
+    static double Mm(HIDP_CAPS72 c)
+    {
+        int logical = c.LogicalMax - c.LogicalMin, phys = c.PhysicalMax - c.PhysicalMin;
+        if (logical <= 0 || phys <= 0) return 0;
+        uint system = c.Units & 0xF, length = (c.Units >> 4) & 0xF;
+        int exp = (int)(c.UnitsExp & 0xF);
+        if (exp > 7) exp -= 16;
+        double unitMm = system == 1 ? 10 : system == 3 ? 25.4 : 0;
+        if (unitMm == 0 || length != 1) return 0;
+        return phys * Math.Pow(10, exp) * unitMm / logical;
+    }
+
+    static void Report(Pad pad, byte[] r)
+    {
+        uint n = 0;
+        if (pad.HasCount && HidP_GetUsageValue(0, PAGE_DIGITIZER, pad.CountLink, USAGE_COUNT, out n, pad.Preparsed, r, (uint)r.Length) == HIDP_OK && n > 0)
+        {
+            pad.Expected = (int)Math.Min(n, 10); pad.Slots = 0; pad.Touching = 0; pad.SumX = pad.SumY = 0;
+        }
+        else if (!pad.HasCount)
+        {
+            pad.Expected = pad.Links.Count; pad.Slots = 0; pad.Touching = 0; pad.SumX = pad.SumY = 0;
+        }
+        if (pad.Expected <= 0) return;
+        foreach (var link in pad.Links)
+        {
+            if (pad.Slots >= pad.Expected) break;
+            uint x, y;
+            if (HidP_GetUsageValue(0, PAGE_DESKTOP, link, USAGE_X, out x, pad.Preparsed, r, (uint)r.Length) != HIDP_OK) continue;
+            if (HidP_GetUsageValue(0, PAGE_DESKTOP, link, USAGE_Y, out y, pad.Preparsed, r, (uint)r.Length) != HIDP_OK) continue;
+            bool tip = !pad.HasTip;
+            if (pad.HasTip)
+            {
+                uint len = (uint)usageBuf.Length;
+                if (HidP_GetUsages(0, PAGE_DIGITIZER, link, usageBuf, ref len, pad.Preparsed, r, (uint)r.Length) == HIDP_OK)
+                    for (int i = 0; i < len; i++) if (usageBuf[i] == USAGE_TIP) { tip = true; break; }
+            }
+            pad.Slots++;
+            if (!tip) continue;
+            pad.Touching++;
+            pad.SumX += ((int)x - pad.XMin) * pad.MmPerX;
+            pad.SumY += ((int)y - pad.YMin) * pad.MmPerY;
+        }
+        if (pad.Slots < pad.Expected) return; // karenin geri kalanı sonraki raporda
+        int t = pad.Touching;
+        Frame(t, t > 0 ? pad.SumX / t : 0, t > 0 ? pad.SumY / t : 0, Environment.TickCount);
+        pad.Expected = 0;
+    }
+
+    // ---- Hareket tanıma (parmak sayısı ve ağırlık merkezi, mm) ----
+    enum St { Idle, Pending, Swipe, Discrete, Done }
+    static St st;
+    static int fingers;
+    static bool horizontal;
+    static double x0, y0, lastX, lastY;
+    static readonly List<KeyValuePair<long, double>> trail = new List<KeyValuePair<long, double>>();
+    const double LOCK_MM = 4, FIRE_MM = 12;
+    // Bir workspace boyu kaydırma için parmak yolu (dokunmatik yüzeyin yarısından biraz fazlası)
+    const double SWIPE_MM = 60;
+
+    public static void Frame(int n, double cx, double cy, long t)
+    {
+        if (lift != null) { lift.Stop(); if (n > 0) lift.Start(); }
+        if (n > 0) { lastX = cx; lastY = cy; }
+        if (!Prefs.Gestures && st != St.Swipe) { st = n == 0 ? St.Idle : St.Done; return; }
+        switch (st)
+        {
+            case St.Idle:
+                if (n >= 3) { st = St.Pending; fingers = n; x0 = cx; y0 = cy; }
+                return;
+            case St.Pending:
+                if (n < 3) { st = n == 0 ? St.Idle : St.Done; return; }
+                // Parmaklar peş peşe değdi (3 -> 4): hareket yeni parmak sayısıyla baştan
+                if (n != fingers) { fingers = n; x0 = cx; y0 = cy; return; }
+                double dx = cx - x0, dy = cy - y0;
+                if (Math.Abs(dx) < LOCK_MM && Math.Abs(dy) < LOCK_MM) return;
+                horizontal = Math.Abs(dx) >= Math.Abs(dy);
+                // Animasyonlar kapalıysa kaydırma parmağı izlemez: yeterince gidince workspace doğrudan değişir
+                if (fingers == 3 && horizontal && slider != null && slider.SwipeBegin())
+                {
+                    st = St.Swipe;
+                    trail.Clear();
+                    Swipe(cx, t);
+                }
+                else st = fingers <= 4 ? St.Discrete : St.Done; // 5 parmak: hareket yok
+                return;
+            case St.Discrete:
+                if (n < fingers) { st = n == 0 ? St.Idle : St.Done; return; }
+                double d = horizontal ? cx - x0 : cy - y0;
+                if (Math.Abs(d) >= FIRE_MM) { Fire(fingers, horizontal, d); st = St.Done; }
+                return;
+            case St.Swipe:
+                if (n < 3) { EndSwipe(); st = n == 0 ? St.Idle : St.Done; return; }
+                Swipe(cx, t);
+                return;
+            default: // Done: hepsi kalkana kadar yeni hareket yok
+                if (n == 0) st = St.Idle;
+                return;
+        }
+    }
+
+    // Parmaklar sola -> içerik sola -> sağdaki (sonraki) workspace (dokunmatik ekrandaki gibi içerik parmağı izler)
+    static void Swipe(double cx, long t)
+    {
+        trail.Add(new KeyValuePair<long, double>(t, cx));
+        while (trail.Count > 2 && t - trail[0].Key > 80) trail.RemoveAt(0);
+        slider.SwipeUpdate(-(cx - x0) / SWIPE_MM);
+    }
+
+    static void EndSwipe()
+    {
+        double v = 0; // ilerleme / ms
+        if (trail.Count >= 2)
+        {
+            var a = trail[0]; var b = trail[trail.Count - 1];
+            long dt = b.Key - a.Key;
+            if (dt > 0) v = -(b.Value - a.Value) / SWIPE_MM / dt;
+        }
+        trail.Clear();
+        slider.SwipeEnd(v);
+    }
+
+    static void Fire(int n, bool isHorizontal, double d)
+    {
+        var k = Keys2.Instance;
+        if (k == null) return;
+        string act = n == 3
+            ? (isHorizontal ? (d < 0 ? "ws-next" : "ws-prev") : (d < 0 ? "overview" : "sidebar"))
+            : "move-" + (isHorizontal ? (d < 0 ? "left" : "right") : (d < 0 ? "up" : "down"));
+        Slider.Log("parmak hareketi: " + n + " parmak -> " + act);
+        k.Dispatch(act);
+    }
+
+    // Test: gerçek dokunmatik yüzey olmadan aynı yoldan yapay hareket (kareler 8 ms arayla UI thread'ine)
+    //   /cmd?a=gesture&f=3&dx=-45&dy=0&ms=260   (mm)
+    public static void Simulate(Control ui, int f, double dx, double dy, int ms)
+    {
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            const double X = 50, Y = 35;
+            Action<int, double, double> frame = (n, x, y) => { try { ui.Invoke((Action)(() => Frame(n, x, y, Environment.TickCount))); } catch { } };
+            for (int i = 0; i < 3; i++) { frame(f, X, Y); Thread.Sleep(8); }
+            int steps = Math.Max(2, ms / 8);
+            for (int i = 1; i <= steps; i++) { frame(f, X + dx * i / steps, Y + dy * i / steps); Thread.Sleep(8); }
+            frame(0, X + dx, Y + dy);
+        });
     }
 }
 
@@ -8155,6 +8743,7 @@ static class Program
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s0, e0) => { try { ui.BeginInvoke((Action)slider.Warm); } catch { } };
         Slider.Ui = ui;
         ConfigWatch.Start(ui); // prefs.json (animasyonlar) ve config.yaml (odak rengi) değişince
+        ui.BeginInvoke((Action)(() => Touchpad.Start(slider))); // dokunmatik yüzey hareketleri (girdi UI thread'ine)
         var dwindle = new Dwindle(new TilingClient(), ui, slider);
         dwindle.Start(); // kendi IPC bağlantısıyla: slide'ı beklemesin
         dwindle.HookNewWindows();

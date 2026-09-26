@@ -473,6 +473,11 @@ try {
     }
     # No taskbar at all on the other monitors ("Show taskbar on all displays" off)
     Set-Reg "$cu\Explorer\Advanced" 'MMTaskbarEnabled' 0
+    # Touchpad: Windows' own three- and four-finger swipes (switch apps / desktops) would run together with the
+    # core's gestures (workspace swipe, overview, moving windows). 0 = nothing; taps stay as they are. Windows reads
+    # these at sign-in. Harmless without a touchpad.
+    Set-Reg "$cu\PrecisionTouchPad" 'ThreeFingerSlideEnabled' 0
+    Set-Reg "$cu\PrecisionTouchPad" 'FourFingerSlideEnabled' 0
 
     # ------------------------------------------------------------ scheduled tasks
     Step 'tasks' 'Creating the startup tasks'
