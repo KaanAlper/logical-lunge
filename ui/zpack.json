@@ -96,6 +96,7 @@
             "focused": false,
             "resizable": false,
             "transparent": true,
+            "shownOnStart": false,
             "includeFiles": [
                 "*.html",
                 "*.css",
@@ -168,6 +169,7 @@
             "focused": false,
             "resizable": false,
             "transparent": true,
+            "shownOnStart": false,
             "includeFiles": [
                 "*.html",
                 "*.css",
@@ -240,6 +242,7 @@
             "focused": false,
             "resizable": false,
             "transparent": true,
+            "shownOnStart": false,
             "includeFiles": [
                 "*.html",
                 "*.css",
@@ -296,6 +299,7 @@
             "focused": false,
             "resizable": false,
             "transparent": true,
+            "shownOnStart": false,
             "includeFiles": [
                 "*.html",
                 "*.css",
@@ -347,6 +351,7 @@
             "focused": false,
             "resizable": false,
             "transparent": true,
+            "shownOnStart": false,
             "includeFiles": [
                 "*.html",
                 "*.css",
@@ -394,6 +399,7 @@
             "focused": false,
             "resizable": false,
             "transparent": true,
+            "shownOnStart": false,
             "includeFiles": [
                 "*.html",
                 "*.css",
@@ -441,6 +447,7 @@
             "focused": false,
             "resizable": false,
             "transparent": true,
+            "shownOnStart": false,
             "includeFiles": [
                 "*.html",
                 "*.css",

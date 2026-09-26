@@ -7856,11 +7856,13 @@ static class Program
         // lunge.exe --raise "<pencere başlığı>" : pencereyi her zaman üstte yapıp en öne getir.
         // (shell'in setAlwaysOnTop'u gizle/göster sonrası etkisiz kalıyordu; sağ panel terminalin arkasında açılıyordu.)
         // --top: yalnızca en üste al, odak verme (ekran klavyesi: tuşlar yazılan uygulamaya gitmeli)
+        // Pencereyi göstermez: gösterme widget'ın işi. Bu süreç geç başladığında widget bu arada kapanmış olabiliyor;
+        // eskiden SWP_SHOWWINDOW onu yeniden açıyordu (içi boş, tıklamaları yutan pencere).
         if (args.Length == 2 && (args[0] == "--raise" || args[0] == "--top"))
         {
             IntPtr rh = Native.FindWindow(null, args[1]);
-            if (rh == IntPtr.Zero) return;
-            Native.SetWindowPos(rh, new IntPtr(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040 | (args[0] == "--top" ? 0x0010u : 0u) /*NOSIZE|NOMOVE|SHOWWINDOW|NOACTIVATE*/);
+            if (rh == IntPtr.Zero || !Native.IsWindowVisible(rh)) return;
+            Native.SetWindowPos(rh, new IntPtr(-1) /*HWND_TOPMOST*/, 0, 0, 0, 0, 0x0001 | 0x0002 | (args[0] == "--top" ? 0x0010u : 0u) /*NOSIZE|NOMOVE|NOACTIVATE*/);
             if (args[0] == "--top") return;
             Native.keybd_event(0xE8, 0, 0, UIntPtr.Zero); Native.keybd_event(0xE8, 0, 2, UIntPtr.Zero); // önplan izni
             Native.SetForegroundWindow(rh);

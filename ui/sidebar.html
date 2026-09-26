@@ -148,22 +148,38 @@
         useEffect(() => { if (!open) setTimeout(() => setPage(null), 280); }, [open]);
         const [o, setO] = useState(providers.outputMap);
         const openedFocus = useRef(null);
-        useEffect(() => { providers.onOutput(() => setO({ ...providers.outputMap })); }, []);
+        // Gizliyken sağlayıcı çıktıları paneli yeniden çizdirmez (her pencere olayında bütün panel yeniden
+        // hesaplanıyordu); açılırken son çıktılarla bir kez çizilir.
+        const live = useRef(false);
+        useEffect(() => { providers.onOutput(() => { if (live.current) setO({ ...providers.outputMap }); }); }, []);
 
+        const wantOpen = useRef(false);
         const hide = useCallback(() => {
+          wantOpen.current = false;
           setOpen(false);
-          setTimeout(() => win.hide().catch(() => {}), 260);
+          // Kapanış animasyonundan sonra; bu arada yeniden açıldıysa gizleme
+          setTimeout(() => {
+            if (wantOpen.current) return;
+            live.current = false;
+            lunge.hideWindow(win).catch(() => {});
+          }, 260);
         }, []);
         const show = useCallback(async () => {
+          wantOpen.current = true;
+          live.current = true;
+          setO({ ...providers.outputMap });
           openedFocus.current = providers.outputMap.tiling?.focusedContainer?.id ?? null;
           // Gizlenip yeniden gösterilince "her zaman üstte" düşebiliyor: her açılışta yeniden ver
-          try { await win.show(); } catch {}
+          try { await lunge.showWindow(win); } catch {}
           // Kabuğun setAlwaysOnTop'u gizle/göster sonrası etkisiz: helper Windows API ile en üste alıp odaklar
           helper(['--raise', 'Logical Lunge · sidebar-right']).catch(() => {});
-          requestAnimationFrame(() => setOpen(true));
+          // Kare gelmezse (sayfa hâlâ gizli sayılıyorsa) zamanlayıcı açar: panel boş pencere olarak kalmasın
+          const go = () => { if (wantOpen.current) setOpen(true); };
+          requestAnimationFrame(go);
+          setTimeout(go, 60);
         }, []);
 
-        useEffect(() => { win.hide().catch(() => {}); }, []);
+        useEffect(() => { lunge.hideWindow(win).catch(() => {}); lunge.reviveOnFocus(win); }, []);
 
         useEffect(() => {
           const un1 = listen('ll:sidebar-right-toggle', () => (open ? hide() : show()));
@@ -1327,24 +1343,31 @@
       // pomodoro/PomodoroWidget.qml — 25/5 dk, 4 turda uzun mola
       function Pomodoro() {
         const FOCUS = 25 * 60, BREAK = 5 * 60, LONG = 15 * 60;
-        const [st, setSt] = useState(load('ll.pomo', { running: false, phase: 'focus', left: FOCUS, cycle: 0 }));
+        const dur = p => p === 'focus' ? FOCUS : p === 'long' ? LONG : BREAK;
+        // Çalışırken kalan süre bitiş anından hesaplanır: panel gizliyken tarayıcı zamanlayıcıları
+        // kısar (dakikada bire kadar), sayaç yine de kaymaz; kaçırılan evreler sırayla atlanır.
+        const advance = s => {
+          if (!s.running) return s;
+          const now = Date.now();
+          let n = s.end ? s : { ...s, end: now + s.left * 1000 };
+          while (now >= n.end) {
+            const focusDone = n.phase === 'focus';
+            const cycle = focusDone ? n.cycle + 1 : n.cycle;
+            const phase = focusDone ? (cycle % 4 === 0 ? 'long' : 'break') : 'focus';
+            n = { ...n, phase, cycle, end: n.end + dur(phase) * 1000 };
+          }
+          const left = Math.max(1, Math.ceil((n.end - now) / 1000));
+          if (n !== s && (n.phase !== s.phase || !s.end)) save('ll.pomo', { ...n, left });
+          return n === s && left === s.left ? s : { ...n, left };
+        };
+        const [st, setSt] = useState(() => advance(load('ll.pomo', { running: false, phase: 'focus', left: FOCUS, cycle: 0 })));
         useEffect(() => {
-          const t = setInterval(() => {
-            setSt(s => {
-              if (!s.running) return s;
-              const left = s.left - 1;
-              if (left > 0) { const n = { ...s, left }; save('ll.pomo', n); return n; }
-              const focusDone = s.phase === 'focus';
-              const cycle = focusDone ? s.cycle + 1 : s.cycle;
-              const phase = focusDone ? (cycle % 4 === 0 ? 'long' : 'break') : 'focus';
-              const n = { ...s, phase, cycle, left: phase === 'focus' ? FOCUS : phase === 'long' ? LONG : BREAK };
-              save('ll.pomo', n);
-              return n;
-            });
-          }, 1000);
-          return () => clearInterval(t);
+          const tick = () => setSt(advance);
+          const t = setInterval(tick, 1000);
+          document.addEventListener('visibilitychange', tick);
+          return () => { clearInterval(t); document.removeEventListener('visibilitychange', tick); };
         }, []);
-        const total = st.phase === 'focus' ? FOCUS : st.phase === 'long' ? LONG : BREAK;
+        const total = dur(st.phase);
         const r = 80, c = 2 * Math.PI * r;
         const mm = String(Math.floor(st.left / 60)).padStart(2, '0'), ss = String(st.left % 60).padStart(2, '0');
         const set = n => { setSt(n); save('ll.pomo', n); };
@@ -1358,7 +1381,10 @@
                 <span className="l">{st.phase === 'focus' ? 'Odak' : st.phase === 'long' ? 'Uzun mola' : 'Mola'} · {st.cycle % 4}/4</span></div>
             </div>
             <div className="pomo-btns">
-              <button className="chip primary" onClick={() => set({ ...st, running: !st.running })}>{st.running ? 'Duraklat' : 'Başlat'}</button>
+              <button className="chip primary" onClick={() => {
+                const { end, ...rest } = st;
+                set(st.running ? { ...rest, running: false } : { ...rest, running: true, end: Date.now() + st.left * 1000 });
+              }}>{st.running ? 'Duraklat' : 'Başlat'}</button>
               <button className="chip" onClick={() => set({ running: false, phase: 'focus', left: FOCUS, cycle: 0 })}>Sıfırla</button>
             </div>
           </div>

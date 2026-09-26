@@ -412,19 +412,26 @@
         const update = useCallback(patch => setS(x => ({ ...x, ...patch })), []);
         const load = useCallback(() => helper(['--settings-get']).then(o => { const r = json(o); if (r) setS(x => ({ ...r, dirty: x.dirty })); }).catch(() => {}), []);
 
+        const wantOpen = useRef(false);
         const hide = useCallback(() => {
+          wantOpen.current = false;
           setOpen(false);
-          setTimeout(() => win.hide().catch(() => {}), 220);
+          // Kapanış animasyonundan sonra; bu arada yeniden açıldıysa gizleme
+          setTimeout(() => { if (!wantOpen.current) lunge.hideWindow(win).catch(() => {}); }, 220);
         }, []);
         const show = useCallback(async () => {
+          wantOpen.current = true;
           load();
-          try { await win.show(); } catch {}
+          try { await lunge.showWindow(win); } catch {}
           // en üste al ve odakla (kabuğun setAlwaysOnTop'u gizle/göster sonrası etkisiz kalabiliyor)
           helper(['--raise', 'Logical Lunge · settings']).catch(() => {});
-          requestAnimationFrame(() => setOpen(true));
+          // Kare gelmezse (sayfa hâlâ gizli sayılıyorsa) zamanlayıcı açar: pencere boş kalmasın
+          const go = () => { if (wantOpen.current) setOpen(true); };
+          requestAnimationFrame(go);
+          setTimeout(go, 60);
         }, []);
 
-        useEffect(() => { win.hide().catch(() => {}); }, []);
+        useEffect(() => { lunge.hideWindow(win).catch(() => {}); lunge.reviveOnFocus(win); }, []);
         useEffect(() => {
           const un1 = listen('ll:settings-toggle', () => (open ? hide() : show()));
           const un2 = listen('ll:overview-toggle', () => { if (open) hide(); });

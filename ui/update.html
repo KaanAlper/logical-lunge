@@ -272,13 +272,28 @@
       // Boşken pencere gerçekten gizlenir: saydam da olsa açık kalan pencere oyunun üstünde her karede birleştiriliyor
       // ve içinde kalan animasyonlar çizilmeye devam ediyordu. Odak çalmadan çekirdek gösterir / gizler (tam ekran oyunda
       // bildirimi oyun bitince gösterir); çekirdeğe ulaşılamazsa Tauri.
-      let shownState = null;
+      // İstekler sırayla gider (ters sırada işlenen iki istek pencereyi yanlış durumda bırakıyordu); sırada beklerken
+      // durum yine değiştiyse eskisi atlanır. Gösterirken önce sayfa görünür yapılır (ilk kare hazır olsun). Gizlerken
+      // çekirdeğe bildirilir (oyun sonrasına bekleyen gösterme iptal olur), pencere Tauri ile de gizlenir (pencere
+      // kütüphanesi kendi kaydında görünür sanıp sonraki stil değişikliğinde yeniden gösteriyordu), sonra sayfa
+      // görünmez olur (çizim durur).
+      let shownState = null, shownQueue = Promise.resolve();
+      const coreShow = v => fetch(`http://127.0.0.1:6131/widget?w=update&v=${v ? 1 : 0}`, { method: 'POST', cache: 'no-store' })
+        .then(r => { if (!r.ok) throw new Error(String(r.status)); });
       const setShown = v => {
         if (shownState === v) return;
         shownState = v;
-        fetch(`http://127.0.0.1:6131/widget?w=update&v=${v ? 1 : 0}`, { method: 'POST', cache: 'no-store' })
-          .then(r => { if (!r.ok) throw new Error(String(r.status)); })
-          .catch(() => (v ? win.show() : win.hide()).catch(() => {}));
+        shownQueue = shownQueue.then(async () => {
+          if (shownState !== v) return;
+          if (v) {
+            await lunge.setWebviewVisible(true);
+            await coreShow(true).catch(() => win.show());
+          } else {
+            await coreShow(false).catch(() => {});
+            await win.hide();
+            if (shownState === false) await lunge.setWebviewVisible(false);
+          }
+        }).catch(() => {});
       };
 
       async function fit() {
@@ -301,6 +316,9 @@
       }
       listen('ll:update-card-query', () => { announced = -1; fit(); });
       fit();
+      // Sayfa görünmezken (pencere gizliyken) kare gelmez, requestAnimationFrame hiç çalışmaz: ölçüm hemen yapılır
+      // (yerleşim zaten eşzamanlı hesaplanır); görünürken bir sonraki karede.
+      const fitSoon = () => (document.visibilityState === 'hidden' ? fit() : requestAnimationFrame(fit));
 
       function close() {
         clearTimeout(closeTimer);
@@ -363,10 +381,10 @@
             const open = card.classList.toggle('open');
             more.querySelector('.lbl').textContent = open ? 'Daha az göster' : 'Tümünü göster';
             if (!open) notes.scrollTop = 0;
-            requestAnimationFrame(fit);
+            fitSoon();
           });
         }
-        requestAnimationFrame(fit);
+        fitSoon();
         if (state === 'uptodate') closeTimer = setTimeout(close, 3600);
       }
       function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]); }

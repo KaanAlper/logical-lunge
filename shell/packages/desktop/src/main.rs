@@ -98,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
       commands::call_provider_function,
       commands::set_always_on_top,
       commands::set_skip_taskbar,
+      commands::set_webview_visible,
       commands::shell_exec,
       commands::shell_spawn,
       commands::shell_write,

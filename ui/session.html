@@ -202,7 +202,8 @@
 
       const win = lunge.currentWidget().tauriWindow;
       win.setTitle('lunge-session').catch(() => {});
-      win.hide().catch(() => {});
+      lunge.hideWindow(win).catch(() => {});
+      lunge.reviveOnFocus(win);
       const run = (prog, args) => lunge.shellSpawn(prog, args).catch(e => console.error(prog, e));
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       // ii sessionScreen: kilitle, uyku, oturumu kapat, yeniden başlat, kapat, ürün yazılımı (UEFI/BIOS) ayarları
@@ -238,7 +239,7 @@
       async function show() {
         if (open) return;
         open = true; sel = 0; mark(); shownAt = Date.now(); focusedAt = 0;
-        try { await win.show(); if (primary) await win.setFocus(); } catch (e) { log('show hata ' + e); }
+        try { await lunge.showWindow(win); if (primary) await win.setFocus(); } catch (e) { log('show hata ' + e); }
         requestAnimationFrame(reveal);
         setTimeout(reveal, 40);
         log('açıldı' + (primary ? ' (birincil)' : ''));
@@ -247,12 +248,11 @@
         if (!open) return;
         open = false;
         scrim.classList.remove('on'); row.classList.remove('on');
-        setTimeout(() => { if (!open) win.hide().catch(() => {}); }, 260);
+        setTimeout(() => { if (!open) lunge.hideWindow(win).catch(() => {}); }, 260);
       }
-      win.hide().catch(() => {});
       // Kabuk pencereyi betik çalıştıktan sonra da gösterebiliyor (çok monitörlü açılış): gizli kalana dek tekrarla,
       // yoksa tam ekran saydam pencere fare tıklamalarını yutar.
-      [800, 2000, 4500, 9000, 16000].forEach(ms => setTimeout(() => { if (!open) win.hide().catch(() => {}); }, ms));
+      [800, 2000, 4500, 9000, 16000].forEach(ms => setTimeout(() => { if (!open) lunge.hideWindow(win).catch(() => {}); }, ms));
       listen('ll:session-toggle', () => (open ? hideAll() : show()));
       listen('ll:session-hide', () => hide());
       // Açılırken sağ panel kapanıyor ve Windows odağı bir an başka yere verebiliyor. Odak kaybı yalnızca menü odağı

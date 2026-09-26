@@ -154,6 +154,75 @@ pub fn set_skip_taskbar(
   Ok(())
 }
 
+/// Logical Lunge: tells WebView2 whether the widget is on screen. Hiding
+/// the window alone does not stop the browser: animations, timers and
+/// paints keep running in a hidden widget. With `IsVisible` false the page
+/// becomes `hidden`, rendering stops and timers are throttled.
+///
+/// A window that got keyboard focus while its webview was invisible (the
+/// core shows the overview with Win32 and focuses it right away) did not
+/// pass the focus on to the browser. Focus is moved again here, but only
+/// when the window is in the foreground and the focus is not already in
+/// the browser: an extra focus event turned focus fights into a loop.
+#[tauri::command]
+pub fn set_webview_visible(
+  webview: tauri::Webview,
+  visible: bool,
+) -> anyhow::Result<(), String> {
+  #[cfg(target_os = "windows")]
+  {
+    let refocus = visible
+      && webview
+        .window()
+        .hwnd()
+        .is_ok_and(|hwnd| focus_outside_browser(hwnd.0));
+
+    webview
+      .with_webview(move |platform| unsafe {
+        let _ = platform.controller().SetIsVisible(visible);
+      })
+      .map_err(|err| err.to_string())?;
+
+    if refocus {
+      let _ = webview.set_focus();
+    }
+  }
+
+  #[cfg(not(target_os = "windows"))]
+  let _ = (webview, visible);
+
+  Ok(())
+}
+
+/// Whether `window` is the foreground window while keyboard focus is on
+/// the window itself (or nowhere) rather than in its browser.
+#[cfg(target_os = "windows")]
+fn focus_outside_browser(window: *mut std::ffi::c_void) -> bool {
+  use windows::Win32::UI::WindowsAndMessaging::{
+    GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GUITHREADINFO,
+  };
+
+  unsafe {
+    if GetForegroundWindow().0 != window {
+      return false;
+    }
+
+    let mut info = GUITHREADINFO {
+      cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+      ..Default::default()
+    };
+
+    if GetGUIThreadInfo(0, &mut info).is_err() || info.hwndFocus.is_invalid()
+    {
+      return true;
+    }
+
+    let mut class = [0u16; 64];
+    let len = GetClassNameW(info.hwndFocus, &mut class).max(0) as usize;
+    !String::from_utf16_lossy(&class[..len]).starts_with("Chrome_")
+  }
+}
+
 #[tauri::command]
 pub async fn shell_exec(
   program: String,

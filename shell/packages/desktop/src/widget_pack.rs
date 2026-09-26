@@ -119,6 +119,13 @@ pub struct WidgetConfig {
   /// Whether the Tauri window frame should be transparent.
   pub transparent: bool,
 
+  /// Logical Lunge: whether the window is shown when the widget opens.
+  /// Widgets that open on demand (panels, menus, cards) start hidden and
+  /// show themselves. Created visible, each one stayed on screen as a
+  /// transparent window that took clicks until its page loaded and hid it.
+  #[serde(default = "default_bool::<true>")]
+  pub shown_on_start: bool,
+
   /// Files to include as part of the widget.
   #[serde(default)]
   pub include_files: Vec<String>,

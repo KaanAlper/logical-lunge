@@ -360,16 +360,26 @@
         };
         // Odak olayı ve görünürlük yoklaması aynı açılışı iki kez tetikleyebiliyor; ikincisi bayrağı boş bulup ";"yi siliyordu
         const lastShow = useRef(0);
+        // Açılış sırası: mod okunurken kapatıldıysa (blur, Esc) gecikmiş açılış pencereyi yeniden göstermesin (kapalı
+        // sayfa boş, tıklamaları yutan tam ekran pencere olarak kalıyordu)
+        const openSeq = useRef(0);
         const show = async () => {
           if (Date.now() - lastShow.current < 400) return;
           lastShow.current = Date.now();
+          const my = ++openSeq.current;
+          // Sayfa hemen görünür yapılır: çekirdek pencereyi saydam gösterip bu sayfa hazır olunca opak yapıyor, çizim
+          // mod okunurken başlasın
+          const visible = lunge.setWebviewVisible(true);
           setSel(0); setOpen(true); setEnterKey(k => k + 1); // hemen açık say: odak olayları yeni açılış başlatmasın
           const m = await readMode();
+          if (my !== openSeq.current) return;
           setQuery(m === ';' ? ';' : '');
+          await visible;
+          if (my !== openSeq.current) return;
           try { await win.show(); await win.setFocus(); } catch {}
           setTimeout(() => inputRef.current?.focus(), 30);
         };
-        const hide = () => { setOpen(false); win.hide().catch(() => {}); };
+        const hide = () => { openSeq.current++; setOpen(false); lunge.hideWindow(win).catch(() => {}); };
 
         // Helper pencereyi Win32 ile gizleyip gösterir (Super / Super+V): bu, sayfaya blur/focus olayı göndermez ve
         // 'open' eski kalır. Helper gösterdiğini / gizlediğini uzun yoklamayla (/overview-wait) bildirir: gösterdiyse
@@ -381,12 +391,13 @@
         useEffect(() => {
           let alive = true, seq = -1, was = false;
           const shown = () => {
+            lunge.setWebviewVisible(true);
             if (!openRef.current) showRef.current();
             else readMode().then(m => {
               if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
             });
           };
-          const hidden = () => { if (openRef.current) setOpen(false); };
+          const hidden = () => { openSeq.current++; if (openRef.current) setOpen(false); lunge.markHidden(win); };
           (async () => {
             while (alive) {
               const ctl = new AbortController();
@@ -412,7 +423,7 @@
         }, []);
 
         // Açılışta gizli başla; Super (çekirdek) ya da bar olayı açar
-        useEffect(() => { win.hide().catch(() => {}); }, []);
+        useEffect(() => { lunge.hideWindow(win).catch(() => {}); lunge.reviveOnFocus(win); }, []);
 
         useEffect(() => {
           const un = listen('ll:overview-toggle', () => (document.hasFocus() && open ? hide() : show()));

@@ -30,6 +30,7 @@ const desktopCommands = {
   shellSpawn: (program, args = [], options = {}) => invoke('shell_spawn', { program, args, options }),
   shellWrite: (processId, buffer) => invoke('shell_write', { processId, buffer }),
   shellKill: processId => invoke('shell_kill', { processId }),
+  setWebviewVisible: visible => invoke('set_webview_visible', { visible }),
 };
 
 async function invoke(command, args) {
@@ -106,6 +107,49 @@ async function onProviderEmit(config, callback) {
       emitListenPromise = null;
     }
   };
+}
+
+// ---------------------------------------------------------------- görünürlük
+// Pencereyi gizlemek tarayıcıyı durdurmuyordu: gizli widget'ta animasyonlar, zamanlayıcılar ve çizim sürüyordu. Kabuğa
+// bildirilir: görünmezken sayfa 'hidden' olur, çizim durur, zamanlayıcılar kısılır. Pencere gösterilmeden önce görünür
+// yapılır (ilk kare hazır olsun), gizlendikten sonra görünmez. Komut yoksa (eski kabuk) sessizce geçilir.
+// wantVisible: gizleme sürerken pencere yeniden gösterildiyse sayfa görünmez yapılmaz (görünen pencere boş kalırdı).
+let wantVisible = true;
+export function setWebviewVisible(visible) {
+  wantVisible = visible;
+  return desktopCommands.setWebviewVisible(visible).catch(() => {});
+}
+
+export async function showWindow(win) {
+  await setWebviewVisible(true);
+  await win.show();
+}
+
+// Gizleme başarısızsa sayfa görünür kalır
+export async function hideWindow(win) {
+  wantVisible = false;
+  await win.hide();
+  if (!wantVisible) await setWebviewVisible(false);
+}
+
+// Pencereyi başkası (çekirdek, Win32 ile) gizlediyse: gerçekten gizliyse ve bu arada yeniden gösterilmediyse görünmez
+// yap. Pencere kütüphanesine de gizlendiği bildirilir: kendi kaydında "görünür" kalan pencereyi sonraki ilk stil
+// değişikliğinde (tıklama geçirgenliği, en üstte) yeniden gösteriyordu.
+export async function markHidden(win) {
+  wantVisible = false;
+  const shown = await win.isVisible().catch(() => true);
+  if (shown || wantVisible) return;
+  await win.hide().catch(() => {});
+  if (!wantVisible) await setWebviewVisible(false);
+}
+
+// Güvenlik ağı: sayfa görünür olmak isterken (pencere gösterildi) odak geldiği halde görünmez kaldıysa (sırası karışan
+// bir komut) görünür yap. Gizlenmek isterken dokunmaz: gizlenmekte olan pencereye gelen odak olayı sayfayı yeniden
+// görünür yapıp odak kavgasını (gizle / göster) döngüye çeviriyordu.
+export function reviveOnFocus(win) {
+  win.onFocusChanged(({ payload: focused }) => {
+    if (focused && wantVisible && document.visibilityState === 'hidden') setWebviewVisible(true);
+  }).catch(() => {});
 }
 
 // ---------------------------------------------------------------- kabuk süreçleri

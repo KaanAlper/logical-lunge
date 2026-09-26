@@ -317,6 +317,7 @@ impl WidgetFactory {
         webview_url,
       )
       .title(format!("Logical Lunge · {widget_name}"))
+      .visible(widget_config.shown_on_start)
       .focused(widget_config.focused)
       .skip_taskbar(!widget_config.shown_in_taskbar)
       .visible_on_all_workspaces(true)
