@@ -44,3 +44,23 @@ export function appIconFor(apps, proc) {
   }
   return best;
 }
+
+// Uygulama listesinde karşılığı olmayan pencerenin (Git Bash, oyun istemcisi, kurulum) kendi simgesi: çekirdek
+// pencereden ya da exe'sinden verir. Pencere başına bir kez sorulur; gelince onLoad çağrılır (yeniden çizim).
+// Alınamazsa 30 sn sonra yeniden denenir.
+const winIconCache = new Map();
+export function winIconOf(handle, onLoad) {
+  if (!handle) return null;
+  const k = String(handle);
+  if (winIconCache.has(k)) return winIconCache.get(k);
+  if (winIconCache.size > 200) winIconCache.clear();
+  winIconCache.set(k, null);
+  fetch(`http://127.0.0.1:6131/winicon?h=${k}`, { method: 'POST', cache: 'no-store' })
+    .then(r => (r.status === 200 ? r.text() : ''))
+    .then(t => {
+      if (t.startsWith('data:image/')) { winIconCache.set(k, t); if (onLoad) onLoad(); }
+      else setTimeout(() => winIconCache.delete(k), 30000);
+    })
+    .catch(() => setTimeout(() => winIconCache.delete(k), 30000));
+  return null;
+}

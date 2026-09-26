@@ -3884,7 +3884,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -3937,6 +3937,17 @@ static class Toasts
                 // Super menüsünün uygulama listesi (build-apps.ps1 kullanıcının veri klasörüne yazar)
                 try { body = System.IO.File.ReadAllText(Paths.AppsJson); status = "200 OK"; }
                 catch { body = "[]"; status = "200 OK"; }
+            }
+            // Pencerenin kendi simgesi (uygulama listesinde karşılığı yoksa): /winicon?h=<pencere>
+            else if (target.StartsWith("/winicon?h="))
+            {
+                long hv;
+                if (long.TryParse(target.Substring(11).Split('&')[0], out hv) && hv > 0)
+                {
+                    body = WinIcons.For(new IntPtr(hv)) ?? "";
+                    status = body.Length > 0 ? "200 OK" : "204 No Content";
+                }
+                else status = "400 Bad Request";
             }
             else if (target.StartsWith("/widget?"))
             {
@@ -5297,6 +5308,68 @@ static class Touchpad
             for (int i = 1; i <= steps; i++) { frame(f, X + dx * i / steps, Y + dy * i / steps); Thread.Sleep(8); }
             frame(0, X + dx, Y + dy);
         });
+    }
+}
+
+// ---------------- Pencere simgesi (bar / overview) ----------------
+// Uygulama listesinde (apps.json) karşılığı olmayan pencere (Git Bash, oyun istemcileri, kurulumlar) bar'da noktayla
+// kalıyordu: simge pencerenin kendisinden (WM_GETICON, sınıf simgesi), yoksa exe'sinden alınır ve PNG veri adresi
+// olarak verilir. Exe başına önbellekte; askıdaki pencerede 150 ms'den fazla beklenmez.
+static class WinIcons
+{
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")] static extern IntPtr GetClassLongPtr(IntPtr h, int index);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr p, uint flags, StringBuilder name, ref uint size);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    static readonly Dictionary<string, string> cache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+    public static string For(IntPtr h)
+    {
+        if (!Native.IsWindow(h)) return null;
+        uint pid; Native.GetWindowThreadProcessId(h, out pid);
+        string exe = ExePath(pid);
+        string key = exe ?? ("pid:" + pid);
+        lock (cache) { string c; if (cache.TryGetValue(key, out c)) return c; }
+        string data = null;
+        try
+        {
+            IntPtr hi = IntPtr.Zero, r;
+            if (SendMessageTimeout(h, 0x7F /*WM_GETICON*/, (IntPtr)1 /*ICON_BIG*/, IntPtr.Zero, 0x2 /*SMTO_ABORTIFHUNG*/, 150, out r) != IntPtr.Zero) hi = r;
+            if (hi == IntPtr.Zero && SendMessageTimeout(h, 0x7F, (IntPtr)2 /*ICON_SMALL2*/, IntPtr.Zero, 0x2, 150, out r) != IntPtr.Zero) hi = r;
+            if (hi == IntPtr.Zero) hi = GetClassLongPtr(h, -14 /*GCLP_HICON*/);
+            // FromHandle tanıtıcıyı sahiplenmez: pencerenin simgesi yok edilmez
+            if (hi != IntPtr.Zero) { using (var ic = Icon.FromHandle(hi)) data = Png(ic); }
+            else if (exe != null) { using (var ic = Icon.ExtractAssociatedIcon(exe)) if (ic != null) data = Png(ic); }
+        }
+        catch { }
+        // Boş sonuç önbelleğe girmez: pencere simgesini açıldıktan biraz sonra koyabiliyor
+        if (data != null) lock (cache) { if (cache.Count > 300) cache.Clear(); cache[key] = data; }
+        return data;
+    }
+
+    static string Png(Icon ic)
+    {
+        using (var bmp = ic.ToBitmap())
+        using (var ms = new System.IO.MemoryStream())
+        {
+            bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+            return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+        }
+    }
+
+    // Yönetici haklarıyla çalışan süreçte de çalışır (PROCESS_QUERY_LIMITED_INFORMATION)
+    static string ExePath(uint pid)
+    {
+        IntPtr p = OpenProcess(0x1000, false, pid);
+        if (p == IntPtr.Zero) return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            uint n = (uint)sb.Capacity;
+            return QueryFullProcessImageName(p, 0, sb, ref n) ? sb.ToString() : null;
+        }
+        finally { CloseHandle(p); }
     }
 }
 

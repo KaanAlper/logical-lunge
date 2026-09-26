@@ -120,7 +120,7 @@
       import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
-      import { appIconFor } from 'lunge/apps';
+      import { appIconFor, winIconOf } from 'lunge/apps';
       import { emit, listen } from '@tauri-apps/api/event';
 
       // Super menüsünün uygulama listesi çekirdekten (kullanıcının veri klasöründe; kurulum klasörü korumalı).
@@ -702,7 +702,7 @@
             if (c.type === 'window') {
               if (c.state?.type === 'minimized') continue; // simge durumundaki pencere workspace'i dolu göstermesin
               const area = (c.width || 0) * (c.height || 0);
-              if (!out[name] || area > out[name].area) out[name] = { area, proc: c.processName, title: c.title };
+              if (!out[name] || area > out[name].area) out[name] = { area, proc: c.processName, title: c.title, handle: c.handle };
             } else walk(c, name);
           }
         };
@@ -713,6 +713,8 @@
       // ii Workspaces.qml — occupied arka planı birleşik, aktif gösterge "trailing":
       // ön kenar 100ms, arka kenar 300ms (AnimatedTabIndexPair), OutSine. Dolu olanlarda uygulama ikonu.
       function Workspaces({ tiling, run, onRightClick, iconFor }) {
+        const [, setIconTick] = useState(0);
+        const bumpIcons = useCallback(() => setIconTick(x => x + 1), []);
         const lastWheel = useRef(0);
         const prevIdx = useRef(null);
         const [dir, setDir] = useState(0);
@@ -762,7 +764,7 @@
             <div className="ws-active" style={{ left: idx * WS + MARGIN, right: (SHOWN - idx - 1) * WS + MARGIN, transition }} />
             {slots.map((n, i) => {
               const b = big[String(n)];
-              const ic = b ? iconFor(b.proc) : null;
+              const ic = b ? (iconFor(b.proc) || winIconOf(b.handle, bumpIcons)) : null;
               return (
                 <button key={n}
                   className={`ws ${occupied.has(n) ? 'occupied' : ''} ${i === idx ? 'active' : ''}`}

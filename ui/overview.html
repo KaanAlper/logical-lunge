@@ -120,7 +120,7 @@
       import React, { useState, useEffect, useRef, useMemo } from 'react';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
-      import { appIconFor } from 'lunge/apps';
+      import { appIconFor, winIconOf } from 'lunge/apps';
       import { listen, emit } from '@tauri-apps/api/event';
 
       // Super menüsünün uygulama listesi çekirdekten (kullanıcının veri klasöründe; kurulum klasörü korumalı).
@@ -638,6 +638,9 @@
       function WorkspaceOverview({ tiling, apps, onDone }) {
         const [drag, setDrag] = useState(null);
         const [over, setOver] = useState(null);
+        // pencerenin kendi simgesi çekirdekten gelince yeniden çiz
+        const [, setIconTick] = useState(0);
+        const bumpIcons = () => setIconTick(x => x + 1);
         if (!tiling) return null;
 
         const mon = tiling.focusedMonitor ?? tiling.allMonitors?.[0];
@@ -685,7 +688,7 @@
                     const wm = monOf[n] ?? mon;
                     const sx = W / wm.width, sy = H / wm.height;
                     const x = (w.x - wm.x) * sx, y = (w.y - wm.y) * sy;
-                    const ic = iconFor(w.processName);
+                    const ic = iconFor(w.processName) || winIconOf(w.handle, bumpIcons);
                     return (
                       <div key={w.id}
                            className={`win ${w.hasFocus ? 'focused' : ''} ${drag === w.id ? 'dragging' : ''}`}
