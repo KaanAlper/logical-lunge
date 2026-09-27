@@ -1717,7 +1717,11 @@ class Slider
             }
             // Aynı anda birden çok thread / süreç yazabiliyor (ör. iki HTTP isteği): paylaşımlı aç, kısa yeniden dene;
             // yoksa satırlar sessizce kayboluyordu
-            var bytes = Encoding.UTF8.GetBytes(DateTime.Now.ToString("HH:mm:ss.fff ") + s + Environment.NewLine);
+            // Satırlarda yalnızca saat var: gün değişince (ve her açılışta) bir tarih satırı; dün ile bugün karışmasın
+            var nowT = DateTime.Now;
+            string day = nowT.Date != logDay ? "---- " + nowT.ToString("yyyy-MM-dd") + " ----" + Environment.NewLine : "";
+            logDay = nowT.Date;
+            var bytes = Encoding.UTF8.GetBytes(day + nowT.ToString("HH:mm:ss.fff ") + s + Environment.NewLine);
             lock (logLock)
                 for (int i = 0; i < 5; i++)
                 {
@@ -1733,6 +1737,7 @@ class Slider
         catch { }
     }
     static readonly object logLock = new object();
+    static DateTime logDay = DateTime.MinValue;
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
@@ -3567,6 +3572,10 @@ static class Supervisor
         var sw = Stopwatch.StartNew();
         while (!TilingIpcUp() && sw.ElapsedMilliseconds < 20000) Thread.Sleep(150);
         if (!Maint.Running(Names.Shell)) ShellWatchdog.StartShell("açılış");
+        // Masaüstü yeniden ayakta: bakım bitti. --stop-desktop'ın bıraktığı işaret kalınca odak bekçisi, parça nöbetçileri
+        // ve kendini toparlama 10 dakika susuyordu (her "masaüstünü yenile" / durdur-başlat sonrasında; gizlenen overview
+        // önde kalıyor, boş workspace'te tuşlar görünmeyen pencereye gidiyordu).
+        Maint.Unmark();
     }
 
     static bool TilingIpcUp()
@@ -5181,16 +5190,33 @@ class Keys2
             return ovSignalSeq + " " + (ovSignalSeq == since ? "" : ovSignalWhat);
         }
     }
+    // Overview açılmadan önce öndeki pencere (kapanınca odak ona döner)
+    static volatile IntPtr overviewPrev;
+
     public static void HideOverview(IntPtr h)
     {
         Native.ShowWindow(h, 0);
+        // Gizlenen overview ön plan penceresi olarak kalıyordu: sayfa kapanırken odak ona geri dönüyor, sayfa bunu "açıldım"
+        // sanıp kendini yeniden açıyordu (Super ile kapatınca kapanıp geri açılma; 10 denemede 7). Odak hemen, sayfa
+        // tepki vermeden önceki pencereye verilir; o yoksa odak bekçisi (boş workspace: odak penceresi) karar verir.
+        IntPtr prev = overviewPrev;
+        IntPtr fg = Native.GetForegroundWindow();
+        if ((fg == h || fg == IntPtr.Zero) && Usable(prev, h)) FocusSink.Give(prev);
         OverviewSignal("hide");
-        FocusGuard.Kick(); // gizlenen overview önde kalıyordu: boş workspace'te yazılanlar görünmeyen arama kutusuna gidiyordu
+        FocusGuard.Kick(); // önceki pencere yoksa / verilemediyse
+    }
+
+    static bool Usable(IntPtr w, IntPtr ov)
+    {
+        if (w == IntPtr.Zero || w == ov || !Native.IsWindow(w) || !Native.IsWindowVisible(w) || Native.IsIconic(w) || ShellLike(w)) return false;
+        int cl;
+        return !(Native.DwmGetWindowAttribute(w, Native.DWMWA_CLOAKED, out cl, 4) == 0 && cl != 0); // başka workspace'te değil
     }
 
     public static void ShowOverviewInMode(IntPtr h, string mode)
     {
         IntPtr prevFg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
+        if (prevFg != h) overviewPrev = prevFg;
         int gen = Interlocked.Increment(ref overviewGen);
         if (prevFg != h && !ShellLike(prevFg)) ThreadPool.QueueUserWorkItem(_ => RestoreFocusAfterOverview(h, prevFg, gen));
         string d = Paths.StateDir;
@@ -8298,6 +8324,11 @@ static class FocusSink
     [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
     [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG m);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attach, uint to, bool on);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+    const uint WM_APP_TAKE_FOCUS = 0x8000 + 7;
 
     public static void Start()
     {
@@ -8315,6 +8346,7 @@ static class FocusSink
                 return IntPtr.Zero; // yut (Alt+F4 de bu pencereyi kapatmasın)
             case 0x0010: return IntPtr.Zero; // WM_CLOSE: yalnızca süreçle birlikte gider
             case 0x0021: return new IntPtr(3); // WM_MOUSEACTIVATE: MA_NOACTIVATE
+            case WM_APP_TAKE_FOCUS: return TakeFocus(w == IntPtr.Zero ? h : w) ? new IntPtr(1) : IntPtr.Zero;
         }
         return DefWindowProc(h, msg, w, l);
     }
@@ -8340,13 +8372,41 @@ static class FocusSink
         handle = IntPtr.Zero;
     }
 
-    // Klavyeyi bu pencereye ver (boş workspace). Ön plan kilidi için önce kendi sürecimize sahte bir tuş.
-    public static bool Focus()
+    // Klavyeyi bu pencereye ver (boş workspace). Pencerenin kendi thread'inde yapılır: o anki ön plan thread'inin girdisine
+    // kısa süre bağlanınca Windows'un ön plan kilidi izin verir. Arka plandaki bir thread'den SetForegroundWindow (sahte
+    // tuş hilesiyle bile) ön plan başka süreçteyken reddediliyordu: gizlenen overview önde kalıyordu.
+    public static bool Focus() { return Give(IntPtr.Zero); }
+
+    // Başka bir pencereyi öne al (overview kapanınca önceki pencere), aynı yöntemle; odak penceresi yoksa doğrudan dener
+    public static bool Give(IntPtr target)
     {
         IntPtr h = handle;
-        if (h == IntPtr.Zero) return false;
-        Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
-        Native.SetForegroundWindow(h);
+        if (h == IntPtr.Zero)
+        {
+            if (target == IntPtr.Zero) return false;
+            Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
+            Native.SetForegroundWindow(target);
+            return Native.GetForegroundWindow() == target;
+        }
+        IntPtr r;
+        if (SendMessageTimeout(h, WM_APP_TAKE_FOCUS, target, IntPtr.Zero, 0x2 /*SMTO_ABORTIFHUNG*/, 300, out r) == IntPtr.Zero) return false;
+        return r != IntPtr.Zero;
+    }
+
+    static bool TakeFocus(IntPtr h)
+    {
+        IntPtr fg = Native.GetForegroundWindow();
+        if (fg == h) return true;
+        uint fgPid, me = GetCurrentThreadId();
+        uint fgTid = fg == IntPtr.Zero ? 0 : Native.GetWindowThreadProcessId(fg, out fgPid);
+        bool attached = fgTid != 0 && fgTid != me && AttachThreadInput(me, fgTid, true);
+        try
+        {
+            Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
+            Native.SetForegroundWindow(h);
+            SetFocus(h);
+        }
+        finally { if (attached) AttachThreadInput(me, fgTid, false); }
         return Native.GetForegroundWindow() == h;
     }
 }
@@ -8447,7 +8507,13 @@ static class FocusGuard
     {
         ThreadPool.QueueUserWorkItem(_ =>
         {
-            try { Thread.Sleep(90); string why = Lost(); if (why != null && why != SinkReason) Refocus(why); }
+            try
+            {
+                Thread.Sleep(90);
+                string why = Lost();
+                int r = why != null && why != SinkReason ? Refocus(why) : 1;
+                if (why != null && why != SinkReason) Slider.Log("odak bekçisi (hemen): " + why + " -> " + (r > 0 ? "verildi" : r == 0 ? "boş workspace: odak penceresine" : "verilemedi"));
+            }
             catch (Exception ex) { Slider.Log("odak bekçisi: " + ex.GetBaseException().Message); }
         });
     }

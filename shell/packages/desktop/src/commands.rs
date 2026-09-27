@@ -198,12 +198,17 @@ pub fn set_webview_visible(
 /// the window itself (or nowhere) rather than in its browser.
 #[cfg(target_os = "windows")]
 fn focus_outside_browser(window: *mut std::ffi::c_void) -> bool {
-  use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, GUITHREADINFO,
+  use windows::Win32::{
+    Foundation::HWND,
+    UI::WindowsAndMessaging::{
+      GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, IsWindowVisible, GUITHREADINFO,
+    },
   };
 
   unsafe {
-    if GetForegroundWindow().0 != window {
+    // A hidden window can stay the foreground window (the core hides the
+    // overview with Win32): focusing its browser then reopened the page.
+    if GetForegroundWindow().0 != window || !IsWindowVisible(HWND(window)).as_bool() {
       return false;
     }
 

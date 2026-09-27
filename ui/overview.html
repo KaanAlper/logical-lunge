@@ -436,7 +436,12 @@
           // Bar'da herhangi bir yere tıklanınca kapan (bar penceresi odak almadığı için blur gelmiyordu)
           const unBar = listen('ll:bar-click', () => { if (open) hide('bar tıklaması'); });
           const onFocus = () => {
-            if (!open) { show('odak geldi (kapalıyken)'); return; }
+            // Kapalıyken gelen odak yalnızca pencere gerçekten görünürse açar (çekirdek Win32 ile gösterdi). Gizlenmiş pencereye
+            // geri dönen odak (kapanışta) sayfayı yeniden açıyordu: kapat / aç döngüsü.
+            if (!open) {
+              win.isVisible().then(v => { if (v) show('odak geldi (kapalıyken)'); else dbg('odak geldi, pencere gizli: açılmadı'); }).catch(() => {});
+              return;
+            }
             inputRef.current?.focus();
             // Helper pencereyi kendisi gizleyip yeniden gösterdiyse (Super / Super+V ile kapatma) blur gelmez ve
             // 'open' eski kalır: helper'ın bıraktığı mod bayrağına göre taze açılmış gibi davran.
