@@ -227,10 +227,10 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
     if !demo && native_bar::crash_loop() {
       error!("Native bar: it failed at the last starts; no bar this time (the core brings Windows' taskbar back).");
     } else {
-      let emit: Arc<dyn Fn(&str) + Send + Sync> = {
+      let emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync> = {
         let handle = app.handle().clone();
-        Arc::new(move |event| {
-          if let Err(err) = handle.emit(event, ()) {
+        Arc::new(move |event, payload| {
+          if let Err(err) = handle.emit(event, payload) {
             tracing::warn!("Native bar: event {}: {:?}", event, err);
           }
         })

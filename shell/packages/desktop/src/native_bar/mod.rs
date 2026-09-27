@@ -13,6 +13,7 @@ mod gfx;
 mod icons;
 mod model;
 mod popup;
+mod overview;
 mod pops;
 mod search;
 mod view;
@@ -95,6 +96,8 @@ const TIMER_STABLE: usize = 12;
 /// test only (`LL_NATIVE_BAR_FAIL_AFTER=<s>`): the first bar panics in its
 /// window procedure after that many seconds, to check that a new bar is built
 const TIMER_TEST_FAIL: usize = 13;
+/// test only: waits for the app list before `LL_NATIVE_OVERVIEW_SHOT`
+const TIMER_SNAPSHOT: usize = 14;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -111,11 +114,19 @@ enum Msg {
   Art(String, Option<Vec<u8>>),
   /// the core's event stream: an `ll:*` event, or None on (re)connect
   Core(Option<String>),
+  /// the clipboard history (Super menu, `;`)
+  Clips(Vec<search::Clip>),
+  /// song recognition ended
+  SongRecDone,
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
 static WAKE: AtomicIsize = AtomicIsize::new(0);
 static FAILED: AtomicBool = AtomicBool::new(false);
+/// the Super menu's window: it takes the keyboard (the bars never do)
+static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
+/// song recognition was stopped: its result is dropped
+static SONGREC_STOPPED: AtomicBool = AtomicBool::new(false);
 
 /// The bar cannot go on (a panic, the graphics device never came back). Its
 /// UI thread ends (its windows go with it) and `start`'s guard builds a new
@@ -209,8 +220,9 @@ pub struct Options {
   pub pack_dir: PathBuf,
   /// Test run next to the running shell's bar: own title, just below it, topmost.
   pub demo: bool,
-  /// Sends a shell event to the web widgets (`ll:overview-toggle` ...).
-  pub emit: Arc<dyn Fn(&str) + Send + Sync>,
+  /// Sends a shell event to the web widgets (`ll:overview-toggle` ..., a
+  /// payload for `ll:toast`).
+  pub emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
 }
 
 /// Starts the native bar and waits until its bars are on screen, it failed,
@@ -400,7 +412,11 @@ struct Ui {
   pops: pops::PopState,
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
-  emit: Arc<dyn Fn(&str) + Send + Sync>,
+  emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
+  /// the native Super menu (made on first use)
+  overview: Option<overview::Overview>,
+  /// test run: a menu picture to write once the app list is in (text, PNG, asked at)
+  snapshot: Option<(String, PathBuf, Instant)>,
 }
 
 thread_local! {
@@ -491,6 +507,8 @@ fn ui_thread(
         pops: Default::default(),
         pack_dir: opts.pack_dir.clone(),
         emit: opts.emit,
+        overview: None,
+        snapshot: None,
       })
     });
     WAKE.store(msg_hwnd.0 as isize, Ordering::Release);
@@ -505,6 +523,19 @@ fn ui_thread(
     }
     if let Some(ready) = &ready {
       let _ = ready.send(Ok(()));
+    }
+    // test run: `LL_NATIVE_OVERVIEW=1` opens the native Super menu at once;
+    // `LL_NATIVE_OVERVIEW_SHOT=<png>` draws it offscreen and exits
+    if opts.demo {
+      if let Some(shot) = std::env::var_os("LL_NATIVE_OVERVIEW_SHOT") {
+        let text = std::env::var("LL_NATIVE_OVERVIEW_TEXT").unwrap_or_default();
+        with_ui(|ui| {
+          ui.snapshot = Some((text, PathBuf::from(shot), Instant::now()));
+          ui.take_snapshot();
+        });
+      } else if std::env::var_os("LL_NATIVE_OVERVIEW").is_some() {
+        with_ui(|ui| ui.overview_open(""));
+      }
     }
     if !opts.demo {
       SetTimer(msg_hwnd, TIMER_STABLE, 60_000, None);
@@ -547,14 +578,15 @@ fn ms_to_next_minute() -> u32 {
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
   if msg == WM_MOUSEACTIVATE {
-    // clicking the bar never takes the keyboard from the app
-    return LRESULT(MA_NOACTIVATE as isize);
+    // clicking the bar never takes the keyboard from the app; the Super menu does
+    let menu = hwnd.0 as isize == OVERVIEW_HWND.load(Ordering::Acquire);
+    return LRESULT(if menu { MA_ACTIVATE } else { MA_NOACTIVATE } as isize);
   }
   if msg == WM_ERASEBKGND {
     return LRESULT(1);
   }
-  // A panic must not cross into Windows: the bar fails cleanly and the shell
-  // restarts (`fail`).
+  // A panic must not cross into Windows: the bar fails cleanly and a new one
+  // is built (`fail`).
   match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| with_ui(|ui| ui.handle(hwnd, msg, wp, lp)))) {
     Ok(Some(Some(r))) => return r,
     Ok(_) => {}
@@ -581,6 +613,9 @@ fn monitor_device(mon: HMONITOR) -> String {
 
 impl Ui {
   fn handle(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if self.overview.as_ref().is_some_and(|o| o.hwnd == hwnd) {
+      return self.overview_msg(msg, wp, lp);
+    }
     if hwnd == self.msg_hwnd {
       match msg {
         WM_APP_WAKE => self.drain(),
@@ -619,6 +654,12 @@ impl Ui {
         WM_APP_TRAY_CLOSE => self.tray_close(),
         WM_TIMER if wp.0 == TIMER_CYCLE => self.fake_switch(),
         WM_TIMER if wp.0 == TIMER_TEST_FAIL => panic!("LL_NATIVE_BAR_FAIL_AFTER"),
+        WM_TIMER if wp.0 == TIMER_SNAPSHOT => {
+          unsafe {
+            let _ = KillTimer(self.msg_hwnd, TIMER_SNAPSHOT);
+          }
+          self.take_snapshot();
+        }
         WM_TIMER if wp.0 == TIMER_RECOVER => {
           unsafe {
             let _ = KillTimer(self.msg_hwnd, TIMER_RECOVER);
@@ -715,7 +756,7 @@ impl Ui {
           _ => false,
         };
         if !toggles {
-          (self.emit)("ll:bar-click");
+          (self.emit)("ll:bar-click", serde_json::Value::Null);
         }
         // a tray icon may be dragged (to pin / unpin it)
         if let (Some(HitKind::TrayIcon(id)), WM_LBUTTONDOWN) = (kind, msg) {
@@ -757,6 +798,23 @@ impl Ui {
     }
   }
 
+  /// Writes the test picture once the app list is in (or after 5 s).
+  fn take_snapshot(&mut self) {
+    let ready = self.snapshot.as_ref().is_some_and(|(_, _, at)| self.icons.has_apps() || at.elapsed() > Duration::from_secs(5));
+    if !ready {
+      if self.snapshot.is_some() {
+        unsafe { SetTimer(self.msg_hwnd, TIMER_SNAPSHOT, 250, None) };
+      }
+      return;
+    }
+    let Some((text, path, _)) = self.snapshot.take() else { return };
+    match self.overview_snapshot(&text, &path) {
+      Ok(()) => tracing::info!("Super menu picture: {}", path.display()),
+      Err(err) => tracing::error!("Super menu picture: {:?}", err),
+    }
+    std::process::exit(0);
+  }
+
   fn drain(&mut self) {
     // icons arriving must repaint even when the data did not change
     let mut force = false;
@@ -790,6 +848,8 @@ impl Ui {
         Msg::Temps(t) => self.got_temps(t),
         Msg::Art(title, bytes) => self.got_art(title, bytes),
         Msg::Core(evt) => self.core_event(evt),
+        Msg::Clips(clips) => self.overview_clips(clips),
+        Msg::SongRecDone => self.songrec_done(),
         Msg::Wm(state) => self.model.wm = state,
         Msg::Apps(apps) => self.icons.set_apps(apps),
         Msg::WinIcon(h, png) => self.icons.set_win_icon(h, png),
@@ -1146,6 +1206,9 @@ impl Ui {
         self.res = res;
         self.icons.clear_bitmaps();
         self.pops_reset();
+        // its surfaces belonged to the lost device: made again on next open
+        self.overview = None;
+        OVERVIEW_HWND.store(0, Ordering::Release);
         if let Some(o) = self.osd.take() {
           unsafe {
             let _ = DestroyWindow(o.hwnd);
@@ -1362,24 +1425,24 @@ impl Ui {
     let media = |f: fn(MediaControlArgs) -> MediaFunction| ProviderFunction::Media(f(MediaControlArgs { session_id: None }));
     match (kind, button) {
       // the events the web widgets listen to
-      (HitKind::Search, 0) => (self.emit)("ll:overview-toggle"),
-      (HitKind::ActiveWindow, 0) => (self.emit)("ll:sidebar-left-toggle"),
+      (HitKind::Search, 0) => (self.emit)("ll:overview-toggle", serde_json::Value::Null),
+      (HitKind::ActiveWindow, 0) => (self.emit)("ll:sidebar-left-toggle", serde_json::Value::Null),
       (HitKind::Paused, 0) => self.wm_command("command wm-toggle-pause".into()),
       (HitKind::Mode(name), 0) => self.wm_command(format!("command wm-disable-binding-mode --name {}", name)),
       (HitKind::Workspace(n), 0) => self.slide(n.to_string()),
-      (HitKind::Workspace(_), 1) => (self.emit)("ll:overview-toggle"),
+      (HitKind::Workspace(_), 1) => (self.emit)("ll:overview-toggle", serde_json::Value::Null),
       (HitKind::Media, 0) => self.provider("media", media(MediaFunction::TogglePlayPause)),
       (HitKind::Media, 1) => self.provider("media", media(MediaFunction::Next)),
       (HitKind::Media, 2) => self.provider("media", media(MediaFunction::Previous)),
       (HitKind::Snip, 0) => core_api::run_core(&["--snip"]),
-      (HitKind::Osk, 0) => (self.emit)("ll:osk-toggle"),
+      (HitKind::Osk, 0) => (self.emit)("ll:osk-toggle", serde_json::Value::Null),
       (HitKind::Theme, 0) => {
         // the one shell theme (prefs.json): the web widgets follow through the core's event
         let light = !self.model.light;
         self.set_light(light);
         core_api::set_pref("theme", if light { "light" } else { "dark" });
       }
-      (HitKind::Indicators, 0) => (self.emit)("ll:sidebar-right-toggle"),
+      (HitKind::Indicators, 0) => (self.emit)("ll:sidebar-right-toggle", serde_json::Value::Null),
       (HitKind::TrayMore, 0) => self.tray_toggle(i),
       (HitKind::TrayIcon(id), b) => self.tray_action(id, b),
       _ => {}

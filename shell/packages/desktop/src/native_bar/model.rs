@@ -36,7 +36,7 @@ pub struct Model {
   pub pins: Option<Vec<String>>,
   /// The tray panel is open (the arrow points up).
   pub tray_open: bool,
-  hour12: bool,
+  pub hour12: bool,
   /// Language of the date and of `tr()`: prefs.json, else the Windows UI language.
   locale: String,
   /// Turkish source text -> translation (empty for Turkish).
@@ -254,6 +254,32 @@ fn load_dict(pack_dir: &Path, locale: &str) -> HashMap<String, String> {
     .zip(vals.iter())
     .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
     .collect()
+}
+
+/// Local clock time of a Unix timestamp, in the user's 12 / 24 h setting
+/// (clipboard entries in the Super menu).
+pub fn clock_at(unix: i64, hour12: bool) -> String {
+  use windows::Win32::{
+    Foundation::{FILETIME, SYSTEMTIME},
+    System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
+  };
+  let ticks = ((unix.max(0) as u64) + 11_644_473_600) * 10_000_000;
+  let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+  let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+  unsafe {
+    if FileTimeToSystemTime(&ft, &mut utc).is_err() || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err() {
+      return String::new();
+    }
+    let mut buf = [0u16; 64];
+    let n = GetTimeFormatEx(
+      &HSTRING::from(""),
+      TIME_FORMAT_FLAGS(0),
+      Some(&local),
+      &HSTRING::from(if hour12 { "h:mm tt" } else { "HH:mm" }),
+      Some(&mut buf),
+    );
+    String::from_utf16_lossy(&buf[..(n.max(1) - 1) as usize])
+  }
 }
 
 fn format_time(pattern: &str) -> String {

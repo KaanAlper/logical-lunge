@@ -91,6 +91,21 @@ impl Icons {
     !self.apps.is_empty()
   }
 
+  /// The Super menu's app list.
+  pub fn apps(&self) -> &[App] {
+    &self.apps
+  }
+
+  /// An app list entry's icon (the Super menu's results).
+  pub fn app(&mut self, gfx: &Gfx, i: usize) -> Option<ID2D1Bitmap1> {
+    let k = format!("app:{}", i);
+    if !self.bitmaps.contains_key(&k) {
+      let bmp = self.apps.get(i)?.icon.as_deref().and_then(data_url_bytes).and_then(|b| gfx.bitmap(&b).ok());
+      self.bitmaps.insert(k.clone(), bmp);
+    }
+    self.bitmaps.get(&k).cloned().flatten()
+  }
+
   fn match_app(&self, proc: &str) -> Option<usize> {
     let p = proc.to_lowercase();
     let fp = flat(&p);

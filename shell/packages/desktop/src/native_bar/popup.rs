@@ -344,6 +344,14 @@ impl Drop for PopWin {
 
 /// The popup box (styles.css `.res-pop`, `.media-pop`, `.tray-popup`):
 /// `box-shadow: 0 4px 14px rgba(0 0 0 / 35%)`, `colLayer0`, 1 px border.
+pub(super) fn frame_shadow(p: &mut Painter, r: Rect, radius: f32) -> anyhow::Result<()> {
+  for k in 1..=7 {
+    let g = k as f32 * 1.8;
+    p.fill_round(Rect::new(r.x - g, r.y + 4.0 - g, r.w + 2.0 * g, r.h + 2.0 * g), radius + g, Rgba(0, 0, 0, 0.045))?;
+  }
+  Ok(())
+}
+
 fn frame_box(p: &mut Painter, t: &Theme, r: Rect, radius: f32) -> anyhow::Result<()> {
   for k in 1..=7 {
     let g = k as f32 * 1.8;

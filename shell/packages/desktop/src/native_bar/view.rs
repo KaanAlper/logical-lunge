@@ -76,6 +76,17 @@ pub struct Theme {
   pub tip_fg: Rgba,
   /// popups: `border: 1px solid rgba(73 69 79 / 60%)`
   pub border: Rgba,
+  /// Super menu (overview.css): selected row, search shape
+  pub primary_container: Rgba,
+  pub on_primary_container: Rgba,
+  /// the search box
+  pub surface_container: Rgba,
+  /// tool button hover
+  pub surface_container_high: Rgba,
+  /// separator
+  pub outline_variant: Rgba,
+  /// placeholder, secondary text, tool icons
+  pub on_surface_variant: Rgba,
 }
 
 /// Material You dark, purple seed (styles.css `:root`).
@@ -96,6 +107,12 @@ pub const DARK: Theme = Theme {
   tip_bg: Rgba::hex(0xe6e0e9),
   tip_fg: Rgba::hex(0x322f35),
   border: Rgba(73, 69, 79, 0.6),
+  primary_container: Rgba::hex(0x4f378b),
+  on_primary_container: Rgba::hex(0xeaddff),
+  surface_container: Rgba::hex(0x211f26),
+  surface_container_high: Rgba::hex(0x2b2930),
+  outline_variant: Rgba::hex(0x49454f),
+  on_surface_variant: Rgba::hex(0xcac4d0),
 };
 
 /// styles.css `:root[data-theme="light"]`.
@@ -116,6 +133,12 @@ pub const LIGHT: Theme = Theme {
   tip_bg: Rgba::hex(0x322f35),
   tip_fg: Rgba::hex(0xf5eff7),
   border: Rgba(121, 116, 126, 0.35),
+  primary_container: Rgba::hex(0xeaddff),
+  on_primary_container: Rgba::hex(0x21005d),
+  surface_container: Rgba::hex(0xf3edf7),
+  surface_container_high: Rgba::hex(0xece6f0),
+  outline_variant: Rgba::hex(0xcac4d0),
+  on_surface_variant: Rgba::hex(0x49454f),
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -209,7 +232,7 @@ pub(super) enum Align {
 }
 
 impl Painter<'_> {
-  fn brush(&mut self, c: Rgba) -> Result<ID2D1SolidColorBrush> {
+  pub(super) fn brush(&mut self, c: Rgba) -> Result<ID2D1SolidColorBrush> {
     let key = (c.0, c.1, c.2, (c.3 * 1000.0) as u16);
     if let Some(b) = self.res.brushes.get(&key) {
       return Ok(b.clone());
@@ -249,7 +272,7 @@ impl Painter<'_> {
     Ok(())
   }
 
-  fn layout(&mut self, s: &str, style: TextStyle, max_w: f32, h: f32, tabular: bool) -> anyhow::Result<IDWriteTextLayout> {
+  pub(super) fn layout(&mut self, s: &str, style: TextStyle, max_w: f32, h: f32, tabular: bool) -> anyhow::Result<IDWriteTextLayout> {
     let format = self.fonts.text(style)?;
     let wide: Vec<u16> = s.encode_utf16().collect();
     unsafe {
@@ -264,7 +287,7 @@ impl Painter<'_> {
     }
   }
 
-  fn width_of(layout: &IDWriteTextLayout) -> f32 {
+  pub(super) fn width_of(layout: &IDWriteTextLayout) -> f32 {
     let mut m = DWRITE_TEXT_METRICS::default();
     unsafe {
       let _ = layout.GetMetrics(&mut m);

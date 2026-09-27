@@ -113,6 +113,73 @@ impl Gfx {
     unsafe { self.dc.CreateSolidColorBrush(&c.into(), None) }
   }
 
+  /// Draws offscreen (DIPs at `scale`) into a `w` x `h` pixel bitmap and
+  /// writes it as a PNG: checks drawing without showing a window
+  /// (`LL_NATIVE_OVERVIEW_SHOT`).
+  pub fn snapshot<F>(&self, w: u32, h: u32, scale: f32, path: &std::path::Path, f: F) -> anyhow::Result<()>
+  where
+    F: FnOnce(&ID2D1DeviceContext) -> Result<()>,
+  {
+    use windows::{
+      core::HSTRING,
+      Win32::{
+        Foundation::GENERIC_WRITE,
+        Graphics::{
+          Direct2D::{
+            Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT, D2D_SIZE_U},
+            D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_CPU_READ, D2D1_BITMAP_OPTIONS_TARGET,
+            D2D1_MAP_OPTIONS_READ,
+          },
+          Imaging::{GUID_ContainerFormatPng, WICBitmapEncoderNoCache},
+        },
+      },
+    };
+    unsafe {
+      let format = D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED };
+      let size = D2D_SIZE_U { width: w, height: h };
+      let props = |options| D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: format,
+        dpiX: 96.0,
+        dpiY: 96.0,
+        bitmapOptions: options,
+        ..Default::default()
+      };
+      let target = self.dc.CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_TARGET))?;
+      self.dc.SetTarget(&target);
+      self.dc.SetDpi(96.0 * scale, 96.0 * scale);
+      self.dc.BeginDraw();
+      self.dc.SetTransform(&Matrix3x2::identity());
+      self.dc.Clear(Some(&Rgba(0, 0, 0, 0.0).into()));
+      let drawn = f(&self.dc);
+      let ended = self.dc.EndDraw(None, None);
+      self.dc.SetTarget(None);
+      self.dc.SetDpi(96.0, 96.0);
+      drawn?;
+      ended?;
+      let cpu = self.dc.CreateBitmap(size, None, 0, &props(D2D1_BITMAP_OPTIONS_CPU_READ | D2D1_BITMAP_OPTIONS_CANNOT_DRAW))?;
+      cpu.CopyFromBitmap(None, &target, None)?;
+      let map = cpu.Map(D2D1_MAP_OPTIONS_READ)?;
+      let pixels = std::slice::from_raw_parts(map.bits, (map.pitch * h) as usize).to_vec();
+      cpu.Unmap()?;
+      let bitmap = self.wic.CreateBitmapFromMemory(w, h, &GUID_WICPixelFormat32bppPBGRA, map.pitch, &pixels)?;
+      let stream = self.wic.CreateStream()?;
+      stream.InitializeFromFilename(&HSTRING::from(path.as_os_str()), GENERIC_WRITE.0)?;
+      let encoder = self.wic.CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())?;
+      encoder.Initialize(&stream, WICBitmapEncoderNoCache)?;
+      let (mut frame, mut bag) = (None, None);
+      encoder.CreateNewFrame(&mut frame, &mut bag)?;
+      let frame = frame.ok_or_else(|| anyhow::anyhow!("no PNG frame"))?;
+      frame.Initialize(bag.as_ref())?;
+      frame.SetSize(w, h)?;
+      let mut pf = GUID_WICPixelFormat32bppPBGRA;
+      frame.SetPixelFormat(&mut pf)?;
+      frame.WriteSource(&bitmap, std::ptr::null())?;
+      frame.Commit()?;
+      encoder.Commit()?;
+    }
+    Ok(())
+  }
+
   /// Decodes PNG / ICO / JPEG bytes into a bitmap usable in any surface.
   pub fn bitmap(&self, bytes: &[u8]) -> Result<ID2D1Bitmap1> {
     unsafe {
