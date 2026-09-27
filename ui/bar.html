@@ -820,12 +820,39 @@
       function Battery({ battery }) {
         if (!battery) return null;
         const p = Math.round(battery.chargePercent);
+        
+        let timeStr = '';
+        if (battery.timeRemaining && typeof battery.timeRemaining === 'object') {
+          timeStr = `${battery.timeRemaining.hours || 0}s ${battery.timeRemaining.minutes || 0}d`;
+        } else if (typeof battery.timeRemaining === 'number') {
+          const hrs = Math.floor(battery.timeRemaining / 3600);
+          const mins = Math.floor((battery.timeRemaining % 3600) / 60);
+          timeStr = `${hrs}s ${mins}d`;
+        }
+
+        let watt = '?';
+        if (battery.chargeRate !== undefined && battery.chargeRate !== 0) watt = Math.abs(battery.chargeRate).toFixed(1);
+        else if (battery.dischargeRate !== undefined && battery.dischargeRate !== 0) watt = Math.abs(battery.dischargeRate).toFixed(1);
+        else if (battery.powerUsage !== undefined) watt = Math.abs(battery.powerUsage).toFixed(1);
+
+        const tooltip = battery.isCharging 
+            ? `Dolmasına kalan: ${timeStr || 'Hesaplanıyor...'}\nŞarj: %${p}\nGüç: ${watt}W`
+            : `Bitmesine kalan: ${timeStr || 'Hesaplanıyor...'}\nŞarj: %${p}\nHarcama: ${watt}W`;
+
+        if (battery.isCharging) {
+          return (
+            <div className="battery charging" title={tooltip} style={{ background: 'transparent', width: 'auto' }}>
+              <Icon name="power" fill style={{ color: '#b69df8', fontSize: 18 }} />
+              <span className="label" style={{ color: '#b69df8', marginLeft: 2, fontSize: 13 }}>{p}%</span>
+            </div>
+          );
+        }
+
         return (
-          <div className={`battery ${p <= 20 && !battery.isCharging ? 'low' : ''}`} title={`${p}%`}>
+          <div className={`battery ${p <= 20 ? 'low' : ''}`} title={tooltip}>
             <div className="fill" style={{ width: `${p}%` }} />
             <span className="label" style={{ color: p > 55 ? '#1d1b20' : '#e8def8' }}>
-              {battery.isCharging && p < 100 && <Icon name="bolt" fill />}
-              {p}
+              {p}%
             </span>
           </div>
         );
