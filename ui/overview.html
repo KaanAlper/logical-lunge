@@ -239,6 +239,8 @@
       const __fact = n => { if (!(n >= 0 && n <= 170) || n % 1) return NaN; let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; };
       function tryMath(expr) {
         let e = expr.trim().toLowerCase();
+        // Yazılmakta olan ifadenin yarım kalan sonu atılır: "2*6+" -> 12, "2*" -> 2 (sonuç yazarken kaybolmasın)
+        e = e.replace(/[\s+\-*\/^×÷(,√]+$/, '');
         if (!e || !/[\dπ]|\b(pi|tau|phi)\b/.test(e)) return null; // tek başına "e" uygulama aramasıdır
         e = e.replace(/×/g, '*').replace(/÷/g, '/').replace(/√\s*(\d+(?:[.,]\d+)?|\([^()]*\))/g, 'sqrt($1)').replace(/√/g, 'sqrt');
         // Fonksiyon çağrısı yoksa virgül ondalık ayracıdır (3,5 + 1)
