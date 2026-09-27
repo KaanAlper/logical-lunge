@@ -184,7 +184,10 @@
       }
 
       // ---- ii fuzzy (Fuzzy.qml'e yakın): ardışık eşleşme ve kelime başı bonusu ----
-      const low = s => s.toLocaleLowerCase(window.LL_LOCALE);
+      // Küçük harf + Türkçe i katlaması (tr yerelinde "Instagram" "ınstagram" oluyor, "ins" eşleşmiyordu) + görünmez
+      // karakterler atılır (bazı oyun adlarında sıfır genişlikli boşluk var). Harf sayısı korunur: vurgulama aynı sırayla
+      // ilerler.
+      const low = s => s.toLocaleLowerCase(window.LL_LOCALE).replace(/[\u0131\u0130]/g, 'i').replace(/[\u0307\u200b-\u200f\u2060-\u2064\ufeff]/g, '');
       function fuzzyScore(text, query) {
         const t = low(text), q = low(query).trim();
         if (!q) return 0;
@@ -538,7 +541,8 @@
           if (mathOnly) return out;
 
           if (term) {
-            apps.map(a => ({ a, s: a.alias && low(a.alias) === low(term) ? 2000 : Math.max(fuzzyScore(a.name, term), a.also ? fuzzyScore(a.also, term) : 0) }))
+            // "also" yoksa -1: eskiden 0'dı ve >= 0 süzgecinden geçip eşleşmeyen uygulamalar listeye doluyordu
+            apps.map(a => ({ a, s: a.alias && low(a.alias) === low(term) ? 2000 : Math.max(fuzzyScore(a.name, term), a.also ? fuzzyScore(a.also, term) : -1) }))
               .filter(x => x.s >= 0)
               .sort((x, y) => y.s - x.s)
               .slice(0, 15)
