@@ -7916,7 +7916,7 @@ static class Wallpaper
     }
 
     // Seçilen duvar kağıdı kalıcıdır: başka araçlar (ör. Superpaper) açılışta kendi resmini uygularsa, birkaç dakika
-    // içinde bizim seçimimiz geri yüklenir. Kayıt: satır başına "mod<TAB>yol".
+    // boyunca bizim seçimimiz geri yüklenir. Kayıt: satır başına "mod<TAB>yol".
     static string StatePath { get { return Paths.State(@"wallpaper.txt"); } }
 
     static void SaveState(string path, string mode)
@@ -7934,14 +7934,29 @@ static class Wallpaper
         catch { }
     }
 
+    [DllImport("advapi32.dll")]
+    static extern int RegNotifyChangeKeyValue(IntPtr hKey, bool watchSubtree, uint filter, IntPtr hEvent, bool async);
+
+    // Açılıştan sonraki ~3 dk: masaüstü ayarları (HKCU\Control Panel\Desktop) değiştiği an kontrol edilir; başka bir
+    // aracın resmi 15 sn görünmesin. Bildirim kurulamazsa 5 sn'lik yoklama aynı işi görür.
     public static void StartKeeper()
     {
         var t = new Thread(() =>
         {
             int fixes = 0;
-            for (int i = 0; i < 40 && fixes < 3; i++) // ~3 dk
+            Microsoft.Win32.RegistryKey key = null;
+            var changed = new AutoResetEvent(false);
+            try { key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop"); } catch { }
+            var until = DateTime.UtcNow.AddMinutes(3);
+            for (int i = 0; DateTime.UtcNow < until && fixes < 3; i++)
             {
-                Thread.Sleep(i == 0 ? 15000 : 5000);
+                if (i > 0)
+                {
+                    bool watching = false;
+                    try { watching = key != null && RegNotifyChangeKeyValue(key.Handle.DangerousGetHandle(), false, 4 /* LAST_SET */, changed.SafeWaitHandle.DangerousGetHandle(), true) == 0; } catch { }
+                    changed.WaitOne(5000);
+                    if (watching) Thread.Sleep(300); // aracın ardışık yazmaları bitsin
+                }
                 try
                 {
                     if (!System.IO.File.Exists(StatePath)) return;
@@ -7958,10 +7973,11 @@ static class Wallpaper
                         if (System.IO.Path.GetFileName(cur ?? "") == System.IO.Path.GetFileName(a[1])) continue;
                         SetRaw(a[1], a[0]); fixedOne = true;
                     }
-                    if (fixedOne) fixes++;
+                    if (fixedOne) { fixes++; Slider.Log("duvar kağıdı başka bir araçça değiştirilmişti, seçim geri yüklendi"); }
                 }
                 catch { }
             }
+            if (key != null) key.Close();
         }) { IsBackground = true };
         t.SetApartmentState(ApartmentState.STA);
         t.Start();
