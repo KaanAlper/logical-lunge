@@ -412,6 +412,7 @@ struct Ui {
   pops: pops::PopState,
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
+  custom_theme: Option<view::Theme>,
   emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
   /// the native Super menu (made on first use)
   overview: Option<overview::Overview>,
@@ -506,6 +507,7 @@ fn ui_thread(
         recover_tries: 0,
         pops: Default::default(),
         pack_dir: opts.pack_dir.clone(),
+        custom_theme: None,
         emit: opts.emit,
         overview: None,
         snapshot: None,
@@ -1083,11 +1085,14 @@ impl Ui {
     }
   }
 
-  fn theme(&self) -> &'static view::Theme {
+  fn theme(&self) -> view::Theme {
+    if let Some(t) = &self.custom_theme {
+      return *t;
+    }
     if self.model.light {
-      &view::LIGHT
+      view::LIGHT
     } else {
-      &view::DARK
+      view::DARK
     }
   }
 
@@ -1112,7 +1117,7 @@ impl Ui {
       let mut frame = None;
       gfx::draw_surface(&bar.bg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        match view::paint(&mut p, model, theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
+        match view::paint(&mut p, model, &theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
           Ok(f) => frame = Some(f),
           Err(err) => tracing::warn!("Native bar paint: {:?}", err),
         }
@@ -1130,7 +1135,7 @@ impl Ui {
       }
       gfx::draw_surface(&bar.fg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        if let Err(err) = view::paint_ws(&mut p, model, theme, bar.hover.as_ref()) {
+        if let Err(err) = view::paint_ws(&mut p, model, &theme, bar.hover.as_ref()) {
           tracing::warn!("Native bar paint (workspaces): {:?}", err);
         }
         Ok(())
@@ -1237,14 +1242,70 @@ impl Ui {
     let light = match evt.as_deref() {
       Some("ll:theme-light") => true,
       Some("ll:theme-dark") => false,
+      Some("ll:theme-color") => return self.reload_custom_theme(),
       Some("ll:tray-pins") => return self.reload_pins(),
       None => {
         self.reload_pins();
+        self.reload_custom_theme();
         model::prefs(&self.pack_dir)["theme"].as_str() == Some("light")
       }
       _ => return,
     };
     self.set_light(light);
+  }
+
+  fn reload_custom_theme(&mut self) {
+    if let Some(mut appdata) = std::env::var_os("LOCALAPPDATA") {
+      appdata.push("\\LogicalLunge\\state\\prefs.json");
+      if let Ok(content) = std::fs::read_to_string(appdata) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+          if let Some(hex_str) = json.get("focusColor").and_then(|v| v.as_str()) {
+            if hex_str.len() == 7 && hex_str.starts_with('#') {
+              if let Ok(hex_val) = u32::from_str_radix(&hex_str[1..], 16) {
+                let p = gfx::Rgba::hex(hex_val);
+                let mix = |base: (u8, u8, u8), alpha: f32| -> gfx::Rgba {
+                  let r = (base.0 as f32 * (1.0 - alpha) + p.0 as f32 * alpha) as u8;
+                  let g = (base.1 as f32 * (1.0 - alpha) + p.1 as f32 * alpha) as u8;
+                  let b = (base.2 as f32 * (1.0 - alpha) + p.2 as f32 * alpha) as u8;
+                  gfx::Rgba(r, g, b, 1.0)
+                };
+                let mut t = if self.model.light { view::LIGHT } else { view::DARK };
+                if !self.model.light {
+                  t.primary = p;
+                  t.primary_container = mix((16, 16, 16), 0.3);
+                  t.on_primary_container = mix((255, 255, 255), 0.2);
+                  t.layer0 = mix((20, 18, 24), 0.08);
+                  t.layer1 = mix((29, 27, 32), 0.12);
+                  t.layer1_hover = mix((54, 50, 59), 0.15);
+                  t.surface_container = mix((33, 31, 38), 0.1);
+                  t.surface_container_high = mix((43, 41, 48), 0.12);
+                  t.sec_container = mix((40, 38, 44), 0.2);
+                  t.border = mix((73, 69, 79), 0.3);
+                  t.border.3 = 0.6; // restore alpha
+                } else {
+                  t.primary = p;
+                  t.primary_container = mix((255, 255, 255), 0.3);
+                  t.on_primary_container = mix((0, 0, 0), 0.2);
+                  t.layer0 = mix((254, 247, 255), 0.08);
+                  t.layer1 = mix((243, 237, 247), 0.12);
+                  t.layer1_hover = mix((230, 224, 233), 0.15);
+                  t.surface_container = mix((243, 237, 247), 0.1);
+                  t.surface_container_high = mix((236, 230, 240), 0.12);
+                  t.sec_container = mix((232, 222, 248), 0.2);
+                  t.border = mix((121, 116, 126), 0.3);
+                  t.border.3 = 0.35; // restore alpha
+                }
+                self.custom_theme = Some(t);
+                let _ = self.redraw();
+                return;
+              }
+            }
+          }
+        }
+      }
+    }
+    self.custom_theme = None;
+    let _ = self.redraw();
   }
 
   fn set_light(&mut self, light: bool) {
@@ -1297,7 +1358,7 @@ impl Ui {
     let mut requests = Vec::new();
     let drawn = gfx::draw_surface(&osd.layer.surface, scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      if let Err(err) = view::paint_osd(&mut p, model, theme, kind, value) {
+      if let Err(err) = view::paint_osd(&mut p, model, &theme, kind, value) {
         tracing::warn!("Native bar OSD paint: {:?}", err);
       }
       Ok(())
