@@ -159,6 +159,8 @@ pub fn highlight(content: &str, query: &str) -> Vec<bool> {
 /// same rules, so both menus give the same answers.
 pub fn eval_math(expr: &str) -> Option<f64> {
   let src = expr.trim().to_lowercase();
+  // an expression being typed: its unfinished end is left out ("2*6+" -> 12, "2*" -> 2)
+  let src = src.trim_end_matches(|c: char| c.is_whitespace() || "+-*/^×÷(,√".contains(c)).to_string();
   if src.is_empty() || !has_number(&src) {
     return None;
   }
