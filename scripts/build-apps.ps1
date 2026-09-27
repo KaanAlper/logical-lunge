@@ -80,7 +80,8 @@ $items = $shell.NameSpace('shell:AppsFolder').Items()
 $apps = New-Object System.Collections.Generic.List[object]
 $seen = @{}
 foreach ($it in $items) {
-    $name = $it.Name
+    # Görünmez karakterler atılır (bazı oyun adlarında sıfır genişlikli boşluk var: "4<ZWSP>42"; aranınca bulunmuyordu)
+    $name = if ($it.Name) { $it.Name -replace '[\u00AD\u200B-\u200F\u2060-\u2064\uFEFF]', '' } else { $it.Name }
     $id = $it.Path
     $also = $null
     # Sistem dilindeki ad (Windows'un arayüz dili); dosya adı farklıysa onunla da aranır
