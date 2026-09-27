@@ -216,20 +216,51 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
   let (manager, emit_rx) = ProviderManager::new(app.handle());
   app.manage(manager.clone());
 
+  // Logical Lunge: the bar is native (Direct2D, no WebView) when the user's
+  // prefs say "bar": "native" or LL_NATIVE_BAR=on (web until the native
+  // bar is verified: native_bar::prefs_bar). If the native
+  // bar cannot start, dies later, or died at the last starts, the web bar is
+  // opened instead: there is always a bar.
+  let pack_dir = app_settings.config_dir.join("logical-lunge");
+  let mut web_bar = true;
   #[cfg(windows)]
-  if demo || native_bar == "on" {
-    let pack_dir = app_settings.config_dir.join("logical-lunge");
-    if let Err(err) = native_bar::start(
-      manager.clone(),
-      native_bar::Options { pack_dir, demo },
-    ) {
-      error!("Native bar: {:?}", err);
+  {
+    let want_native = match native_bar.as_str() {
+      "demo" | "on" | "native" => true,
+      "off" | "web" => false,
+      _ => native_bar::prefs_bar(&pack_dir) != "web",
+    };
+    if want_native && !demo && native_bar::crash_loop() {
+      error!("Native bar: it failed at the last starts, using the web bar this time.");
+    } else if want_native {
+      let fallback: Box<dyn Fn() + Send + Sync> = {
+        let factory = widget_factory.clone();
+        let rt = tokio::runtime::Handle::current();
+        Box::new(move || {
+          let factory = factory.clone();
+          rt.spawn(async move {
+            if let Err(err) = factory
+              .start_widget_by_id("logical-lunge", "bar", &WidgetOpenOptions::Preset("default".into()), false)
+              .await
+            {
+              error!("Web bar (fallback): {:?}", err);
+            }
+          });
+        })
+      };
+      match native_bar::start(manager.clone(), native_bar::Options { pack_dir: pack_dir.clone(), demo }, fallback) {
+        Ok(()) => {
+          web_bar = demo;
+          NATIVE_BAR_UP.store(!demo, std::sync::atomic::Ordering::Release);
+        }
+        Err(err) => error!("Native bar: {:?}; using the web bar.", err),
+      }
     }
   }
 
   // Open widgets based on CLI command.
   if !demo {
-    open_widgets_by_cli_command(cli, widget_factory.clone()).await?;
+    open_widgets_by_cli_command(cli, widget_factory.clone(), !web_bar).await?;
   }
 
   // Logical Lunge: no tray icon, widget manager / settings window or
@@ -300,7 +331,7 @@ fn setup_single_instance(
           Ok(cli) => {
             // No-op if no subcommand is provided.
             if cli.command() != CliCommand::Empty {
-              open_widgets_by_cli_command(cli, widget_factory).await
+              open_widgets_by_cli_command(cli, widget_factory, NATIVE_BAR_UP.load(std::sync::atomic::Ordering::Acquire)).await
             } else {
               Ok(())
             }
@@ -318,10 +349,14 @@ fn setup_single_instance(
   Ok(())
 }
 
+/// The native bar is up: a later "startup" (second instance) must not open the web bar.
+static NATIVE_BAR_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Opens widgets based on CLI command.
 async fn open_widgets_by_cli_command(
   cli: Cli,
   widget_factory: Arc<WidgetFactory>,
+  native_bar_up: bool,
 ) -> anyhow::Result<()> {
   let res = match cli.command() {
     CliCommand::StartWidget(args) => {
@@ -357,7 +392,7 @@ async fn open_widgets_by_cli_command(
         .await
     }
     CliCommand::Startup(_) | CliCommand::Empty => {
-      widget_factory.startup().await
+      widget_factory.startup_skipping(if native_bar_up { &["bar"] } else { &[] }).await
     }
     _ => unreachable!(),
   };

@@ -137,10 +137,10 @@ fn quote_arg(arg: &str) -> String {
 /// assert_eq!(args, ".");
 ///
 /// let (prog, args) = parse_command(
-///   r#"C:\Program Files\Git\git-bash --cd=C:\Users\larsb\.glaze-wm"#,
+///   r#"C:\Program Files\Git\git-bash --cd=C:\Users\user\projects"#,
 /// )?;
 /// assert_eq!(prog, r#"C:\Program Files\Git\git-bash"#);
-/// assert_eq!(args, r#"--cd=C:\Users\larsb\.glaze-wm"#);
+/// assert_eq!(args, r#"--cd=C:\Users\user\projects"#);
 /// ```
 fn parse_command(
   command: &str,

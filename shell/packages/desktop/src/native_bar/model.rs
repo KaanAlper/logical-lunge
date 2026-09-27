@@ -45,16 +45,14 @@ pub struct Model {
 
 impl Model {
   pub fn new(pack_dir: &Path) -> Self {
-    let prefs: serde_json::Value = std::fs::read_to_string(pack_dir.join("prefs.json"))
-      .ok()
-      .and_then(|s| serde_json::from_str(&s).ok())
-      .unwrap_or_default();
+    let prefs = prefs(pack_dir);
     let locale = match prefs["language"].as_str() {
       Some(l) if !l.is_empty() && l != "system" => l.to_string(),
       _ => ui_language(),
     };
     let mut m = Model {
       hour12: prefs["clock"].as_str() == Some("12"),
+      light: prefs["theme"].as_str() == Some("light"),
       dict: load_dict(pack_dir, &locale),
       locale,
       ..Default::default()
@@ -196,6 +194,19 @@ pub fn pin_key(ic: &SystrayOutputIcon) -> String {
     .next()
     .unwrap_or("")
     .to_lowercase()
+}
+
+/// The user's preferences (`~\.config\logical-lunge\prefs.json`, the core's
+/// file: language, clock, theme, bar); the pack's copy only as a fallback.
+pub fn prefs(pack_dir: &Path) -> serde_json::Value {
+  let user = std::env::var_os("USERPROFILE")
+    .map(|h| Path::new(&h).join(".config").join("logical-lunge").join("prefs.json"));
+  for path in user.into_iter().chain(std::iter::once(pack_dir.join("prefs.json"))) {
+    if let Some(v) = std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+      return v;
+    }
+  }
+  serde_json::Value::Null
 }
 
 /// First Windows display language (`tr-TR`, `en-US` ...).

@@ -581,9 +581,18 @@ impl WidgetFactory {
 
   /// Opens presets that are configured to be launched on startup.
   pub async fn startup(&self) -> anyhow::Result<()> {
+    self.startup_skipping(&[]).await
+  }
+
+  /// Logical Lunge: the startup widgets except `skip` (the web bar when the
+  /// native bar is up).
+  pub async fn startup_skipping(&self, skip: &[&str]) -> anyhow::Result<()> {
     let startup_configs = self.app_settings.startup_configs().await;
 
     for startup_config in startup_configs {
+      if skip.contains(&startup_config.widget.as_str()) {
+        continue;
+      }
       if let Err(err) = self
         .start_widget_by_id(
           &startup_config.pack,

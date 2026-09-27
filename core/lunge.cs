@@ -154,6 +154,8 @@ static class Native
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize, dwTime; }
+    [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO info);
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out RECT r, int size);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int v, int size);
@@ -744,7 +746,7 @@ class Slider
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
     const int MAX_WS = 30;             // tiling config'deki workspace sayısı (next/prev sarması için)
 
-    readonly TilingClient glaze;
+    readonly TilingClient tiling;
     // Her monitörün kendi katmanı hazır ve gizli bekler (Warm): tek katmanı başka monitöre taşımak yeniden boyutlama ve
     // boyama demekti (~15 ms). Listede olmayan bir dikdörtgen (monitör düzeni değişti) yedek katmanı taşıyarak kullanır.
     Overlay overlay = new Overlay();
@@ -806,7 +808,7 @@ class Slider
 
     public Slider(TilingClient g)
     {
-        glaze = g; spare = overlay;
+        tiling = g; spare = overlay;
         if (ringSrc == null)
         {
             try
@@ -1505,7 +1507,7 @@ class Slider
         var p = Cursor.Position;
         IntPtr under = Native.WindowFromPoint(p);
         long handle = under == IntPtr.Zero ? 0 : Native.GetAncestor(under, 2).ToInt64();
-        var mons = glaze.Monitors();
+        var mons = tiling.Monitors();
         foreach (var m in mons)
             foreach (Dictionary<string, object> ws in J.Children(m))
             {
@@ -1517,7 +1519,7 @@ class Slider
                     object hv;
                     if (w.TryGetValue("handle", out hv) && Convert.ToInt64(hv) == handle)
                     {
-                        if (!J.Bool(w, "hasFocus")) glaze.Command("focus --container-id " + J.Str(w, "id"));
+                        if (!J.Bool(w, "hasFocus")) tiling.Command("focus --container-id " + J.Str(w, "id"));
                         return;
                     }
                 }
@@ -1530,7 +1532,7 @@ class Slider
             if (p.X < mx || p.Y < my || p.X >= mx + J.Int(m, "width") || p.Y >= my + J.Int(m, "height")) continue;
             foreach (Dictionary<string, object> ws in J.Children(m))
                 if (J.Bool(ws, "isDisplayed") && !J.Bool(ws, "hasFocus"))
-                    glaze.Command("focus --workspace " + J.Str(ws, "name"));
+                    tiling.Command("focus --workspace " + J.Str(ws, "name"));
             return;
         }
     }
@@ -1538,7 +1540,7 @@ class Slider
     // Super+ok (focus) / Super+Shift+ok (move): yalnızca AYNI workspace içinde. tiling'in
     // "--direction" komutları o yönde pencere yoksa yan monitöre/workspace'e atlıyordu.
     // Sonunda fare hedef pencerenin ortasına taşınır (Hyprland'de odak değişince imleç de gider).
-    public void Commands(string[] cmds) { foreach (var c in cmds) glaze.Command(c); }
+    public void Commands(string[] cmds) { foreach (var c in cmds) tiling.Command(c); }
 
     public void FocusInWorkspace(string dir) { InWorkspace(dir, false); }
     public void MoveInWorkspace(string dir) { InWorkspace(dir, true); }
@@ -1602,7 +1604,7 @@ class Slider
     bool Current(out Dictionary<string, object> mon, out Dictionary<string, object> ws, out List<Dictionary<string, object>> wins, out Dictionary<string, object> cur)
     {
         wins = new List<Dictionary<string, object>>(); cur = null;
-        mon = FocusedMonitor(glaze.Monitors(), out ws);
+        mon = FocusedMonitor(tiling.Monitors(), out ws);
         if (mon == null || ws == null || !J.Bool(ws, "hasFocus")) return false;
         J.WindowNodes(ws, wins);
         foreach (var w in wins) if (J.Bool(w, "hasFocus")) cur = w;
@@ -1648,7 +1650,7 @@ class Slider
         if (!move)
         {
             if (best == null) return; // o yönde bu workspace'te pencere yok
-            glaze.Command("focus --container-id " + J.Str(best, "id"));
+            tiling.Command("focus --container-id " + J.Str(best, "id"));
             WarpTo(best);
             return;
         }
@@ -1666,7 +1668,7 @@ class Slider
             if (par0 == null || wins.Count < 2) return;
             if (J.Str(par0, "type") == "workspace" && J.Str(par0, "tilingDirection") == axis) return;
         }
-        if (!Prefs.Animations || MoveMs <= 0) { glaze.Command("move --direction " + dir); return; } // animasyonlar kapalı (ayarlar / config.yaml)
+        if (!Prefs.Animations || MoveMs <= 0) { tiling.Command("move --direction " + dir); return; } // animasyonlar kapalı (ayarlar / config.yaml)
         // Önce görüntüyü dondur (pencereler şu an nerede görünüyorsa orada), tiling arkada yerleştirsin
         var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
         var hs = new List<long>(Rects(wins).Keys);
@@ -1679,7 +1681,7 @@ class Slider
         long frozenAt = clk.ElapsedMilliseconds;
         // tiling (fork) Hyprland dwindle movewindow yapar: o yönde pencere varsa onu uzun kenarından böler; yoksa
         // bölme yönü değişir (yan yana iki pencerede Super+Shift+Yukarı -> odaktaki üstte tam genişlik).
-        glaze.Command("move --direction " + dir);
+        tiling.Command("move --direction " + dir);
 
         Dictionary<string, object> mA, wsA, curA; List<Dictionary<string, object>> winsA;
         bool ok = Current(out mA, out wsA, out winsA, out curA);
@@ -1737,14 +1739,14 @@ class Slider
         SwipeAbort();
         // Animasyonlar kapalı (ayarlar) ya da bu hareketin süresi 0 (config.yaml): workspace doğrudan değişir
         bool carry0 = commands.Length == 2 && commands[0].StartsWith("move --") && commands[1].StartsWith("focus --");
-        if (!Prefs.Animations || (carry0 ? Anims.Carry : Anims.Workspaces).Ms <= 0) { foreach (var c in commands) glaze.Command(c); return; }
+        if (!Prefs.Animations || (carry0 ? Anims.Carry : Anims.Workspaces).Ms <= 0) { foreach (var c in commands) tiling.Command(c); return; }
         var clock = Stopwatch.StartNew();
         Interrupt = false;
-        var mons = glaze.Monitors();
+        var mons = tiling.Monitors();
         Dictionary<string, object> oldWs;
         var mon = FocusedMonitor(mons, out oldWs);
         Log("query " + clock.ElapsedMilliseconds + "ms monitors=" + mons.Count + " focusedMon=" + (mon != null));
-        if (mon == null || oldWs == null) { foreach (var c in commands) glaze.Command(c); return; }
+        if (mon == null || oldWs == null) { foreach (var c in commands) tiling.Command(c); return; }
 
         string oldName = J.Str(oldWs, "name");
         if (targetName != null && targetName == oldName) return;
@@ -1777,7 +1779,7 @@ class Slider
             if (J.Bool(otherWs, "isDisplayed") || shown == null || commands.Length != 1)
             {
                 // Zaten orada gösteriliyor (yandaki ekrana geçiş) ya da pencere taşınıp takip ediliyor: animasyonsuz
-                foreach (var c in commands) glaze.Command(c);
+                foreach (var c in commands) tiling.Command(c);
                 WarpInto(otherMon, otherWs); // imleç odağın geçtiği monitöre (Hyprland gibi)
                 Log("slide: hedef diğer monitörde, animasyonsuz");
                 return;
@@ -1886,7 +1888,7 @@ class Slider
             Log("fast shown " + clock.ElapsedMilliseconds + "ms (kayıt " + regMs + "ms) new=" + newThumbs.Count);
 
             var cmdsAll = (string[])commands.Clone();
-            var task = Task.Factory.StartNew(() => { foreach (var cm in cmdsAll) glaze.Command(cm); });
+            var task = Task.Factory.StartNew(() => { foreach (var cm in cmdsAll) tiling.Command(cm); });
             var slide = moveFollow ? Anims.Carry : Anims.Workspaces; // taşıma daha kısa: pencere beklemeden yerine geçsin
             var settle = Anims.WindowsMove.Curve;
             int dur0 = Adaptive(ref lastSlideStart, slide.Ms);
@@ -1986,7 +1988,7 @@ class Slider
         Native.DwmFlush();
         Log("shown " + clock.ElapsedMilliseconds + "ms");
 
-        foreach (var c in commands) glaze.Command(c);
+        foreach (var c in commands) tiling.Command(c);
         Log("commanded " + clock.ElapsedMilliseconds + "ms");
 
         // tiling komuta hemen "tamam" der ama workspace'i birkaç ms sonra değiştirir:
@@ -1994,7 +1996,7 @@ class Slider
         Dictionary<string, object> newWs = null;
         for (int tries = 0; tries < 25; tries++)
         {
-            mons = glaze.Monitors();
+            mons = tiling.Monitors();
             newWs = null;
             foreach (var m in mons)
                 if (J.Str(m, "id") == J.Str(mon, "id"))
@@ -2082,7 +2084,7 @@ class Slider
         if (swipe != null) return true;
         if (!Prefs.Animations || Anims.Workspaces.Ms <= 0) return false;
         var clock = Stopwatch.StartNew();
-        var mons = glaze.Monitors();
+        var mons = tiling.Monitors();
         Dictionary<string, object> oldWs;
         var mon = FocusedMonitor(mons, out oldWs);
         int cur;
@@ -2178,7 +2180,7 @@ class Slider
         else if (s.PrevName != null && ((p < -COMMIT && velocity < FLICK) || (p < 0 && velocity < -FLICK))) target = -1;
         string name = target > 0 ? s.NextName : target < 0 ? s.PrevName : null;
         Task task = null;
-        if (name != null) task = Task.Factory.StartNew(() => glaze.Command("focus --workspace " + name));
+        if (name != null) task = Task.Factory.StartNew(() => tiling.Command("focus --workspace " + name));
 
         // Kalan yol workspace hareketinin eğrisiyle; süre kalan yolla orantılı (en az 120 ms)
         var spec = Anims.Workspaces;
@@ -2243,15 +2245,15 @@ class Slider
 // böylece bir sonraki pencere dwindle'daki gibi yerleşiyor.
 class Dwindle
 {
-    readonly TilingClient glaze;
+    readonly TilingClient tiling;
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
-    public Dwindle(TilingClient g) { glaze = g; }
+    public Dwindle(TilingClient g) { tiling = g; }
 
     // ---- Aç/kapa animasyonu için yerleşim hafızası ----
     Control ui; Slider slider;
     int animSeq;
-    readonly TilingClient cacheGlaze = new TilingClient();
+    readonly TilingClient cacheTiling = new TilingClient();
     readonly object cacheLock = new object();
     Dictionary<long, Native.RECT> rects = new Dictionary<long, Native.RECT>();   // görünen pencereler
     Dictionary<long, string> monOf = new Dictionary<long, string>();              // pencere -> monitör id
@@ -2297,7 +2299,7 @@ class Dwindle
     {
         r = new Dictionary<long, Native.RECT>(); m = new Dictionary<long, string>(); mr = new Dictionary<string, Rectangle>();
         var tiled = new HashSet<long>();
-        foreach (var mon in cacheGlaze.Monitors())
+        foreach (var mon in cacheTiling.Monitors())
         {
             string mid = J.Str(mon, "id");
             mr[mid] = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
@@ -2435,9 +2437,27 @@ class Dwindle
     // ---- Pencere kapanıyor / gizleniyor: Windows'un olayı tiling'in bildiriminden ~30-40 ms önce gelir; o arada tiling
     // kalan pencereleri yeniden yerleştirdiği için pencereler animasyon başlamadan zıplıyordu. Ekranı hemen, pencerelerin
     // görüldükleri yerlerde donduruyoruz; bildirim gelince AnimateChange bu katmanı alıp kaydırır. Gelmezse 0,4 sn'de kalkar.
+    // Donma katmanı, beklenen yeni pencere yok olunca ya da kural onu yüzdürünce / tam ekran yapınca hemen kalkar.
+    // Önceden 900 ms'lik güvenlik zamanlayıcısını bekliyordu: kısa ömürlü bir pencere (WezTerm'in açarken gösterdiği
+    // yardımcı pencere) ekranı ~1 sn dondurup asıl pencereyi donmuş görüntünün altında bırakıyordu; o sürede yeni
+    // pencere de dondurulamıyordu (açılış animasyonu oynuyor, terminal görünmüyordu).
+    void ReleasePending(long h, string why)
+    {
+        Slider.Frozen left = null;
+        lock (pendLock) { if (pendFrozen != null && pendHandle == h) { left = pendFrozen; pendFrozen = null; } }
+        if (left == null) return;
+        Slider.Log("donma bırakıldı: " + why);
+        ui.BeginInvoke((Action)(() =>
+        {
+            try { List<long> now; lock (cacheLock) now = new List<long>(rects.Keys); slider.Finish(left, now, 0, 120); }
+            catch (Exception ex) { Slider.Log("donma bırakma: " + ex.Message); }
+        }));
+    }
+
     void OnWindowGone(IntPtr hwnd)
     {
         long h = hwnd.ToInt64();
+        ReleasePending(h, "yeni pencere hemen kapandı");
         if (Slider.Animating || !Prefs.Animations) return;
         string mid; Rectangle mon;
         Dictionary<long, Native.RECT> vis; Dictionary<long, string> mo; HashSet<long> tl;
@@ -2599,10 +2619,32 @@ class Dwindle
         bool coversMonitor = r.Left <= scr.Left && r.Top <= scr.Top && r.Right >= scr.Right && r.Bottom >= scr.Bottom;
 
         string id = J.Str(win, "id"), cmd = null;
-        if (!caption && !thick && coversMonitor) cmd = "set-fullscreen";
+        if (!caption && !thick && coversMonitor)
+        {
+            // Tam ekran yalnızca öyle kalan pencereye: bazı uygulamalar açılırken monitör boyunda çerçevesiz bir yardımcı
+            // pencereyi bir an gösterip kapatıyor (WezTerm). Oyun 250 ms sonra da tam ekrandadır.
+            string proc = J.Str(win, "processName"), title = J.Str(win, "title");
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Thread.Sleep(250);
+                try
+                {
+                    Native.RECT r2;
+                    int st2 = Native.GetWindowLong(h, Native.GWL_STYLE);
+                    bool still = Native.IsWindow(h) && Native.IsWindowVisible(h) && Native.GetWindowRect(h, out r2)
+                        && (st2 & Native.WS_CAPTION) != Native.WS_CAPTION && (st2 & 0x00040000) == 0
+                        && r2.Left <= scr.Left && r2.Top <= scr.Top && r2.Right >= scr.Right && r2.Bottom >= scr.Bottom;
+                    if (!still) { Slider.Log("auto set-fullscreen atlandı (geçici pencere): " + proc + " | " + title); return; }
+                    tiling.Command("--id " + id + " set-fullscreen");
+                    Slider.Log("auto set-fullscreen: " + proc + " | " + title);
+                }
+                catch (Exception ex) { Slider.Log("auto set-fullscreen: " + ex.Message); }
+            });
+            return true;
+        }
         else if (owned || !thick || (popup && !caption)) cmd = "set-floating --centered";
         if (cmd == null) return false;
-        glaze.Command("--id " + id + " " + cmd);
+        tiling.Command("--id " + id + " " + cmd);
         Slider.Log("auto " + cmd + ": " + J.Str(win, "processName") + " | " + J.Str(win, "title"));
         return true;
     }
@@ -2648,7 +2690,7 @@ class Dwindle
         // Hedef: odaktaki workspace'te en son odaklanmış, hâlâ açık pencere
         var ids = new HashSet<string>();
         string focusedNow = null;
-        foreach (var m in glaze.Monitors())
+        foreach (var m in tiling.Monitors())
             foreach (Dictionary<string, object> ws in J.Children(m))
             {
                 if (!J.Bool(ws, "hasFocus")) continue;
@@ -2659,7 +2701,7 @@ class Dwindle
         foreach (var candidate in mru)
         {
             if (!ids.Contains(candidate)) continue;
-            if (candidate != focusedNow) glaze.Command("focus --container-id " + candidate);
+            if (candidate != focusedNow) tiling.Command("focus --container-id " + candidate);
             Slider.Log("close -> refocus " + (candidate == focusedNow ? "(zaten odakta)" : candidate));
             return;
         }
@@ -2726,7 +2768,13 @@ class Dwindle
         if (J.Str(data, "eventType") == "focus_changed") { OnFocused(J.Str(win, "id")); }
         if (J.Str(data, "eventType") == "window_managed")
         {
-            if (AutoFloat(win)) { LaunchQueue.Managed.Set(); return; }
+            if (AutoFloat(win))
+            {
+                object ah;
+                if (win.TryGetValue("handle", out ah) && ah != null) ReleasePending(Convert.ToInt64(ah), "kural yüzdürdü");
+                LaunchQueue.Managed.Set();
+                return;
+            }
             LaunchQueue.Managed.Set(); // sıradaki açma devam etsin
             object nh;
             if (win.TryGetValue("handle", out nh) && nh != null) AnimateChange(Convert.ToInt64(nh), true, win);
@@ -2742,13 +2790,13 @@ class Dwindle
 // Düşük seviyeli fare kancası sahte/sentetik hareketleri görmez.
 class MouseFocus
 {
-    readonly TilingClient glaze;
+    readonly TilingClient tiling;
     readonly AutoResetEvent moved = new AutoResetEvent(false);
     Native.LowLevelMouseProc proc;
     IntPtr hookHandle;
     volatile int lastX = int.MinValue, lastY = int.MinValue;
 
-    public MouseFocus(TilingClient g) { glaze = g; }
+    public MouseFocus(TilingClient g) { tiling = g; }
 
     // Kanca, klavye kancasıyla aynı (başka iş yapmayan) thread'de kurulur; burada sadece sinyal verilir.
     public void InstallHook()
@@ -2765,8 +2813,12 @@ class MouseFocus
         if (old != IntPtr.Zero) Native.UnhookWindowsHookEx(old);
     }
 
+    // Kanca en son ne zaman çağrıldı (kanca bekçisi: Windows geç cevap veren kancayı sessizce söker)
+    public static volatile int LastHookTick = Environment.TickCount;
+
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
+        LastHookTick = Environment.TickCount;
         int msg = wParam.ToInt32();
         if (nCode >= 0 && msg == 0x200) // WM_MOUSEMOVE
         {
@@ -2842,7 +2894,7 @@ class MouseFocus
 
                 // Yalnızca tiling'in yönettiği ve odaktaki workspace'te görünen pencereler
                 long handle = root.ToInt64();
-                foreach (var m in glaze.Monitors())
+                foreach (var m in tiling.Monitors())
                     foreach (Dictionary<string, object> ws in J.Children(m))
                     {
                         if (!J.Bool(ws, "isDisplayed")) continue;
@@ -2853,7 +2905,7 @@ class MouseFocus
                             object hv;
                             if (w.TryGetValue("handle", out hv) && Convert.ToInt64(hv) == handle)
                             {
-                                if (!J.Bool(w, "hasFocus")) glaze.Command("focus --container-id " + J.Str(w, "id"));
+                                if (!J.Bool(w, "hasFocus")) tiling.Command("focus --container-id " + J.Str(w, "id"));
                                 lastRoot = IntPtr.Zero;
                                 goto done;
                             }
@@ -4762,10 +4814,14 @@ class Keys2
         hookHandle = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
     }
 
-    public void Reinstall()
+    public void Reinstall() { Reinstall(false); }
+
+    // force: kanca Windows tarafından sökülmüş (tuşlar bize gelmiyor): basılı Win bilgisi de artık geçersiz
+    public void Reinstall(bool force)
     {
         // Tuş basılıyken değiştirme (durum karışmasın)
-        if (winDown) return;
+        if (winDown && !force) return;
+        if (force) { winDown = false; winInjected = false; held.Clear(); }
         IntPtr fresh = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
         if (fresh == IntPtr.Zero) return;
         IntPtr old = hookHandle;
@@ -4808,7 +4864,25 @@ class Keys2
 
     static void SuppressStart() { Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK); }
 
+    public static volatile int LastHookTick = Environment.TickCount;
+
+    // Süre ölçümü: kanca Windows'un sınırını (~300 ms) aşarsa tuş işlenmeden uygulamaya gider, tekrarlarsa kanca sessizce
+    // sökülür. Yavaş çağrılar log'a yazılır (hangi tuşta).
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        LastHookTick = Environment.TickCount;
+        long t0 = Stopwatch.GetTimestamp();
+        IntPtr r = HookInner(nCode, wParam, lParam);
+        long ms = (Stopwatch.GetTimestamp() - t0) * 1000 / Stopwatch.Frequency;
+        if (ms > 100)
+        {
+            int vk = nCode >= 0 ? Marshal.ReadInt32(lParam) : -1;
+            ThreadPool.QueueUserWorkItem(_ => Slider.Log("klavye kancası yavaş: " + ms + " ms (tuş 0x" + vk.ToString("X") + ")"));
+        }
+        return r;
+    }
+
+    IntPtr HookInner(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode < 0) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         var k = (Native.KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.KBDLLHOOKSTRUCT));
@@ -5141,6 +5215,14 @@ class Keys2
         }) { IsBackground = true, Name = "overview-reveal" }.Start();
     }
 
+    static string WinDesc(IntPtr w)
+    {
+        if (w == IntPtr.Zero) return "yok";
+        uint pid; Native.GetWindowThreadProcessId(w, out pid);
+        var t = new StringBuilder(64); Native.GetWindowText(w, t, 64);
+        return ProcInfo.Name(pid) + " '" + t + "'";
+    }
+
     // Super+V: overview'u pano modunda (";" öneki) aç; açıkken tekrar basınca kapat
     static void ToggleClipboard()
     {
@@ -5154,7 +5236,10 @@ class Keys2
     {
         IntPtr h = Native.FindWindow(null, "lunge-overview");
         if (h == IntPtr.Zero) return;
-        if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { HideOverview(h); return; }
+        bool vis = Native.IsWindowVisible(h);
+        IntPtr fg = Native.GetForegroundWindow();
+        Slider.Log("super: overview görünür=" + (vis ? 1 : 0) + " önde=" + (fg == h ? 1 : 0) + " -> " + (vis && fg == h ? "kapat" : "aç") + (vis && fg != h ? " (ön plan: " + WinDesc(fg) + ")" : ""));
+        if (vis && fg == h) { HideOverview(h); return; }
         // Mod bayrağı: "s" = düz arama (pano modunun bayrağı ";"); widget taze açılmış gibi davransın
         ShowOverviewInMode(h, "s");
     }
@@ -7197,7 +7282,7 @@ class Switcher : Form
     readonly List<Card> cards = new List<Card>();
     int sel;
     RectangleF hi, hiTarget;
-    readonly TilingClient glaze = new TilingClient();
+    readonly TilingClient tiling = new TilingClient();
     readonly System.Windows.Forms.Timer anim = new System.Windows.Forms.Timer { Interval = 15 };
     readonly System.Windows.Forms.Timer altWatch = new System.Windows.Forms.Timer { Interval = 40 };
     int animStart, fadeStart;
@@ -7222,7 +7307,7 @@ class Switcher : Form
         altWatch.Tick += (o, e) =>
         {
             // Alt bırakıldı ama kanca olayını kaçırdıysa yine de seçimi uygula
-            if (!demo && Active && (Native.GetAsyncKeyState(VK_MENU) & 0x8000) == 0) CommitCurrent();
+            if (!demo && Active && (Native.GetAsyncKeyState(VK_MENU) & 0x8000) == 0) { Slider.Log("switcher: alt bırakılmış görüldü (40 ms yoklama) -> seçileni aç"); CommitCurrent(); }
         };
     }
     protected override bool ShowWithoutActivation { get { return true; } }
@@ -7281,12 +7366,17 @@ class Switcher : Form
         // Alt bırakıldı: seçimi uygula (Alt olayı sisteme geçer; sahte tuş menü çubuğunu etkinleştirmesin diye araya girer)
         if (isUp && (vk == VK_MENU || vk == 0xA4 || vk == 0xA5))
         {
+            ThreadPool.QueueUserWorkItem(_ => Slider.Log("switcher: alt bırakıldı -> seçileni aç"));
             Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK);
             ui.BeginInvoke((Action)(() => inst.CommitCurrent()));
             return false;
         }
         // Alt basılı değilken menü açık kalmış olamaz (kaçırılan bırakma olayı): kilitlenme olmasın, tuşu geçir
-        if (!altDown && !demo) { Active = false; ui.BeginInvoke((Action)(() => inst.CloseOnly())); return false; }
+        if (!altDown && !demo)
+        {
+            ThreadPool.QueueUserWorkItem(_ => Slider.Log("switcher: tuş 0x" + vk.ToString("X") + " geldi ama alt basılı görünmüyor -> kapandı"));
+            Active = false; ui.BeginInvoke((Action)(() => inst.CloseOnly())); return false;
+        }
         if (isDown)
         {
             if (vk == VK_TAB) { bool rev = shift; ui.BeginInvoke((Action)(() => inst.Move(rev ? -1 : 1, 0))); return true; }
@@ -7307,7 +7397,7 @@ class Switcher : Form
         var list = new List<Card>();
         try
         {
-            foreach (var m in glaze.Monitors())
+            foreach (var m in tiling.Monitors())
                 foreach (Dictionary<string, object> ws in J.Children(m))
                 {
                     string wsName = J.Str(ws, "name");
@@ -7363,7 +7453,7 @@ class Switcher : Form
             Release();
             cards.Clear();
             cards.AddRange(Collect());
-            Slider.Log("switcher: " + cards.Count + " pencere");
+            Slider.Log("switcher: " + cards.Count + " pencere" + (reverse ? " (geri)" : ""));
             if (cards.Count == 0) { Active = false; return; }
             foreach (var c in cards) c.Icon = IconFor(c.H);
             sel = cards.Count > 1 ? (reverse ? cards.Count - 1 : 1) : 0;
@@ -7422,8 +7512,10 @@ class Switcher : Form
         if (!Visible || cards.Count == 0) return;
         int perRow = Math.Max(1, (ClientSize.Width - 2 * PAD + GAP) / (CW + GAP));
         int n = cards.Count;
+        int from = sel;
         if (dy != 0) { int t = sel + dy * perRow; if (t >= 0 && t < n) sel = t; }
         else sel = ((sel + dx) % n + n) % n;
+        Slider.Log("switcher: ilerle " + (dx != 0 ? dx : dy * perRow) + ": " + from + " -> " + sel + " / " + n);
         hi = (Environment.TickCount - animStart < 170) ? drawHi : hiTarget;
         hiTarget = Inflate(cards[sel].R);
         animStart = Environment.TickCount;
@@ -7470,10 +7562,10 @@ class Switcher : Form
             {
                 // başka workspace: önce animasyonlu geçiş, sonra pencereyi odakla
                 var k = Slider.Ui;
-                glaze.Command("focus --workspace " + c.Ws);
-                ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(120); try { glaze.Command("focus --container-id " + c.Id); } catch { } });
+                tiling.Command("focus --workspace " + c.Ws);
+                ThreadPool.QueueUserWorkItem(_ => { Thread.Sleep(120); try { tiling.Command("focus --container-id " + c.Id); } catch { } });
             }
-            else glaze.Command("focus --container-id " + c.Id);
+            else tiling.Command("focus --container-id " + c.Id);
         }
         catch (Exception ex) { Slider.Log("switcher activate: " + ex.Message); }
     }
@@ -8271,7 +8363,7 @@ static class FocusGuard
     [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr h);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool GetUserObjectInformation(IntPtr h, int index, StringBuilder info, int len, out int needed);
 
-    static readonly TilingClient glaze = new TilingClient();
+    static readonly TilingClient tiling = new TilingClient();
 
     public static void Start()
     {
@@ -8364,7 +8456,7 @@ static class FocusGuard
     static int Refocus(string why)
     {
         Dictionary<string, object> ws = null;
-        foreach (var m in glaze.Monitors())
+        foreach (var m in tiling.Monitors())
             foreach (Dictionary<string, object> w in J.Children(m))
                 if (J.Bool(w, "hasFocus")) ws = w;
         if (ws == null) return 0;
@@ -8393,7 +8485,7 @@ static class FocusGuard
         }
         var hw = new IntPtr(Convert.ToInt64(pick["handle"]));
         // Önce tiling üzerinden (durumu da güncel kalsın); o pencereyi zaten odaklı sayıyorsa ön plana getirmeyebilir
-        glaze.Command("focus --container-id " + J.Str(pick, "id"));
+        tiling.Command("focus --container-id " + J.Str(pick, "id"));
         Thread.Sleep(150);
         if (Lost() != null)
         {
@@ -9210,8 +9302,8 @@ static class Program
         ui.Load += (s, e) => ui.Hide();
         var h = ui.Handle;
 
-        var glaze = new TilingClient();
-        var slider = new Slider(glaze);
+        var tiling = new TilingClient();
+        var slider = new Slider(tiling);
         slider.Warm();
         // Monitör takıldı/çıkarıldı ya da çözünürlük değişti: yeni dikdörtgenlerin katmanı da hazır beklesin
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s0, e0) => { try { ui.BeginInvoke((Action)slider.Warm); } catch { } };
@@ -9250,6 +9342,23 @@ static class Program
             // Windows kancayı bir şekilde sökse bile geri gelsin
             var re = new System.Windows.Forms.Timer { Interval = 15000 };
             re.Tick += (s, e) => { keys.Reinstall(); mouse.Reinstall(); };
+            // Kanca bekçisi: kullanıcı girdisi var ama iki kanca da 1,5 sn'dir çağrılmadı -> Windows sökmüş; 15 sn'lik yenilemeyi
+            // beklemeden yeniden kur (o arada Super, Alt+Tab, kısayollar bize gelmiyordu)
+            var health = new System.Windows.Forms.Timer { Interval = 1000 };
+            health.Tick += (s, e) =>
+            {
+                var li = new Native.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(Native.LASTINPUTINFO)) };
+                if (!Native.GetLastInputInfo(ref li)) return;
+                int last = (int)li.dwTime, now = Environment.TickCount;
+                int seen = Math.Max(Keys2.LastHookTick, MouseFocus.LastHookTick);
+                if (now - last < 3000 && last - seen > 1500)
+                {
+                    keys.Reinstall(true); mouse.Reinstall();
+                    Keys2.LastHookTick = now; MouseFocus.LastHookTick = now;
+                    Slider.Log("klavye/fare kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu");
+                }
+            };
+            health.Start();
             re.Start();
             Application.Run();
         });

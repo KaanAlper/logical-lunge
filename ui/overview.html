@@ -362,10 +362,13 @@
         // Açılış sırası: mod okunurken kapatıldıysa (blur, Esc) gecikmiş açılış pencereyi yeniden göstermesin (kapalı
         // sayfa boş, tıklamaları yutan tam ekran pencere olarak kalıyordu)
         const openSeq = useRef(0);
-        const show = async () => {
+        // Tanı: açılış / kapanış nedeni çekirdeğin log'una (core.log "widget: overview ...")
+        const dbg = m => { fetch('http://127.0.0.1:6131/log?m=' + encodeURIComponent('overview ' + m), { method: 'POST', cache: 'no-store' }).catch(() => {}); };
+        const show = async (why = '?') => {
           // Aynı açılışın ikinci tetiklenişi (odak olayı + çekirdeğin sinyali). Önceden 400 ms'lik zaman engeli vardı:
           // hızlı kapat-aç'ta ikinci açılış yutuluyor, pencere görünür ama boş kalıyordu.
-          if (openRef.current) return;
+          if (openRef.current) { dbg('aç atlandı (zaten açık): ' + why); return; }
+          dbg('aç: ' + why);
           openRef.current = true;
           const my = ++openSeq.current;
           // Sayfa hemen görünür yapılır: çekirdek pencereyi saydam gösterip bu sayfa hazır olunca opak yapıyor, çizim
@@ -380,7 +383,7 @@
           try { await win.show(); await win.setFocus(); } catch {}
           setTimeout(() => inputRef.current?.focus(), 30);
         };
-        const hide = () => { openSeq.current++; openRef.current = false; setOpen(false); lunge.hideWindow(win).catch(() => {}); };
+        const hide = (why = '?') => { dbg('kapat: ' + why); openSeq.current++; openRef.current = false; setOpen(false); lunge.hideWindow(win).catch(() => {}); };
 
         // Helper pencereyi Win32 ile gizleyip gösterir (Super / Super+V): bu, sayfaya blur/focus olayı göndermez ve
         // 'open' eski kalır. Helper gösterdiğini / gizlediğini uzun yoklamayla (/overview-wait) bildirir: gösterdiyse
@@ -395,12 +398,12 @@
           let alive = true, seq = -1, was = false;
           const shown = () => {
             lunge.setWebviewVisible(true);
-            if (!openRef.current) showRef.current();
+            if (!openRef.current) showRef.current('çekirdek gösterdi');
             else readMode().then(m => {
               if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
             });
           };
-          const hidden = () => { openSeq.current++; openRef.current = false; setOpen(false); lunge.markHidden(win); };
+          const hidden = () => { dbg('çekirdek gizledi'); openSeq.current++; openRef.current = false; setOpen(false); lunge.markHidden(win); };
           (async () => {
             while (alive) {
               const ctl = new AbortController();
@@ -429,11 +432,11 @@
         useEffect(() => { lunge.hideWindow(win).catch(() => {}); lunge.reviveOnFocus(win); }, []);
 
         useEffect(() => {
-          const un = listen('ll:overview-toggle', () => (document.hasFocus() && open ? hide() : show()));
+          const un = listen('ll:overview-toggle', () => (document.hasFocus() && open ? hide('bar düğmesi') : show('bar düğmesi')));
           // Bar'da herhangi bir yere tıklanınca kapan (bar penceresi odak almadığı için blur gelmiyordu)
-          const unBar = listen('ll:bar-click', () => { if (open) hide(); });
+          const unBar = listen('ll:bar-click', () => { if (open) hide('bar tıklaması'); });
           const onFocus = () => {
-            if (!open) { show(); return; }
+            if (!open) { show('odak geldi (kapalıyken)'); return; }
             inputRef.current?.focus();
             // Helper pencereyi kendisi gizleyip yeniden gösterdiyse (Super / Super+V ile kapatma) blur gelmez ve
             // 'open' eski kalır: helper'ın bıraktığı mod bayrağına göre taze açılmış gibi davran.
@@ -441,7 +444,7 @@
               if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
             });
           };
-          const onBlur = () => hide();
+          const onBlur = () => hide('odak gitti');
           window.addEventListener('focus', onFocus);
           window.addEventListener('blur', onBlur);
           return () => { un.then(f => f()); unBar.then(f => f()); window.removeEventListener('focus', onFocus); window.removeEventListener('blur', onBlur); };

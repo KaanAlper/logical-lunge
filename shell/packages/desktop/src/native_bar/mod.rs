@@ -22,7 +22,7 @@ use std::{
   collections::HashMap,
   path::PathBuf,
   sync::{
-    atomic::{AtomicIsize, Ordering},
+    atomic::{AtomicBool, AtomicIsize, Ordering},
     Arc, OnceLock,
   },
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -89,6 +89,8 @@ const TIMER_POP_HIDE: usize = 8;
 const TIMER_POP_TICK: usize = 9;
 const TIMER_TRAY_HIDE: usize = 10;
 const TIMER_TIP: usize = 11;
+/// running for a minute: the start is not part of a crash loop
+const TIMER_STABLE: usize = 12;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -107,6 +109,54 @@ enum Msg {
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
 static WAKE: AtomicIsize = AtomicIsize::new(0);
+/// Opens the web bar (main.rs): the native bar could not go on.
+static FALLBACK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+static FAILED: AtomicBool = AtomicBool::new(false);
+/// `start` gave up waiting: the UI thread must not show bars after all.
+static ABORTED: AtomicBool = AtomicBool::new(false);
+/// the bars were on screen (a failure after this is a runtime failure)
+static READY: AtomicBool = AtomicBool::new(false);
+
+/// `"bar"` in the user's prefs: "native" or "web". The web bar stays the
+/// default until the native bar's popups are verified on screen.
+pub fn prefs_bar(pack_dir: &std::path::Path) -> String {
+  model::prefs(pack_dir)["bar"].as_str().unwrap_or("web").to_string()
+}
+
+/// The native bar cannot go on (a panic, the graphics device never came
+/// back): its windows go away with its thread and the web bar takes over.
+fn fail(why: &str) {
+  if FAILED.swap(true, Ordering::AcqRel) {
+    return;
+  }
+  tracing::error!("Native bar failed ({}): the web bar takes over", why);
+  if let Some(f) = FALLBACK.get() {
+    f();
+  }
+  unsafe { PostQuitMessage(0) };
+}
+
+/// Starts of the native bar in the last two minutes (a crash loop: the core
+/// restarts a shell that died). Three or more: this start uses the web bar.
+/// The record is cleared once a native bar has run for a minute.
+pub fn crash_loop() -> bool {
+  let path = state_dir().join("native-bar-starts");
+  let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+  let mut starts: Vec<u64> = std::fs::read_to_string(&path)
+    .unwrap_or_default()
+    .lines()
+    .filter_map(|l| l.trim().parse().ok())
+    .filter(|t| now.saturating_sub(*t) < 120)
+    .collect();
+  starts.push(now);
+  let _ = std::fs::create_dir_all(state_dir());
+  let _ = std::fs::write(&path, starts.iter().map(|t| t.to_string()).collect::<Vec<_>>().join("\n"));
+  starts.len() >= 3
+}
+
+fn stable() {
+  let _ = std::fs::remove_file(state_dir().join("native-bar-starts"));
+}
 
 fn send(msg: Msg) {
   let Some(tx) = SENDER.get() else { return };
@@ -133,7 +183,14 @@ pub struct Options {
   pub demo: bool,
 }
 
-pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()> {
+/// Starts the native bar and waits until its bars are on screen (or it
+/// failed). `fallback` opens the web bar if the native bar dies later.
+pub fn start(
+  manager: Arc<ProviderManager>,
+  opts: Options,
+  fallback: Box<dyn Fn() + Send + Sync>,
+) -> anyhow::Result<()> {
+  let _ = FALLBACK.set(fallback);
   let (tx, rx) = unbounded();
   SENDER.set(tx).map_err(|_| anyhow::anyhow!("native bar already started"))?;
   let wm_cmd = wm::spawn(|state| send(Msg::Wm(state)));
@@ -176,12 +233,27 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
     }
   });
 
+  let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+  let ready = ready_tx.clone();
   std::thread::Builder::new().name("native-bar".into()).spawn(move || {
-    if let Err(err) = ui_thread(rx, wm_cmd, manager, rt, opts) {
+    if let Err(err) = ui_thread(rx, wm_cmd, manager, rt, opts, ready) {
       tracing::error!("Native bar stopped: {:?}", err);
+      if READY.load(Ordering::Acquire) {
+        fail("stopped");
+      } else {
+        // still starting: `start` returns the error and the web bar opens there
+        let _ = ready_tx.send(Err(format!("{:?}", err)));
+      }
     }
   })?;
-  Ok(())
+  match ready_rx.recv_timeout(Duration::from_secs(5)) {
+    Ok(Ok(())) => Ok(()),
+    Ok(Err(err)) => Err(anyhow::anyhow!("native bar: {}", err)),
+    Err(_) => {
+      ABORTED.store(true, Ordering::Release);
+      Err(anyhow::anyhow!("native bar: not ready in 5 s"))
+    }
+  }
 }
 
 /// A DirectComposition visual with its own surface.
@@ -284,6 +356,7 @@ fn ui_thread(
   manager: Arc<ProviderManager>,
   rt: tokio::runtime::Handle,
   opts: Options,
+  ready: std::sync::mpsc::Sender<Result<(), String>>,
 ) -> anyhow::Result<()> {
   unsafe {
     CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
@@ -354,11 +427,27 @@ fn ui_thread(
         pops: Default::default(),
       })
     });
+    if ABORTED.load(Ordering::Acquire) {
+      return Ok(()); // the web bar is already up
+    }
     WAKE.store(msg_hwnd.0 as isize, Ordering::Release);
-    with_ui(|ui| {
+    let bars = with_ui(|ui| {
       ui.create_bars();
       ui.drain();
-    });
+      ui.bars.len()
+    })
+    .unwrap_or(0);
+    if bars == 0 {
+      anyhow::bail!("no bar window could be created");
+    }
+    if ABORTED.load(Ordering::Acquire) {
+      return Ok(()); // too slow: the web bar opened meanwhile (the windows go with this thread)
+    }
+    READY.store(true, Ordering::Release);
+    let _ = ready.send(Ok(()));
+    if !opts.demo {
+      SetTimer(msg_hwnd, TIMER_STABLE, 60_000, None);
+    }
     SetTimer(msg_hwnd, TIMER_CLOCK, ms_to_next_minute(), None);
     if !opts.demo {
       SetTimer(msg_hwnd, TIMER_ALIVE, 30_000, None);
@@ -398,8 +487,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
   if msg == WM_ERASEBKGND {
     return LRESULT(1);
   }
-  if let Some(Some(r)) = with_ui(|ui| ui.handle(hwnd, msg, wp, lp)) {
-    return r;
+  // A panic must not cross into Windows (that aborts the whole shell): the
+  // native bar stops and the web bar takes over.
+  match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| with_ui(|ui| ui.handle(hwnd, msg, wp, lp)))) {
+    Ok(Some(Some(r))) => return r,
+    Ok(_) => {}
+    Err(_) => fail("panic"),
   }
   unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
 }
@@ -451,6 +544,12 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_POP_TICK => self.pop_tick(),
         WM_TIMER if wp.0 == TIMER_TRAY_HIDE => self.tray_hidden(),
         WM_TIMER if wp.0 == TIMER_TIP => self.tip_show(),
+        WM_TIMER if wp.0 == TIMER_STABLE => {
+          unsafe {
+            let _ = KillTimer(self.msg_hwnd, TIMER_STABLE);
+          }
+          stable();
+        }
         WM_APP_TRAY_CLOSE => self.tray_close(),
         WM_TIMER if wp.0 == TIMER_CYCLE => self.fake_switch(),
         WM_TIMER if wp.0 == TIMER_RECOVER => {
@@ -958,6 +1057,11 @@ impl Ui {
       }
       Err(err) => {
         self.recover_tries += 1;
+        // about a minute without a device: the web bar (it has its own renderer)
+        if self.recover_tries > 12 {
+          fail("graphics device");
+          return;
+        }
         let wait = (500 * self.recover_tries).min(10_000);
         tracing::warn!("Native bar: device rebuild failed ({:?}), again in {} ms", err, wait);
         unsafe { SetTimer(self.msg_hwnd, TIMER_RECOVER, wait, None) };
