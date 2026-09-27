@@ -21,6 +21,20 @@ end-4 illogical-impulse Hyprland masaüstü, Windows için — tek komutla.
 > [!NOTE]
 > Logical Lunge is one application (`lunge.exe`) with its own window manager and shell. Parts of it are derived from open-source projects (see [Credits](#credits--teşekkürler) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); the whole project is GPL-3.0.
 
+## 🧭 Status · Durum
+
+**English.** Today the core (`lunge.exe`, C#) and the window manager (`lunge-tiling`, Rust) are native Windows programs. The bar, Super menu, sidebar, settings, notifications and on-screen keyboard are web widgets (WebView2) hosted by `lunge-shell`. That part is being rewritten natively:
+
+- **Native bar (in progress):** the same ii bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. Bar, indicators and actions are done; the popups (resources, media, tray panel, tooltips) are written and being tested. Turn it on with `"bar": "native"` in `~\.config\logical-lunge\prefs.json`; if it cannot start, the web bar opens instead.
+- **Next:** native Super menu, sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
+- **Branches:** `native-bar` is this work; `web-ui` keeps the WebView version and gets the shared fixes.
+
+**Türkçe.** Bugün çekirdek (`lunge.exe`, C#) ve pencere yöneticisi (`lunge-tiling`, Rust) native Windows programları. Bar, Super menüsü, sağ panel, ayarlar, bildirimler ve ekran klavyesi ise `lunge-shell` içinde çalışan web widget'ları (WebView2). Bu kısım native olarak yeniden yazılıyor:
+
+- **Native bar (sürüyor):** aynı ii bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Bar, göstergeler ve eylemler hazır; açılır pencereler (kaynaklar, medya, tepsi paneli, ipuçları) yazıldı, sınanıyor. `~\.config\logical-lunge\prefs.json` içinde `"bar": "native"` ile açılır; açılamazsa yerine web bar gelir.
+- **Sırada:** native Super menüsü, sağ panel ve diğer paneller; ardından Logical Lunge'ın Windows'un üstünde değil, Explorer'ın yerine doğrudan Windows kabuğu olarak çalışması.
+- **Branch'ler:** `native-bar` bu çalışma; `web-ui` WebView sürümünü tutar ve ortak düzeltmeleri alır.
+
 ## ⚡ Quick install · Hızlı kurulum
 
 Open **PowerShell** and paste · **PowerShell**'i aç ve yapıştır:
@@ -138,7 +152,7 @@ flowchart TD
   task["Sign-in task (LogicalLunge / Start)"] --> core
   core["lunge.exe (core, C#)<br/>root of the desktop: starts and watches the parts<br/>keys, slides and window animations, focus, rounded corners,<br/>toasts, splash, screenshots, wallpapers, night light, shortcuts"]
   core -- child --> tiling["lunge-tiling.exe (Rust)<br/>tiling (Hyprland dwindle), window borders, IPC"]
-  core -- child --> shell["lunge-shell.exe (Rust + WebView2)<br/>bar, sidebar, overview, session screen, toasts, keyboard"]
+  core -- child --> shell["lunge-shell.exe (Rust)<br/>bar (native: Direct2D / DirectComposition, or WebView2)<br/>sidebar, overview, session screen, toasts, keyboard (WebView2, going native)"]
   shell <-- IPC --> tiling
   core <-- IPC --> tiling
 ```
