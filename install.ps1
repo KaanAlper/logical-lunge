@@ -30,7 +30,7 @@ $T = if ($tr) { @{
         qLang = 'Arayüz hangi dilde olsun?'; systemLang = 'Sistem dili'
         qColor = 'Odak rengi ne olsun? (etkin pencerenin kenarlığı)'; custom = 'Özel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi görünmüyor, örnek: #b69df8'
         qClock = 'Saat nasıl görünsün?'; h24 = '24 saat'; h12 = '12 saat'
-        qExtras = 'Ek bileşenler (x ile seç / kaldır, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sıcaklığı: PawnIO sürücüsü'
+        qExtras = 'Ek bileşenler (Boşluk ile seç / kaldır, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sıcaklığı: PawnIO sürücüsü'
         summary = 'Özet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bileşenler'; none = 'yok'
         qGo = 'Kuralım mı?'; go = 'Kur'; cancel = 'Vazgeç'
         downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket doğrulanıyor'; extracting = 'Paket açılıyor'; stopping = 'Açık masaüstü kapatılıyor'
@@ -63,7 +63,7 @@ $T = if ($tr) { @{
         qLang = 'Which language should the interface use?'; systemLang = 'System language'
         qColor = 'Pick a focus color (the border of the active window)'; custom = 'Custom color...'; qHex = 'Color code (#rrggbb)'; badHex = "That doesn't look like a color code, e.g. #b69df8"
         qClock = 'How should the clock look?'; h24 = '24-hour'; h12 = '12-hour'
-        qExtras = 'Extras (x to toggle, Enter to confirm)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU temperature: PawnIO driver'
+        qExtras = 'Extras (Space to toggle, Enter to confirm)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU temperature: PawnIO driver'
         summary = 'Summary'; sLang = 'Language'; sColor = 'Focus color'; sClock = 'Clock'; sExtras = 'Extras'; none = 'none'
         qGo = 'Ready to install?'; go = 'Install'; cancel = 'Cancel'
         downloading = 'Downloading Logical Lunge'; verifying = 'Verifying the package'; extracting = 'Unpacking'; stopping = 'Closing the running desktop'
@@ -157,73 +157,70 @@ function Bar([double]$frac, [int]$width, [int]$tick) {
 }
 
 # ---------------------------------------------------------------- input
-$script:gum = $null
 $script:cancelled = $false
-function Assert-Answer([int]$code) { if ($code -eq 130) { $script:cancelled = $true; throw (New-Object OperationCanceledException) } }
-# gum could not draw a prompt (an error, not an answer): this and every later question use the simple prompts
-function Use-PlainPrompts { $script:gum = $null }
-# items: @(@(label, value), ...); returns the chosen value
-function Choose([string]$header, [object[]]$items, [string]$default) {
-    if ($script:gum) {
-        $args2 = @('choose', '--header', $header, '--label-delimiter', '|', '--cursor', '❯ ', '--cursor.foreground', $C.accent, '--header.foreground', $C.accent, '--selected.foreground', $C.accent, '--height', '16')
-        $def = ($items | Where-Object { $_[1] -eq $default } | Select-Object -First 1)
-        if ($def) { $args2 += @('--selected', $def[0]) }
-        foreach ($it in $items) { $args2 += ($it[0] + '|' + $it[1]) }
-        $out = & $script:gum @args2
-        Assert-Answer $LASTEXITCODE
-        if ($LASTEXITCODE -eq 0 -and $out) { return ([string]$out).Trim() }
-        Use-PlainPrompts
-    }
-    Write-Host ('  ' + (Paint $C.accent $header))
-    for ($i = 0; $i -lt $items.Count; $i++) { Write-Host ('    ' + (Paint $C.dim "$($i + 1))") + ' ' + $items[$i][0] + $(if ($items[$i][1] -eq $default) { Paint $C.accent '  ●' })) }
-    $a = Read-Host ('  ' + $T.plainPick)
-    $n = 0
-    if ([int]::TryParse($a, [ref]$n) -and $n -ge 1 -and $n -le $items.Count) { return $items[$n - 1][1] }
-    return $default
-}
-function Multi([string]$header, [object[]]$items, [string[]]$selected) {
-    if ($script:gum) {
-        $args2 = @('choose', '--no-limit', '--header', $header, '--cursor', '❯ ', '--cursor.foreground', $C.accent, '--header.foreground', $C.accent, '--selected.foreground', $C.accent, '--selected-prefix', '◆ ', '--unselected-prefix', '◇ ', '--cursor-prefix', '◇ ')
-        if ($selected.Count) { $args2 += @('--selected', (($items | Where-Object { $selected -contains $_[1] } | ForEach-Object { $_[0] }) -join ',')) }
-        foreach ($it in $items) { $args2 += $it[0] }
-        $out = & $script:gum @args2
-        Assert-Answer $LASTEXITCODE
-        if ($LASTEXITCODE -eq 0) {
-            $labels = @($out | Where-Object { $_ })
-            return @($items | Where-Object { $labels -contains $_[0] } | ForEach-Object { $_[1] })
+
+function Show-Menu([string]$Header, [object[]]$Items, [string]$Default, [bool]$Multi, [bool]$IsColor) {
+    if (-not [Environment]::UserInteractive) { return $Default }
+    $sel = 0
+    for ($i = 0; $i -lt $Items.Count; $i++) { if ($Items[$i][1] -eq $Default) { $sel = $i } }
+    $selected = @()
+    if ($Multi -and $Default) { $selected = $Default -split ',' | Where-Object { $_ } }
+
+    $drawn = 0
+    while ($true) {
+        if ($drawn -gt 0) { Write-Host -NoNewline "$E[$($drawn)A" }
+        $out = ""
+        $out += "  " + (Paint $C.accent $Header) + "`n"
+        
+        $accent = if ($IsColor) { $Items[$sel][1] } else { $C.accent }
+        if ($IsColor -and $Items[$sel][1] -eq 'custom') { $accent = $C.accent }
+
+        for ($i = 0; $i -lt $Items.Count; $i++) {
+            $isSel = ($i -eq $sel)
+            $prefix = if ($Multi) { if ($selected -contains $Items[$i][1]) { "◆ " } else { "◇ " } } else { "  " }
+            $cur = if ($isSel) { Paint $accent "❯ " } else { "  " }
+            $text = if ($isSel) { Paint $accent $Items[$i][0] } else { $Items[$i][0] }
+            
+            if ($IsColor -and $Items[$i][1] -ne 'custom') {
+                $text = (Paint $Items[$i][1] "██") + " " + $text
+            }
+            $out += "  " + $cur + $prefix + $text + "$E[K`n"
         }
-        Use-PlainPrompts
+        Write-Host -NoNewline $out
+        $drawn = $Items.Count + 1
+
+        $k = [Console]::ReadKey($true)
+        if ($k.Key -eq 'UpArrow') { $sel = ($sel - 1 + $Items.Count) % $Items.Count }
+        elseif ($k.Key -eq 'DownArrow') { $sel = ($sel + 1) % $Items.Count }
+        elseif ($k.Key -eq 'LeftArrow') { Write-Host -NoNewline "$E[$($drawn)A$E[J"; return 'BACK' }
+        elseif ($k.Key -eq 'Spacebar' -and $Multi) {
+            $val = $Items[$sel][1]
+            if ($selected -contains $val) { $selected = @($selected | Where-Object { $_ -ne $val }) }
+            else { $selected += $val }
+        }
+        elseif ($k.Key -eq 'Enter') {
+            Write-Host -NoNewline "$E[$($drawn)A$E[J"
+            if ($Multi) { return $selected } else { return $Items[$sel][1] }
+        }
+        elseif ($k.Key -eq 'C' -and ($k.Modifiers -band [ConsoleModifiers]::Control)) {
+            $script:cancelled = $true; throw (New-Object OperationCanceledException)
+        }
     }
-    $res = @()
-    foreach ($it in $items) {
-        $a = Read-Host ('  ' + $it[0] + ' [' + $T.yes + '/n]')
-        if ($a -eq '' -or $a -like "$($T.yes)*" -or $a -like 'y*') { $res += $it[1] }
-    }
-    return $res
+}
+
+function Choose([string]$header, [object[]]$items, [string]$default) { return Show-Menu $header $items $default $false $false }
+function Multi([string]$header, [object[]]$items, [string[]]$selected) { return Show-Menu $header $items ($selected -join ',') $true $false }
+function Confirm([string]$prompt, [string]$yes, [string]$no, [bool]$default = $true) {
+    $ans = Show-Menu $prompt @(@($yes, 'y'), @($no, 'n')) $(if ($default) { 'y' } else { 'n' }) $false $false
+    if ($ans -eq 'BACK') { return 'BACK' }
+    return ($ans -eq 'y')
 }
 function Ask([string]$header, [string]$placeholder, [string]$value) {
-    if ($script:gum) {
-        # Windows PowerShell drops an empty argument, so --value goes only with a value (an empty one made gum
-        # read --char-limit as the value, fail, and the color question repeat forever)
-        $args2 = @('input', '--header', $header, '--placeholder', $placeholder, '--char-limit', '7', '--prompt', '❯ ', '--prompt.foreground', $C.accent, '--header.foreground', $C.accent, '--cursor.foreground', $C.accent)
-        if ($value) { $args2 += @('--value', $value) }
-        $out = & $script:gum @args2
-        Assert-Answer $LASTEXITCODE
-        if ($LASTEXITCODE -eq 0) { return ([string]$out).Trim() }
-        Use-PlainPrompts
-    }
-    return (Read-Host ('  ' + $header)).Trim()
-}
-function Confirm([string]$prompt, [string]$yes, [string]$no, [bool]$default = $true) {
-    if ($script:gum) {
-        $d = if ($default) { '--default=true' } else { '--default=false' }
-        & $script:gum confirm $prompt --affirmative $yes --negative $no $d --prompt.foreground $C.accent --selected.background $C.accent --selected.foreground '#21005d'
-        if ($LASTEXITCODE -eq 130) { return $false }
-        if ($LASTEXITCODE -le 1) { return ($LASTEXITCODE -eq 0) }
-        Use-PlainPrompts
-    }
-    $a = Read-Host ("  $prompt [" + $T.yes + '/n]')
-    return ($a -eq '' -or $a -like "$($T.yes)*" -or $a -like 'y*')
+    Write-Host ('  ' + (Paint $C.accent $header))
+    Write-Host -NoNewline ('  ' + (Paint $C.accent '❯ '))
+    $ans = Read-Host
+    if ($ans -eq '') { $ans = $placeholder }
+    return $ans.Trim()
 }
 
 # ---------------------------------------------------------------- download with an animated progress bar
@@ -254,7 +251,7 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
                             $frac = if ($total -gt 0) { [Math]::Min(1.0, [double]$done / $total) } else { 0 }
                             $speed = if ($sw.Elapsed.TotalSeconds -gt 0.3) { (Human (($done - $have) / $sw.Elapsed.TotalSeconds)) + '/s' } else { '' }
                             $pct = if ($total -gt 0) { '{0,3:0}%' -f ($frac * 100) } else { '' }
-                            Write-Host -NoNewline ("`r  " + (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + $label + '  ' + (Bar $frac 28 $tick) + ' ' + (Paint $C.text $pct) + '  ' + (Paint $C.dim ((Human $done) + $(if ($total -gt 0) { ' / ' + (Human $total) }) + '  ' + $speed)) + "$E[K")
+                            Write-Host -NoNewline ("`r  " + (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + $label + '  ' + (Bar $frac 16 $tick) + ' ' + (Paint $C.text $pct) + '  ' + (Paint $C.dim ((Human $done) + $(if ($total -gt 0) { ' / ' + (Human $total) }) + '  ' + $speed)) + "$E[K")
                         }
                     }
                 }
@@ -325,22 +322,6 @@ try {
     $build = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
     if ($build -lt 19041) { Box $C.err $T.errTitle ($T.oldWin -f $build); return }
 
-    # gum (the prompts): downloaded to %TEMP%, removed at the end; without it the prompts are simple numbered menus
-    if ($interactive -and -not $env:LL_PLAIN) {
-        try {
-            With-Spinner $T.preparing {
-                $gz = Join-Path $work 'gum.zip'
-                $base = "https://github.com/charmbracelet/gum/releases/download/v$GUM_VER"
-                (New-Object Net.WebClient).DownloadFile("$base/gum_${GUM_VER}_Windows_x86_64.zip", $gz)
-                $sums = (New-Object Net.WebClient).DownloadString("$base/checksums.txt")
-                $want = ($sums -split "`n" | Where-Object { $_ -match "gum_${GUM_VER}_Windows_x86_64\.zip$" } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
-                if (-not $want -or $want.ToUpper() -ne (Get-FileHash $gz -Algorithm SHA256).Hash) { throw 'gum checksum' }
-                Expand-Archive $gz (Join-Path $work 'gum') -Force
-                $script:gum = (Get-ChildItem (Join-Path $work 'gum') -Recurse -Filter gum.exe | Select-Object -First 1).FullName
-            } | Out-Null
-        }
-        catch { $script:gum = $null }
-    }
 
     # the release to install
     $src = $env:LL_SOURCE; $zipUrl = $null; $shaUrl = $null; $zipSize = 0; $ver = $null
@@ -369,35 +350,45 @@ try {
         $sysName = (Get-UICulture).NativeName
         $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Français', 'fr'), @('Español', 'es'), @('Italiano', 'it'), @('Português', 'pt'),
             @('Русский (Russian)', 'ru'), @('Українська (Ukrainian)', 'uk'), @('Polski', 'pl'), @('日本語 (Japanese)', 'ja'), @('中文 (Chinese)', 'zh'), @('한국어 (Korean)', 'ko'), @('العربية (Arabic)', 'ar'))
-        $choice.language = Choose $T.qLang $langs 'system'
-        $langLabel = ($langs | Where-Object { $_[1] -eq $choice.language } | Select-Object -First 1)[0]
-        Say '✓' $C.ok "$($T.sLang): $langLabel"
-
         $colors = if ($tr) { @(@('Mor (varsayılan)', '#b69df8'), @('Mavi', '#8ab4f8'), @('Camgöbeği', '#7fd4c9'), @('Yeşil', '#a6d189'), @('Pembe', '#f5a3c7'), @('Turuncu', '#ffb77c'), @('Kırmızı', '#f28b82')) }
                   else { @(@('Purple (default)', '#b69df8'), @('Blue', '#8ab4f8'), @('Teal', '#7fd4c9'), @('Green', '#a6d189'), @('Pink', '#f5a3c7'), @('Orange', '#ffb77c'), @('Red', '#f28b82')) }
-        Write-Host ('  ' + (($colors | ForEach-Object { (Paint $_[1] '██') + ' ' + (Paint $C.dim $_[0]) }) -join '  '))
-        $pick = Choose $T.qColor (@($colors | ForEach-Object { , @(($_[0] + '  ' + $_[1]), $_[1]) }) + , @($T.custom, 'custom')) '#b69df8'
-        for ($try = 1; $pick -eq 'custom'; $try++) {
-            $hex = Ask $T.qHex '#b69df8' ''
-            if ($hex -notmatch '^#') { $hex = '#' + $hex }
-            if ($hex -match '^#[0-9a-fA-F]{6}$') { $pick = $hex.ToLower() }
-            elseif ($try -ge 3) { $pick = '#b69df8' }   # the default instead of asking forever
-            else { Say '!' $C.warn $T.badHex }
-        }
-        $choice.focusColor = $pick
-        Say '✓' $C.ok ("$($T.sColor): " + (Paint $pick '██') + ' ' + $pick)
-
         $now = Get-Date
-        $choice.clock = Choose $T.qClock @(@("$($T.h24)   $($now.ToString('HH:mm'))", '24'), @("$($T.h12)   $($now.ToString('h:mm tt', [Globalization.CultureInfo]::InvariantCulture))", '12')) '24'
-        Say '✓' $C.ok "$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })"
-
-        $extras = @(Multi $T.qExtras @(@($T.xTerm, 'terminal'), @($T.xSensors, 'sensors')) $extras)
-        $extraText = if ($extras.Count) { (@($extras | ForEach-Object { if ($_ -eq 'terminal') { $T.xTerm } else { $T.xSensors } }) -join "`n  ") } else { $T.none }
-
-        Box $C.accent $T.summary ("$($T.sLang): $langLabel`n$($T.sColor): $($choice.focusColor)`n$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })`n$($T.sExtras):`n  $extraText")
-        Write-Host ''
-        if (-not (Confirm $T.qGo $T.go $T.cancel $true)) { $script:cancelled = $true; throw (New-Object OperationCanceledException) }
-        Write-Host ''
+        $clocks = @(@("$($T.h24)   $($now.ToString('HH:mm'))", '24'), @("$($T.h12)   $($now.ToString('h:mm tt', [Globalization.CultureInfo]::InvariantCulture))", '12'))
+        
+        $step = 0
+        while ($step -lt 5) {
+            Clear-Host; Banner
+            if ($step -eq 0) {
+                $ans = Choose $T.qLang $langs $choice.language
+                if ($ans -eq 'BACK') { $script:cancelled = $true; throw (New-Object OperationCanceledException) }
+                $choice.language = $ans
+                $tr = $ans -eq 'tr' -or ($ans -eq 'system' -and (Get-UICulture).Name -like 'tr*')
+                $step++
+            } elseif ($step -eq 1) {
+                $cItems = @($colors | ForEach-Object { , @($_[0], $_[1]) }) + , @($T.custom, 'custom')
+                $ans = Show-Menu $T.qColor $cItems $choice.focusColor $false $true
+                if ($ans -eq 'BACK') { $step-- }
+                elseif ($ans -eq 'custom') {
+                    $hex = Ask $T.qHex '#b69df8' ''
+                    if ($hex -notmatch '^#') { $hex = '#' + $hex }
+                    if ($hex -match '^#[0-9a-fA-F]{6}$') { $choice.focusColor = $hex.ToLower(); $step++ }
+                    else { Say '!' $C.warn $T.badHex; Start-Sleep 2 }
+                } else { $choice.focusColor = $ans; $step++ }
+            } elseif ($step -eq 2) {
+                $ans = Choose $T.qClock $clocks $choice.clock
+                if ($ans -eq 'BACK') { $step-- } else { $choice.clock = $ans; $step++ }
+            } elseif ($step -eq 3) {
+                $ans = Multi $T.qExtras @(@($T.xTerm, 'terminal'), @($T.xSensors, 'sensors')) $extras
+                if ($ans -is [string] -and $ans -eq 'BACK') { $step-- } else { $extras = @($ans); $step++ }
+            } elseif ($step -eq 4) {
+                $langLabel = ($langs | Where-Object { $_[1] -eq $choice.language } | Select-Object -First 1)[0]
+                $extraText = if ($extras.Count) { (@($extras | ForEach-Object { if ($_ -eq 'terminal') { $T.xTerm } else { $T.xSensors } }) -join "`n  ") } else { $T.none }
+                Box $C.accent $T.summary ("$($T.sLang): $langLabel`n$($T.sColor): $($choice.focusColor)`n$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })`n$($T.sExtras):`n  $extraText")
+                Write-Host ''
+                $ans = Confirm $T.qGo $T.go $T.cancel $true
+                if ($ans -eq 'BACK') { $step-- } elseif (-not $ans) { $script:cancelled = $true; throw (New-Object OperationCanceledException) } else { $step++ }
+            }
+        }
     }
 
     # ------------------------------------------------------------ package
