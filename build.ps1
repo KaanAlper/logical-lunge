@@ -33,16 +33,17 @@ Step 'lunge.exe (core)'
 # File description = the name Task Manager shows for the app (the other parts are grouped under it)
 $nver = ($ver -replace '[^0-9.]', '') + '.0'
 $info = Join-Path $cache 'AssemblyInfo.cs'
-[IO.File]::WriteAllText($info, @"
+$infoText = @"
 using System.Reflection;
-[assembly: AssemblyTitle("Logical Lunge")]
+[assembly: AssemblyTitle("{TITLE}")]
 [assembly: AssemblyProduct("Logical Lunge")]
 [assembly: AssemblyCompany("Logical Lunge")]
 [assembly: AssemblyCopyright("GPL-3.0")]
 [assembly: AssemblyVersion("$nver")]
 [assembly: AssemblyFileVersion("$nver")]
 [assembly: AssemblyInformationalVersion("$ver")]
-"@)
+"@
+[IO.File]::WriteAllText($info, $infoText.Replace('{TITLE}', 'Logical Lunge'))
 & $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:Accessibility.dll "$root\core\lunge.cs" $info
 if ($LASTEXITCODE) { throw 'lunge.exe build failed' }
 
@@ -56,7 +57,9 @@ Step 'lunge-temps.exe (CPU/GPU temperature, LibreHardwareMonitorLib)'
 $lz = Join-Path $cache 'LibreHardwareMonitor.zip'
 if (-not (Test-Path $lz)) { Invoke-WebRequest -UseBasicParsing 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip' -OutFile $lz }
 $lx = Join-Path $cache 'lhm'; if (-not (Test-Path "$lx\LibreHardwareMonitorLib.dll")) { Expand-Archive $lz $lx -Force }
-& $csc /nologo /target:winexe /optimize+ "/out:$app\tools\temps\lunge-temps.exe" "/r:$lx\LibreHardwareMonitorLib.dll" "/r:$fx\Facades\netstandard.dll" /r:System.Core.dll "$root\tools\temps\lunge-temps.cs"
+$tinfo = Join-Path $cache 'TempsInfo.cs'
+[IO.File]::WriteAllText($tinfo, $infoText.Replace('{TITLE}', 'Logical Lunge Temperatures'))
+& $csc /nologo /target:winexe /optimize+ "/out:$app\tools\temps\lunge-temps.exe" "/r:$lx\LibreHardwareMonitorLib.dll" "/r:$fx\Facades\netstandard.dll" /r:System.Core.dll "$root\tools\temps\lunge-temps.cs" $tinfo
 if ($LASTEXITCODE) { throw 'lunge-temps build failed' }
 
 if (-not $SkipPython) {

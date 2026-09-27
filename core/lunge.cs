@@ -2434,6 +2434,7 @@ class Dwindle
 
     void OnWinEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("pencere", time);
         if (ev == Native.EVENT_OBJECT_SHOW) { OnWindowShown(hook, ev, hwnd, idObject, idChild, thread, time); return; }
         if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) return;
         try { OnWindowGone(hwnd); } catch (Exception ex) { Slider.Log("gone hook: " + ex.Message); }
@@ -4386,6 +4387,7 @@ class DialogCatcher
 
     void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("iletişim kutusu", time);
         if (idObject != 0 || hwnd == IntPtr.Zero) return;
         try
         {
@@ -4574,6 +4576,7 @@ class Rounder
 
     void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("köşe", time);
         if (idObject != 0 || hwnd == IntPtr.Zero) return; // OBJID_WINDOW
         if (ev == 0x8001) { Forget(hwnd); return; }
         if (ev == Native.EVENT_OBJECT_LOCATIONCHANGE) Dwindle.WindowMoved(hwnd);
@@ -7475,6 +7478,7 @@ class Switcher : Form
 
     static void OnForeground(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("alt-tab", time);
         try
         {
             IntPtr root = Native.GetAncestor(hwnd, 2);
@@ -8252,6 +8256,25 @@ static class WarmTerminal
 // Bizim kabuk (shell'deki bar) ayakta mı. Bar 20 sn'den uzun yoksa (shell ya da tiling çöktü / açılamadı) helper
 // güvenli tarafa açılır: Windows görev çubuğu ve Win tuşu (Başlat menüsü) geri gelir, kullanıcı hiçbir zaman barsız,
 // görev çubuğusuz ve Başlat'sız kalmaz. Bar dönünce ikisi yine bizim. (Kısa shell yeniden başlatmaları sayılmaz.)
+// Sistem genelindeki olay kancalarının (WinEvent) gecikmesi: olayın üretildiği an (dwmsEventTime) ile bize ulaştığı an
+// arası. Bir uygulama olay seli ürettiğinde (ör. Görev Yöneticisi'nin listesi yeniden sıralanırken) kuyruk birikirse
+// kaydedilir: bir dahaki kasmanın kaynağı tahminle değil kayıtla bulunsun. Ucuz: çağrı başına bir karşılaştırma.
+static class EventLag
+{
+    static int lastLog, seen;
+
+    public static void Note(string hook, uint time)
+    {
+        int lag = unchecked(Environment.TickCount - (int)time);
+        Interlocked.Increment(ref seen);
+        if (lag < 1000 || lag > 600000) return;
+        int now = Environment.TickCount;
+        int last = lastLog;
+        if (now - last < 5000 || Interlocked.CompareExchange(ref lastLog, now, last) != last) return;
+        Slider.Log("olay kancası gecikti: " + hook + " " + lag + " ms (son kayıttan beri " + Interlocked.Exchange(ref seen, 0) + " olay)");
+    }
+}
+
 static class ShellState
 {
     static volatile bool up = true;
@@ -8729,7 +8752,7 @@ static class TaskbarGuard
     {
         if (cb != null) return;
         FailOpen = failOpen;
-        cb = (hook, ev, h, idObject, idChild, thread, time) => { if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
+        cb = (hook, ev, h, idObject, idChild, thread, time) => { EventLag.Note("görev çubuğu", time); if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
         Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
         Sweep();
         // Yoğunlukta kaçan olay olursa diye seyrek yedek tarama; bar'ın durumu da burada izlenir
