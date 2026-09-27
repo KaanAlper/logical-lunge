@@ -233,6 +233,20 @@ function Stop-Parts {
     }
 }
 
+# A process still running from a Logical Lunge folder whose program file is gone (moved or removed by this or an earlier
+# update) keeps working on stale files: a WezTerm left from the 0.1.x folder took Super+Enter requests it could not serve.
+# Those are stopped. Processes whose files still exist are never touched (other programs may use our old tools).
+function Stop-Leftovers {
+    $roots = @($APP, $OLD_APP, $OLD_LL, $OLD_ZB, $OLD_GW) | ForEach-Object { $_.TrimEnd('\') + '\' }
+    foreach ($p in Get-CimInstance Win32_Process) {
+        $exe = $p.ExecutablePath
+        if (-not $exe -or (Test-Path -LiteralPath $exe)) { continue }
+        if (-not ($roots | Where-Object { $exe.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })) { continue }
+        Log "    stopped a leftover process: $exe ($($p.ProcessId))"
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Puts back what this run changed and starts the previous desktop
 function Undo-Install {
     Log ''; Log '==> Rolling back'
@@ -600,6 +614,7 @@ if (-not $ok) {
 # ---------------------------------------------------------------- committed: registration and clean-up
 # Nothing below can undo the install; failures are only logged.
 Step 'finish' 'Registering and cleaning up'
+try { Stop-Leftovers } catch { Log "    leftover processes: $($_.Exception.Message)" }
 try {
     $un = "$HKU\Software\Microsoft\Windows\CurrentVersion\Uninstall\LogicalLunge"
     New-Item -Path $un -Force | Out-Null
