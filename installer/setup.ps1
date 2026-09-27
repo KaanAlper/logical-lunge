@@ -381,8 +381,14 @@ try {
     # interface preferences chosen in the installer (language, clock); the UI reads a copy next to the widgets
     $prefs = Join-Path $CONF 'prefs.json'
     if ($choice -and ($choice.language -or $choice.clock)) {
-        $p = [ordered]@{ language = $(if ($choice.language) { [string]$choice.language } else { 'system' }); clock = $(if ($choice.clock) { [string]$choice.clock } else { '24' }) }
-        if (-not (Test-Path $prefs)) { Remember-Created $prefs }
+        # merged into the existing file: rewriting it dropped the theme, bar, focus color and animation settings
+        $p = [ordered]@{}
+        if (Test-Path $prefs) {
+            try { (Get-Content $prefs -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $p[$_.Name] = $_.Value } } catch { Log "    prefs.json unreadable, starting over" }
+        }
+        else { Remember-Created $prefs }
+        $p['language'] = $(if ($choice.language) { [string]$choice.language } else { 'system' })
+        $p['clock'] = $(if ($choice.clock) { [string]$choice.clock } else { '24' })
         [IO.File]::WriteAllText($prefs, ($p | ConvertTo-Json), $UTF8)
     }
     if (Test-Path $prefs) { Copy-Item $prefs (Join-Path $PACK 'prefs.json') -Force }
