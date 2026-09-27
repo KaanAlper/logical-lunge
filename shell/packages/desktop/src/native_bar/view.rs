@@ -157,7 +157,7 @@ pub enum HitKind {
   TrayMore,
   TrayIcon(String),
   /// tooltip only
-  Battery(i32),
+  Battery(String),
 }
 
 pub struct Hit {
@@ -577,7 +577,17 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
       right_edge -= 4.0;
       let r = Rect::new(right_edge - 38.0, 11.0, 38.0, 18.0);
       battery(p, t, r, bat.charge_percent, bat.is_charging)?;
-      f.hits.push(Hit { rect: r, kind: HitKind::Battery(bat.charge_percent.round() as i32) });
+      let mut tip = String::new();
+      let hrs = bat.time_till_full.unwrap_or(bat.time_till_empty.unwrap_or(0.0)) as i32 / 3600;
+      let mins = (bat.time_till_full.unwrap_or(bat.time_till_empty.unwrap_or(0.0)) as i32 % 3600) / 60;
+      let time_str = if hrs == 0 && mins == 0 { "Hesaplanıyor...".to_string() } else { format!("{}s {}d", hrs, mins) };
+      let watt = bat.power_consumption.abs();
+      if bat.is_charging {
+        tip = format!("Dolmasına kalan: {}\nŞarj: %{}\nGüç: {:.1}W", time_str, bat.charge_percent.round() as i32, watt);
+      } else {
+        tip = format!("Bitmesine kalan: {}\nŞarj: %{}\nHarcama: {:.1}W", time_str, bat.charge_percent.round() as i32, watt);
+      }
+      f.hits.push(Hit { rect: r, kind: HitKind::Battery(tip) });
       right_edge -= 38.0 + 4.0 + 4.0;
     }
   }
@@ -795,6 +805,20 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>) 
 /// ii BatteryIndicator.qml (ClippedProgressBar).
 fn battery(p: &mut Painter, t: &Theme, r: Rect, percent: f32, charging: bool) -> anyhow::Result<()> {
   let pct = percent.round().clamp(0.0, 100.0);
+  let label = format!("{}", pct as i32);
+  let st = TextStyle { size: 11.0, weight: 600.0 };
+  let lw = p.measure_with(&label, st, true)?;
+  let color = if pct > 55.0 { Rgba::hex(0x1d1b20) } else { Rgba::hex(0xe8def8) };
+  
+  if charging {
+    let c = Rgba::hex(0xb69df8);
+    let mut x = r.x + (r.w - lw - 14.0) / 2.0;
+    p.icon("power", x + 5.0, r.y + r.h / 2.0, 14.0, true, c)?;
+    x += 14.0;
+    p.text(&format!("{}%", pct as i32), Rect::new(x, r.y, lw + 10.0, r.h), TextStyle { size: 12.0, weight: 600.0 }, c, Align::Left, true)?;
+    return Ok(());
+  }
+
   let low = pct <= 20.0 && !charging;
   p.fill_round(r, r.h / 2.0, t.sec_container)?;
   unsafe {
@@ -802,16 +826,7 @@ fn battery(p: &mut Painter, t: &Theme, r: Rect, percent: f32, charging: bool) ->
   }
   p.fill_round(r, r.h / 2.0, if low { t.error } else { t.on_sec_container })?;
   unsafe { p.dc.PopAxisAlignedClip() };
-  let label = format!("{}", pct as i32);
-  let color = if pct > 55.0 { Rgba::hex(0x1d1b20) } else { Rgba::hex(0xe8def8) };
-  let st = TextStyle { size: 11.0, weight: 600.0 };
-  let lw = p.measure_with(&label, st, true)?;
-  let total = lw + if charging && pct < 100.0 { 10.0 } else { 0.0 };
-  let mut x = r.x + (r.w - total) / 2.0;
-  if charging && pct < 100.0 {
-    p.icon("bolt", x + 5.0, r.y + r.h / 2.0, 12.0, true, color)?;
-    x += 10.0;
-  }
+  let mut x = r.x + (r.w - lw) / 2.0;
   p.text(&label, Rect::new(x, r.y, lw + 1.0, r.h), st, color, Align::Left, true)?;
   Ok(())
 }

@@ -848,7 +848,7 @@ impl Ui {
         HitKind::Snip => Some(m.tr("Bölge ekran görüntüsü")),
         HitKind::Osk => Some(m.tr("Ekran klavyesi")),
         HitKind::Theme => Some(m.tr("Karanlık / aydınlık")),
-        HitKind::Battery(p) => Some(format!("{}%", p)),
+        HitKind::Battery(t) => Some(t.clone()),
         HitKind::TrayIcon(id) => m.tray_icon(id).map(|ic| ic.tooltip.clone()).filter(|t| !t.trim().is_empty()),
         HitKind::TrayMore => Some(m.tr("Diğer simgeler (sürükleyerek taşı)")),
         _ => None,
