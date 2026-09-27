@@ -1,4 +1,4 @@
-﻿# Logical Lunge - first-install wizard
+# Logical Lunge - first-install wizard
 #   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 # Asks for the focus color, the interface language and the clock, downloads the latest release (with a progress bar)
 # and runs installer\setup.ps1 elevated (one UAC prompt) while showing its steps. On an error or Ctrl+C the installer
@@ -251,7 +251,10 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
                             $frac = if ($total -gt 0) { [Math]::Min(1.0, [double]$done / $total) } else { 0 }
                             $speed = if ($sw.Elapsed.TotalSeconds -gt 0.3) { (Human (($done - $have) / $sw.Elapsed.TotalSeconds)) + '/s' } else { '' }
                             $pct = if ($total -gt 0) { '{0,3:0}%' -f ($frac * 100) } else { '' }
-                            Write-Host -NoNewline ("`r  " + (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + $label + '  ' + (Bar $frac 16 $tick) + ' ' + (Paint $C.text $pct) + '  ' + (Paint $C.dim ((Human $done) + $(if ($total -gt 0) { ' / ' + (Human $total) }) + '  ' + $speed)) + "$E[K")
+                            $info = ((Human $done) + $(if ($total -gt 0) { ' / ' + (Human $total) }) + '  ' + $speed)
+                            $bw = 16
+                            try { $bw = [Math]::Max(5, [Math]::Min(40, [Console]::WindowWidth - 14 - $label.Length - $pct.Length - $info.Length)) } catch {}
+                            Write-Host -NoNewline ("`r  " + (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + $label + '  ' + (Bar $frac $bw $tick) + ' ' + (Paint $C.text $pct) + '  ' + (Paint $C.dim $info) + "$E[K")
                         }
                     }
                 }
