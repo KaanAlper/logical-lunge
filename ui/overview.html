@@ -235,7 +235,8 @@
         karekok: 'Math.sqrt', 'karekök': 'Math.sqrt', fact: '__fact',
       };
       const MATH_CONST = { pi: 'Math.PI', 'π': 'Math.PI', e: 'Math.E', tau: '(2*Math.PI)', phi: '((1+Math.sqrt(5))/2)' };
-      const __fact = n => { if (n < 0 || n > 170 || n % 1) return NaN; let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; };
+      // Argümansız çağrı da geçersiz (undefined eskiden 1 sayılıyordu: "2fact(" -> 2)
+      const __fact = n => { if (!(n >= 0 && n <= 170) || n % 1) return NaN; let r = 1; for (let i = 2; i <= n; i++) r *= i; return r; };
       function tryMath(expr) {
         let e = expr.trim().toLowerCase();
         if (!e || !/[\dπ]|\b(pi|tau|phi)\b/.test(e)) return null; // tek başına "e" uygulama aramasıdır
@@ -250,7 +251,8 @@
           else if (m[2]) {
             const id = m[2];
             const pre = /[\d)]$/.test(out) ? '*' : ''; // 2pi, 3sqrt(4)
-            if (MATH_FN[id]) { out += pre + MATH_FN[id]; last = id; }
+            // Fonksiyon adından sonra parantez gelmeli ("sqrt tau" çalışıp "log tau" çalışmıyordu)
+            if (MATH_FN[id]) { if (!/^\s*\(/.test(e.slice(re.lastIndex))) { ok = false; break; } out += pre + MATH_FN[id]; last = id; }
             else if (MATH_CONST[id]) { out += pre + MATH_CONST[id]; last = ')'; }
             else { ok = false; break; }
           }
@@ -273,6 +275,15 @@
         const open = (out.match(/\(/g) || []).length - (out.match(/\)/g) || []).length;
         if (open < 0) return null;
         out += ')'.repeat(open);
+        // ++ / -- hesap değil, atama: "max--" sayfanın Math.max'ini NaN yapıyor, menünün kendi çizimi de çöküyordu
+        if (/\+\+|--/.test(out)) return null;
+        // Virgül yalnızca fonksiyon argümanlarını ayırır: JavaScript'in virgül işleci ("2,pi" -> 3.14, "(1,2)" -> 2) hesap değil
+        const calls = [];
+        for (let i = 0; i < out.length; i++) {
+          if (out[i] === '(') calls.push(/[A-Za-z_]\w*$/.test(out.slice(0, i)));
+          else if (out[i] === ')') calls.pop();
+          else if (out[i] === ',' && !calls[calls.length - 1]) return null;
+        }
         try {
           const v = Function('__fact', `"use strict"; return (${out});`)(__fact);
           if (typeof v !== 'number' || !isFinite(v)) return null;

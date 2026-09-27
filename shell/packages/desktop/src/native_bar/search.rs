@@ -178,12 +178,11 @@ pub fn eval_math(expr: &str) -> Option<f64> {
   format!("{:.11e}", v).parse().ok()
 }
 
-/// a digit, π, or the word pi / tau / phi
+/// a digit or a constant's name; a lone "e" stays an app search
 fn has_number(s: &str) -> bool {
-  s.chars().any(|c| c.is_ascii_digit() || c == 'π')
-    || s
-      .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-      .any(|w| matches!(w, "pi" | "tau" | "phi"))
+  let named = |w: &str| CONSTANTS.iter().any(|(names, _)| names.contains(&w) && w != "e");
+  s.chars().any(|c| c.is_ascii_digit() || named(&c.to_string()))
+    || s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).any(named)
 }
 
 /// √9, √(1+3) -> sqrt(9), sqrt((1+3)); any other √ -> sqrt
@@ -281,49 +280,77 @@ fn decimal_commas(s: &str) -> String {
   out
 }
 
-fn function_name(id: &str) -> Option<&'static str> {
-  Some(match id {
-    "sqrt" | "karekok" | "karekök" => "sqrt",
-    "cbrt" => "cbrt",
-    "abs" => "abs",
-    "exp" => "exp",
-    "ln" => "ln",
-    "log" | "log10" => "log10",
-    "log2" => "log2",
-    "sin" => "sin",
-    "cos" => "cos",
-    "tan" => "tan",
-    "asin" => "asin",
-    "acos" => "acos",
-    "atan" => "atan",
-    "sinh" => "sinh",
-    "cosh" => "cosh",
-    "tanh" => "tanh",
-    "floor" => "floor",
-    "ceil" => "ceil",
-    "round" => "round",
-    "min" => "min",
-    "max" => "max",
-    "pow" => "pow",
-    "fact" => "fact",
-    _ => return None,
-  })
+fn first(a: &[f64]) -> f64 {
+  a.first().copied().unwrap_or(f64::NAN)
 }
 
-/// Names the calculator hint offers, in the web menu's order.
-const HINT_FUNCTIONS: &[&str] = &[
-  "sqrt", "cbrt", "abs", "exp", "ln", "log", "log2", "log10", "sin", "cos", "tan", "asin", "acos", "atan", "sinh",
-  "cosh", "tanh", "floor", "ceil", "round", "min", "max", "pow", "karekok", "karekök",
+fn factorial(a: &[f64]) -> f64 {
+  let n = first(a);
+  if !(0.0..=170.0).contains(&n) || n.fract() != 0.0 {
+    return f64::NAN;
+  }
+  (2..=n as u32).map(f64::from).product()
+}
+
+type MathFn = fn(&[f64]) -> f64;
+
+/// The calculator's functions, in the web menu's order (MATH_FN): the names
+/// that can be typed and what they compute. Name lookup, the "sqrt(" hint and
+/// evaluation all read this one table.
+static FUNCTIONS: &[(&[&str], MathFn)] = &[
+  (&["sqrt", "karekok", "karekök"], |a| first(a).sqrt()),
+  (&["cbrt"], |a| first(a).cbrt()),
+  (&["abs"], |a| first(a).abs()),
+  (&["exp"], |a| first(a).exp()),
+  (&["ln"], |a| first(a).ln()),
+  (&["log", "log10"], |a| first(a).log10()),
+  (&["log2"], |a| first(a).log2()),
+  (&["sin"], |a| first(a).sin()),
+  (&["cos"], |a| first(a).cos()),
+  (&["tan"], |a| first(a).tan()),
+  (&["asin"], |a| first(a).asin()),
+  (&["acos"], |a| first(a).acos()),
+  (&["atan"], |a| first(a).atan()),
+  (&["sinh"], |a| first(a).sinh()),
+  (&["cosh"], |a| first(a).cosh()),
+  (&["tanh"], |a| first(a).tanh()),
+  (&["floor"], |a| first(a).floor()),
+  (&["ceil"], |a| first(a).ceil()),
+  // JavaScript rounds halves up: round(-2.5) = -2
+  (&["round"], |a| (first(a) + 0.5).floor()),
+  (&["min"], |a| a.iter().copied().fold(f64::INFINITY, f64::min)),
+  (&["max"], |a| a.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
+  (&["pow"], |a| first(a).powf(a.get(1).copied().unwrap_or(f64::NAN))),
+  // the ! operator; not offered as a hint (as in the web menu)
+  (&["fact"], factorial),
 ];
 
+/// Constants: typed names and their value in the translated expression.
+static CONSTANTS: &[(&[&str], &str)] =
+  &[(&["pi", "π"], "PI"), (&["e"], "E"), (&["tau"], "(2*PI)"), (&["phi"], "((1+sqrt_(5))/2)")];
+
+/// A function's name in the translated expression: its first name plus "_",
+/// so digits typed after it ("log 2") cannot turn it into another name.
+fn function_token(id: &str) -> Option<String> {
+  FUNCTIONS.iter().find(|(names, _)| names.contains(&id)).map(|(names, _)| format!("{}_", names[0]))
+}
+
+fn function_by_token(token: &str) -> Option<MathFn> {
+  let name = token.strip_suffix('_')?;
+  FUNCTIONS.iter().find(|(names, _)| names[0] == name).map(|(_, f)| *f)
+}
+
 fn constant(id: &str) -> Option<&'static str> {
-  Some(match id {
-    "pi" | "π" => "PI",
-    "e" => "E",
-    "tau" => "(2*PI)",
-    "phi" => "((1+sqrt(5))/2)",
-    _ => return None,
-  })
+  CONSTANTS.iter().find(|(names, _)| names.contains(&id)).map(|(_, v)| *v)
+}
+
+/// The first function name that starts with `typed` (the calculator hint).
+fn hint_function(typed: &str) -> Option<&'static str> {
+  FUNCTIONS
+    .iter()
+    .filter(|(names, _)| names[0] != "fact")
+    .flat_map(|(names, _)| names.iter().copied())
+    .find(|n| n.starts_with(typed))
 }
 
 /// The web menu's tokenizer: numbers, names, operators; implicit
@@ -374,9 +401,13 @@ fn translate(e: &str) -> Option<String> {
       }
       let id: String = c[start..i].iter().collect();
       let pre = if out.ends_with(|x: char| x.is_ascii_digit() || x == ')') { "*" } else { "" };
-      if let Some(f) = function_name(&id) {
+      if let Some(f) = function_token(&id) {
+        // a function name must be followed by "(" ("sqrt tau" is not a call)
+        if c[i..].iter().find(|x| !x.is_whitespace()) != Some(&'(') {
+          return None;
+        }
         out.push_str(pre);
-        out.push_str(f);
+        out.push_str(&f);
         last = id;
       } else if let Some(k) = constant(&id) {
         out.push_str(pre);
@@ -397,7 +428,7 @@ fn translate(e: &str) -> Option<String> {
           // the last number or parenthesis without nested ones: 5!, (2+3)!
           let start = trailing_operand(&out)?;
           let operand = out.split_off(start);
-          out.push_str("fact(");
+          out.push_str("fact_(");
           out.push_str(&operand);
           out.push(')');
         }
@@ -630,48 +661,11 @@ impl Parser {
             }
           }
         }
-        call(&name, &args)
+        Some(function_by_token(&name)?(&args))
       }
       Tok::Op(_) => None,
     }
   }
-}
-
-fn call(name: &str, args: &[f64]) -> Option<f64> {
-  let a = args.first().copied().unwrap_or(f64::NAN);
-  Some(match name {
-    "sqrt" => a.sqrt(),
-    "cbrt" => a.cbrt(),
-    "abs" => a.abs(),
-    "exp" => a.exp(),
-    "ln" => a.ln(),
-    "log10" => a.log10(),
-    "log2" => a.log2(),
-    "sin" => a.sin(),
-    "cos" => a.cos(),
-    "tan" => a.tan(),
-    "asin" => a.asin(),
-    "acos" => a.acos(),
-    "atan" => a.atan(),
-    "sinh" => a.sinh(),
-    "cosh" => a.cosh(),
-    "tanh" => a.tanh(),
-    "floor" => a.floor(),
-    "ceil" => a.ceil(),
-    // JavaScript rounds halves up: round(-2.5) = -2
-    "round" => (a + 0.5).floor(),
-    "min" => args.iter().copied().fold(f64::INFINITY, f64::min),
-    "max" => args.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-    "pow" => a.powf(args.get(1).copied().unwrap_or(f64::NAN)),
-    "fact" => {
-      if !(0.0..=170.0).contains(&a) || a.fract() != 0.0 {
-        f64::NAN
-      } else {
-        (2..=a as u32).map(f64::from).product()
-      }
-    }
-    _ => return None,
-  })
 }
 
 /// A number the way JavaScript prints it: 0.3, 1024, 1e+21, 1.5e-7.
@@ -877,7 +871,7 @@ pub fn results(query: &str, apps: &[App], clips: &[Clip], time: &dyn Fn(i64) -> 
   } else if term.chars().count() >= 2 {
     // introduce the calculator: "sqrt", "sin", "hesap" show it too; choosing it starts the expression
     let lt = fold(term);
-    let function = HINT_FUNCTIONS.iter().find(|f| f.starts_with(lt.as_str()));
+    let function = hint_function(&lt);
     let keyword = ["hesap", "calc", "matemat", "math", "="].iter().any(|k| lt.starts_with(k));
     if function.is_some() || keyword {
       let (name, start) = match function {
@@ -967,39 +961,26 @@ mod tests {
     assert_eq!(&h[..2], &[true, true]);
   }
 
+  /// One example per rule; web_parity compares every short input and many
+  /// long ones with the web menu.
   #[test]
-  fn calculator_matches_the_web_menu() {
-    assert_eq!(math("2+2").as_deref(), Some("4"));
-    assert_eq!(math("9").as_deref(), Some("9"));
-    assert_eq!(math("sqrt(9)").as_deref(), Some("3"));
-    assert_eq!(math("sqrt(9").as_deref(), Some("3"));
-    assert_eq!(math("√16").as_deref(), Some("4"));
-    assert_eq!(math("√(1+3)").as_deref(), Some("2"));
-    assert_eq!(math("5!").as_deref(), Some("120"));
-    assert_eq!(math("(2+3)!").as_deref(), Some("120"));
-    assert_eq!(math("2^10").as_deref(), Some("1024"));
-    assert_eq!(math("2**3**2").as_deref(), Some("512"));
-    assert_eq!(math("2^-1").as_deref(), Some("0.5"));
-    assert_eq!(math("-2^2"), None);
-    assert_eq!(math("--3"), None);
-    assert_eq!(math("50%").as_deref(), Some("0.5"));
-    assert_eq!(math("200*10%").as_deref(), Some("20"));
-    assert_eq!(math("10%3").as_deref(), Some("1"));
-    assert_eq!(math("3,5+1").as_deref(), Some("4.5"));
-    assert_eq!(math("max(1,5)").as_deref(), Some("5"));
-    assert_eq!(math("2pi").as_deref(), Some("6.28318530718"));
-    assert_eq!(math("0.1+0.2").as_deref(), Some("0.3"));
-    assert_eq!(math("1/3").as_deref(), Some("0.333333333333"));
-    assert_eq!(math("2 3").as_deref(), Some("23"));
-    assert_eq!(math("1e21*10").as_deref(), Some("1e+22"));
-    assert_eq!(math("round(-2.5)").as_deref(), Some("-2"));
-    assert_eq!(math("3×4÷2").as_deref(), Some("6"));
-    assert_eq!(math("karekök(16)").as_deref(), Some("4"));
-    assert_eq!(math("1/0"), None);
-    assert_eq!(math("e"), None);
-    assert_eq!(math("chrome"), None);
-    assert_eq!(math("2(3)"), None);
-    assert_eq!(math("171!"), None);
+  fn calculator_rules() {
+    let cases: &[(&str, Option<&str>)] = &[
+      ("9", Some("9")),                    // a number alone is a result
+      ("e", None),                         // a lone "e" is an app search
+      ("sqrt(9", Some("3")),               // open parentheses are closed
+      ("-2^2", None),                      // JavaScript: a sign before ** is an error
+      ("50% + 1", Some("1.5")),            // % after a number is percent, before a number modulo
+      ("(2+3)!", Some("120")),             // ! takes the last number or parenthesis
+      ("2pi", Some("6.28318530718")),      // implicit multiplication, 12 significant digits
+      ("3,5+1", Some("4.5")),              // comma decimals when there is no call
+      ("2,pi", None),                      // otherwise commas only separate arguments
+      ("sqrt tau", None),                  // a function needs its parenthesis
+      ("max--", None),                     // ++ / -- are assignments, not calculations
+    ];
+    for &(input, want) in cases {
+      assert_eq!(math(input).as_deref(), want, "{:?}", input);
+    }
   }
 
   #[test]
@@ -1056,8 +1037,7 @@ mod tests {
       let input = m["input"].as_str().unwrap();
       let want = m["out"].as_str().map(str::to_string);
       let got = math(input);
-      // intended: JavaScript's comma operator makes "1,2,3" evaluate to 3; a list is not a calculation
-      if got != want && input != "1,2,3" {
+      if got != want {
         bad.push(format!("hesap {:?}: web {:?}, native {:?}", input, want, got));
       }
     }
