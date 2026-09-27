@@ -519,3 +519,42 @@ export function createProviderGroup(configMap) {
     },
   };
 }
+
+(async function applyDynamicTheme() {
+  try {
+    const p = await fetch('http://127.0.0.1:40493/prefs.json').then(r => r.json());
+    if (p.focusColor) {
+      const hex = p.focusColor.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      const mix = (br, bg, bb, a) => {
+        const nr = Math.round(br * (1 - a) + r * a);
+        const ng = Math.round(bg * (1 - a) + g * a);
+        const nb = Math.round(bb * (1 - a) + b * a);
+        return `rgb(${nr}, ${ng}, ${nb})`;
+      };
+      const root = document.documentElement;
+      root.style.setProperty('--m3primary', p.focusColor);
+      if (p.theme === 'light') {
+        root.style.setProperty('--m3primaryContainer', mix(255, 255, 255, 0.3));
+        root.style.setProperty('--m3onPrimaryContainer', mix(0, 0, 0, 0.2));
+        root.style.setProperty('--colLayer0', mix(254, 247, 255, 0.08));
+        root.style.setProperty('--colLayer1', mix(243, 237, 247, 0.12));
+        root.style.setProperty('--colLayer2', mix(243, 237, 247, 0.1));
+        root.style.setProperty('--colLayer3', mix(236, 230, 240, 0.12));
+      } else {
+        root.style.setProperty('--m3primaryContainer', mix(16, 16, 16, 0.3));
+        root.style.setProperty('--m3onPrimaryContainer', mix(255, 255, 255, 0.2));
+        root.style.setProperty('--colLayer0', mix(20, 18, 24, 0.08));
+        root.style.setProperty('--colLayer1', mix(29, 27, 32, 0.12));
+        root.style.setProperty('--colLayer2', mix(33, 31, 38, 0.1));
+        root.style.setProperty('--colLayer3', mix(43, 41, 48, 0.12));
+      }
+    }
+  } catch (e) {}
+  
+  if (window.llEventTarget) {
+    window.llEventTarget.addEventListener('ll:theme-color', () => applyDynamicTheme());
+  }
+})();

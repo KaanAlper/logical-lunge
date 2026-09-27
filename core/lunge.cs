@@ -1,4 +1,4 @@
-﻿// lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
+// lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
 // süreç olarak açar ve korur (Supervisor, nöbetçiler); pencere yöneticisinin yapamadığı, Hyprland/ii'de olan şeyleri yapar:
 //   1) Workspace geçişinde "slide" animasyonu (Hyprland: animation workspaces, slide, menu_decel)
 //      DWM thumbnail'leri ile: eski workspace'in canlı görüntüsü kayarak çıkar, yenisi girer.
@@ -3367,6 +3367,7 @@ static class Settings
         if (ours) System.IO.File.WriteAllText(hashFile, Sha256(next));
         Prefs.Set("focusColor", hex);
         try { new TilingClient().Command("wm-reload-config"); } catch { }
+        Toasts.Emit("ll:theme-color");
         var r = Result(true);
         r["focusColor"] = hex;
         return r;
