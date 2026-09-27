@@ -422,7 +422,11 @@ try {
     $running = (Get-Process lunge, lunge-tiling, lunge-shell, ll-helper -ErrorAction SilentlyContinue) -or
         ((Get-Process glazewm -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $env:USERPROFILE '.glzr\logical-lunge')))
     if ($running -and -not $preview) {
-        With-Spinner $T.stopping { & (Join-Path $src 'app\lunge.exe') --stop-desktop | Out-Null } | Out-Null
+        With-Spinner $T.stopping {
+            $lungeExe = Join-Path $src 'app\lunge.exe'
+            if (Test-Path $lungeExe) { & $lungeExe --stop-desktop | Out-Null }
+            else { Stop-Process -Name lunge, lunge-tiling, lunge-shell, ll-helper, glazewm, zebar -Force -ErrorAction SilentlyContinue }
+        } | Out-Null
         $stopped = $true
     }
 
