@@ -836,12 +836,18 @@
       // WebView'da iptal oluyordu; bu yüzden fare olaylarıyla kendi sürüklememiz:
       // basılı tutup 5px kaydır -> panel açılır, ikon imleci izler; bırakınca:
       //   bar'daki bir ikonun üstü = onun önüne sabitle, bar'daki boşluk = sona sabitle, panel = sakla.
+      // Tek kayıt çekirdekte (state\tray-pins.json; native bar da onu kullanır). localStorage onun ilk çizim için kopyası.
       const PIN_KEY = 'll.tray.pinned';
       const DEFAULT_PINNED = 4;
       const loadPins = () => { try { return JSON.parse(localStorage.getItem(PIN_KEY)); } catch { return null; } };
-      const savePins = p => { try { localStorage.setItem(PIN_KEY, JSON.stringify(p)); } catch {} };
-      // Sabitleme exe yoluna değil tooltip'in ilk kelimesine göre (id her açılışta değişebiliyor)
-      const pinKey = ic => (ic.tooltip || ic.id).split(/[\s\-–:]/)[0].toLowerCase();
+      const keepPins = p => { try { localStorage.setItem(PIN_KEY, JSON.stringify(p)); } catch {} };
+      const pinsUrl = (p, onlyIfMissing) => `http://127.0.0.1:6131/tray-pins?${onlyIfMissing ? 'if-missing=1&' : ''}v=${encodeURIComponent(JSON.stringify(p))}`;
+      const savePins = p => { keepPins(p); fetch(pinsUrl(p), { method: 'POST', cache: 'no-store' }).catch(() => {}); };
+      const fetchPins = () => fetch('http://127.0.0.1:6131/tray-pins', { method: 'POST', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : null)).then(p => (Array.isArray(p) ? p : null)).catch(() => null);
+      // Sabitleme anahtarı tooltip'in ilk kelimesi; tooltip boşsa simgenin sahibi exe'nin adı (id her açılışta
+      // değişebiliyor). Native bar'daki pin_key ile aynı.
+      const pinKey = ic => ((ic.tooltip || '').trim() ? ic.tooltip : ic.processName || ic.id).split(/[\s\-–:]/)[0].toLowerCase();
 
       function TrayItem({ ic, systray, big, drag }) {
         return (
@@ -863,19 +869,31 @@
       function Tray({ systray }) {
         const [open, setOpen] = useState(false);
         const [pins, setPins] = useState(loadPins);
+        const [pinsRead, setPinsRead] = useState(false);
         const [dragKey, setDragKey] = useState(null);
         const [ghost, setGhost] = useState(null); // { x, y, src }
         const btnRef = useRef(null);
         const dropTime = useRef(0);
         const icons = systray?.icons ?? [];
 
-        // İlk açılışta ilk birkaç simge bar'da görünsün
+        // Çekirdekteki kayıt esas (native bar'da yapılan düzen de); yoksa bu depodaki eski düzen oraya taşınır
         useEffect(() => {
-          if (pins === null && icons.length) {
+          fetchPins().then(p => {
+            if (p) { setPins(p); keepPins(p); }
+            else { const old = loadPins(); if (Array.isArray(old)) fetch(pinsUrl(old, true), { method: 'POST', cache: 'no-store' }).catch(() => {}); }
+            setPinsRead(true);
+          });
+          const un = listen('ll:tray-pins', () => fetchPins().then(p => { if (p) { setPins(p); keepPins(p); } }));
+          return () => { un.then(f => f()); };
+        }, []);
+
+        // Hiç kayıt yoksa ilk birkaç simge bar'da görünsün (kayıt okunmadan önce değil: gerçek düzenin üstüne yazmasın)
+        useEffect(() => {
+          if (pinsRead && pins === null && icons.length) {
             const p = icons.slice(0, DEFAULT_PINNED).map(pinKey);
             setPins(p); savePins(p);
           }
-        }, [icons.length]);
+        }, [icons.length, pinsRead]);
 
         useEffect(() => {
           const onBlur = () => { if (!dragKey) setOpen(false); };

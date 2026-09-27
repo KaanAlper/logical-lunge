@@ -371,6 +371,19 @@
         }
       }
       stream();
+
+      // Tepsi sabitlemeleri eski sürümde yalnızca bu tarayıcı deposundaydı: çekirdekte kayıt yoksa oraya taşı (native bar
+      // da oradan okur). Bildirim widget'ı her zaman açık olduğu için taşıma, bar hangisi olursa olsun yapılır.
+      (async () => {
+        let old = null;
+        try { old = JSON.parse(localStorage.getItem('ll.tray.pinned')); } catch {}
+        if (!Array.isArray(old)) return;
+        const url = `http://127.0.0.1:6131/tray-pins?if-missing=1&v=${encodeURIComponent(JSON.stringify(old))}`;
+        for (let i = 0; i < 5; i++) {
+          try { if ((await fetch(url, { method: 'POST', cache: 'no-store' })).ok) return; } catch {}
+          await new Promise(r => setTimeout(r, 3000)); // çekirdek henüz açılmadıysa
+        }
+      })();
     </script>
   </body>
 </html>

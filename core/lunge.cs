@@ -3226,27 +3226,74 @@ static class Prefs
                 d = new Dictionary<string, object>();
             }
             d[key] = val;
-            // Atomik: okuyan (izleyici, kabuk, native bar) yarım yazılmış dosya görmez
-            string tmp = FilePath + ".tmp";
-            bool written = false;
-            try
-            {
-                System.IO.File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
-                for (int i = 0; i < 6 && !written; i++)
-                {
-                    try
-                    {
-                        if (System.IO.File.Exists(FilePath)) System.IO.File.Replace(tmp, FilePath, null);
-                        else System.IO.File.Move(tmp, FilePath);
-                        written = true;
-                    }
-                    catch (System.IO.IOException) { Thread.Sleep(50); } // başka bir süreç o an paylaşımsız okuyor
-                }
-            }
-            catch { }
-            if (!written) { try { System.IO.File.Delete(tmp); } catch { } return false; }
+            if (!Files.WriteAtomic(FilePath, new JavaScriptSerializer().Serialize(d))) return false;
         }
         Load();
+        return true;
+    }
+}
+
+static class Files
+{
+    // Atomik yazma: okuyan (dosya izleyici, kabuk, native bar) yarım yazılmış dosya görmez
+    public static bool WriteAtomic(string path, string text)
+    {
+        string tmp = path + ".tmp";
+        try
+        {
+            System.IO.File.WriteAllText(tmp, text, new UTF8Encoding(false));
+            for (int i = 0; i < 6; i++)
+            {
+                try
+                {
+                    if (System.IO.File.Exists(path)) System.IO.File.Replace(tmp, path, null);
+                    else System.IO.File.Move(tmp, path);
+                    return true;
+                }
+                catch (System.IO.IOException) { Thread.Sleep(50); } // başka bir süreç o an paylaşımsız okuyor
+            }
+        }
+        catch { }
+        try { System.IO.File.Delete(tmp); } catch { }
+        return false;
+    }
+}
+
+// Tepsi sabitlemeleri: native bar ve web bar aynı kaydı kullanır (state\tray-pins.json; anahtar = simge ipucunun ilk
+// kelimesi). Değişince kabuğa ll:tray-pins gider.
+static class TrayPins
+{
+    static readonly object gate = new object();
+    static string FilePath { get { return Paths.State("tray-pins.json"); } }
+
+    // JSON dizi; kayıt yoksa "null"
+    public static string Read()
+    {
+        try { return System.IO.File.Exists(FilePath) ? System.IO.File.ReadAllText(FilePath) : "null"; }
+        catch { return "null"; }
+    }
+
+    // ifMissing: yalnızca kayıt yoksa yaz (eski sürümün tarayıcı deposundan taşıma). false: geçersiz değer / yazılamadı
+    public static bool Write(string json, bool ifMissing)
+    {
+        object[] arr;
+        try { arr = new JavaScriptSerializer().Deserialize<object[]>(json); } catch { return false; }
+        if (arr == null || arr.Length > 64) return false;
+        var keys = new List<string>();
+        foreach (var o in arr)
+        {
+            var k = o as string;
+            if (string.IsNullOrEmpty(k) || k.Length > 64) return false;
+            keys.Add(k);
+        }
+        string text = new JavaScriptSerializer().Serialize(keys);
+        lock (gate)
+        {
+            if (ifMissing && System.IO.File.Exists(FilePath)) return true;
+            if (text == Read()) return true;
+            if (!Files.WriteAtomic(FilePath, text)) return false;
+        }
+        Toasts.Emit("ll:tray-pins");
         return true;
     }
 }
@@ -4125,7 +4172,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4178,6 +4225,13 @@ static class Toasts
             {
                 var m = System.Text.RegularExpressions.Regex.Match(target, @"^/pref\?k=([A-Za-z]{1,20})&v=([^&\s]{1,40})$");
                 status = m.Success && Prefs.Set(m.Groups[1].Value, Uri.UnescapeDataString(m.Groups[2].Value)) ? "204 No Content" : "400 Bad Request";
+            }
+            // Tepsi sabitlemeleri: /tray-pins okur; /tray-pins?v=[...] yazar; /tray-pins?if-missing=1&v=[...] yalnızca kayıt yoksa
+            else if (target == "/tray-pins") { body = TrayPins.Read(); status = "200 OK"; }
+            else if (target.StartsWith("/tray-pins?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/tray-pins\?(if-missing=1&)?v=([^&\s]{2,6000})$");
+                status = m.Success && TrayPins.Write(Uri.UnescapeDataString(m.Groups[2].Value), m.Groups[1].Success) ? "204 No Content" : "400 Bad Request";
             }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {

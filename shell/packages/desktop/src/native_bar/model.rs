@@ -187,8 +187,16 @@ impl Model {
 
 /// Pins follow the tooltip's first word, not the icon id (ids change between
 /// runs) -- same key as the web bar.
+/// A tray icon's pin key: its tooltip's first word; without a tooltip the
+/// owner's exe name (the id changes between runs). Same as ui/bar.html.
 pub fn pin_key(ic: &SystrayOutputIcon) -> String {
-  let src = if ic.tooltip.trim().is_empty() { ic.id.as_str() } else { ic.tooltip.as_str() };
+  let src = if !ic.tooltip.trim().is_empty() {
+    ic.tooltip.as_str()
+  } else if !ic.process_name.is_empty() {
+    ic.process_name.as_str()
+  } else {
+    ic.id.as_str()
+  };
   src
     .split(|c: char| c.is_whitespace() || c == '-' || c == '–' || c == ':')
     .next()

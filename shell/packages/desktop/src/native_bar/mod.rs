@@ -789,6 +789,9 @@ impl Ui {
   }
 
   /// First run: the first icons are pinned (ii SysTray.qml).
+  /// No saved pins yet: the first icons, in memory only. The file stays
+  /// missing until the user moves an icon, so the web bar's old layout can
+  /// still be moved over (`ll:tray-pins`).
   fn init_pins(&mut self) {
     if self.model.pins.is_some() {
       return;
@@ -797,8 +800,23 @@ impl Ui {
     if tray.icons.is_empty() {
       return;
     }
-    let pins: Vec<String> = tray.icons.iter().take(DEFAULT_PINNED).map(pin_key).collect();
-    self.save_pins(pins);
+    self.model.pins = Some(tray.icons.iter().take(DEFAULT_PINNED).map(pin_key).collect());
+  }
+
+  /// The saved pins changed (the core's `ll:tray-pins`), or the core
+  /// reconnected.
+  fn reload_pins(&mut self) {
+    let Some(pins) = std::fs::read_to_string(&self.pins_file).ok().and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()) else {
+      return;
+    };
+    if self.model.pins.as_ref() == Some(&pins) {
+      return;
+    }
+    self.model.pins = Some(pins);
+    self.redraw_all();
+    if self.model.tray_open {
+      self.tray_render();
+    }
   }
 
   fn save_pins(&mut self, pins: Vec<String>) {
@@ -1102,7 +1120,11 @@ impl Ui {
     let light = match evt.as_deref() {
       Some("ll:theme-light") => true,
       Some("ll:theme-dark") => false,
-      None => model::prefs(&self.pack_dir)["theme"].as_str() == Some("light"),
+      Some("ll:tray-pins") => return self.reload_pins(),
+      None => {
+        self.reload_pins();
+        model::prefs(&self.pack_dir)["theme"].as_str() == Some("light")
+      }
       _ => return,
     };
     self.set_light(light);

@@ -24,6 +24,70 @@ pub struct SystrayOutputIcon {
   pub tooltip: String,
   pub icon_bytes: Vec<u8>,
   pub icon_hash: String,
+  /// Logical Lunge: the owner's exe name, lowercase, no extension
+  /// ("discord"); empty if unknown. Pins use it when the tooltip is empty.
+  pub process_name: String,
+}
+
+/// The exe name of the process that owns the icon's window, cached by
+/// process id (the systray output is rebuilt on every icon change).
+fn process_name(hwnd: Option<isize>) -> String {
+  use std::{collections::HashMap, sync::Mutex};
+  use windows::{
+    core::PWSTR,
+    Win32::{
+      Foundation::{CloseHandle, HWND},
+      System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+      },
+      UI::WindowsAndMessaging::GetWindowThreadProcessId,
+    },
+  };
+  static CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+
+  let Some(hwnd) = hwnd else { return String::new() };
+  let mut pid = 0u32;
+  unsafe { GetWindowThreadProcessId(HWND(hwnd as _), Some(&mut pid)) };
+  if pid == 0 {
+    return String::new();
+  }
+  let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+  let map = cache.get_or_insert_with(HashMap::new);
+  if let Some(name) = map.get(&pid) {
+    return name.clone();
+  }
+  let path = unsafe {
+    match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+      Ok(process) => {
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+          process,
+          PROCESS_NAME_WIN32,
+          PWSTR(buf.as_mut_ptr()),
+          &mut len,
+        )
+        .is_ok();
+        let _ = CloseHandle(process);
+        if ok {
+          String::from_utf16_lossy(&buf[..len as usize])
+        } else {
+          String::new()
+        }
+      }
+      Err(_) => String::new(),
+    }
+  };
+  let name = std::path::Path::new(&path)
+    .file_stem()
+    .map(|s| s.to_string_lossy().to_lowercase())
+    .unwrap_or_default();
+  if map.len() >= 256 {
+    map.clear();
+  }
+  map.insert(pid, name.clone());
+  name
 }
 
 impl TryFrom<SystrayIcon> for SystrayOutputIcon {
@@ -33,6 +97,7 @@ impl TryFrom<SystrayIcon> for SystrayOutputIcon {
     Ok(SystrayOutputIcon {
       id: icon.stable_id.to_string(),
       tooltip: icon.tooltip.clone(),
+      process_name: process_name(icon.window_handle),
       icon_bytes: icon.to_image_format(ImageFormat::Png)?,
       icon_hash: icon
         .icon_image_hash
@@ -209,6 +274,7 @@ impl Provider for SystrayProvider {
               tooltip: icon.tooltip.clone(),
               icon_bytes: bytes,
               icon_hash: hash,
+              process_name: process_name(icon.window_handle),
             });
           }
 
