@@ -2583,13 +2583,9 @@ class Dwindle
         foreach (var kv in after) v[kv.Key] = Slider.WindowRectForFrame(new IntPtr(kv.Key), kv.Value);
         lock (cacheLock) { rects = after; monOf = afterMon; monRects = mr; visual = v; }
         Slider.Log((opened ? "açıldı" : "kapandı") + ": " + start.Count + "->" + end.Count + " pencere, donma+hedef " + clk.ElapsedMilliseconds + " ms" + (f == null ? " (katman yok)" : ""));
-        if (opened && end.Contains(anchorHandle))
-        {
-            Native.RECT nr;
-            IntPtr fg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
-            if (fg.ToInt64() == anchorHandle && after.TryGetValue(anchorHandle, out nr))
-                Cursor.Position = new Point((nr.Left + nr.Right) / 2, (nr.Top + nr.Bottom) / 2);
-        }
+        // Yeni pencere açılınca fare yerinde kalır (odak yeni pencerede): sonraki pencere de farenin altındaki pencereyi
+        // farenin bulunduğu yarısından böler (Hyprland dwindle, force_split = 0). Fare yeni pencerenin ortasına
+        // taşındığında her yeni pencere bir öncekini ortadan bölüyordu.
         if (f != null)
             ui.BeginInvoke((Action)(() =>
             {
