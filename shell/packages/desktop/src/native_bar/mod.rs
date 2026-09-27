@@ -105,6 +105,8 @@ enum Msg {
   Temps(Option<popup::Temps>),
   /// song title, cover (PNG / JPEG bytes)
   Art(String, Option<Vec<u8>>),
+  /// the core's event stream: an `ll:*` event, or None on (re)connect
+  Core(Option<String>),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -181,6 +183,9 @@ pub struct Options {
   pub pack_dir: PathBuf,
   /// Test run next to the web bar: own title, just below it, topmost.
   pub demo: bool,
+  /// Sends a shell event to the web widgets (`ll:overview-toggle` ...): the
+  /// same events, on the same bus, as the web bar's buttons.
+  pub emit: Box<dyn Fn(&str) + Send + Sync>,
 }
 
 /// Starts the native bar and waits until its bars are on screen (or it
@@ -219,6 +224,9 @@ pub fn start(
       }
     }
   });
+
+  // core -> shell events (the theme changed in a web widget or the settings)
+  core_api::events(|evt| send(Msg::Core(evt)));
 
   // the app list (icons for the workspace dots); the core may still be starting
   std::thread::spawn(|| {
@@ -337,6 +345,9 @@ struct Ui {
   /// device loss: recovery attempts in a row
   recover_tries: u32,
   pops: pops::PopState,
+  /// `ui/logical-lunge` (fallback prefs)
+  pack_dir: PathBuf,
+  emit: Box<dyn Fn(&str) + Send + Sync>,
 }
 
 thread_local! {
@@ -425,6 +436,8 @@ fn ui_thread(
         last_key: 0,
         recover_tries: 0,
         pops: Default::default(),
+        pack_dir: opts.pack_dir.clone(),
+        emit: opts.emit,
       })
     });
     if ABORTED.load(Ordering::Acquire) {
@@ -634,11 +647,24 @@ impl Ui {
         self.tip_hide();
         Some(LRESULT(0))
       }
-      WM_LBUTTONDOWN => {
-        // a tray icon may be dragged (to pin / unpin it)
+      WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN => {
         let (x, y) = lparam_point(lp);
         let (dx, dy) = self.dip(i, x, y);
-        if let Some(HitKind::TrayIcon(id)) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) {
+        let kind = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone());
+        // Like the web bar: a press on the bar closes the Super menu and the
+        // sidebar (this bar never takes focus, so they get no blur). The
+        // presses that toggle them (search, indicators, right press on the
+        // workspaces) leave that to the toggle.
+        let toggles = match (&kind, msg) {
+          (Some(HitKind::Search) | Some(HitKind::Indicators), _) => true,
+          (Some(HitKind::Workspace(_)), WM_RBUTTONDOWN) => true,
+          _ => false,
+        };
+        if !toggles {
+          (self.emit)("ll:bar-click");
+        }
+        // a tray icon may be dragged (to pin / unpin it)
+        if let (Some(HitKind::TrayIcon(id)), WM_LBUTTONDOWN) = (kind, msg) {
           self.drag_begin(id, hwnd);
         }
         Some(LRESULT(0))
@@ -709,6 +735,7 @@ impl Ui {
         }
         Msg::Temps(t) => self.got_temps(t),
         Msg::Art(title, bytes) => self.got_art(title, bytes),
+        Msg::Core(evt) => self.core_event(evt),
         Msg::Wm(state) => self.model.wm = state,
         Msg::Apps(apps) => self.icons.set_apps(apps),
         Msg::WinIcon(h, png) => self.icons.set_win_icon(h, png),
@@ -1069,6 +1096,27 @@ impl Ui {
     }
   }
 
+  /// An event from the core. On (re)connect the theme is read again: it may
+  /// have changed while the stream was down.
+  fn core_event(&mut self, evt: Option<String>) {
+    let light = match evt.as_deref() {
+      Some("ll:theme-light") => true,
+      Some("ll:theme-dark") => false,
+      None => model::prefs(&self.pack_dir)["theme"].as_str() == Some("light"),
+      _ => return,
+    };
+    self.set_light(light);
+  }
+
+  fn set_light(&mut self, light: bool) {
+    if self.model.light == light {
+      return;
+    }
+    self.model.light = light;
+    self.redraw_all();
+    self.pops_repaint();
+  }
+
   fn redraw_all(&mut self) {
     for i in 0..self.bars.len() {
       self.redraw(i);
@@ -1227,7 +1275,7 @@ impl Ui {
   /// button: 0 left, 1 right, 2 middle, 3 left double
   fn click(&mut self, i: usize, x: i32, y: i32, button: u8) {
     let (dx, dy) = self.dip(i, x, y);
-    self.tip_hide();
+    self.tip_click(i);
     let Some(kind) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) else {
       self.tray_close();
       return;
@@ -1237,22 +1285,25 @@ impl Ui {
     }
     let media = |f: fn(MediaControlArgs) -> MediaFunction| ProviderFunction::Media(f(MediaControlArgs { session_id: None }));
     match (kind, button) {
-      (HitKind::Search, 0) => core_api::post_async("/cmd?a=overview".into()),
-      (HitKind::ActiveWindow, 0) => core_api::post_async("/cmd?a=emit&e=ll:sidebar-left-toggle".into()),
+      // the web bar's events (ui/bar.html), so the widgets react the same way
+      (HitKind::Search, 0) => (self.emit)("ll:overview-toggle"),
+      (HitKind::ActiveWindow, 0) => (self.emit)("ll:sidebar-left-toggle"),
       (HitKind::Paused, 0) => self.wm_command("command wm-toggle-pause".into()),
       (HitKind::Mode(name), 0) => self.wm_command(format!("command wm-disable-binding-mode --name {}", name)),
       (HitKind::Workspace(n), 0) => self.slide(n.to_string()),
-      (HitKind::Workspace(_), 1) => core_api::post_async("/cmd?a=overview".into()),
+      (HitKind::Workspace(_), 1) => (self.emit)("ll:overview-toggle"),
       (HitKind::Media, 0) => self.provider("media", media(MediaFunction::TogglePlayPause)),
       (HitKind::Media, 1) => self.provider("media", media(MediaFunction::Next)),
       (HitKind::Media, 2) => self.provider("media", media(MediaFunction::Previous)),
       (HitKind::Snip, 0) => core_api::run_core(&["--snip"]),
-      (HitKind::Osk, 0) => core_api::post_async("/cmd?a=emit&e=ll:osk-toggle".into()),
+      (HitKind::Osk, 0) => (self.emit)("ll:osk-toggle"),
       (HitKind::Theme, 0) => {
-        self.model.light = !self.model.light;
-        self.redraw_all();
+        // the one shell theme (prefs.json): the web widgets follow through the core's event
+        let light = !self.model.light;
+        self.set_light(light);
+        core_api::set_pref("theme", if light { "light" } else { "dark" });
       }
-      (HitKind::Indicators, 0) => core_api::post_async("/cmd?a=sidebar".into()),
+      (HitKind::Indicators, 0) => (self.emit)("ll:sidebar-right-toggle"),
       (HitKind::TrayMore, 0) => self.tray_toggle(i),
       (HitKind::TrayIcon(id), b) => self.tray_action(id, b),
       _ => {}

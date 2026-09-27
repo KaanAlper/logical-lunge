@@ -248,7 +248,15 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
           });
         })
       };
-      match native_bar::start(manager.clone(), native_bar::Options { pack_dir: pack_dir.clone(), demo }, fallback) {
+      let emit: Box<dyn Fn(&str) + Send + Sync> = {
+        let handle = app.handle().clone();
+        Box::new(move |event| {
+          if let Err(err) = handle.emit(event, ()) {
+            tracing::warn!("Native bar: event {}: {:?}", event, err);
+          }
+        })
+      };
+      match native_bar::start(manager.clone(), native_bar::Options { pack_dir: pack_dir.clone(), demo, emit }, fallback) {
         Ok(()) => {
           web_bar = demo;
           NATIVE_BAR_UP.store(!demo, std::sync::atomic::Ordering::Release);

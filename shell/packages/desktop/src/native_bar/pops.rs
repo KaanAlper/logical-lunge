@@ -65,6 +65,9 @@ pub struct PopState {
 
   tip: Option<PopWin>,
   tip_at: Option<TipAt>,
+  /// The item just clicked: its tooltip stays away until the pointer leaves it
+  /// (a popup opening makes Windows resend a mouse move over the same item).
+  tip_quiet: Option<TipAt>,
 
   ghost: Option<PopWin>,
   drag: Option<Drag>,
@@ -668,6 +671,7 @@ impl Ui {
     }
     if let Some(id) = self.tray_hit(x, y) {
       self.tip_candidate(None);
+      self.pops.tip_quiet = Some(TipAt::Panel(id.clone()));
       self.tray_action(id, button);
     }
   }
@@ -858,6 +862,10 @@ impl Ui {
   }
 
   fn tip_candidate(&mut self, at: Option<TipAt>) {
+    if self.pops.tip_quiet.is_some() && at != self.pops.tip_quiet {
+      self.pops.tip_quiet = None;
+    }
+    let at = if at.is_some() && at == self.pops.tip_quiet { None } else { at };
     if at == self.pops.tip_at {
       return;
     }
@@ -876,8 +884,24 @@ impl Ui {
     }
   }
 
+  /// The theme changed: repaint the open popups.
+  pub(super) fn pops_repaint(&mut self) {
+    self.tip_hide();
+    self.pop_render();
+    if self.model.tray_open {
+      self.tray_render();
+    }
+  }
+
   pub(super) fn tip_hide(&mut self) {
     self.tip_candidate(None);
+  }
+
+  /// A bar item was clicked: hide its tooltip and keep it hidden while the
+  /// pointer stays on it.
+  pub(super) fn tip_click(&mut self, i: usize) {
+    self.tip_candidate(None);
+    self.pops.tip_quiet = self.bars.get(i).and_then(|b| b.hover.clone()).map(|k| TipAt::Bar(i, k));
   }
 
   pub(super) fn tip_show(&mut self) {

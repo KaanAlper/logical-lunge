@@ -89,22 +89,33 @@
 })();
     </script>
     <script>
-// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz:
-// tercih localStorage 'll.theme' ('dark' | 'light'); tüm widget'lar aynı kaynaktan yüklendiği için
-// bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir.
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz.
+// Tek kaynak çekirdekteki prefs.json "theme" anahtarı (native bar da onu okur). localStorage 'll.theme' onun sayfa
+// çizilmeden okunabilen kopyası: bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir; başka yerden
+// gelen değişikliği (native bar, ayarlar) bildirim widget'ı çekirdeğin olay akışından alıp llTheme.set ile buraya yazar.
 (function () {
   function read() {
     try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
   }
+  function write(t) { try { localStorage.setItem('ll.theme', t); } catch (e) {} }
   function apply() { document.documentElement.dataset.theme = read(); }
+  function save(t) {
+    try { var x = new XMLHttpRequest(); x.open('POST', 'http://127.0.0.1:6131/pref?k=theme&v=' + t); x.send(); } catch (e) {}
+  }
+  var P = window.LL_PREFS || {};
+  if (P.theme === 'light' || P.theme === 'dark') write(P.theme);
+  else if (read() === 'light') save('light'); // eski sürümden: tercih yalnızca bu tarayıcı deposundaydı
   apply();
   window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
   window.llTheme = {
     get: read,
+    // Başka yerden gelen değişiklik (kaydedilmez, zaten kayıtlı)
+    set: function (t) { if (t === 'light' || t === 'dark') { write(t); apply(); } return read(); },
     toggle: function () {
       var next = read() === 'light' ? 'dark' : 'light';
-      try { localStorage.setItem('ll.theme', next); } catch (e) {}
+      write(next);
       apply();
+      save(next);
       return next;
     }
   };

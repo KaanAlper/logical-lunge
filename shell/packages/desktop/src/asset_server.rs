@@ -210,6 +210,23 @@ pub async fn serve(
     { ASSET_SERVER_TOKENS.lock().await.get(&token.0).cloned() }?;
 
   let relative_path = path.unwrap_or("index.html".into());
+
+  // Logical Lunge: the user's preferences (language, clock, theme ...) live
+  // in `~/.config/logical-lunge/prefs.json`, written through the core by the
+  // settings window and the bars. The pack's `prefs.json` is only the
+  // installer's snapshot (the install folder is admin-only), so it is the
+  // fallback. Same order as the native bar (`native_bar::model::prefs`).
+  if relative_path == Path::new("prefs.json") {
+    if let Some(user) = std::env::var_os("USERPROFILE")
+      .map(|h| Path::new(&h).join(".config").join("logical-lunge").join("prefs.json"))
+      .filter(|p| p.is_file())
+    {
+      if let Ok(file) = NamedFile::open(user).await {
+        return Some(file);
+      }
+    }
+  }
+
   let absolute_path = token_access
     .base_dir
     .join(relative_path.clone())

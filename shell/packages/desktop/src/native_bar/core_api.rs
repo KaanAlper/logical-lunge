@@ -2,7 +2,7 @@
 //! off the UI thread; a missing core never blocks the bar.
 
 use std::{
-  io::{Read, Write},
+  io::{BufRead, BufReader, Read, Write},
   net::{SocketAddr, TcpStream},
   path::PathBuf,
   time::Duration,
@@ -33,6 +33,65 @@ pub fn post_async(path: String) {
   std::thread::spawn(move || {
     post(&path);
   });
+}
+
+/// Writes a user preference (`prefs.json`, validated by the core); if the
+/// core does not answer, `lunge.exe --set-pref` does the same.
+pub fn set_pref(key: &'static str, value: &'static str) {
+  std::thread::spawn(move || {
+    if matches!(post(&format!("/pref?k={}&v={}", key, value)), Some((204, _))) {
+      return;
+    }
+    run_core(&["--set-pref", key, value]);
+  });
+}
+
+/// The core's event stream (`/events`, the one the web widgets get through
+/// the toast widget): `on(Some("ll:..."))` for each event, `on(None)` each
+/// time the stream (re)connects -- state may have changed while it was down.
+/// Reconnects for as long as the shell runs (the core restarts, or starts
+/// after the shell). Blocks on the socket: no polling.
+pub fn events(on: impl Fn(Option<String>) + Send + 'static) {
+  let _ = std::thread::Builder::new().name("core-events".into()).spawn(move || {
+    let mut wait = 1;
+    loop {
+      if let Some(stream) = open_events() {
+        wait = 1;
+        on(None);
+        read_events(stream, &on);
+      }
+      std::thread::sleep(Duration::from_secs(wait));
+      wait = (wait * 2).min(10);
+    }
+  });
+}
+
+fn open_events() -> Option<TcpStream> {
+  let addr: SocketAddr = "127.0.0.1:6131".parse().ok()?;
+  let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
+  // the core pings every 20 s: a longer silence means the connection is gone
+  s.set_read_timeout(Some(Duration::from_secs(50))).ok()?;
+  s.set_write_timeout(Some(Duration::from_secs(1))).ok()?;
+  write!(s, "GET /events HTTP/1.1\r\nHost: 127.0.0.1:6131\r\n\r\n").ok()?;
+  Some(s)
+}
+
+fn read_events(stream: TcpStream, on: &impl Fn(Option<String>)) {
+  let mut reader = BufReader::new(stream);
+  let mut line = String::new();
+  loop {
+    line.clear();
+    match reader.read_line(&mut line) {
+      Ok(0) | Err(_) => return,
+      Ok(_) => {}
+    }
+    // `data: {"emit":"ll:theme-dark"}`; toasts and pings are not ours
+    let Some(json) = line.trim_end().strip_prefix("data: ") else { continue };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { continue };
+    if let Some(evt) = v["emit"].as_str().filter(|e| e.starts_with("ll:")) {
+      on(Some(evt.to_string()));
+    }
+  }
 }
 
 /// `lunge.exe` next to the shell (the install folder).

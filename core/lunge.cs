@@ -3123,9 +3123,10 @@ static class ShellWatchdog
 
 // ---------------- Arayüz tercihleri ve config izleme ----------------
 // ~\.config\logical-lunge\prefs.json: {"language": "system" | "tr" | ..., "clock": "24" | "12", "animations": true,
-// "focusColor": "#rrggbb"}. Widget'lar /prefs.json'dan okur (kurulum klasörü yönetici korumalı, yazılamaz); çekirdek
-// animasyon tercihini kullanır. config.yaml değişince (ayarlar penceresi ya da elle) animasyon kenarlıklarının rengi
-// yenilenir.
+// "focusColor": "#rrggbb", "theme": "dark" | "light"}. Widget'lar /prefs.json'dan okur (kurulum klasörü yönetici korumalı,
+// yazılamaz); çekirdek animasyon tercihini kullanır. Kabuk teması burada tek kaynak: değişince (ayarlar, bar, panel ya da
+// elle) kabuğa ll:theme-dark / ll:theme-light olayı gider; web widget'ları ve native bar aynı anda güncellenir.
+// config.yaml değişince (ayarlar penceresi ya da elle) animasyon kenarlıklarının rengi yenilenir.
 static class Prefs
 {
     static volatile bool animations = true, gestures = true;
@@ -3137,21 +3138,45 @@ static class Prefs
 
     public static Dictionary<string, object> Read()
     {
+        bool corrupt;
+        return TryRead(out corrupt) ?? new Dictionary<string, object>();
+    }
+
+    // null: okunamadı. corrupt: dosya bozuk (JSON değil); değilse o an yazılıyor / kilitli. Dosya yoksa boş sözlük.
+    static Dictionary<string, object> TryRead(out bool corrupt)
+    {
+        corrupt = false;
+        string text;
         try
         {
-            var d = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(FilePath));
-            if (d != null) return d;
+            if (!System.IO.File.Exists(FilePath)) return new Dictionary<string, object>();
+            // Silme / yazma paylaşımıyla: okurken yazanın atomik değiştirmesini engellemez
+            using (var fs = new System.IO.FileStream(FilePath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+            using (var sr = new System.IO.StreamReader(fs, Encoding.UTF8)) text = sr.ReadToEnd();
         }
-        catch { }
-        return new Dictionary<string, object>();
+        catch { return null; }
+        try { return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(text) ?? new Dictionary<string, object>(); }
+        catch { corrupt = text.Trim().Length > 0; return null; } // boş: yazılırken okundu
     }
+
+    static readonly object loadGate = new object();
+    static string theme; // son okunan kabuk teması (null: henüz okunmadı)
 
     public static void Load()
     {
-        object v;
-        var d = Read();
-        animations = !(d.TryGetValue("animations", out v) && v is bool && !(bool)v);
-        gestures = !(d.TryGetValue("gestures", out v) && v is bool && !(bool)v);
+        lock (loadGate)
+        {
+            bool corrupt;
+            var d = TryRead(out corrupt);
+            if (d == null) return; // yazılırken okundu: yazma bitince dosya izleyicisi yeniden okutur
+            object v;
+            animations = !(d.TryGetValue("animations", out v) && v is bool && !(bool)v);
+            gestures = !(d.TryGetValue("gestures", out v) && v is bool && !(bool)v);
+            string th = d.TryGetValue("theme", out v) && "light".Equals(v) ? "light" : "dark";
+            string was = theme;
+            theme = th;
+            if (was != null && was != th) Toasts.Emit("ll:theme-" + th);
+        }
     }
 
     public static string Json()
@@ -3178,13 +3203,48 @@ static class Prefs
             case "focusColor":
                 if (!System.Text.RegularExpressions.Regex.IsMatch(value, "^#[0-9a-fA-F]{6}$")) return false;
                 val = value.ToLowerInvariant(); break;
+            case "theme":
+                if (value != "dark" && value != "light") return false;
+                val = value; break;
             default: return false;
         }
         lock (gate)
         {
-            var d = Read();
+            // Okunamayan dosyanın üstüne tek anahtarla yazmak diğer tercihleri (dil, saat ...) silerdi: kilitliyse
+            // kısa süre yeniden dene; bozuksa yedeğini alıp baştan başla.
+            bool corrupt = false;
+            Dictionary<string, object> d = null;
+            for (int i = 0; i < 6 && d == null && !corrupt; i++)
+            {
+                d = TryRead(out corrupt);
+                if (d == null && !corrupt) Thread.Sleep(50);
+            }
+            if (d == null)
+            {
+                if (!corrupt) return false;
+                try { System.IO.File.Copy(FilePath, FilePath + ".bad", true); } catch { }
+                d = new Dictionary<string, object>();
+            }
             d[key] = val;
-            System.IO.File.WriteAllText(FilePath, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
+            // Atomik: okuyan (izleyici, kabuk, native bar) yarım yazılmış dosya görmez
+            string tmp = FilePath + ".tmp";
+            bool written = false;
+            try
+            {
+                System.IO.File.WriteAllText(tmp, new JavaScriptSerializer().Serialize(d), new UTF8Encoding(false));
+                for (int i = 0; i < 6 && !written; i++)
+                {
+                    try
+                    {
+                        if (System.IO.File.Exists(FilePath)) System.IO.File.Replace(tmp, FilePath, null);
+                        else System.IO.File.Move(tmp, FilePath);
+                        written = true;
+                    }
+                    catch (System.IO.IOException) { Thread.Sleep(50); } // başka bir süreç o an paylaşımsız okuyor
+                }
+            }
+            catch { }
+            if (!written) { try { System.IO.File.Delete(tmp); } catch { } return false; }
         }
         Load();
         return true;
@@ -4065,7 +4125,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4113,6 +4173,12 @@ static class Toasts
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             // Arayüz tercihleri (dil, saat, animasyon): widget'lar sayfa çizilmeden önce okur
             else if (target == "/prefs.json" || target.StartsWith("/prefs.json?")) { body = Prefs.Json(); status = "200 OK"; }
+            // Tercih yaz (/pref?k=theme&v=light): bar / panel / ayarlar; değer Prefs.Set'te doğrulanır
+            else if (target.StartsWith("/pref?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/pref\?k=([A-Za-z]{1,20})&v=([^&\s]{1,40})$");
+                status = m.Success && Prefs.Set(m.Groups[1].Value, Uri.UnescapeDataString(m.Groups[2].Value)) ? "204 No Content" : "400 Bad Request";
+            }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {
                 // Super menüsünün uygulama listesi (build-apps.ps1 kullanıcının veri klasörüne yazar)

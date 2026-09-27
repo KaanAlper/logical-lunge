@@ -28,7 +28,7 @@ use windows::{
     System::LibraryLoader::GetModuleHandleW,
     UI::WindowsAndMessaging::{
       CreateWindowExW, DestroyWindow, SetWindowPos, ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE,
-      SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
+      SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, WS_EX_NOACTIVATE, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOOLWINDOW,
       WS_EX_TOPMOST, WS_POPUP,
     },
   },
@@ -254,6 +254,9 @@ impl PopWin {
         }
       }
       gfx.dcomp.Commit()?;
+      // Only opening puts the window on top. A content update of an open
+      // window keeps its place: the tray panel re-drawn on hover was
+      // covering the tooltip opened over it.
       let _ = SetWindowPos(
         self.hwnd,
         HWND_TOPMOST,
@@ -261,7 +264,7 @@ impl PopWin {
         y,
         self.size.0 as i32,
         self.size.1 as i32,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        if reopen { SWP_NOACTIVATE | SWP_SHOWWINDOW } else { SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOZORDER },
       );
     }
     self.shown = true;
@@ -542,7 +545,8 @@ pub fn paint_media(p: &mut Painter, m: &Model, t: &Theme, v: &MediaView) -> anyh
   p.text(&title, Rect::new(ix, r.y + 10.0, iw, 19.0), style(15.0), t.on_layer0, Align::Left, false)?;
   let artist = session.and_then(|s| s.artist.clone()).unwrap_or_default();
   p.text(&artist, Rect::new(ix, r.y + 31.0, iw, 14.0), style(11.0), t.subtext, Align::Left, false)?;
-  let time = format!("{} / {}", fmt_time(v.pos), fmt_time(v.end));
+  // Some sources (browser streams) report no length: show the position alone, not "3:29 / 0:00".
+  let time = if v.end > 0.0 { format!("{} / {}", fmt_time(v.pos), fmt_time(v.end)) } else { fmt_time(v.pos) };
   p.text(&time, Rect::new(ix, r.y + 55.0, iw, 16.0), style(12.0), t.subtext, Align::Left, true)?;
 
   // controls: prev, progress, next (bottom of the info column)
