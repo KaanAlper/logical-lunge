@@ -1,4 +1,4 @@
-﻿# Logical Lunge - first-install wizard
+# Logical Lunge - first-install wizard
 #   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 # Asks for the focus color, the interface language and the clock, downloads the latest release (with a progress bar)
 # and runs installer\setup.ps1 elevated (one UAC prompt) while showing its steps. On an error or Ctrl+C the installer
@@ -374,9 +374,9 @@ try {
                 elseif ($ans -eq 'custom') {
                     $hex = Ask $T.qHex '#b69df8' ''
                     if ($hex -notmatch '^#') { $hex = '#' + $hex }
-                    if ($hex -match '^#[0-9a-fA-F]{6}$') { $choice.focusColor = $hex.ToLower(); $step++ }
+                    if ($hex -match '^#[0-9a-fA-F]{6}$') { $choice.focusColor = $hex.ToLower(); $C.accent = $choice.focusColor; $step++ }
                     else { Say '!' $C.warn $T.badHex; Start-Sleep 2 }
-                } else { $choice.focusColor = $ans; $step++ }
+                } else { $choice.focusColor = $ans; $C.accent = $choice.focusColor; $step++ }
             } elseif ($step -eq 2) {
                 $ans = Choose $T.qClock $clocks $choice.clock
                 if ($ans -eq 'BACK') { $step-- } else { $choice.clock = $ans; $step++ }
@@ -389,7 +389,7 @@ try {
                 Box $C.accent $T.summary ("$($T.sLang): $langLabel`n$($T.sColor): $($choice.focusColor)`n$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })`n$($T.sExtras):`n  $extraText")
                 Write-Host ''
                 $ans = Confirm $T.qGo $T.go $T.cancel $true
-                if ($ans -eq 'BACK') { $step-- } elseif (-not $ans) { $script:cancelled = $true; throw (New-Object OperationCanceledException) } else { $step++ }
+                if ($ans -is [string] -and $ans -eq 'BACK') { $step-- } elseif (-not $ans) { $script:cancelled = $true; throw (New-Object OperationCanceledException) } else { $step++ }
             }
         }
     }
