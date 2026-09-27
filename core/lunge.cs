@@ -7603,6 +7603,7 @@ class Switcher : Form
             if (cards.Count == 0) { Active = false; return; }
             foreach (var c in cards) c.Icon = IconFor(c.H);
             sel = cards.Count > 1 ? (reverse ? cards.Count - 1 : 1) : 0;
+            lastMouse = Cursor.Position; // açılırken imlecin altındaki kart seçilmez
 
             var mon = Screen.FromPoint(Cursor.Position).Bounds;
             int perRow = Math.Max(1, Math.Min(cards.Count, (int)((mon.Width * 0.9 - 2 * PAD + GAP) / (CW + GAP))));
@@ -7768,9 +7769,17 @@ class Switcher : Form
         }
     }
 
+    // Seçim yalnızca fare gerçekten hareket edince değişir. Windows fare kıpırdamadan da WM_MOUSEMOVE gönderir (pencere
+    // belirince, z-sırası ya da altındaki pencereler değişince): imleç bir kartın üstünde duruyorsa seçim her Tab'dan sonra
+    // o karta geri çekiliyordu ("ilerle 3 -> 4" tekrar tekrar).
+    Point lastMouse;
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        Point p = Cursor.Position;
+        if (p == lastMouse) return;
+        lastMouse = p;
         for (int i = 0; i < cards.Count; i++)
             if (cards[i].R.Contains(e.Location) && i != sel) { sel = i; hi = (Environment.TickCount - animStart < 170) ? drawHi : hiTarget; hiTarget = Inflate(cards[i].R); animStart = Environment.TickCount; Invalidate(); break; }
     }
@@ -8155,28 +8164,54 @@ static class WarmTerminal
 
     static bool IsWezterm(string path) { return path != null && path.EndsWith("wezterm-gui.exe", StringComparison.OrdinalIgnoreCase); }
 
-    static bool Resident(string path)
+    // Kurulumdaki WezTerm'in arka planda bekleyen süreci (0: yok)
+    static int ResidentPid(string path)
     {
+        int found = 0;
         foreach (var pr in Process.GetProcessesByName("wezterm-gui"))
         {
-            try { if (string.Equals(ProcInfo.Path((uint)pr.Id), path, StringComparison.OrdinalIgnoreCase)) return true; }
+            try { if (found == 0 && string.Equals(ProcInfo.Path((uint)pr.Id), path, StringComparison.OrdinalIgnoreCase)) found = pr.Id; }
             catch { }
             finally { pr.Dispose(); }
         }
-        return false;
+        return found;
     }
 
+    static bool Resident(string path) { return ResidentPid(path) != 0; }
+
+    // İstek o sürece özeldir (ll-spawn.<pid>): başka bir WezTerm (ör. eski kurulumdan kalıp kendi OpenConsole'unu
+    // bulamayan) isteği kapıp açamıyordu, terminal hiç gelmiyordu. WezTerm sonucu .ok / .failed ile bildirir. İstek
+    // alınmaz, açılamaz ya da sonuç gelmezse false: çağıran normal açılışa düşer; terminal hiçbir durumda kaybolmaz.
     public static bool TrySpawn(string path)
     {
-        if (!IsWezterm(path) || !Resident(path)) return false;
+        if (!IsWezterm(path)) return false;
+        int pid = ResidentPid(path);
+        if (pid == 0) return false;
+        string req = Request + "." + pid, ok = req + ".ok", failed = req + ".failed";
         try
         {
             System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Request));
-            System.IO.File.WriteAllText(Request, Home);
-            Slider.Log("terminal: sıcak açılış (istek dosyası)");
-            return true;
+            foreach (var f in new[] { ok, failed }) { try { System.IO.File.Delete(f); } catch { } }
+            System.IO.File.WriteAllText(req, Home);
         }
         catch { return false; }
+        var sw = Stopwatch.StartNew();
+        // WezTerm dosyaya 40 ms'de bir bakar
+        while (System.IO.File.Exists(req) && sw.ElapsedMilliseconds < 500) Thread.Sleep(10);
+        if (System.IO.File.Exists(req))
+        {
+            try { System.IO.File.Delete(req); } catch { }
+            Slider.Log("terminal: istek " + pid + " alınmadı, normal açılış");
+            return false;
+        }
+        while (sw.ElapsedMilliseconds < 2500)
+        {
+            if (System.IO.File.Exists(ok)) { try { System.IO.File.Delete(ok); } catch { } Slider.Log("terminal: sıcak açılış " + pid + ", " + sw.ElapsedMilliseconds + " ms"); return true; }
+            if (System.IO.File.Exists(failed)) { try { System.IO.File.Delete(failed); } catch { } Slider.Log("terminal: WezTerm " + pid + " açamadı, normal açılış"); return false; }
+            Thread.Sleep(10);
+        }
+        Slider.Log("terminal: WezTerm " + pid + " sonuç bildirmedi, normal açılış");
+        return false;
     }
 
     // Oturum açılışında (açılış perdesi ekranı örterken) WezTerm'i başlat ve ilk penceresini kapat:

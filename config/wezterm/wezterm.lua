@@ -129,14 +129,19 @@ config.keys = {
 }
 
 -- ---- Anında yeni pencere (Linux'taki kitty hızı) ----
--- Arka planda bekleyen WezTerm süreci her 40 ms'de ll-spawn dosyasına bakar; helper Super+Enter'da yeni süreç
--- başlatmak yerine bu dosyayı yazar ve pencere mevcut süreçte anında açılır (soğuk açılış ~0.6 s yerine).
--- Birden fazla süreç varsa isteği dosyayı atomik olarak yeniden adlandıran alır (çift pencere olmaz).
+-- Arka planda bekleyen WezTerm süreci her 40 ms'de kendi istek dosyasına (ll-spawn.<pid>) bakar; çekirdek Super+Enter'da
+-- yeni süreç başlatmak yerine bu dosyayı yazar ve pencere mevcut süreçte anında açılır (soğuk açılış ~0.6 s yerine).
+-- İstek sürece özel: eski bir kurulumdan kalan WezTerm isteği kapıp açamıyordu. Sonuç .ok / .failed ile bildirilir;
+-- açılamazsa çekirdek normal açılışa düşer.
 -- Ayar her yüklendiğinde yeni bir yoklayıcı kurulur; eskiler de yaşadıkça çalışır (penceresiz süreçte yeni yüklemenin
 -- zamanlayıcısı hemen başlamayabiliyor). İsteği yalnızca dosyayı yeniden adlandırabilen alır: çift pencere olmaz.
 if wezterm.gui then
-  local req = wezterm.home_dir .. '/.config/wezterm/ll-spawn'
-  local claim = req .. '.' .. tostring(wezterm.procinfo.pid())
+  local req = wezterm.home_dir .. '/.config/wezterm/ll-spawn.' .. tostring(wezterm.procinfo.pid())
+  local claim = req .. '.claimed'
+  local function mark(ext)
+    local f = io.open(req .. ext, 'w')
+    if f then f:close() end
+  end
   local function poll()
     if os.rename(req, claim) then
       local f = io.open(claim, 'r')
@@ -144,7 +149,12 @@ if wezterm.gui then
       if f then f:close() end
       os.remove(claim)
       local ok, err = pcall(wezterm.mux.spawn_window, { cwd = (cwd ~= '' and cwd) or wezterm.home_dir })
-      if not ok then wezterm.log_error('ll-spawn: ' .. tostring(err)) end
+      if ok then
+        mark('.ok')
+      else
+        wezterm.log_error('ll-spawn: ' .. tostring(err))
+        mark('.failed')
+      end
     end
     wezterm.time.call_after(0.04, poll)
   end
