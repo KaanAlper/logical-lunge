@@ -580,17 +580,25 @@ impl WidgetFactory {
   }
 
   /// Opens presets that are configured to be launched on startup.
+  /// Logical Lunge: an entry whose widget is no longer in its pack (a panel
+  /// that became native, still listed in an older settings file) is skipped.
   pub async fn startup(&self) -> anyhow::Result<()> {
-    self.startup_skipping(&[]).await
-  }
-
-  /// Logical Lunge: the startup widgets except `skip` (the web bar when the
-  /// native bar is up).
-  pub async fn startup_skipping(&self, skip: &[&str]) -> anyhow::Result<()> {
     let startup_configs = self.app_settings.startup_configs().await;
 
     for startup_config in startup_configs {
-      if skip.contains(&startup_config.widget.as_str()) {
+      let in_pack = self
+        .widget_pack_manager
+        .widget_pack_by_id(&startup_config.pack)
+        .await
+        .is_some_and(|pack| {
+          pack.config.widgets.iter().any(|w| w.name == startup_config.widget)
+        });
+      if !in_pack {
+        tracing::info!(
+          "Startup widget {}/{} is not in the pack; skipped.",
+          startup_config.pack,
+          startup_config.widget
+        );
         continue;
       }
       if let Err(err) = self

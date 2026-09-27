@@ -62,11 +62,18 @@ that cost no CPU per frame; works on machines without a GPU driver (WARP) and wi
 Kept as they are: the WM reserves the bar area through `gaps.outer_gap.top` in config.yaml; the core's
 integration points all key on the window title.
 
-## Switching and fallback
+## Fallback
 
-`"bar": "native" | "web"` in `~\.config\logical-lunge\prefs.json` (or `LL_NATIVE_BAR=on|off|demo`); web is the default
-until the switch. If the native bar cannot start (no D3D and no WARP, a crash loop) or dies later, the shell starts the
-web bar widget instead, so there is always a bar.
+The web bar is removed (it is kept in the `web-ui` branch). When the native bar fails (a panic in its window procedure,
+the graphics device not coming back for a minute, its thread ending), its UI thread ends and a guard thread builds a new
+bar after 1-2 s; the last state of every source (providers, window manager, app list) is given to it at once, so it is
+full from its first frame. The shell and the other panels are not touched. After three failures in two minutes, or when
+the shell itself died at its last three starts, the shell goes on without a bar and the core brings Windows' taskbar and
+Start menu back (after 20 s without a bar).
+
+`LL_NATIVE_BAR=off` starts no bar; `LL_NATIVE_BAR=demo` runs a test bar next to the running one;
+`LL_NATIVE_BAR_FAIL_AFTER=<s>` makes the first bar panic after that many seconds (checked 2026-09-27: the new bar was up
+1.1 s later with its content, the process kept running).
 
 ## Measured (2026-09-27, two monitors, same session)
 
@@ -79,8 +86,8 @@ GDI objects stay flat over hours with either bar.
 
 ## Phases
 
-Status: 1-3 done and checked on screen (popups, tooltips, drag to pin and back, outside click, second monitor);
-4 done except the default switch.
+Status: 1-4 done and checked on screen (popups, tooltips, drag to pin and back, outside click, second monitor); the web
+bar is removed. Phase 5 is superseded: the other panels become native too (docs/native-overview.md).
 
 1. Skeleton: window per monitor, device, DComp tree, fonts, clock, workspaces from the WM, layout and shorten levels.
 2. All indicators and actions: resources, media, battery, network, audio, tray, wheels, OSD.

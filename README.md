@@ -23,17 +23,17 @@ end-4 illogical-impulse Hyprland masaüstü, Windows için — tek komutla.
 
 ## 🧭 Status · Durum
 
-**English.** Today the core (`lunge.exe`, C#) and the window manager (`lunge-tiling`, Rust) are native Windows programs. The bar, Super menu, sidebar, settings, notifications and on-screen keyboard are web widgets (WebView2) hosted by `lunge-shell`. That part is being rewritten natively:
+**English.** The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are native Windows programs. The Super menu, sidebar, settings, notifications and on-screen keyboard are still web widgets (WebView2) hosted by `lunge-shell`; they are being rewritten natively one by one, and each web version is removed once its native one is done:
 
-- **Native bar (in progress):** the same ii bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. Bar, indicators and actions are done; the popups (resources, media, tray panel, tooltips) are written and being tested. Turn it on with `"bar": "native"` in `~\.config\logical-lunge\prefs.json`; if it cannot start, the web bar opens instead.
-- **Next:** native Super menu, sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
-- **Branches:** `native-bar` is this work; `web-ui` keeps the WebView version and gets the shared fixes.
+- **Native bar (done):** the same ii bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. If it fails it builds itself again inside the shell; if it keeps failing, Windows' taskbar comes back. About 100 MB less memory than the web bar.
+- **Next:** native Super menu (its search is done), sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
+- **Branches:** `native-bar` is this work; `web-ui` keeps the complete WebView version as an archive.
 
-**Türkçe.** Bugün çekirdek (`lunge.exe`, C#) ve pencere yöneticisi (`lunge-tiling`, Rust) native Windows programları. Bar, Super menüsü, sağ panel, ayarlar, bildirimler ve ekran klavyesi ise `lunge-shell` içinde çalışan web widget'ları (WebView2). Bu kısım native olarak yeniden yazılıyor:
+**Türkçe.** Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar native Windows programları. Super menüsü, sağ panel, ayarlar, bildirimler ve ekran klavyesi hâlâ `lunge-shell` içinde çalışan web widget'ları (WebView2); tek tek native olarak yeniden yazılıyorlar, her birinin web sürümü native'i bitince kaldırılıyor:
 
-- **Native bar (sürüyor):** aynı ii bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Bar, göstergeler ve eylemler hazır; açılır pencereler (kaynaklar, medya, tepsi paneli, ipuçları) yazıldı, sınanıyor. `~\.config\logical-lunge\prefs.json` içinde `"bar": "native"` ile açılır; açılamazsa yerine web bar gelir.
-- **Sırada:** native Super menüsü, sağ panel ve diğer paneller; ardından Logical Lunge'ın Windows'un üstünde değil, Explorer'ın yerine doğrudan Windows kabuğu olarak çalışması.
-- **Branch'ler:** `native-bar` bu çalışma; `web-ui` WebView sürümünü tutar ve ortak düzeltmeleri alır.
+- **Native bar (bitti):** aynı ii bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Arızalanırsa shell'in içinde kendini yeniden kurar; arızası sürerse Windows görev çubuğu geri gelir. Web bar'dan yaklaşık 100 MB daha az bellek.
+- **Sırada:** native Super menüsü (araması bitti), sağ panel ve diğer paneller; ardından Logical Lunge'ın Windows'un üstünde değil, Explorer'ın yerine doğrudan Windows kabuğu olarak çalışması.
+- **Branch'ler:** `native-bar` bu çalışma; `web-ui` WebView sürümünün tamamını arşiv olarak tutar.
 
 ## ⚡ Quick install · Hızlı kurulum
 
@@ -152,7 +152,7 @@ flowchart TD
   task["Sign-in task (LogicalLunge / Start)"] --> core
   core["lunge.exe (core, C#)<br/>root of the desktop: starts and watches the parts<br/>keys, slides and window animations, focus, rounded corners,<br/>toasts, splash, screenshots, wallpapers, night light, shortcuts"]
   core -- child --> tiling["lunge-tiling.exe (Rust)<br/>tiling (Hyprland dwindle), window borders, IPC"]
-  core -- child --> shell["lunge-shell.exe (Rust)<br/>bar (native: Direct2D / DirectComposition, or WebView2)<br/>sidebar, overview, session screen, toasts, keyboard (WebView2, going native)"]
+  core -- child --> shell["lunge-shell.exe (Rust)<br/>bar (native: Direct2D / DirectComposition)<br/>sidebar, overview, session screen, toasts, keyboard (WebView2, going native)"]
   shell <-- IPC --> tiling
   core <-- IPC --> tiling
 ```

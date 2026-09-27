@@ -102,7 +102,7 @@ pub fn core_exe() -> Option<PathBuf> {
 
 /// Workspace switch with the core's slide animation; if the core does not
 /// answer, `lunge.exe --slide`; if that fails, the plain WM command
-/// (`fallback`). Same chain as the web bar.
+/// (`fallback`).
 pub fn slide(target: String, fallback: impl FnOnce() + Send + 'static) {
   std::thread::spawn(move || {
     if matches!(post(&format!("/cmd?a=ws-{}", target)), Some((204, _))) {

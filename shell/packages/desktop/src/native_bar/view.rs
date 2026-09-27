@@ -1,5 +1,7 @@
-//! Layout and drawing of one bar: `ui/bar.html` + `ui/styles.css` with the
-//! same sizes (ii Appearance.qml), in DIPs.
+//! Layout and drawing of one bar, in DIPs, with the sizes of ii
+//! Appearance.qml. Ported from the web bar (`ui/bar.html` + `ui/styles.css`,
+//! kept in the `web-ui` branch); the "styles.css ..." notes in this module
+//! and the others name the rule a value came from.
 
 use std::collections::HashMap;
 

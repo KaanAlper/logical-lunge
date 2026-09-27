@@ -3259,7 +3259,7 @@ static class Files
     }
 }
 
-// Tepsi sabitlemeleri: native bar ve web bar aynı kaydı kullanır (state\tray-pins.json; anahtar = simge ipucunun ilk
+// Tepsi sabitlemeleri (state\tray-pins.json; anahtar = simge ipucunun ilk
 // kelimesi). Değişince kabuğa ll:tray-pins gider.
 static class TrayPins
 {

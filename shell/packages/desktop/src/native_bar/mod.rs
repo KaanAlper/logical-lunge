@@ -24,7 +24,7 @@ use std::{
   path::PathBuf,
   sync::{
     atomic::{AtomicBool, AtomicIsize, Ordering},
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
   },
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -92,6 +92,9 @@ const TIMER_TRAY_HIDE: usize = 10;
 const TIMER_TIP: usize = 11;
 /// running for a minute: the start is not part of a crash loop
 const TIMER_STABLE: usize = 12;
+/// test only (`LL_NATIVE_BAR_FAIL_AFTER=<s>`): the first bar panics in its
+/// window procedure after that many seconds, to check that a new bar is built
+const TIMER_TEST_FAIL: usize = 13;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -112,36 +115,54 @@ enum Msg {
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
 static WAKE: AtomicIsize = AtomicIsize::new(0);
-/// Opens the web bar (main.rs): the native bar could not go on.
-static FALLBACK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static FAILED: AtomicBool = AtomicBool::new(false);
-/// `start` gave up waiting: the UI thread must not show bars after all.
-static ABORTED: AtomicBool = AtomicBool::new(false);
-/// the bars were on screen (a failure after this is a runtime failure)
-static READY: AtomicBool = AtomicBool::new(false);
 
-/// `"bar"` in the user's prefs: "native" or "web". The web bar stays the
-/// default until the native bar's popups are verified on screen.
-pub fn prefs_bar(pack_dir: &std::path::Path) -> String {
-  model::prefs(pack_dir)["bar"].as_str().unwrap_or("web").to_string()
-}
-
-/// The native bar cannot go on (a panic, the graphics device never came
-/// back): its windows go away with its thread and the web bar takes over.
+/// The bar cannot go on (a panic, the graphics device never came back). Its
+/// UI thread ends (its windows go with it) and `start`'s guard builds a new
+/// bar; the shell and the other panels are not touched.
 fn fail(why: &str) {
   if FAILED.swap(true, Ordering::AcqRel) {
     return;
   }
-  tracing::error!("Native bar failed ({}): the web bar takes over", why);
-  if let Some(f) = FALLBACK.get() {
-    f();
-  }
+  tracing::error!("Native bar failed ({}): building a new one", why);
   unsafe { PostQuitMessage(0) };
 }
 
-/// Starts of the native bar in the last two minutes (a crash loop: the core
-/// restarts a shell that died). Three or more: this start uses the web bar.
-/// The record is cleared once a native bar has run for a minute.
+/// The last state from each source: they only send changes, so a bar that
+/// is built again gets these first (else the tray, audio, media and the
+/// workspaces stayed empty until something changed).
+#[derive(Default)]
+struct Latest {
+  providers: HashMap<String, ProviderEmission>,
+  wm: Option<wm::WmState>,
+  apps: Option<Vec<icons::App>>,
+}
+
+static LATEST: Mutex<Option<Latest>> = Mutex::new(None);
+
+fn remember(f: impl FnOnce(&mut Latest)) {
+  let mut guard = LATEST.lock().unwrap_or_else(|e| e.into_inner());
+  f(guard.get_or_insert_with(Latest::default));
+}
+
+fn replay() {
+  let guard = LATEST.lock().unwrap_or_else(|e| e.into_inner());
+  let Some(latest) = guard.as_ref() else { return };
+  for emission in latest.providers.values() {
+    send(Msg::Provider(emission.clone()));
+  }
+  if let Some(state) = &latest.wm {
+    send(Msg::Wm(state.clone()));
+  }
+  if let Some(apps) = &latest.apps {
+    send(Msg::Apps(apps.clone()));
+  }
+}
+
+/// Starts of the shell with a bar in the last two minutes (a crash loop: the
+/// core restarts a shell that died). Three or more: this start runs without a
+/// bar and the core brings Windows' taskbar back. The record is cleared once
+/// a bar has run for a minute.
 pub fn crash_loop() -> bool {
   let path = state_dir().join("native-bar-starts");
   let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
@@ -175,31 +196,37 @@ fn send(msg: Msg) {
 /// Every provider emission passes through here (main.rs); ours go to the bar.
 pub fn forward(emission: &ProviderEmission) {
   if emission.config_hash.starts_with(HASH_PREFIX) {
+    remember(|l| {
+      l.providers.insert(emission.config_hash.clone(), emission.clone());
+    });
     send(Msg::Provider(emission.clone()));
   }
 }
 
+#[derive(Clone)]
 pub struct Options {
   /// `ui/logical-lunge`: fonts, i18n.json, prefs.json.
   pub pack_dir: PathBuf,
-  /// Test run next to the web bar: own title, just below it, topmost.
+  /// Test run next to the running shell's bar: own title, just below it, topmost.
   pub demo: bool,
-  /// Sends a shell event to the web widgets (`ll:overview-toggle` ...): the
-  /// same events, on the same bus, as the web bar's buttons.
-  pub emit: Box<dyn Fn(&str) + Send + Sync>,
+  /// Sends a shell event to the web widgets (`ll:overview-toggle` ...).
+  pub emit: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
-/// Starts the native bar and waits until its bars are on screen (or it
-/// failed). `fallback` opens the web bar if the native bar dies later.
-pub fn start(
-  manager: Arc<ProviderManager>,
-  opts: Options,
-  fallback: Box<dyn Fn() + Send + Sync>,
-) -> anyhow::Result<()> {
-  let _ = FALLBACK.set(fallback);
+/// Starts the native bar and waits until its bars are on screen, it failed,
+/// or five seconds passed (then it goes on starting on its own thread).
+///
+/// A guard thread keeps a bar running: when the bar's UI thread ends (a
+/// failure), a new one is built after 1, 2 s. After three failures in two
+/// minutes the shell goes on without a bar and the core brings Windows'
+/// taskbar back. The shell itself never exits because of the bar.
+pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()> {
   let (tx, rx) = unbounded();
   SENDER.set(tx).map_err(|_| anyhow::anyhow!("native bar already started"))?;
-  let wm_cmd = wm::spawn(|state| send(Msg::Wm(state)));
+  let wm_cmd = wm::spawn(|state| {
+    remember(|l| l.wm = Some(state.clone()));
+    send(Msg::Wm(state));
+  });
   let rt = tokio::runtime::Handle::current();
 
   // the same providers (and intervals) as ui/bar.html
@@ -234,6 +261,7 @@ pub fn start(
     for i in 1..=6u64 {
       if let Some((200, body)) = core_api::post("/apps.json") {
         if let Ok(apps) = serde_json::from_slice::<Vec<icons::App>>(&body) {
+          remember(|l| l.apps = Some(apps.clone()));
           send(Msg::Apps(apps));
           return;
         }
@@ -243,24 +271,48 @@ pub fn start(
   });
 
   let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
-  let ready = ready_tx.clone();
-  std::thread::Builder::new().name("native-bar".into()).spawn(move || {
-    if let Err(err) = ui_thread(rx, wm_cmd, manager, rt, opts, ready) {
-      tracing::error!("Native bar stopped: {:?}", err);
-      if READY.load(Ordering::Acquire) {
-        fail("stopped");
-      } else {
-        // still starting: `start` returns the error and the web bar opens there
-        let _ = ready_tx.send(Err(format!("{:?}", err)));
+  std::thread::Builder::new().name("native-bar-guard".into()).spawn(move || {
+    let mut ready = Some(ready_tx);
+    let mut failures: Vec<Instant> = Vec::new();
+    loop {
+      FAILED.store(false, Ordering::Release);
+      replay();
+      let attempt = {
+        let (rx, wm_cmd, manager, rt, opts, first) =
+          (rx.clone(), wm_cmd.clone(), manager.clone(), rt.clone(), opts.clone(), ready.clone());
+        std::thread::Builder::new().name("native-bar".into()).spawn(move || ui_thread(rx, wm_cmd, manager, rt, opts, first))
+      };
+      // the bar runs as long as the shell: its thread ending is a failure
+      let why = match attempt.map(|t| t.join()) {
+        Err(err) => format!("thread: {:?}", err),
+        Ok(Err(_)) => "panic".to_string(),
+        Ok(Ok(Err(err))) => format!("{:?}", err),
+        Ok(Ok(Ok(()))) => "stopped".to_string(),
+      };
+      // the first start reports its failure to `start` (a no-op once it reported success)
+      if let Some(first) = ready.take() {
+        let _ = first.send(Err(why.clone()));
       }
+      failures.retain(|t| t.elapsed() < Duration::from_secs(120));
+      failures.push(Instant::now());
+      if failures.len() >= 3 {
+        tracing::error!(
+          "Native bar stopped ({}), the third time in two minutes: the shell goes on without a bar (the core brings Windows' taskbar back)",
+          why
+        );
+        return;
+      }
+      tracing::error!("Native bar stopped ({}): building a new one", why);
+      std::thread::sleep(Duration::from_secs(failures.len() as u64));
     }
   })?;
   match ready_rx.recv_timeout(Duration::from_secs(5)) {
     Ok(Ok(())) => Ok(()),
     Ok(Err(err)) => Err(anyhow::anyhow!("native bar: {}", err)),
     Err(_) => {
-      ABORTED.store(true, Ordering::Release);
-      Err(anyhow::anyhow!("native bar: not ready in 5 s"))
+      // slow (a busy logon): the bar goes on starting on its own thread
+      tracing::warn!("Native bar: not ready in 5 s, still starting");
+      Ok(())
     }
   }
 }
@@ -348,7 +400,7 @@ struct Ui {
   pops: pops::PopState,
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
-  emit: Box<dyn Fn(&str) + Send + Sync>,
+  emit: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 thread_local! {
@@ -368,7 +420,7 @@ fn ui_thread(
   manager: Arc<ProviderManager>,
   rt: tokio::runtime::Handle,
   opts: Options,
-  ready: std::sync::mpsc::Sender<Result<(), String>>,
+  ready: Option<std::sync::mpsc::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
   unsafe {
     CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
@@ -441,9 +493,6 @@ fn ui_thread(
         emit: opts.emit,
       })
     });
-    if ABORTED.load(Ordering::Acquire) {
-      return Ok(()); // the web bar is already up
-    }
     WAKE.store(msg_hwnd.0 as isize, Ordering::Release);
     let bars = with_ui(|ui| {
       ui.create_bars();
@@ -454,11 +503,9 @@ fn ui_thread(
     if bars == 0 {
       anyhow::bail!("no bar window could be created");
     }
-    if ABORTED.load(Ordering::Acquire) {
-      return Ok(()); // too slow: the web bar opened meanwhile (the windows go with this thread)
+    if let Some(ready) = &ready {
+      let _ = ready.send(Ok(()));
     }
-    READY.store(true, Ordering::Release);
-    let _ = ready.send(Ok(()));
     if !opts.demo {
       SetTimer(msg_hwnd, TIMER_STABLE, 60_000, None);
     }
@@ -467,6 +514,11 @@ fn ui_thread(
       SetTimer(msg_hwnd, TIMER_ALIVE, 30_000, None);
     } else if std::env::var_os("LL_NATIVE_BAR_CYCLE").is_some() {
       SetTimer(msg_hwnd, TIMER_CYCLE, 1500, None);
+    }
+    if let Some(secs) = std::env::var("LL_NATIVE_BAR_FAIL_AFTER").ok().and_then(|v| v.parse::<u32>().ok()) {
+      if ready.is_some() {
+        SetTimer(msg_hwnd, TIMER_TEST_FAIL, secs * 1000, None);
+      }
     }
 
     let mut msg = MSG::default();
@@ -501,8 +553,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
   if msg == WM_ERASEBKGND {
     return LRESULT(1);
   }
-  // A panic must not cross into Windows (that aborts the whole shell): the
-  // native bar stops and the web bar takes over.
+  // A panic must not cross into Windows: the bar fails cleanly and the shell
+  // restarts (`fail`).
   match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| with_ui(|ui| ui.handle(hwnd, msg, wp, lp)))) {
     Ok(Some(Some(r))) => return r,
     Ok(_) => {}
@@ -566,6 +618,7 @@ impl Ui {
         }
         WM_APP_TRAY_CLOSE => self.tray_close(),
         WM_TIMER if wp.0 == TIMER_CYCLE => self.fake_switch(),
+        WM_TIMER if wp.0 == TIMER_TEST_FAIL => panic!("LL_NATIVE_BAR_FAIL_AFTER"),
         WM_TIMER if wp.0 == TIMER_RECOVER => {
           unsafe {
             let _ = KillTimer(self.msg_hwnd, TIMER_RECOVER);
@@ -652,8 +705,8 @@ impl Ui {
         let (x, y) = lparam_point(lp);
         let (dx, dy) = self.dip(i, x, y);
         let kind = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone());
-        // Like the web bar: a press on the bar closes the Super menu and the
-        // sidebar (this bar never takes focus, so they get no blur). The
+        // A press on the bar closes the Super menu and the sidebar (this bar
+        // never takes focus, so they get no blur). The
         // presses that toggle them (search, indicators, right press on the
         // workspaces) leave that to the toggle.
         let toggles = match (&kind, msg) {
@@ -791,8 +844,8 @@ impl Ui {
 
   /// First run: the first icons are pinned (ii SysTray.qml).
   /// No saved pins yet: the first icons, in memory only. The file stays
-  /// missing until the user moves an icon, so the web bar's old layout can
-  /// still be moved over (`ll:tray-pins`).
+  /// missing until the user moves an icon, so a layout saved by the old web
+  /// bar can still be moved over (`ll:tray-pins`).
   fn init_pins(&mut self) {
     if self.model.pins.is_some() {
       return;
@@ -1103,7 +1156,7 @@ impl Ui {
       }
       Err(err) => {
         self.recover_tries += 1;
-        // about a minute without a device: the web bar (it has its own renderer)
+        // about a minute without a device: start over (`fail` restarts the shell)
         if self.recover_tries > 12 {
           fail("graphics device");
           return;
@@ -1308,7 +1361,7 @@ impl Ui {
     }
     let media = |f: fn(MediaControlArgs) -> MediaFunction| ProviderFunction::Media(f(MediaControlArgs { session_id: None }));
     match (kind, button) {
-      // the web bar's events (ui/bar.html), so the widgets react the same way
+      // the events the web widgets listen to
       (HitKind::Search, 0) => (self.emit)("ll:overview-toggle"),
       (HitKind::ActiveWindow, 0) => (self.emit)("ll:sidebar-left-toggle"),
       (HitKind::Paused, 0) => self.wm_command("command wm-toggle-pause".into()),

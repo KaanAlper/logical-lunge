@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use super::gfx::Gfx;
 
 /// An entry of the Super menu's app list (`apps.json`, scripts/build-apps.ps1).
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct App {
   #[serde(default)]
   pub(super) name: String,
