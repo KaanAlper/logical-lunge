@@ -68,13 +68,18 @@ static class Program
         {
             try
             {
-                foreach (var h in pc.Hardware) h.Update();
+                foreach (var h in pc.Hardware) {
+                    // NVIDIA GPU'yu sürekli güncelleyerek uyandırmamak için dGpu'yu güncellemiyoruz veya isteğe bağlı yapıyoruz.
+                    // Uyku (D3) modundan çıkıp 20-30W güç çekmesini engellemek için NVIDIA güncellemesini atla.
+                    if (h.HardwareType == HardwareType.GpuNvidia) continue; 
+                    h.Update();
+                }
                 var hw = pc.Hardware.ToArray();
                 Func<IHardware, bool> isCpu = h => h.HardwareType == HardwareType.Cpu;
                 Func<IHardware, bool> isGpu = h => h.HardwareType == HardwareType.GpuNvidia || h.HardwareType == HardwareType.GpuAmd || h.HardwareType == HardwareType.GpuIntel;
-                // Harici GPU varsa onu seç
-                var dGpu = hw.FirstOrDefault(h => h.HardwareType == HardwareType.GpuNvidia || h.HardwareType == HardwareType.GpuAmd);
-                if (dGpu != null) isGpu = h => h == dGpu;
+                // Harici GPU yerine iGPU'yu (Dahili grafik) seçmek pilden tasarruf sağlar
+                var iGpu = hw.FirstOrDefault(h => h.HardwareType == HardwareType.GpuIntel || h.HardwareType == HardwareType.GpuAmd);
+                if (iGpu != null) isGpu = h => h == iGpu;
 
                 var cpu = Find(hw, isCpu, SensorType.Temperature, "CPU Package", "Core (Tctl/Tdie)", "Core Max", "Core Average");
                 var gpu = Find(hw, isGpu, SensorType.Temperature, "GPU Core");
