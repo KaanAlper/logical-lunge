@@ -14,6 +14,7 @@ mod icons;
 mod model;
 mod popup;
 mod pops;
+mod search;
 mod view;
 mod wm;
 

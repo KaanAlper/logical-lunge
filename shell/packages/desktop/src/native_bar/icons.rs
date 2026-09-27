@@ -9,14 +9,24 @@ use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 
 use super::gfx::Gfx;
 
+/// An entry of the Super menu's app list (`apps.json`, scripts/build-apps.ps1).
 #[derive(Deserialize)]
 pub struct App {
   #[serde(default)]
-  name: String,
+  pub(super) name: String,
   #[serde(default)]
-  exe: Option<String>,
+  pub(super) exe: Option<String>,
   #[serde(default)]
-  icon: Option<String>,
+  pub(super) icon: Option<String>,
+  /// `shell:AppsFolder\...`, opened with explorer
+  #[serde(default)]
+  pub(super) path: String,
+  /// the file name when the shown name is localized (searched too)
+  #[serde(default)]
+  pub(super) also: Option<String>,
+  /// exact short name ("run" for the Run dialog)
+  #[serde(default)]
+  pub(super) alias: Option<String>,
 }
 
 #[derive(Default)]
@@ -240,7 +250,14 @@ mod tests {
   use super::*;
 
   fn app(name: &str, exe: Option<&str>) -> App {
-    App { name: name.into(), exe: exe.map(str::to_string), icon: Some("data:image/png;base64,AA==".into()) }
+    App {
+      name: name.into(),
+      exe: exe.map(str::to_string),
+      icon: Some("data:image/png;base64,AA==".into()),
+      path: String::new(),
+      also: None,
+      alias: None,
+    }
   }
 
   #[test]
