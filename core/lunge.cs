@@ -3158,6 +3158,17 @@ static class Prefs
 
     static readonly object loadGate = new object();
     static string theme; // son okunan kabuk teması (null: henüz okunmadı)
+    static string last; // son okunan tercihler; değişince kabuğa ll:prefs (ör. bildirim süreleri hemen uygulanır)
+
+    // Bildirimin ekranda kalma süresi (sn): bilgi / başarı ve uyarı / hata. toast.html'deki varsayılanlar bunlarla aynı.
+    static readonly Dictionary<string, int> ToastDefaults = new Dictionary<string, int> { { "toastInfo", 3 }, { "toastError", 5 } };
+    const int ToastMax = 60;
+
+    public static int ToastSeconds(Dictionary<string, object> p, string key)
+    {
+        object v;
+        return p.TryGetValue(key, out v) && v is int && (int)v >= 1 && (int)v <= ToastMax ? (int)v : ToastDefaults[key];
+    }
 
     public static void Load()
     {
@@ -3173,6 +3184,9 @@ static class Prefs
             string was = theme;
             theme = th;
             if (was != null && was != th) Toasts.Emit("ll:theme-" + th);
+            string all = new JavaScriptSerializer().Serialize(d);
+            if (last != null && last != all) Toasts.Emit("ll:prefs");
+            last = all;
         }
     }
 
@@ -3181,10 +3195,11 @@ static class Prefs
         return new JavaScriptSerializer().Serialize(Read());
     }
 
-    // key: language | clock | animations | gestures | focusColor; değer doğrulanır
+    // key: language | clock | animations | gestures | focusColor | theme | toastInfo | toastError (sn); değer doğrulanır
     public static bool Set(string key, string value)
     {
         object val;
+        int n;
         switch (key)
         {
             case "language":
@@ -3203,6 +3218,10 @@ static class Prefs
             case "theme":
                 if (value != "dark" && value != "light") return false;
                 val = value; break;
+            case "toastInfo":
+            case "toastError":
+                if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) || n < 1 || n > ToastMax) return false;
+                val = n; break;
             default: return false;
         }
         lock (gate)
@@ -3342,6 +3361,8 @@ static class Settings
             { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
             { "animations", !(p.TryGetValue("animations", out anim) && anim is bool && !(bool)anim) },
             { "gestures", !(p.TryGetValue("gestures", out gest) && gest is bool && !(bool)gest) },
+            { "toastInfo", Prefs.ToastSeconds(p, "toastInfo") },
+            { "toastError", Prefs.ToastSeconds(p, "toastError") },
             { "touchpad", Touchpad.Present() },
             { "version", Updater.Installed() },
             { "configDir", Paths.ConfigDir },

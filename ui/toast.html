@@ -234,7 +234,15 @@
       import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 
       const win = lunge.currentWidget().tauriWindow;
-      const W = 420, TIMEOUT = 6000; // ii notifications.timeout
+      const W = 420;
+      // Ekranda kalma süresi (ayarlardan, sn): bilgi / başarı ve uyarı / hata; varsayılanlar çekirdekteki
+      // Prefs.ToastDefaults ile aynı. Kart kendi süresini veriyorsa (düğmeli "Müzik tanındı", kısa "Panoya kopyalandı")
+      // o geçerli. Tercihler değişince çekirdek ll:prefs yollar, yeni süre sayfa yenilenmeden gelir.
+      let prefs = window.LL_PREFS || {};
+      const secs = (k, d) => { const n = prefs[k]; return Number.isInteger(n) && n >= 1 && n <= 60 ? n : d; };
+      const timeoutFor = kind => (kind === 'error' || kind === 'warn' ? secs('toastError', 5) : secs('toastInfo', 3)) * 1000;
+      const reloadPrefs = () => fetch('./prefs.json', { cache: 'no-store' }).then(r => (r.ok ? r.json() : null)).then(p => { if (p) prefs = p; }).catch(() => {});
+      listen('ll:prefs', reloadPrefs);
       const stack = document.getElementById('stack');
       let cards = 0;
 
@@ -282,7 +290,8 @@
 
       // actions: [{ label, url }] -> ii notify-send -A düğmeleri; image: kapak görseli (rozet yerine)
       const openUrl = url => lunge.shellExec('{{INSTALL_ESC}}\\lunge.exe', ['--open', url]).catch(() => {});
-      function show({ kind = 'info', title = '', body = '', icon = 'info', mono = false, actions = [], image = '', timeout = TIMEOUT }) {
+      function show({ kind = 'info', title = '', body = '', icon = 'info', mono = false, actions = [], image = '', timeout }) {
+        if (!(timeout > 0)) timeout = timeoutFor(kind);
         // ii Notifications.silent: sessiz moddayken açılır bildirim gösterme
         try { if (JSON.parse(localStorage.getItem('ll.dnd')) === true) return; } catch {}
         const el = document.createElement('div');
@@ -359,6 +368,7 @@
                   // Tema başka yerden değişti (native bar, ayarlar): bu deponun kopyası güncellenince diğer widget'lar
                   // 'storage' olayıyla aynı anda değişir
                   if (m.emit === 'll:theme-light' || m.emit === 'll:theme-dark') window.llTheme?.set(m.emit.slice(9));
+                  if (m.emit === 'll:prefs') reloadPrefs();
                 }
                 else show(m);
               } catch {}
