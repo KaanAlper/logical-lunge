@@ -221,6 +221,8 @@ pub struct Overview {
   root: IDCompositionVisual2,
   panel: Layer,
   pub shown: bool,
+  /// the Windows context menu of an app is open (its helper has the focus)
+  pub menu_open: bool,
   pub edit: Edit,
   results: Vec<Item>,
   sel: usize,
@@ -293,6 +295,7 @@ impl Overview {
         root,
         panel,
         shown: false,
+        menu_open: false,
         edit: Edit::default(),
         results: Vec::new(),
         sel: 0,
@@ -589,6 +592,16 @@ pub enum Do {
   Tool(Tool),
   Copy(String),
   Paste,
+  /// the Windows context menu of an app (its `shell:AppsFolder\...` path)
+  Menu(String),
+}
+
+/// The Windows context menu belongs to app results only.
+fn menu_path(item: &Item) -> Option<String> {
+  match &item.act {
+    Act::Launch(path) => Some(path.clone()),
+    _ => None,
+  }
 }
 
 impl Overview {
@@ -680,6 +693,9 @@ impl Overview {
         }
       }
       0x56 if ctrl => Do::Paste,
+      // the menu key, Shift+F10: the selected app's context menu
+      0x5D => self.selected().and_then(menu_path).map(Do::Menu).unwrap_or(Do::Nothing),
+      0x79 if shift => self.selected().and_then(menu_path).map(Do::Menu).unwrap_or(Do::Nothing),
       _ => Do::Nothing,
     }
   }
@@ -740,6 +756,16 @@ impl Overview {
       return Do::Hide;
     }
     Do::Nothing
+  }
+
+  /// Right click: selects the row; an app gets its Windows context menu.
+  pub fn right_click(&mut self, x: f32, y: f32) -> Do {
+    let Some(i) = self.hit_row(x, y) else { return Do::Nothing };
+    self.sel = i;
+    match self.results.get(i).and_then(menu_path) {
+      Some(path) => Do::Menu(path),
+      None => Do::Redraw,
+    }
   }
 
   pub fn wheel(&mut self, delta: i32) -> Do {
@@ -1065,10 +1091,15 @@ impl Ui {
         let (x, y) = dip(lp, o.scale);
         o.click(x, y)
       }
+      WM_RBUTTONUP => {
+        let (x, y) = dip(lp, o.scale);
+        o.right_click(x, y)
+      }
       WM_MOUSEWHEEL => o.wheel(((wp.0 >> 16) & 0xFFFF) as i16 as i32),
       WM_ACTIVATE => {
-        // focus went elsewhere: close (the web menu's blur)
-        if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE && o.shown {
+        // focus went elsewhere: close (the web menu's blur); not to an app's
+        // context menu, which gives it back or runs a command
+        if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE && o.shown && !o.menu_open {
           Do::Hide
         } else {
           Do::Nothing
@@ -1131,6 +1162,59 @@ impl Ui {
           self.overview_do(Do::Search);
         }
       }
+      Do::Menu(path) => self.overview_menu(path),
+    }
+  }
+
+  /// An app's Windows context menu (`lunge.exe --shell-menu`, run from this
+  /// unelevated process so what it opens is unelevated too). The helper
+  /// answers `{"invoked":true|false}` as soon as the menu closes; it may live
+  /// on for a window it opened (Properties). A command closes the Super menu,
+  /// a cancel leaves it open (the helper gives the focus back).
+  fn overview_menu(&mut self, path: String) {
+    let Some(o) = self.overview.as_mut() else { return };
+    if o.menu_open {
+      return;
+    }
+    o.menu_open = true;
+    std::thread::spawn(move || {
+      use std::io::BufRead;
+      let mut invoked = None;
+      if let Some(exe) = core_api::core_exe() {
+        let child = std::process::Command::new(exe)
+          .args(["--shell-menu", &path])
+          .stdout(std::process::Stdio::piped())
+          .creation_flags(CREATE_NO_WINDOW)
+          .spawn();
+        match child {
+          Ok(mut child) => {
+            if let Some(out) = child.stdout.take() {
+              for line in std::io::BufReader::new(out).lines() {
+                let Ok(line) = line else { break };
+                if line.contains("\"invoked\"") {
+                  let yes = line.contains("true");
+                  invoked = Some(yes);
+                  super::send(Msg::ShellMenu(yes));
+                  break;
+                }
+              }
+            }
+            let _ = child.wait();
+          }
+          Err(err) => tracing::warn!("Super menu: context menu: {:?}", err),
+        }
+      }
+      if invoked.is_none() {
+        super::send(Msg::ShellMenu(false));
+      }
+    });
+  }
+
+  pub(super) fn overview_menu_done(&mut self, invoked: bool) {
+    let Some(o) = self.overview.as_mut() else { return };
+    o.menu_open = false;
+    if invoked {
+      self.overview_hide();
     }
   }
 

@@ -118,6 +118,8 @@ enum Msg {
   Clips(Vec<search::Clip>),
   /// song recognition ended
   SongRecDone,
+  /// an app's context menu closed: whether a command was chosen
+  ShellMenu(bool),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -850,6 +852,7 @@ impl Ui {
         Msg::Core(evt) => self.core_event(evt),
         Msg::Clips(clips) => self.overview_clips(clips),
         Msg::SongRecDone => self.songrec_done(),
+        Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
         Msg::Wm(state) => self.model.wm = state,
         Msg::Apps(apps) => self.icons.set_apps(apps),
         Msg::WinIcon(h, png) => self.icons.set_win_icon(h, png),

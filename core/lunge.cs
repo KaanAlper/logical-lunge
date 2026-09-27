@@ -7867,6 +7867,178 @@ class GraphicsPathHelper : IDisposable
 }
 
 // ---------------- Duvar kağıdı (sağ panel > Duvar kağıtları) ----------------
+// Arama menüsündeki bir uygulamanın Windows sağ tık menüsü (Başlat menüsündekiyle aynı: dosya konumunu aç, yönetici
+// olarak çalıştır, sabitle, kaldır ...): lunge.exe --shell-menu <ayrıştırma adı, ör. shell:AppsFolder\kimlik>.
+// Kabuktan yetkisiz başlatılır: menüden açılanlar da yetkisiz açılsın (çekirdek yönetici haklarıyla çalışır). Fare
+// imlecinin yerinde, LL temasının renginde açılır; Shift basılıysa genişletilmiş komutlarla (Explorer'daki gibi).
+// Sonucu hemen stdout'a tek satır yazar ({"invoked":true|false}); iptal edilirse odağı menüden önceki pencereye
+// (arama menüsü) geri verir. Seçilen komut bu süreçte pencere açtıysa (Özellikler) o kapanana dek süreç yaşar.
+static class ShellMenu
+{
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem
+    {
+        [PreserveSig] int BindToHandler(IntPtr pbc, [In] ref Guid bhid, [In] ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [ComImport, Guid("000214e4-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IContextMenu
+    {
+        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
+        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
+        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
+    }
+
+    [ComImport, Guid("000214f4-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IContextMenu2
+    {
+        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
+        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
+        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
+        [PreserveSig] int HandleMenuMsg(uint uMsg, IntPtr wParam, IntPtr lParam);
+    }
+
+    [ComImport, Guid("bcfce0a0-ec17-11d0-8d10-00a0c90f2719"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IContextMenu3
+    {
+        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
+        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
+        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
+        [PreserveSig] int HandleMenuMsg(uint uMsg, IntPtr wParam, IntPtr lParam);
+        [PreserveSig] int HandleMenuMsg2(uint uMsg, IntPtr wParam, IntPtr lParam, out IntPtr plResult);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct CMINVOKECOMMANDINFOEX
+    {
+        public int cbSize; public uint fMask; public IntPtr hwnd; public IntPtr lpVerb; public IntPtr lpParameters; public IntPtr lpDirectory;
+        public int nShow; public uint dwHotKey; public IntPtr hIcon; public IntPtr lpTitle; public IntPtr lpVerbW; public IntPtr lpParametersW;
+        public IntPtr lpDirectoryW; public IntPtr lpTitleW; public Native.POINT ptInvoke;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHCreateItemFromParsingName(string path, IntPtr pbc, [In] ref Guid riid, out IShellItem item);
+    [DllImport("user32.dll")] static extern IntPtr CreatePopupMenu();
+    [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr h);
+    [DllImport("user32.dll")] static extern uint TrackPopupMenuEx(IntPtr hmenu, uint flags, int x, int y, IntPtr hwnd, IntPtr tpm);
+    // Menülerin koyu / aydınlık çizimi (uxtheme, 1903+; adı yok, sıra numarasıyla)
+    [DllImport("uxtheme.dll", EntryPoint = "#135")] static extern int SetPreferredAppMode(int mode);
+    [DllImport("uxtheme.dll", EntryPoint = "#136")] static extern void FlushMenuThemes();
+
+    static readonly Guid BHID_SFUIObject = new Guid("3981e225-f559-11d3-8e3a-00c04f6837d5");
+    const uint First = 1, Last = 0x7fff;
+
+    // Alt menüler (Birlikte aç, Gönder) içeriklerini sahip pencereye gelen bu iletilerle doldurur ve çizer
+    sealed class Owner : NativeWindow
+    {
+        public IContextMenu2 Cm2;
+        public IContextMenu3 Cm3;
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x117 || m.Msg == 0x2c || m.Msg == 0x2b || m.Msg == 0x120) // INITMENUPOPUP, MEASUREITEM, DRAWITEM, MENUCHAR
+            {
+                try
+                {
+                    IntPtr res;
+                    if (Cm3 != null && Cm3.HandleMenuMsg2((uint)m.Msg, m.WParam, m.LParam, out res) == 0) { m.Result = res; return; }
+                    if (Cm2 != null && Cm2.HandleMenuMsg((uint)m.Msg, m.WParam, m.LParam) == 0) { m.Result = IntPtr.Zero; return; }
+                }
+                catch { }
+            }
+            base.WndProc(ref m);
+        }
+    }
+
+    public static void Run(string path)
+    {
+        var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+        try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
+        IntPtr prev = Native.GetForegroundWindow();
+        bool invoked = false;
+        Owner owner = null;
+        IntPtr menu = IntPtr.Zero;
+        IContextMenu cm = null;
+        try
+        {
+            object th;
+            try { SetPreferredAppMode(Prefs.Read().TryGetValue("theme", out th) && "light".Equals(th) ? 3 : 2); FlushMenuThemes(); } catch { }
+            Guid iidItem = typeof(IShellItem).GUID, bhid = BHID_SFUIObject, iidCm = typeof(IContextMenu).GUID;
+            IShellItem item;
+            if (SHCreateItemFromParsingName(path, IntPtr.Zero, ref iidItem, out item) != 0 || item == null) return;
+            IntPtr ppv;
+            if (item.BindToHandler(IntPtr.Zero, ref bhid, ref iidCm, out ppv) != 0 || ppv == IntPtr.Zero) return;
+            try { cm = (IContextMenu)Marshal.GetObjectForIUnknown(ppv); } finally { Marshal.Release(ppv); }
+            owner = new Owner { Cm2 = cm as IContextMenu2, Cm3 = cm as IContextMenu3 };
+            owner.CreateHandle(new CreateParams { Caption = "lunge-shell-menu", Style = unchecked((int)0x80000000), ExStyle = 0x80 }); // WS_POPUP, TOOLWINDOW; görünmez
+            menu = CreatePopupMenu();
+            uint flags = (Control.ModifierKeys & Keys.Shift) != 0 ? 0x100u : 0u; // CMF_EXTENDEDVERBS
+            if (cm.QueryContextMenu(menu, 0, First, Last, flags) < 0) return;
+            var pt = Cursor.Position;
+            // Menü dışına tıklanınca kapanması için sahip pencere ön planda olmalı; sonra WM_NULL (TrackPopupMenu belgesi)
+            Native.SetForegroundWindow(owner.Handle);
+            uint cmd = TrackPopupMenuEx(menu, 0x100 | 0x2, pt.X, pt.Y, owner.Handle, IntPtr.Zero); // RETURNCMD, RIGHTBUTTON
+            Native.PostMessage(owner.Handle, 0, IntPtr.Zero, IntPtr.Zero);
+            if (cmd >= First)
+            {
+                invoked = true;
+                so.WriteLine("{\"invoked\":true}");
+                var ci = new CMINVOKECOMMANDINFOEX
+                {
+                    cbSize = Marshal.SizeOf(typeof(CMINVOKECOMMANDINFOEX)),
+                    fMask = 0x4000 | 0x20000000 | 0x100, // UNICODE, PTINVOKE, NOASYNC (süreç komut bitmeden çıkmasın)
+                    hwnd = owner.Handle,
+                    lpVerb = new IntPtr(cmd - First),
+                    lpVerbW = new IntPtr(cmd - First),
+                    nShow = 1, // SW_SHOWNORMAL
+                    ptInvoke = new Native.POINT { X = pt.X, Y = pt.Y },
+                };
+                int hr = cm.InvokeCommand(ref ci);
+                if (hr < 0) Slider.Log("sağ tık menüsü: komut çalışmadı (0x" + hr.ToString("x8") + "): " + path);
+            }
+        }
+        catch (Exception ex) { Slider.Log("sağ tık menüsü: " + ex.GetBaseException().Message + ": " + path); }
+        finally
+        {
+            if (!invoked)
+            {
+                try { so.WriteLine("{\"invoked\":false}"); } catch { }
+                if (prev != IntPtr.Zero) Native.SetForegroundWindow(prev);
+            }
+        }
+        try { if (invoked) WaitForOwnWindows(owner == null ? IntPtr.Zero : owner.Handle); } catch { }
+        if (menu != IntPtr.Zero) DestroyMenu(menu);
+        if (owner != null) owner.DestroyHandle();
+        if (cm != null) Marshal.ReleaseComObject(cm);
+    }
+
+    // Komutun bu süreçte açtığı pencereler (Özellikler) kapanana dek bekle; 3 sn içinde hiç açılmadıysa çık
+    static void WaitForOwnWindows(IntPtr owner)
+    {
+        uint me = (uint)Process.GetCurrentProcess().Id;
+        var start = DateTime.UtcNow;
+        bool seen = false;
+        while (true)
+        {
+            bool any = false;
+            Native.EnumWindows((h, l) =>
+            {
+                uint pid;
+                Native.GetWindowThreadProcessId(h, out pid);
+                if (pid == me && h != owner && Native.IsWindowVisible(h)) { any = true; return false; }
+                return true;
+            }, IntPtr.Zero);
+            if (any) seen = true;
+            else if (seen || (DateTime.UtcNow - start).TotalSeconds > 3) return;
+            Application.DoEvents();
+            Thread.Sleep(100);
+        }
+    }
+}
+
 // Windows'un IDesktopWallpaper API'si: monitör başına ayrı resim ya da tüm masaüstüne yayılan tek resim
 // (Superpaper'ın "span" modu). Hazır öneriler Wallhaven'ın herkese açık API'sinden, yalnızca SFW.
 [ComImport, Guid("B92B56A9-8B55-4E14-9A89-0199BBB6F93B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -9115,6 +9287,7 @@ static class Program
         // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
+        if (args.Length == 2 && args[0] == "--shell-menu") { ShellMenu.Run(args[1]); return; }
         // lunge.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
         if (args.Length == 2 && args[0] == "--audio-default")
         {
