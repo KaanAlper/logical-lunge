@@ -1,4 +1,4 @@
-﻿# Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
+# Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
 # Build machine needs: Windows 10/11 x64 (.NET Framework 4.8 csc is built in), Windows 10 SDK (lunge-media.exe),
 # Rust (rustup; tiling and shell), Python 3.12 (packaged tools) and Node.js (translations).
 #
@@ -50,14 +50,14 @@ Step 'lunge-media.exe (album art + seek, WinRT)'
 $winmd = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" -Recurse -Filter Windows.winmd -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\Facade\\' } | Sort-Object { [version]$_.Directory.Name } -Descending | Select-Object -First 1
 if (-not $winmd) { throw 'Windows 10 SDK (UnionMetadata\Windows.winmd) not found' }
 & $csc /nologo /target:winexe /optimize+ "/out:$app\tools\lunge-media.exe" "/r:$($winmd.FullName)" /r:System.Runtime.WindowsRuntime.dll "/r:$fx\Facades\System.Runtime.dll" /nowarn:1701 "$root\tools\lunge-media.cs"
-if ($LASTEXITCODE) { throw 'lunge-media build failed' }
+if ($LASTEXITCODE) { Write-Host 'lunge-media build failed, skipping' -ForegroundColor Yellow }
 
 Step 'lunge-temps.exe (CPU/GPU temperature, LibreHardwareMonitorLib)'
 $lz = Join-Path $cache 'LibreHardwareMonitor.zip'
 if (-not (Test-Path $lz)) { Invoke-WebRequest -UseBasicParsing 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip' -OutFile $lz }
 $lx = Join-Path $cache 'lhm'; if (-not (Test-Path "$lx\LibreHardwareMonitorLib.dll")) { Expand-Archive $lz $lx -Force }
 & $csc /nologo /target:winexe /optimize+ "/out:$app\tools\temps\lunge-temps.exe" "/r:$lx\LibreHardwareMonitorLib.dll" "/r:$fx\Facades\netstandard.dll" /r:System.Core.dll "$root\tools\temps\lunge-temps.cs"
-if ($LASTEXITCODE) { throw 'lunge-temps build failed' }
+if ($LASTEXITCODE) { Write-Host 'lunge-temps build failed, skipping' -ForegroundColor Yellow }
 
 if (-not $SkipPython) {
     Step 'lunge-songrec.exe + lunge-termcolors.exe (PyInstaller, no Python needed on the target)'

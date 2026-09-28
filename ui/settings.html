@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="tr">
   <head>
     <meta charset="utf-8" />
@@ -182,7 +182,7 @@
         const [hex, setHex] = useState('');
         const [bad, setBad] = useState(false);
         const setThemeTo = t => { if (window.llTheme && window.llTheme.get() !== t) window.llTheme.toggle(); setTheme(t); };
-        const setColor = c => helper(['--set-focus-color', c]).then(o => { const r = json(o); if (r?.ok) update({ focusColor: r.focusColor }); }).catch(() => {});
+        const setColor = c => fetch('http://127.0.0.1:6131/focus-color?v=' + encodeURIComponent(c), {method: 'POST'}).then(r => r.json()).then(r => { if (r?.ok) { update({ focusColor: r.focusColor }); window.applyDynamicTheme?.(); emit('ll:theme-color').catch(()=>{}); } }).catch(() => {});
         const applyHex = () => {
           const v = (hex.startsWith('#') ? hex : '#' + hex).toLowerCase();
           if (/^#[0-9a-f]{6}$/.test(v)) { setBad(false); setColor(v); } else setBad(true);
