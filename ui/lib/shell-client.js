@@ -522,7 +522,7 @@ export function createProviderGroup(configMap) {
 
 (async function applyDynamicTheme() {
   try {
-    const p = await fetch('http://127.0.0.1:40493/prefs.json').then(r => r.json());
+    const p = await fetch('http://127.0.0.1:6131/prefs.json').then(r => r.json());
     if (p.focusColor) {
       const hex = p.focusColor.replace('#', '');
       const r = parseInt(hex.substring(0, 2), 16);
@@ -554,7 +554,6 @@ export function createProviderGroup(configMap) {
     }
   } catch (e) {}
   
-  if (window.llEventTarget) {
-    window.llEventTarget.addEventListener('ll:theme-color', () => applyDynamicTheme());
-  }
+  window.applyDynamicTheme = applyDynamicTheme;
+  listen('ll:theme-color', () => applyDynamicTheme());
 })();

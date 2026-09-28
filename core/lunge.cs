@@ -4217,6 +4217,12 @@ static class Toasts
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             // Arayüz tercihleri (dil, saat, animasyon): widget'lar sayfa çizilmeden önce okur
             else if (target == "/prefs.json" || target.StartsWith("/prefs.json?")) { body = Prefs.Json(); status = "200 OK"; }
+            else if (target.StartsWith("/focus-color?v="))
+            {
+                var hex = Uri.UnescapeDataString(target.Substring(15));
+                body = Settings.Cli(new string[] { "--set-focus-color", hex });
+                status = "200 OK";
+            }
             // Tercih yaz (/pref?k=theme&v=light): bar / panel / ayarlar; değer Prefs.Set'te doğrulanır
             else if (target.StartsWith("/pref?"))
             {
@@ -9650,3 +9656,4 @@ static class Program
         GC.KeepAlive(mutex);
     }
 }
+
