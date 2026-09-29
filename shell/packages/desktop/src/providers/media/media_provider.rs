@@ -44,6 +44,10 @@ pub struct MediaSession {
   pub start_time: u64,
   pub end_time: u64,
   pub position: u64,
+  pub position_seconds: f64,
+  /// Unix milliseconds of the Windows timeline snapshot (not the polling time).
+  pub timeline_updated_at: i64,
+  pub playback_rate: f64,
   pub is_playing: bool,
   pub is_current_session: bool,
 }
@@ -60,6 +64,9 @@ impl Default for MediaSession {
       start_time: 0,
       end_time: 0,
       position: 0,
+      position_seconds: 0.0,
+      timeline_updated_at: 0,
+      playback_rate: 1.0,
       is_playing: false,
       is_current_session: false,
     }
@@ -518,11 +525,15 @@ impl MediaProvider {
     let properties = session.GetTimelineProperties()?;
 
     session_output.start_time =
-      properties.StartTime()?.Duration as u64 / 10_000_000;
+      properties.StartTime()?.Duration.max(0) as u64 / 10_000_000;
     session_output.end_time =
-      properties.EndTime()?.Duration as u64 / 10_000_000;
+      properties.EndTime()?.Duration.max(0) as u64 / 10_000_000;
     session_output.position =
-      properties.Position()?.Duration as u64 / 10_000_000;
+      properties.Position()?.Duration.max(0) as u64 / 10_000_000;
+    session_output.position_seconds = properties.Position()?.Duration.max(0) as f64 / 10_000_000.0;
+    // WinRT DateTime uses 100 ns ticks since 1601.
+    let at = properties.LastUpdatedTime()?.UniversalTime;
+    session_output.timeline_updated_at = if at > 116_444_736_000_000_000 { (at - 116_444_736_000_000_000) / 10_000 } else { 0 };
 
     Ok(())
   }
@@ -536,6 +547,8 @@ impl MediaProvider {
 
     session_output.is_playing =
       info.PlaybackStatus()? == GsmtcPlaybackStatus::Playing;
+    session_output.playback_rate = info.PlaybackRate().and_then(|rate| rate.Value()).ok().filter(|rate| rate.is_finite()).unwrap_or(1.0);
+    Self::update_timeline_properties(session_output, session)?;
 
     Ok(())
   }

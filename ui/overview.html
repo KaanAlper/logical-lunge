@@ -707,7 +707,8 @@
         if (!mon) return null;
         const scale = 0.18; // Config.options.overview.scale
         const rows = 2, cols = 5; // overview.rows / columns
-        const W = Math.round(mon.width * scale), H = Math.round(mon.height * scale);
+        const r = window.devicePixelRatio || 1;
+        const W = Math.round((mon.width / r) * scale), H = Math.round((mon.height / r) * scale);
         const current = parseInt(tiling.focusedWorkspace?.name ?? '1', 10) || 1;
         const base = Math.floor((current - 1) / (rows * cols)) * rows * cols;
 

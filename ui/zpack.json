@@ -1,7 +1,7 @@
 {
     "name": "logical-lunge",
     "version": "1.0.0",
-    "description": "Logical Lunge — end-4 illogical-impulse (quickshell ii) Windows portu: bar, overview/arama, sağ kenar çubuğu, bildirimler.",
+    "description": "Logical Lunge: bar, uygulama arama, yan panel, ayarlar ve bildirimler.",
     "tags": [
         "topbar"
     ],

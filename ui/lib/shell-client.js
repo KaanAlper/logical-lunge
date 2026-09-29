@@ -519,3 +519,6 @@ export function createProviderGroup(configMap) {
     },
   };
 }
+
+// Shared accent initialization for each widget.
+import './theme.mjs';

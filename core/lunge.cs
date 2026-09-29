@@ -2363,7 +2363,7 @@ class Dwindle
     int pendAt;
     static readonly HashSet<string> noFreezeProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { Names.Shell, Names.Core, Names.Tiling, "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost",
-          "LockApp", "TextInputHost", "ApplicationFrameHost", "msedgewebview2", "lunge-songrec", "lunge-termcolors" };
+          "LockApp", "TextInputHost", "ApplicationFrameHost", "lunge-songrec", "lunge-termcolors" };
 
     public void HookNewWindows()
     {
@@ -3254,7 +3254,7 @@ static class Files
     // Atomik yazma: okuyan (dosya izleyici, kabuk, native bar) yarım yazılmış dosya görmez
     public static bool WriteAtomic(string path, string text)
     {
-        string tmp = path + ".tmp";
+        string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             System.IO.File.WriteAllText(tmp, text, new UTF8Encoding(false));
@@ -3374,8 +3374,10 @@ static class Settings
     // config.yaml'daki borders.active_color (saydamlık korunur) + pencere yöneticisine yeniden yükle. Kurulumdan beri
     // elle değiştirilmemiş config bu değişiklikten sonra da "bizim" sayılır: güncellemeler yeni sürümünü yazabilir, renk
     // tercihten (prefs.json focusColor) yeniden uygulanır.
+    static readonly object colorGate = new object();
     static Dictionary<string, object> SetFocusColor(string hex)
     {
+        lock (colorGate) {
         if (!System.Text.RegularExpressions.Regex.IsMatch(hex, "^#[0-9a-fA-F]{6}$")) return Result(false);
         hex = hex.ToLowerInvariant();
         string cfg = System.IO.File.ReadAllText(Paths.ConfigFile);
@@ -3385,13 +3387,15 @@ static class Settings
         var re = new System.Text.RegularExpressions.Regex(@"(?m)^(\s*active_color:\s*"")#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?("")");
         if (!re.IsMatch(cfg)) return Result(false);
         string next = re.Replace(cfg, x => x.Groups[1].Value + hex + x.Groups[2].Value + x.Groups[3].Value, 1);
-        System.IO.File.WriteAllText(Paths.ConfigFile, next, new UTF8Encoding(false));
-        if (ours) System.IO.File.WriteAllText(hashFile, Sha256(next));
-        Prefs.Set("focusColor", hex);
+        if (!Files.WriteAtomic(Paths.ConfigFile, next)) return Result(false);
+        if (!Prefs.Set("focusColor", hex)) { Files.WriteAtomic(Paths.ConfigFile, cfg); return Result(false); }
+        if (ours && !Files.WriteAtomic(hashFile, Sha256(next))) Slider.Log("focus color: could not update config hash");
         try { new TilingClient().Command("wm-reload-config"); } catch { }
+        Toasts.Emit("ll:theme-color");
         var r = Result(true);
         r["focusColor"] = hex;
         return r;
+        }
     }
 
     static Dictionary<string, object> Part(string key, Process p)
@@ -4190,7 +4194,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4238,6 +4242,21 @@ static class Toasts
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             // Arayüz tercihleri (dil, saat, animasyon): widget'lar sayfa çizilmeden önce okur
             else if (target == "/prefs.json" || target.StartsWith("/prefs.json?")) { body = Prefs.Json(); status = "200 OK"; }
+            else if (target.StartsWith("/focus-color?v="))
+            {
+                if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else try
+                {
+                    var hex = Uri.UnescapeDataString(target.Substring(15));
+                    body = Settings.Cli(new string[] { "--set-focus-color", hex });
+                    status = "200 OK";
+                }
+                catch (Exception ex)
+                {
+                    body = new JavaScriptSerializer().Serialize(new { ok = false, error = ex.GetBaseException().Message });
+                    status = "500 Internal Server Error";
+                }
+            }
             // Tercih yaz (/pref?k=theme&v=light): bar / panel / ayarlar; değer Prefs.Set'te doğrulanır
             else if (target.StartsWith("/pref?"))
             {
@@ -5229,21 +5248,43 @@ class Keys2
 
     // Hyprland keybinds.lua: Super+W tarayıcı, E dosya yöneticisi, C kod editörü, X metin editörü.
     // tiling'in shell-exec'i boşluklu tırnaklı yolları ayrıştıramıyordu ("doesn't have an ending").
-    // Her bilgisayarda çalışsın: tarayıcı = sistemin varsayılanı, kod editörü = bulunan ilk editör
+    // Use user preferences and Windows associations instead of vendor/path lists.
     static readonly Dictionary<string, string> Apps = new Dictionary<string, string>
     {
         { "browser", DefaultBrowser() },
         { "files", "explorer.exe" },
-        { "code", FirstExisting(@"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe", @"%ProgramFiles%\Microsoft VS Code\Code.exe",
-                                @"%LOCALAPPDATA%\Programs\cursor\Cursor.exe", @"%LOCALAPPDATA%\Programs\Windsurf\Windsurf.exe", @"%ProgramFiles%\Notepad++\notepad++.exe") ?? "notepad.exe" },
+        { "code", DefaultEditor() },
         { "editor", "notepad.exe" },
     };
-    // Ayarlar penceresinin "config'i düzenle"si için (VS Code / Cursor / Windsurf / Notepad++, yoksa Not Defteri)
+    // "Edit config": VISUAL/EDITOR executable, registered YAML editor, then Windows text editor.
     public static string CodeEditor { get { return Apps["code"]; } }
-    static string FirstExisting(params string[] paths)
+    static string DefaultEditor()
     {
-        foreach (var p in paths) { var e = Environment.ExpandEnvironmentVariables(p); if (System.IO.File.Exists(e)) return e; }
-        return null;
+        foreach (string key in new[] { "VISUAL", "EDITOR" })
+        {
+            string value = Environment.GetEnvironmentVariable(key);
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            string exe = Environment.ExpandEnvironmentVariables(value.Trim().Trim('"'));
+            if (System.IO.File.Exists(exe)) return exe;
+        }
+        foreach (string ext in new[] { ".yaml", ".yml", ".txt" })
+        {
+            try
+            {
+                string prog = Convert.ToString(Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\" + ext + @"\UserChoice", "ProgId", null));
+                if (string.IsNullOrEmpty(prog)) prog = Convert.ToString(Microsoft.Win32.Registry.GetValue(@"HKEY_CLASSES_ROOT\" + ext, "", null));
+                foreach (string verb in new[] { "edit", "open" })
+                {
+                    string cmd = Convert.ToString(Microsoft.Win32.Registry.GetValue(@"HKEY_CLASSES_ROOT\" + prog + @"\shell\" + verb + @"\command", "", null));
+                    if (string.IsNullOrWhiteSpace(cmd)) continue;
+                    string exe = cmd.StartsWith("\"") ? cmd.Substring(1, cmd.IndexOf('"', 1) - 1) : cmd.Split(' ')[0];
+                    exe = Environment.ExpandEnvironmentVariables(exe);
+                    if (System.IO.File.Exists(exe)) return exe;
+                }
+            }
+            catch { }
+        }
+        return "notepad.exe";
     }
     static string DefaultBrowser()
     {
@@ -5258,7 +5299,8 @@ class Keys2
             }
         }
         catch { }
-        return "msedge.exe";
+        // No registered browser: let the user choose one through Windows.
+        return "ms-settings:defaultapps";
     }
 
     void Launch(string path) { LaunchQueue.Enqueue(path); }
@@ -6370,7 +6412,7 @@ static class RegionSearch
                 rest = rest.Contains("%1") ? rest.Replace("%1", url) : rest + " \"" + url + "\"";
                 launched = UserLaunch.Start(exe, rest.Trim(), Paths.Home);
             }
-            else launched = UserLaunch.Start("msedge.exe", "\"" + url + "\"", Paths.Home);
+            else launched = UserLaunch.Start(url, "", Paths.Home);
         }
         catch { }
         if (!launched) UserLaunch.Start(url, "", Paths.Home);
@@ -7225,6 +7267,52 @@ static class Updater
 
     class Rel { public string Tag, ZipName, ZipUrl, ShaUrl, Notes; public long Size; }
 
+    static string Edition()
+    {
+        try
+        {
+            string edition = System.IO.File.ReadAllText(Paths.In("EDITION")).Trim();
+            if (edition == "native-bar" || edition == "web-ui") return edition;
+        }
+        catch { }
+        // Upgrade from packages made before EDITION existed. Only the web
+        // edition contains a bar widget; prefs.bar alone can be stale.
+        try
+        {
+            var pack = json.DeserializeObject(System.IO.File.ReadAllText(Paths.UiPack("zpack.json"))) as Dictionary<string, object>;
+            foreach (Dictionary<string, object> widget in (object[])pack["widgets"])
+                if (Convert.ToString(widget["name"]) == "bar") return "web-ui";
+        }
+        catch { }
+        return "native-bar";
+    }
+
+    static Rel SelectRelease(System.Collections.IEnumerable releases, string edition)
+    {
+        if (edition != "native-bar" && edition != "web-ui") throw new ArgumentException("Invalid edition");
+        Rel best = null;
+        var pattern = new System.Text.RegularExpressions.Regex("^v([0-9]+\\.[0-9]+\\.[0-9]+)-" + edition + "$");
+        foreach (var item in releases)
+        {
+            var r = item as Dictionary<string, object>;
+            if (r == null || !r.ContainsKey("tag_name") || !r.ContainsKey("assets")) continue;
+            if ((r.ContainsKey("draft") && true.Equals(r["draft"])) || (r.ContainsKey("prerelease") && true.Equals(r["prerelease"]))) continue;
+            string tag = Convert.ToString(r["tag_name"]);
+            var m = pattern.Match(tag);
+            if (!m.Success) continue;
+            string name = "LogicalLunge-" + edition + "-" + m.Groups[1].Value + ".zip";
+            var rel = new Rel { Tag = tag, ZipName = name, Notes = r.ContainsKey("body") ? Convert.ToString(r["body"]) : "" };
+            foreach (Dictionary<string, object> a in (System.Collections.IEnumerable)r["assets"])
+            {
+                string n = Convert.ToString(a["name"]), u = Convert.ToString(a["browser_download_url"]);
+                if (n == name) { rel.ZipUrl = u; rel.Size = Convert.ToInt64(a["size"]); }
+                if (n == name + ".sha256") rel.ShaUrl = u;
+            }
+            if (rel.ZipUrl != null && rel.ShaUrl != null && (best == null || Ver(tag) > Ver(best.Tag))) best = rel;
+        }
+        return best;
+    }
+
     static System.Net.WebClient Client()
     {
         System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072; // TLS 1.2
@@ -7243,17 +7331,21 @@ static class Updater
         {
             // LL_UPDATE_API: sınama için başka bir sürüm adresi (varsayılan GitHub)
             string api = Environment.GetEnvironmentVariable("LL_UPDATE_API");
-            string body = Client().DownloadString(string.IsNullOrEmpty(api) ? "https://api.github.com/repos/" + Repo + "/releases/latest" : api);
-            var r = json.DeserializeObject(body) as Dictionary<string, object>;
-            var rel = new Rel { Tag = Convert.ToString(r["tag_name"]), Notes = r.ContainsKey("body") ? Convert.ToString(r["body"]) : "" };
-            var assets = r["assets"] as System.Collections.IEnumerable;
-            foreach (Dictionary<string, object> a in assets)
+            var releases = new List<object>();
+            int page = 1;
+            while (true)
             {
-                string n = Convert.ToString(a["name"]), u = Convert.ToString(a["browser_download_url"]);
-                if (n.StartsWith("LogicalLunge-") && n.EndsWith(".zip")) { rel.ZipName = n; rel.ZipUrl = u; rel.Size = Convert.ToInt64(a["size"]); }
-                else if (n.EndsWith(".zip.sha256")) rel.ShaUrl = u;
+                string url = string.IsNullOrEmpty(api) ? "https://api.github.com/repos/" + Repo + "/releases?per_page=100&page=" + page : api;
+                object data;
+                using (var c = Client()) data = json.DeserializeObject(c.DownloadString(url));
+                var batch = data as object[];
+                if (batch == null) { releases.Add(data); break; } // single fixture via LL_UPDATE_API
+                releases.AddRange(batch);
+                if (batch.Length < 100 || !string.IsNullOrEmpty(api)) break;
+                page++;
             }
-            if (rel.ZipUrl == null) { err = "none"; return null; }
+            var rel = SelectRelease(releases, Edition());
+            if (rel == null) { err = "none"; return null; }
             return rel;
         }
         catch (System.Net.WebException ex)
@@ -7294,7 +7386,7 @@ static class Updater
             return json.Serialize(d);
         }
         bool avail = Ver(r.Tag) > Ver(cur);
-        d["latest"] = r.Tag.TrimStart('v', 'V'); d["tag"] = r.Tag; d["available"] = avail;
+        d["latest"] = Ver(r.Tag).ToString(3); d["tag"] = r.Tag; d["available"] = avail;
         d["downloaded"] = avail && IsReady(r); d["size"] = r.Size; d["notes"] = Clean(r.Notes); d["error"] = "";
         return json.Serialize(d);
     }
@@ -7327,7 +7419,7 @@ static class Updater
         string err;
         var r = Latest(out err);
         if (r == null || Ver(r.Tag) <= Ver(Installed())) { SetStatus("idle", "", 0, 0, err == "none" ? "" : err); return Status(); }
-        string ver = r.Tag.TrimStart('v', 'V'), zip = ZipPath(r), part = zip + ".part";
+        string ver = Ver(r.Tag).ToString(3), zip = ZipPath(r), part = zip + ".part";
         if (IsReady(r)) { SetStatus("ready", ver, r.Size, r.Size, ""); return Status(); }
         try
         {
@@ -7390,7 +7482,7 @@ static class Updater
                 string actual;
                 using (var sha = System.Security.Cryptography.SHA256.Create())
                 using (var fs = System.IO.File.OpenRead(part)) actual = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "");
-                if (expected.Length > 0 && expected != actual) { try { System.IO.File.Delete(part); } catch { } throw new Exception("Sağlama toplamı uyuşmuyor, indirme geçersiz."); }
+                if (expected.Length != 64 || expected != actual) { try { System.IO.File.Delete(part); } catch { } throw new Exception("Sağlama toplamı uyuşmuyor, indirme geçersiz."); }
             }
             System.IO.File.Move(part, zip);
             System.IO.File.WriteAllText(zip + ".ok", r.Tag);

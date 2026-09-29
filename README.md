@@ -2,13 +2,12 @@
 
 # Logical Lunge
 
-**end-4's illogical-impulse Hyprland desktop, rebuilt for Windows — with one command.**
+**A personal Windows desktop with tiling, a native bar or an optional web interface.**
 
-end-4 illogical-impulse Hyprland masaüstü, Windows için — tek komutla.
+Döşemeli pencere yönetimi, native bar veya isteğe bağlı web arayüzü ile kişisel Windows masaüstü.
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%C2%B7%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](#compatibility)
 [![App](https://img.shields.io/badge/one%20app-lunge.exe-8B5CF6?style=flat-square)](#how-it-works)
-[![Design](https://img.shields.io/badge/design-illogical--impulse-4F378B?style=flat-square)](https://github.com/end-4/dots-hyprland)
 [![Languages](https://img.shields.io/badge/UI-13%20languages-2A59FF?style=flat-square)](#languages)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
 
@@ -25,60 +24,73 @@ end-4 illogical-impulse Hyprland masaüstü, Windows için — tek komutla.
 
 **English.** The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are native Windows programs. The Super menu, sidebar, settings, notifications and on-screen keyboard are still web widgets (WebView2) hosted by `lunge-shell`; they are being rewritten natively one by one, and each web version is removed once its native one is done:
 
-- **Native bar (done):** the same ii bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. If it fails it builds itself again inside the shell; if it keeps failing, Windows' taskbar comes back. About 100 MB less memory than the web bar.
+- **Native bar (done):** a bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. If it fails it builds itself again inside the shell; if it keeps failing, Windows' taskbar comes back.
 - **Next:** native Super menu (its search is done), sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
-- **Branches:** `native-bar` is this work; `web-ui` keeps the complete WebView version as an archive.
+- **Branches:** `native-bar` is the native development line; `web-ui` remains a supported, selectable WebView interface. Both have separate release streams. `main` is not used for these releases.
 
 **Türkçe.** Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar native Windows programları. Super menüsü, sağ panel, ayarlar, bildirimler ve ekran klavyesi hâlâ `lunge-shell` içinde çalışan web widget'ları (WebView2); tek tek native olarak yeniden yazılıyorlar, her birinin web sürümü native'i bitince kaldırılıyor:
 
-- **Native bar (bitti):** aynı ii bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Arızalanırsa shell'in içinde kendini yeniden kurar; arızası sürerse Windows görev çubuğu geri gelir. Web bar'dan yaklaşık 100 MB daha az bellek.
+- **Native bar (bitti):** bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Arızalanırsa shell'in içinde kendini yeniden kurar; arızası sürerse Windows görev çubuğu geri gelir.
 - **Sırada:** native Super menüsü (araması bitti), sağ panel ve diğer paneller; ardından Logical Lunge'ın Windows'un üstünde değil, Explorer'ın yerine doğrudan Windows kabuğu olarak çalışması.
-- **Branch'ler:** `native-bar` bu çalışma; `web-ui` WebView sürümünün tamamını arşiv olarak tutar.
+- **Branch'ler:** `native-bar` native geliştirme hattı; `web-ui` desteklenen, seçilebilir WebView arayüzüdür. Her hattın ayrı release akışı vardır. Bu sürümler için `main` kullanılmaz.
 
 ## ⚡ Quick install · Hızlı kurulum
 
 Open **PowerShell** and paste · **PowerShell**'i aç ve yapıştır:
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
 ```
 
-A short wizard asks for your focus color, interface language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back. · Kısa bir sihirbaz odak rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
+A short wizard asks for the interface edition, accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back. · Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
 
 ---
+
+## Interface editions / Arayüz seçenekleri
+
+| Edition | Interface | Release tag / Package |
+|---|---|---|
+| `native-bar` | Direct2D native bar; other panels still use WebView2. Native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-bar` / `LogicalLunge-native-bar-X.Y.Z.zip` |
+| `web-ui` | React / WebView2 bar and panels. React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
+
+Both currently run alongside Explorer. Replacing Explorer is a future native milestone. / İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
+
+The shared installer downloads the latest complete, non-draft release for the selected edition and verifies its SHA-256. The updater stays on the installed edition. The Release action can publish either edition or both; each version sequence advances independently. / Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Release action iki sürümü ayrı ayrı veya birlikte yayımlayabilir; sürüm numaraları bağımsız ilerler.
+
+Set `$env:LL_EDITION = 'native-bar'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions. / Varsayılan arayüzü `$env:LL_EDITION = 'native-bar'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
 
 ## English
 
 ### What this is
 
-A complete Windows desktop that looks and behaves like the **illogical-impulse** (`ii`) Quickshell setup on Hyprland — the bar, the right sidebar, the Super-key overview, the animations and the keybinds — not a theme, a working shell:
+A Windows desktop environment with tiling window management, a bar, side panels, app search, animations and configurable shortcuts:
 
 - **Tiling** with Hyprland's dwindle layout (`lunge-tiling`), kept as a real binary tree like Hyprland's: a new window splits the window under the mouse along its longer side and opens on the half the mouse is over (`force_split = 0`); `movewindow` splits the window at the focal point the same way, moving a window toward its split partner swaps the two, and a window that leaves gives its space back to its split partner, so the halves stay halves however much you rearrange. `Super + J` turns a split around (`togglesplit`). New windows never flash at the screen centre — they appear only once in place.
 - **Window borders** drawn by the window manager itself: your focus color (chosen at install, `borders.active_color` in the config) for the focused window, subtle for the others, only on windows the WM manages (never on the bar, menus or picture-in-picture), moving in the same step as their window. No separate program, no tray icon.
-- **ii bar**: workspaces with app icons (any window without a known app shows its own icon), resources (RAM / swap / CPU / **CPU & GPU temperature**), media with album art and seeking, tray with drag-to-pin, clock, battery, scroll-to-change brightness (left edge) and volume (right edge) with an OSD.
-- **ii right sidebar**: Android-style quick toggles (Wi-Fi, Ethernet, Bluetooth, keep-awake, mic, audio, night light with schedule + intensity, dark mode, screenshot, on-screen keyboard, do-not-disturb) with slide-down cards, notifications, calendar with month/year picker, to-do and pomodoro timer.
+- **Bar**: workspaces with app icons (any window without a known app shows its own icon), resources (RAM / swap / CPU / **CPU & GPU temperature**), media with album art and seeking, tray with drag-to-pin, clock, battery, scroll-to-change brightness (left edge) and volume (right edge) with an OSD.
+- **Right sidebar**: Android-style quick toggles (Wi-Fi, Ethernet, Bluetooth, keep-awake, mic, audio, night light with schedule + intensity, dark mode, screenshot, on-screen keyboard, do-not-disturb) with slide-down cards, notifications, calendar with month/year picker, to-do and pomodoro timer.
 - **Shortcuts editor** and **wallpaper picker** built into the sidebar (per-monitor or one image spanning all monitors — Superpaper-style *superscreen*).
 - **Super overview**: fuzzy app search (localized names + icons), calculator (`sqrt(9)`, `5!`, `2^10`, `50%`), `/actions`, `$shell`, `?web`, **Google Lens** region search, **music recognition** (Shazam), workspace previews.
 - **Screenshot tool** (Print): select a region, then annotate — pen, circle, rectangle, colors — copy or save as.
 - **Ctrl+Print**: the whole monitor under the mouse, copied to the clipboard and saved to `Pictures\Screenshots` without asking.
-- **Clipboard history** (Super+V, ii's cliphist): text and images, searchable, opens in the Super search box with the `;` prefix.
+- **Clipboard history** (Super+V): text and images, searchable, opens in the Super search box with the `;` prefix.
 - **Alt+Tab switcher**: live window previews across all workspaces, most recently used first, drawn natively by the core so it opens instantly under load.
 - **Session screen** (power button in the sidebar): dimmed screen with lock / sleep / **reload desktop** / sign out / restart / **UEFI-BIOS** / shut down.
 - **It heals itself**, like an OS should: if the window manager crashes or hangs, the bar crashes, or the core crashes or freezes, the part is restarted automatically (windows hidden on other workspaces come back first). If the shell's bar is ever missing, the Windows taskbar and the Start menu (Win key) come back until it returns — you are never left without a way to launch things. *Reload desktop* (session screen, sidebar, or *Restart Logical Lunge* in the Start menu) restarts everything cleanly without a command line.
 - **Updates**: the sidebar's update button checks GitHub releases, shows a card with a progress bar, then *Install now* / *Later*. A downloaded update is remembered; installing asks for permission once and restarts the desktop.
 - **Animations**: smooth workspace slides, window open / close / move animations (Hyprland `emphasizedDecel` curves), popups that slide in and out. Durations and bezier curves are set like Hyprland's `bezier =` / `animation =` lines in the `animations:` section of the config (applied on save); hidden widgets draw nothing.
 - **Touchpad gestures** (precision touchpads): three fingers sideways move the workspace with your fingers (release past a third or flick to switch), three fingers up open the overview, down the right sidebar, four fingers move the focused window. Windows' own three/four-finger swipes are switched off by the installer (restored on uninstall); a switch in **Settings → Appearance** turns the gestures off.
-- **Terminal**: WezTerm configured exactly like ii's kitty (JetBrains Mono Nerd Font, beam cursor, ii's wallpaper-generated Material You colors) running **fish** with **starship**.
+- **Terminal**: WezTerm (JetBrains Mono Nerd Font, beam cursor and wallpaper-generated Material You colors) running **fish** with **starship**.
 - **Boot straight into the desktop**: a wallpaper splash covers Windows until the shell is ready; the Windows taskbar and Start menu never show — not on other monitors either, and not when an app flashes its taskbar button (Super is owned by the shell *only while it runs*).
 
 ### Why this exists
 
-Recreating ii on Windows means fixing things nobody warns you about:
+Windows desktop integration requires handling these cases:
 
 1. **Lone Super opens Start**, and Ctrl+Super spam leaks it anyway → the core owns the Win key completely and re-injects it only for combos the shell doesn't handle (Win+L still works; Win+V opens our clipboard history; Win+D / Win+M are blocked because they break the tiling layout).
 2. **The upstream window manager's focus/move jumps to the other monitor** when there is no window in that direction → focus and move stay inside the workspace; moving at an edge re-splits the layout like Hyprland.
 3. **Workspace switches lag** by 100–200 ms with many windows → the slide starts from DWM thumbnails before the WM finishes, at high process priority.
-4. **Apps reset rounded window regions**, dialogs flicker under focus-follows-mouse, Windows error boxes pop up → all handled (rounded corners, real-mouse-movement focus, error dialogs turned into ii-style toasts).
+4. **Apps reset rounded window regions**, dialogs flicker under focus-follows-mouse, Windows error boxes pop up → all handled (rounded corners, real-mouse-movement focus, error dialogs turned into desktop notifications).
 5. **Everything had to survive a reboot and a different PC** → one installer, one UAC prompt, every Windows setting backed up and restored on uninstall.
 6. **Three foreign programs don't feel like one desktop** (each with its own tray icon, settings window and config) → they became parts of one app: `lunge.exe` starts `lunge-tiling` and `lunge-shell` as its own children (Task Manager shows one *lunge*), there is one config folder and one log folder, and the parts recover from crashes on their own.
 
@@ -87,10 +99,10 @@ Recreating ii on Windows means fixing things nobody warns you about:
 **One command** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
 ```
 
-A short wizard asks three questions (focus color, interface language, 12/24-hour clock) and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
+A short wizard asks for the interface edition, accent color, language and 12/24-hour clock and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
 
 | Option (set before running) | Effect |
 |---|---|
@@ -107,7 +119,7 @@ Every change is backed up first. If a step fails, or you cancel with Ctrl+C, the
 | `~\.config\logical-lunge` | Your settings: `config.yaml` (window manager, borders, focus color), `keybinds.json`, `prefs.json` (language, clock) |
 | `%LOCALAPPDATA%\LogicalLunge` | Data: `logs\` (one log folder for all parts), `state\`, clipboard history, widget storage |
 
-**Update:** the sidebar's update button, or run the one-liner again. Your `config.yaml` is replaced only if you never edited it (otherwise the new default is saved next to it as `config.default.yaml`). Installs of 0.1.x (`~\.glzr`) are moved to the new folders — settings, shortcuts, night light, clipboard history, to-dos — and removed.
+**Update:** the sidebar's update button, or run the one-liner again. Your `config.yaml` is replaced only if you never edited it (otherwise the new default is saved next to it as `config.default.yaml`). Installs of 0.1.x (`~\.glzr`) are moved to the new folders — settings, shortcuts, night light, clipboard history, to-dos — with legacy tool paths retained when other applications may still use them.
 
 **Uninstall:** *Settings → Apps → Logical Lunge → Uninstall*, or run `%ProgramFiles%\LogicalLunge\uninstall.ps1`. Every Windows setting goes back to what it was (taskbar, desktop icons, Snap, Win shortcuts, startup delay) and config files you had before the install come back. You're asked whether Logical Lunge's own settings and data (its configs, clipboard history, shortcuts, night light, downloaded wallpapers) should be deleted too; `-RemoveConfig` / `-KeepConfig` skip the question. Windows on other workspaces are brought back before anything is removed.
 
@@ -177,28 +189,28 @@ Needs Rust (rustup; the toolchain is pinned in `tiling/` and `shell/`), the Wind
 
 ### Bu nedir
 
-Hyprland üzerindeki **illogical-impulse** (`ii`) Quickshell kurulumunun Windows karşılığı. Bar, sağ panel, Super menüsü, animasyonlar ve kısayollar birebir; tema değil, çalışan bir masaüstü kabuğu:
+Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve ayarlanabilir kısayollar sunan bir Windows masaüstü ortamı:
 
 - **Döşeme**: Hyprland'deki gibi gerçek ikili ağaçla dwindle; `force_split = 0` gibi farenin altındaki yarıya açılan bölmeler. Pencere taşınınca odak noktasındaki pencere bölünür, bölme eşine doğru taşınan pencere onunla yer değiştirir; kapanınca yeri bölmedeki eşine geçer, ne kadar karıştırırsan karıştır yarılar yarı kalır. `Super + J` bölmeyi döndürür (yan yana ↔ alt alta).
 - **Pencere kenarlıkları** pencere yöneticisinin içinde: odaktaki kurulumda seçtiğin renkte (config'de `borders.active_color`), diğerleri silik; yalnızca yönetilen pencerelerde (bar, menüler, PiP hariç), pencereyle aynı adımda hareket eder. Ayrı program ya da tepsi simgesi yok.
-- **ii bar**: uygulama simgeli workspace'ler (bilinmeyen pencerede pencerenin kendi simgesi), kaynaklar (RAM / swap / CPU / **CPU & GPU sıcaklığı**), kapaklı ve sarılabilir medya, sürükleyerek sabitlenen tepsi, saat, pil, sol kenarda kaydırınca parlaklık, sağ kenarda ses (OSD'li).
-- **ii sağ panel**: Android tarzı hızlı ayarlar (Wi-Fi, Ethernet, Bluetooth, uyanık tut, mikrofon, ses, zamanlamalı ve yoğunluk ayarlı gece ışığı, karanlık mod, ekran alıntısı, ekran klavyesi, sessiz) ve alta kayan kartlar; bildirimler; ay/yıl seçicili takvim; yapılacaklar; zamanlayıcı.
+- **Bar**: uygulama simgeli workspace'ler (bilinmeyen pencerede pencerenin kendi simgesi), kaynaklar (RAM / swap / CPU / **CPU & GPU sıcaklığı**), kapaklı ve sarılabilir medya, sürükleyerek sabitlenen tepsi, saat, pil, sol kenarda kaydırınca parlaklık, sağ kenarda ses (OSD'li).
+- **Sağ panel**: Android tarzı hızlı ayarlar (Wi-Fi, Ethernet, Bluetooth, uyanık tut, mikrofon, ses, zamanlamalı ve yoğunluk ayarlı gece ışığı, karanlık mod, ekran alıntısı, ekran klavyesi, sessiz) ve alta kayan kartlar; bildirimler; ay/yıl seçicili takvim; yapılacaklar; zamanlayıcı.
 - Panelde **kısayol düzenleyici** ve **duvar kağıdı seçici** (monitör başına ya da tüm monitörlere yayılan tek resim, Superpaper'daki gibi).
 - **Super menüsü**: bulanık uygulama arama, hesap makinesi, `/eylemler`, `$komut`, `?web`, **Google Lens**, **müzik tanıma** (Shazam), workspace önizlemeleri.
 - **Ekran alıntısı** (Print): alan seç, üzerine kalem / çember / dikdörtgen / renkle çiz, kopyala ya da kaydet.
 - **Animasyonlar**: kaygan workspace geçişleri, pencere açma/kapama/taşıma animasyonları, kayarak açılıp kapanan popup'lar. Süreler ve bezier eğrileri config'teki `animations:` bölümünde Hyprland'in `bezier =` / `animation =` satırları gibi ayarlanır (kaydedince geçerli); gizli widget'lar hiç çizmez.
 - **Dokunmatik yüzey hareketleri** (hassas dokunmatik yüzey): 3 parmak yana workspace'i parmakla birlikte kaydırır (üçte birini geçip bırakınca ya da hızlı fiskeyle geçer), 3 parmak yukarı overview, aşağı sağ panel, 4 parmak odaktaki pencereyi taşır. Windows'un kendi 3/4 parmak kaydırmalarını yükleyici kapatır (kaldırınca geri gelir); **Ayarlar → Görünüm**'deki anahtar hareketleri kapatır.
-- **Terminal**: ii'nin kitty ayarlarıyla birebir WezTerm (JetBrains Mono Nerd Font, çizgi imleç, duvar kağıdından üretilen Material You renkleri) içinde **fish** + **starship**.
+- **Terminal**: WezTerm (JetBrains Mono Nerd Font, çizgi imleç, duvar kağıdından üretilen Material You renkleri) içinde **fish** + **starship**.
 - **Doğrudan masaüstüne açılış**: kabuk hazır olana kadar duvar kağıdı perdesi; Windows görev çubuğu ve Başlat menüsü hiç görünmez — diğer monitörlerde de, bir uygulama görev çubuğu düğmesini yanıp söndürdüğünde de (Super tuşu yalnızca program açıkken kabuğundur).
 - **Kendini toparlar**: pencere yöneticisi çöker ya da donarsa, bar çökerse, çekirdek çöker ya da donarsa o parça kendiliğinden yeniden başlar (diğer workspace'lerde gizli kalan pencereler önce geri gelir). Bar bir sebeple yoksa, dönene kadar Windows görev çubuğu ve Başlat menüsü (Win tuşu) geri gelir; hiçbir zaman eli kolu bağlı kalmazsın. **Masaüstünü yenile** (oturum ekranı, sağ panel ya da Başlat menüsündeki *Logical Lunge'u yeniden başlat*) komut satırı bilmeden her şeyi temiz baştan başlatır.
 
 ### Kurulum
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
 ```
 
-Kısa bir sihirbaz odak rengini, arayüz dilini, 12/24 saati ve ek bileşenleri sorar; Windows **bir kez** izin ister, gerisini yükleyici yapar. Her değişiklik önce yedeklenir: bir adım başarısız olursa ya da Ctrl+C ile vazgeçersen önceki dosyalar, ayarlar, kayıt defteri değerleri ve görevler geri konur, önceki masaüstün yeniden açılır. Uygulama `%ProgramFiles%\LogicalLunge` (korumalı klasör: çekirdek ve pencere yöneticisi, kısayollar ve pencere yönetimi yönetici pencerelerinde de çalışsın diye yönetici haklarıyla çalışır; kabuk ve açtığın her program senin haklarınla), ayarların `~\.config\logical-lunge`, veriler ve tek ortak log klasörü `%LOCALAPPDATA%\LogicalLunge` altında. **Güncelleme:** sağ paneldeki güncelle düğmesi ya da aynı komutu tekrar çalıştırmak; 0.1.x kurulumları (`~\.glzr`) yeni klasörlere taşınır ve kaldırılır. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
+Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini, 12/24 saati ve ek bileşenleri sorar; Windows **bir kez** izin ister, gerisini yükleyici yapar. Her değişiklik önce yedeklenir: bir adım başarısız olursa ya da Ctrl+C ile vazgeçersen önceki dosyalar, ayarlar, kayıt defteri değerleri ve görevler geri konur, önceki masaüstün yeniden açılır. Uygulama `%ProgramFiles%\LogicalLunge` (korumalı klasör: çekirdek ve pencere yöneticisi, kısayollar ve pencere yönetimi yönetici pencerelerinde de çalışsın diye yönetici haklarıyla çalışır; kabuk ve açtığın her program senin haklarınla), ayarların `~\.config\logical-lunge`, veriler ve tek ortak log klasörü `%LOCALAPPDATA%\LogicalLunge` altında. **Güncelleme:** sağ paneldeki güncelle düğmesi ya da aynı komutu tekrar çalıştırmak; 0.1.x kurulumları (`~\.glzr`) yeni klasörlere taşınır; başka uygulamaların kullanabileceği eski araç yolları korunur. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
 
 ### Uyumluluk
 
@@ -210,7 +222,7 @@ Windows 10 22H2 üzerinde geliştirildi ve denendi. Windows 11'i tüm bileşenle
 
 | Project | Used for | License |
 |---|---|---|
-| [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland) (illogical-impulse) | The whole design, layouts, animations, terminal/kitty/fish/starship config, color generator | GPL-3.0 |
+| [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland) (illogical-impulse) | Design inspiration and adapted layouts, animations, terminal configuration and color generator; attribution for reused code is retained | GPL-3.0 |
 | [glzr-io/glazewm](https://github.com/glzr-io/glazewm) | `lunge-tiling` is derived from it | GPL-3.0 |
 | [glzr-io/zebar](https://github.com/glzr-io/zebar) | `lunge-shell` is derived from it | GPL-3.0 |
 | [lukeyou05/tacky-borders](https://github.com/lukeyou05/tacky-borders) | Border drawing engine inside `lunge-tiling` (`wm-borders`) | MIT |

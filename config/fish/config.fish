@@ -24,12 +24,25 @@ if status is-interactive
         set -l bin (command -s starship)
         if test -n "$bin"
             set -l cache ~/.cache/fish/starship-init.fish
-            if not test -f $cache; or test $bin -nt $cache
-                mkdir -p ~/.cache/fish
-                $bin init fish --print-full-init >$cache
+            set -l stamp ~/.cache/fish/starship.path
+            set -l cur_bin ''
+            if test -f $stamp
+                read cur_bin < $stamp
             end
-            source $cache
-            enable_transience
+            if not test -f $cache; or test $bin -nt $cache; or test "$cur_bin" != "$bin"
+                mkdir -p ~/.cache/fish
+                set -l tmp "$cache.$fish_pid.tmp"
+                if $bin init fish --print-full-init >$tmp; and test -s $tmp
+                    mv -f $tmp $cache
+                    echo "$bin" >$stamp
+                else
+                    rm -f $tmp
+                end
+            end
+            if test -s $cache
+                source $cache
+                functions -q enable_transience; and enable_transience
+            end
         end
     end
 

@@ -157,7 +157,7 @@ pub enum HitKind {
   TrayMore,
   TrayIcon(String),
   /// tooltip only
-  Battery(i32),
+  Battery,
 }
 
 pub struct Hit {
@@ -577,7 +577,7 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
       right_edge -= 4.0;
       let r = Rect::new(right_edge - 38.0, 11.0, 38.0, 18.0);
       battery(p, t, r, bat.charge_percent, bat.is_charging)?;
-      f.hits.push(Hit { rect: r, kind: HitKind::Battery(bat.charge_percent.round() as i32) });
+      f.hits.push(Hit { rect: r, kind: HitKind::Battery });
       right_edge -= 38.0 + 4.0 + 4.0;
     }
   }
@@ -802,17 +802,18 @@ fn battery(p: &mut Painter, t: &Theme, r: Rect, percent: f32, charging: bool) ->
   }
   p.fill_round(r, r.h / 2.0, if low { t.error } else { t.on_sec_container })?;
   unsafe { p.dc.PopAxisAlignedClip() };
-  let label = format!("{}", pct as i32);
-  let color = if pct > 55.0 { Rgba::hex(0x1d1b20) } else { Rgba::hex(0xe8def8) };
-  let st = TextStyle { size: 11.0, weight: 600.0 };
-  let lw = p.measure_with(&label, st, true)?;
-  let total = lw + if charging && pct < 100.0 { 10.0 } else { 0.0 };
-  let mut x = r.x + (r.w - total) / 2.0;
-  if charging && pct < 100.0 {
-    p.icon("bolt", x + 5.0, r.y + r.h / 2.0, 12.0, true, color)?;
-    x += 10.0;
+  // A centered bolt while charging; percentage and power details in the hover card.
+    // Stable contrast even when the fill ends underneath the centered label.
+    p.fill_round(Rect::new(r.x + 8.0, r.y + 1.0, r.w - 16.0, r.h - 2.0), 8.0, t.sec_container)?;
+    let color = t.on_sec_container;
+  if charging {
+    p.icon("bolt", r.x + r.w / 2.0, r.y + r.h / 2.0, 14.0, true, color)?;
+  } else {
+    let label = format!("{}", pct as i32);
+    let st = TextStyle { size: 11.0, weight: 600.0 };
+    let lw = p.measure_with(&label, st, true)?;
+    p.text(&label, Rect::new(r.x + (r.w - lw) / 2.0, r.y, lw + 1.0, r.h), st, color, Align::Left, true)?;
   }
-  p.text(&label, Rect::new(x, r.y, lw + 1.0, r.h), st, color, Align::Left, true)?;
   Ok(())
 }
 

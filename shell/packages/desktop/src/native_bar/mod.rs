@@ -12,6 +12,7 @@ mod fonts;
 mod gfx;
 mod icons;
 mod model;
+mod palette;
 mod popup;
 mod overview;
 mod pops;
@@ -414,6 +415,7 @@ struct Ui {
   pops: pops::PopState,
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
+  custom_theme: Option<view::Theme>,
   emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
   /// the native Super menu (made on first use)
   overview: Option<overview::Overview>,
@@ -508,6 +510,7 @@ fn ui_thread(
         recover_tries: 0,
         pops: Default::default(),
         pack_dir: opts.pack_dir.clone(),
+        custom_theme: None,
         emit: opts.emit,
         overview: None,
         snapshot: None,
@@ -830,6 +833,7 @@ impl Ui {
             let tray = matches!(output, ProviderOutput::Systray(_));
             let audio = matches!(output, ProviderOutput::Audio(_));
             let media = matches!(output, ProviderOutput::Media(_));
+            let battery = matches!(output, ProviderOutput::Battery(_));
             self.model.apply(output);
             if tray {
               self.init_pins();
@@ -840,6 +844,7 @@ impl Ui {
             if audio {
               self.audio_osd();
             }
+            if battery { self.pop_render_battery(); }
             if media {
               self.media_seen();
               self.ask_art();
@@ -1086,11 +1091,14 @@ impl Ui {
     }
   }
 
-  fn theme(&self) -> &'static view::Theme {
+  fn theme(&self) -> view::Theme {
+    if let Some(t) = &self.custom_theme {
+      return *t;
+    }
     if self.model.light {
-      &view::LIGHT
+      view::LIGHT
     } else {
-      &view::DARK
+      view::DARK
     }
   }
 
@@ -1115,7 +1123,7 @@ impl Ui {
       let mut frame = None;
       gfx::draw_surface(&bar.bg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        match view::paint(&mut p, model, theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
+        match view::paint(&mut p, model, &theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
           Ok(f) => frame = Some(f),
           Err(err) => tracing::warn!("Native bar paint: {:?}", err),
         }
@@ -1133,7 +1141,7 @@ impl Ui {
       }
       gfx::draw_surface(&bar.fg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        if let Err(err) = view::paint_ws(&mut p, model, theme, bar.hover.as_ref()) {
+        if let Err(err) = view::paint_ws(&mut p, model, &theme, bar.hover.as_ref()) {
           tracing::warn!("Native bar paint (workspaces): {:?}", err);
         }
         Ok(())
@@ -1240,9 +1248,11 @@ impl Ui {
     let light = match evt.as_deref() {
       Some("ll:theme-light") => true,
       Some("ll:theme-dark") => false,
+      Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
       Some("ll:tray-pins") => return self.reload_pins(),
       None => {
         self.reload_pins();
+        self.reload_custom_theme();
         model::prefs(&self.pack_dir)["theme"].as_str() == Some("light")
       }
       _ => return,
@@ -1250,13 +1260,20 @@ impl Ui {
     self.set_light(light);
   }
 
+  fn reload_custom_theme(&mut self) {
+    let prefs = model::prefs(&self.pack_dir);
+    self.custom_theme = Some(palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light));
+    self.redraw_all();
+    self.pops_repaint();
+    self.overview_render();
+  }
+
   fn set_light(&mut self, light: bool) {
     if self.model.light == light {
       return;
     }
     self.model.light = light;
-    self.redraw_all();
-    self.pops_repaint();
+    self.reload_custom_theme();
   }
 
   fn redraw_all(&mut self) {
@@ -1300,7 +1317,7 @@ impl Ui {
     let mut requests = Vec::new();
     let drawn = gfx::draw_surface(&osd.layer.surface, scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      if let Err(err) = view::paint_osd(&mut p, model, theme, kind, value) {
+      if let Err(err) = view::paint_osd(&mut p, model, &theme, kind, value) {
         tracing::warn!("Native bar OSD paint: {:?}", err);
       }
       Ok(())

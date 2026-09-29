@@ -204,6 +204,7 @@ impl Ui {
     let want = match hover {
       Some(HitKind::Resources) => Some(PopKind::Res),
       Some(HitKind::Media) => Some(PopKind::Media),
+      Some(HitKind::Battery) => Some(PopKind::Battery),
       _ => None,
     };
     match want {
@@ -234,6 +235,7 @@ impl Ui {
         self.read_temps();
         unsafe { SetTimer(self.msg_hwnd, TIMER_POP_TICK, 2000, None) };
       }
+      PopKind::Battery => { unsafe { KillTimer(self.msg_hwnd, TIMER_POP_TICK).ok(); } }
       PopKind::Media => {
         self.ask_art();
         unsafe { SetTimer(self.msg_hwnd, TIMER_POP_TICK, 1000, None) };
@@ -283,10 +285,16 @@ impl Ui {
     }
   }
 
+  pub(super) fn pop_render_battery(&mut self) {
+    if self.pops.kind == Some(PopKind::Battery) && self.pops.hover.as_ref().is_some_and(|w| w.shown && !w.closing) {
+      self.pop_render();
+    }
+  }
+
   pub(super) fn pop_tick(&mut self) {
     match self.pops.kind {
       Some(PopKind::Res) => self.read_temps(),
-      Some(PopKind::Media) => self.pop_render(),
+      Some(PopKind::Media | PopKind::Battery) => self.pop_render(),
       None => unsafe {
         let _ = KillTimer(self.msg_hwnd, TIMER_POP_TICK);
       },
@@ -312,6 +320,7 @@ impl Ui {
         }
       },
       PopKind::Media => (popup::MEDIA_W, popup::MEDIA_H),
+      PopKind::Battery => match self.measure_painter(popup::battery_size) { Ok(size) => size, Err(_) => return },
     };
     if kind == PopKind::Media {
       self.ensure_art_bg(scale);
@@ -336,11 +345,12 @@ impl Ui {
     let drawn = win.draw(|dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
       let r = match kind {
-        PopKind::Res => popup::paint_res(&mut p, model, theme, temps.as_ref(), size).map(|_| Vec::new()),
+        PopKind::Res => popup::paint_res(&mut p, model, &theme, temps.as_ref(), size).map(|_| Vec::new()),
+        PopKind::Battery => popup::paint_battery(&mut p, model, &theme, size).map(|_| Vec::new()),
         PopKind::Media => popup::paint_media(
           &mut p,
           model,
-          theme,
+          &theme,
           &MediaView { art: art.as_ref(), bg: bg.as_ref(), pos, end, playing, hover: hover.as_ref() },
         ),
       };
@@ -492,9 +502,11 @@ impl Ui {
   /// playing (the provider reports only on changes).
   pub(super) fn media_seen(&mut self) {
     let Some(s) = self.model.media.as_ref().and_then(|m| m.current_session.as_ref()) else { return };
-    let key = format!("{:?}|{}|{}", s.title, s.position, s.is_playing);
+    let key = format!("{}|{:?}|{}|{}|{}|{}", s.session_id, s.title, s.position_seconds, s.timeline_updated_at, s.is_playing, s.playback_rate);
     if key != self.pops.clock.0 {
-      self.pops.clock = (key, s.position as f64, Some(Instant::now()));
+      let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+      let elapsed = if s.is_playing && s.timeline_updated_at > 0 { (now - s.timeline_updated_at as f64 / 1000.0).max(0.0) * s.playback_rate } else { 0.0 };
+      self.pops.clock = (key, s.position_seconds + elapsed, Some(Instant::now()));
     }
   }
 
@@ -503,11 +515,11 @@ impl Ui {
     let Some(s) = self.model.media.as_ref().and_then(|m| m.current_session.as_ref()) else { return (0.0, 0.0, false) };
     let end = s.end_time as f64;
     let since = self.pops.clock.2.map_or(0.0, |t| t.elapsed().as_secs_f64());
-    let mut pos = self.pops.clock.1 + if s.is_playing { since } else { 0.0 };
+    let mut pos = self.pops.clock.1 + if s.is_playing { since * s.playback_rate } else { 0.0 };
     if end > 0.0 {
       pos = pos.min(end);
     }
-    (pos, end, s.is_playing)
+    (pos.max(s.start_time as f64), end, s.is_playing)
   }
 
   // ------------------------------------------------------------ tray panel
@@ -612,7 +624,7 @@ impl Ui {
     let drawn = win.draw(|dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
       let v = TrayView { hover: hover.as_deref(), drop_zone, dragging: dragging.as_deref() };
-      match popup::paint_tray(&mut p, model, theme, &v) {
+      match popup::paint_tray(&mut p, model, &theme, &v) {
         Ok(h) => hits = h,
         Err(err) => tracing::warn!("Native bar tray paint: {:?}", err),
       }
@@ -848,7 +860,7 @@ impl Ui {
         HitKind::Snip => Some(m.tr("Bölge ekran görüntüsü")),
         HitKind::Osk => Some(m.tr("Ekran klavyesi")),
         HitKind::Theme => Some(m.tr("Karanlık / aydınlık")),
-        HitKind::Battery(p) => Some(format!("{}%", p)),
+        HitKind::Battery => None,
         HitKind::TrayIcon(id) => m.tray_icon(id).map(|ic| ic.tooltip.clone()).filter(|t| !t.trim().is_empty()),
         HitKind::TrayMore => Some(m.tr("Diğer simgeler (sürükleyerek taşı)")),
         _ => None,
@@ -942,7 +954,7 @@ impl Ui {
     let mut requests = Vec::new();
     let _ = win.draw(|dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      let _ = popup::paint_tip(&mut p, theme, &text, size);
+      let _ = popup::paint_tip(&mut p, &theme, &text, size);
       Ok(())
     });
     let x = cx - ((size.0 / 2.0 + PAD) * scale).round() as i32;

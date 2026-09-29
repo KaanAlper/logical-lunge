@@ -61,7 +61,7 @@ const result = await esbuild.build({
   jsx: 'transform',
   jsxFactory: 'React.createElement',
   jsxFragment: 'React.Fragment',
-  alias: { 'lunge/shell': path.join(here, 'lib', 'shell-client.js'), 'lunge/apps': path.join(here, 'lib', 'app-icons.js') },
+  alias: { 'lunge/shell': path.join(here, 'lib', 'shell-client.js'), 'lunge/apps': path.join(here, 'lib', 'app-icons.js'), 'lunge/theme': path.join(here, 'lib', 'theme.mjs') },
   nodePaths: [path.join(here, 'node_modules')],
   define: { 'process.env.NODE_ENV': '"production"' },
   target: 'chrome120',
@@ -77,9 +77,10 @@ for (const [file, html] of pages) fs.writeFileSync(path.join(out, file), html);
 function copy(src, dst) {
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     if (entry.name.startsWith('.')) continue;
+    // node_modules may be a junction/symlink in another edition's worktree.
+    if (src === here && SKIP_DIRS.has(entry.name)) continue;
     const s = path.join(src, entry.name), d = path.join(dst, entry.name);
     if (entry.isDirectory()) {
-      if (src === here && SKIP_DIRS.has(entry.name)) continue;
       fs.mkdirSync(d, { recursive: true });
       copy(s, d);
     } else if (!(src === here && (SKIP.has(entry.name) || entry.name.endsWith('.html')))) {

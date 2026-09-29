@@ -33,6 +33,10 @@ pub fn handle_window_moved_or_resized(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  #[cfg(target_os = "windows")]
+  if super::transition_overlay::constrain_transition_overlay(native_window, state)? {
+    return Ok(());
+  }
   let found_window = state.window_from_native(native_window);
 
   if let Some(window) = found_window {
@@ -285,39 +289,15 @@ pub fn handle_window_moved_or_resized(
       }
     };
 
-    // Logical Lunge: like Hyprland's fake fullscreen. A tiled window that
-    // makes itself fullscreen (a video's fullscreen button) fills its own
-    // tile. Real fullscreen is the `toggle-fullscreen` command (Super+F),
-    // and windows that start fullscreen (games, Steam Big Picture) stay
-    // fullscreen. An app that takes the screen back more than 3 times in
-    // 2 s is let go, instead of fighting it (flicker).
+    // A tiled app's own fullscreen stays in its tile. Super+F changes
+    // the state explicitly and therefore bypasses this branch. Keep the
+    // marker through the resize acknowledgements so the app's restore
+    // rectangle on exit cannot overwrite the tile.
     #[cfg(target_os = "windows")]
-    if should_fullscreen
-      && !is_maximized
-      && matches!(window.state(), WindowState::Tiling)
-    {
-      use wm_platform::NativeWindowWindowsExt;
-
-      let handle = window.native().hwnd().0;
-      let now = std::time::Instant::now();
-      let entry = state.fake_fullscreen.entry(handle).or_insert((now, 0));
-      if now.duration_since(entry.0) > std::time::Duration::from_secs(2) {
-        *entry = (now, 0);
-      }
-      entry.1 += 1;
-      let tries = entry.1;
-      if state.fake_fullscreen.len() > 64 {
-        state
-          .fake_fullscreen
-          .retain(|_, (at, _)| now.duration_since(*at).as_secs() < 10);
-      }
-
-      if tries <= 3 {
-        tracing::info!("Fullscreen inside the tile: {window}");
-        state.pending_sync.queue_container_to_redraw(window.clone());
-        return Ok(());
-      }
-      tracing::info!("Window insists on fullscreen, letting it: {window}");
+    if should_fullscreen && !is_maximized && matches!(window.state(), WindowState::Tiling) {
+      state.fake_fullscreen.insert(window.native().hwnd().0);
+      state.pending_sync.queue_container_to_redraw(window.clone());
+      return Ok(());
     }
 
     // Handle a window being maximized or entering fullscreen.
@@ -393,6 +373,15 @@ pub fn handle_window_moved_or_resized(
           state,
           config,
         )?;
+      }
+      #[cfg(target_os = "windows")]
+      WindowState::Tiling if state.fake_fullscreen.contains(&window.native().hwnd().0) && !state.is_paused => {
+        // Only restore after a real native geometry change; duplicate
+        // acknowledgements returned above. The layout tree stays intact.
+        state.pending_sync.queue_container_to_redraw(window.clone());
+        if window.native().has_window_style(wm_platform::WS_CAPTION) {
+          state.fake_fullscreen.remove(&window.native().hwnd().0);
+        }
       }
       WindowState::Floating(_) => {
         if let WindowContainer::NonTilingWindow(window) = window {
