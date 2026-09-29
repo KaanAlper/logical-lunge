@@ -31,11 +31,18 @@ if status is-interactive
             end
             if not test -f $cache; or test $bin -nt $cache; or test "$cur_bin" != "$bin"
                 mkdir -p ~/.cache/fish
-                $bin init fish --print-full-init >$cache
-                echo "$bin" >$stamp
+                set -l tmp "$cache.$fish_pid.tmp"
+                if $bin init fish --print-full-init >$tmp; and test -s $tmp
+                    mv -f $tmp $cache
+                    echo "$bin" >$stamp
+                else
+                    rm -f $tmp
+                end
             end
-            source $cache
-            enable_transience
+            if test -s $cache
+                source $cache
+                functions -q enable_transience; and enable_transience
+            end
         end
     end
 

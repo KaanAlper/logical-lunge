@@ -132,6 +132,7 @@
       // Değişiklikleri çekirdek yapar (lunge.exe --set-focus-color / --set-pref / ...); dil ve saat gibi arayüz tercihleri
       // kabuk yeniden açılınca uygulanır.
       import React, { useState, useEffect, useRef, useCallback } from 'react';
+      import { applyAccent } from 'lunge/theme';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
@@ -181,8 +182,27 @@
         const [theme, setTheme] = useState(window.llTheme?.get?.() ?? 'dark');
         const [hex, setHex] = useState('');
         const [bad, setBad] = useState(false);
+        const [saving, setSaving] = useState(false);
+        const [colorError, setColorError] = useState('');
+        useEffect(() => {
+          const observer = new MutationObserver(() => setTheme(window.llTheme?.get?.() ?? 'dark'));
+          observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+          return () => observer.disconnect();
+        }, []);
         const setThemeTo = t => { if (window.llTheme && window.llTheme.get() !== t) window.llTheme.toggle(); setTheme(t); };
-        const setColor = c => fetch('http://127.0.0.1:6131/focus-color?v=' + encodeURIComponent(c), {method: 'POST'}).then(r => r.json()).then(r => { if (r?.ok) { update({ focusColor: r.focusColor }); window.applyDynamicTheme?.(); emit('ll:theme-color').catch(()=>{}); } }).catch(() => {});
+        const setColor = async c => {
+          if (saving) return;
+          setSaving(true); setColorError('');
+          try {
+            const response = await fetch('http://127.0.0.1:6131/focus-color?v=' + encodeURIComponent(c), { method: 'POST', signal: AbortSignal.timeout(8000) });
+            const r = await response.json();
+            if (!response.ok || !r?.ok) throw new Error(r?.error || 'Color could not be saved');
+            update({ focusColor: r.focusColor }); applyAccent(r.focusColor);
+          } catch (error) {
+            console.error('Accent color:', error);
+            setColorError('Renk kaydedilemedi. Yeniden dene.');
+          } finally { setSaving(false); }
+        };
         const applyHex = () => {
           const v = (hex.startsWith('#') ? hex : '#' + hex).toLowerCase();
           if (/^#[0-9a-f]{6}$/.test(v)) { setBad(false); setColor(v); } else setBad(true);
@@ -196,21 +216,22 @@
                 <Seg items={[['dark', 'Koyu', 'dark_mode'], ['light', 'Aydınlık', 'light_mode']]} value={theme} onChange={setThemeTo} />
               </Row>
             </div>
-            <div className="sec-title">Odak rengi</div>
+            <div className="sec-title">Vurgu rengi</div>
             <div className="card">
-              <Row icon="border_style" label="Etkin pencerenin kenarlığı" sub="Pencere yöneticisi hemen yeni renge geçer" />
+              <Row icon="palette" label="Kabuk ve pencere kenarlıkları" sub="Bar, paneller ve etkin pencerenin rengi birlikte değişir" />
               <div className="swatches">
                 {COLORS.map(([name, c]) => (
-                  <button key={c} title={name} className={`sw ${s.focusColor === c ? 'sel' : ''}`} style={{ background: c }} onClick={() => setColor(c)} />
+                  <button type="button" key={c} title={name} aria-label={name} aria-pressed={s.focusColor === c} disabled={saving} className={`sw ${s.focusColor === c ? 'sel' : ''}`} style={{ background: c }} onClick={() => setColor(c)} />
                 ))}
               </div>
               <div className="hexrow">
                 <span className="dot" style={{ background: s.focusColor }} />
                 <input value={hex} placeholder={custom ? s.focusColor : '#rrggbb'} maxLength={7} spellCheck={false}
                   onChange={e => { setHex(e.target.value.trim()); setBad(false); }} onKeyDown={e => e.key === 'Enter' && applyHex()} />
-                <button className="btn tonal" onClick={applyHex}><Icon name="colorize" />Özel rengi uygula</button>
+                <button className="btn tonal" disabled={saving} onClick={applyHex}><Icon name="colorize" />Özel rengi uygula</button>
                 {bad && <span className="err">Renk kodu #rrggbb biçiminde olmalı</span>}
               </div>
+              {colorError && <div className="note" role="alert">{colorError}</div>}
             </div>
             <div className="sec-title">Hareket</div>
             <div className="card">
@@ -224,9 +245,40 @@
                 </Row>
               )}
             </div>
+            <div className="sec-title">Bildirimler</div>
+            <div className="card">
+              <ToastRow icon="notifications" label="Bilgi bildirimleri" k="toastInfo" s={s} update={update} />
+              <ToastRow icon="warning" label="Uyarılar ve hatalar" k="toastError" s={s} update={update} />
+              <Row icon="visibility" label="Örnek göster" onClick={sampleToasts}>
+                <Icon name="chevron_right" />
+              </Row>
+            </div>
             {s.dirty && <ApplyNote />}
           </>
         );
+      }
+
+      // Bildirimin ekranda kalma süresi (sn); bildirim widget'ı ll:prefs ile hemen yeni değere geçer
+      function ToastRow({ icon, label, k, s, update }) {
+        const timer = useRef(null);
+        const v = s[k] ?? (k === 'toastError' ? 5 : 3);
+        const slide = n => {
+          update({ [k]: n });
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => helper(['--set-pref', k, String(n)]).catch(() => {}), 150);
+        };
+        return (
+          <Row icon={icon} label={label} sub="Ekranda kalma süresi; üzerine gelince bekler">
+            <div className="slider">
+              <input type="range" min="1" max="30" step="1" value={v} onChange={e => slide(+e.target.value)} />
+              <span className="val">{v} sn</span>
+            </div>
+          </Row>
+        );
+      }
+      function sampleToasts() {
+        emit('ll:toast', { kind: 'info', title: 'Örnek bildirim', body: 'Bilgi bildirimleri', icon: 'notifications' }).catch(() => {});
+        emit('ll:toast', { kind: 'error', title: 'Örnek uyarı', body: 'Uyarılar ve hatalar', icon: 'warning' }).catch(() => {});
       }
 
       // Arayüz tercihleri kabuk yeniden açılınca uygulanır (pencere yöneticisi ve animasyonlar hemen)

@@ -51,7 +51,7 @@ $LOG = Join-Path $env:TEMP 'logical-lunge-install.log'
 $DL = Join-Path $env:TEMP 'll-downloads'
 $UTF8 = New-Object Text.UTF8Encoding $false
 # Files that come from the package (app\): moved aside before the copy, moved back on rollback
-$OWNED = 'lunge.exe', 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'VERSION',
+$OWNED = 'lunge.exe', 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'VERSION', 'EDITION',
 'uninstall.ps1', 'ui', 'scripts', 'tools\lunge-media.exe', 'tools\temps\lunge-temps.exe', 'tools\termcolors', 'tools\songrec'
 $TOTAL_STEPS = 12
 
@@ -170,6 +170,8 @@ $script:moves = New-Object Collections.ArrayList     # (from, to) folders moved 
 $script:newTasks = New-Object Collections.ArrayList  # tasks this run registered that did not exist before
 $script:ownedSaved = $false
 $script:configSaved = $false
+$script:prefsSaved = $false
+$script:hashSaved = $false
 $script:explorerRestarted = $false
 function Remember-Created([string]$p) { if (-not (Test-Path $p)) { [void]$script:created.Add($p) } }
 function Move-Tracked([string]$from, [string]$to) {
@@ -227,6 +229,13 @@ function Set-FocusColor([string]$text, [string]$hex) {
     return $re.Replace($text, [Text.RegularExpressions.MatchEvaluator] { param($m) $m.Groups[1].Value + $hex.ToLower() + $m.Groups[2].Value + $m.Groups[3].Value }, 1)
 }
 function Get-FocusColor([string]$text) { $m = [regex]::Match($text, '(?m)^\s*active_color:\s*"(#[0-9a-fA-F]{6})'); if ($m.Success) { $m.Groups[1].Value } else { $null } }
+function Repair-LegacyWindowRules([string]$text) {
+    # Remove only our former title-only dialog rule; keep custom rules intact.
+    $bad = "- window_title: { regex: '^(Open|Save|Save As|Aç|Kaydet|Farklı Kaydet).*' }"
+    $text = [regex]::Replace($text, '(?m)^[ \t]*' + [regex]::Escape($bad) + '[ \t]*\r?\n', '')
+    # Managed tiled windows keep their outline when browser fullscreen drops its caption.
+    return [regex]::Replace($text, '(?m)^([ \t]*follow_native_border:)[ \t]*true([ \t]*(?:#[^\r\n]*)?)(?=\r?$)', '$1 false$2')
+}
 function Stop-Parts {
     foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-temps', 'glazewm', 'glazewm-watcher', 'zebar', 'll-helper', 'tacky-borders', 'll-temps') {
         Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -268,6 +277,8 @@ function Undo-Install {
     # a first install leaves nothing behind (the folders moved from 0.1.x went back above)
     if (-not $appExisted) { Remove-Item $APP -Recurse -Force -ErrorAction SilentlyContinue }
     if ($script:configSaved -and (Test-Path "$RB\config.yaml")) { Copy-Item "$RB\config.yaml" (Join-Path $CONF 'config.yaml') -Force; Log '    previous config restored' }
+    if ($script:prefsSaved) { Copy-Item "$RB\prefs.json" (Join-Path $CONF 'prefs.json') -Force }
+    if ($script:hashSaved) { Copy-Item "$RB\config.sha256" (Join-Path $STATE 'config.sha256') -Force }
     for ($i = $script:created.Count - 1; $i -ge 0; $i--) { Remove-Item $script:created[$i] -Recurse -Force -ErrorAction SilentlyContinue }
     for ($i = $script:runReg.Count - 1; $i -ge 0; $i--) {
         $r = $script:runReg[$i]
@@ -297,6 +308,8 @@ try {
     # ------------------------------------------------------------ checks
     Step 'check' 'Checking Windows'
     if (-not (Test-Path (Join-Path $Source 'app\lunge.exe'))) { throw "The package is incomplete: app\lunge.exe is missing in $Source." }
+    $edition = [IO.File]::ReadAllText((Join-Path $Source 'EDITION')).Trim()
+    if ($edition -notin @('native-bar', 'web-ui') -or [IO.File]::ReadAllText((Join-Path $Source 'app\EDITION')).Trim() -ne $edition) { throw 'The package edition is missing or inconsistent.' }
     $build = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
     if ($build -lt 19041) { throw "Windows 10 2004 (build 19041) or newer is required; this is build $build." }
     if (-not [Environment]::Is64BitOperatingSystem) { throw '64-bit Windows is required.' }
@@ -353,12 +366,16 @@ try {
         if ($n -ne $t) { [IO.File]::WriteAllText($_.FullName, $n, $UTF8) }
     }
     # The shell starts only our widgets (no BOM: serde_json rejects it)
-    $zsettings = [ordered]@{ startupConfigs = @(foreach ($w in 'bar', 'overview', 'sidebar-right', 'settings', 'toast', 'osk', 'update', 'session') { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
+    $startupWidgets = @('overview', 'sidebar-right', 'settings', 'toast', 'osk', 'update', 'session')
+    if ($edition -eq 'web-ui') { $startupWidgets = @('bar') + $startupWidgets }
+    $zsettings = [ordered]@{ startupConfigs = @(foreach ($w in $startupWidgets) { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
     [IO.File]::WriteAllText((Join-Path $APP 'ui\settings.json'), ($zsettings | ConvertTo-Json -Depth 5), $UTF8)
 
     # ------------------------------------------------------------ settings (config, keybinds, prefs)
     Step 'config' 'Writing the settings'
     $cfg = Join-Path $CONF 'config.yaml'
+    if (Test-Path (Join-Path $STATE 'config.sha256')) { Copy-Item (Join-Path $STATE 'config.sha256') "$RB\config.sha256"; $script:hashSaved = $true }
+    else { Remember-Created (Join-Path $STATE 'config.sha256') }
     $tpl = [IO.File]::ReadAllText((Join-Path $Source 'config\config.yaml'))
     $hashFile = Join-Path $STATE 'config.sha256'
     $focus = if ($choice -and $choice.focusColor) { [string]$choice.focusColor } else { $null }
@@ -375,8 +392,9 @@ try {
             Log '    config.yaml updated'
         }
         else {
-            # edited by the user: kept; the new default is next to it for comparison
-            if ($focus) { [IO.File]::WriteAllText($cfg, (Set-FocusColor $cur $focus), $UTF8) }
+            # Preserve custom settings, repairing only the known legacy rule and outline behavior.
+            $new = Repair-LegacyWindowRules (Set-FocusColor $cur $focus)
+            if ($new -ne $cur) { [IO.File]::WriteAllText($cfg, $new, $UTF8) }
             [IO.File]::WriteAllText((Join-Path $CONF 'config.default.yaml'), $tpl, $UTF8)
             Log '    config.yaml was edited by the user: kept (the new default is config.default.yaml)'
         }
@@ -394,15 +412,18 @@ try {
     if (-not (Test-Path $kb) -and (Test-Path (Join-Path $OLD_STATE 'keybinds.json'))) { Remember-Created $kb; Copy-Item (Join-Path $OLD_STATE 'keybinds.json') $kb }
     # interface preferences chosen in the installer (language, clock); the UI reads a copy next to the widgets
     $prefs = Join-Path $CONF 'prefs.json'
-    if ($choice -and ($choice.language -or $choice.clock)) {
+    & { # Always record the selected edition, including direct setup.ps1 installs.
         # merged into the existing file: rewriting it dropped the theme, bar, focus color and animation settings
         $p = [ordered]@{}
         if (Test-Path $prefs) {
+            Copy-Item $prefs "$RB\prefs.json"; $script:prefsSaved = $true
             try { (Get-Content $prefs -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $p[$_.Name] = $_.Value } } catch { Log "    prefs.json unreadable, starting over" }
         }
         else { Remember-Created $prefs }
-        $p['language'] = $(if ($choice.language) { [string]$choice.language } else { 'system' })
-        $p['clock'] = $(if ($choice.clock) { [string]$choice.clock } else { '24' })
+        if ($choice.language) { $p['language'] = [string]$choice.language }
+        if ($choice.clock) { $p['clock'] = [string]$choice.clock }
+        if ($focus) { $p['focusColor'] = $focus.ToLowerInvariant() }
+        $p['bar'] = if ($edition -eq 'native-bar') { 'native' } else { 'web' }
         [IO.File]::WriteAllText($prefs, ($p | ConvertTo-Json), $UTF8)
     }
     if (Test-Path $prefs) { Copy-Item $prefs (Join-Path $PACK 'prefs.json') -Force }
@@ -431,7 +452,11 @@ try {
             foreach ($d in 'tools\wezterm', 'tools\bin') {
                 $from = Join-Path $old $d; $to = Join-Path $APP $d
                 if ((Test-Path $from) -and -not (Test-Path $to)) {
-                    try { Move-Tracked $from $to; Log "    $d moved" }
+                    try {
+                        # Other programs (e.g. AsenaScale) use the legacy OpenConsole/tool paths.
+                        if ($old -eq $OLD_LL) { Remember-Created $to; Copy-Item $from $to -Recurse; Log "    $d copied (legacy path preserved)" }
+                        else { Move-Tracked $from $to; Log "    $d moved" }
+                    }
                     catch { Remember-Created $to; Copy-Item $from $to -Recurse -Force; Log "    $d copied (in use: $($_.Exception.Message))" }
                 }
             }
@@ -651,7 +676,7 @@ if ($legacy -or (Test-Path $OLD_STATE) -or (Test-Path $OLD_LL)) {
     Log '    removing the 0.1.x install'
     foreach ($t in 'GlazeWM', 'Splash', 'Temps', 'Ethernet-On', 'Ethernet-Off') { Unregister-ScheduledTask -TaskPath '\LL\' -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue }
     try { $svc = New-Object -ComObject Schedule.Service; $svc.Connect(); $svc.GetFolder('\').DeleteFolder('LL', 0) } catch {}
-    foreach ($d in (Join-Path $OLD_LL 'bin'), (Join-Path $OLD_LL 'tools\bin')) { Remove-UserPath $d }
+    # Keep legacy tool paths: other user applications can still depend on them.
     # Older versions installed the upstream GlazeWM / Zebar MSIs; only copies Logical Lunge installed are removed
     foreach ($app in @(@('glazewm', 'GlazeWM'), @('zebar', 'Zebar'))) {
         if (@($backup.installed) -notcontains $app[0]) { continue }
@@ -671,7 +696,7 @@ if ($legacy -or (Test-Path $OLD_STATE) -or (Test-Path $OLD_LL)) {
     foreach ($f in (Join-Path $OLD_GW 'config.yaml'), (Join-Path $OLD_ZB 'settings.json')) {
         if (Test-Path "$f.before-ll") { Move-Item "$f.before-ll" $f -Force } else { Remove-Item $f -Force -ErrorAction SilentlyContinue }
     }
-    foreach ($d in $OLD_LL, (Join-Path $OLD_ZB 'logical-lunge'), $OLD_STATE, $OLD_WEB) {
+    foreach ($d in (Join-Path $OLD_ZB 'logical-lunge'), $OLD_STATE, $OLD_WEB) {
         if (Test-Path $d) { try { Remove-Item $d -Recurse -Force } catch { Log "    could not remove $d (in use?): $($_.Exception.Message)" } }
     }
     foreach ($d in $OLD_GW, $OLD_ZB, (Split-Path $OLD_LL)) {

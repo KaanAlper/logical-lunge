@@ -201,7 +201,7 @@ fn focus_outside_browser(window: *mut std::ffi::c_void) -> bool {
   use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-      GetClassNameW, GetForegroundWindow, GetGUIThreadInfo, IsWindowVisible, GUITHREADINFO,
+      GetForegroundWindow, GetGUIThreadInfo, IsChild, IsWindowVisible, GUITHREADINFO,
     },
   };
 
@@ -222,9 +222,9 @@ fn focus_outside_browser(window: *mut std::ffi::c_void) -> bool {
       return true;
     }
 
-    let mut class = [0u16; 64];
-    let len = GetClassNameW(info.hwndFocus, &mut class).max(0) as usize;
-    !String::from_utf16_lossy(&class[..len]).starts_with("Chrome_")
+    // Any focused descendant belongs to the embedded content. Do not tie
+    // focus recovery to an engine-specific class name.
+    info.hwndFocus == HWND(window) || !IsChild(HWND(window), info.hwndFocus).as_bool()
   }
 }
 

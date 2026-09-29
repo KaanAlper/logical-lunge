@@ -1,4 +1,4 @@
-/* end-4 illogical-impulse (quickshell ii) bar'ının Logical Lunge portu.
+/* Source attribution: appearance adapted from end-4 illogical-impulse.
    Ölçüler modules/common/Appearance.qml ve modules/ii/bar/*.qml'den alındı. */
 @import url('./fonts.css');
 
@@ -206,14 +206,14 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   background: var(--m3secondaryContainer); margin: 0 4px;
   display: flex; align-items: center; justify-content: center;
 }
-.battery .fill {
+.battery > .fill {
   position: absolute; left: 0; top: 0; bottom: 0;
   background: var(--m3onSecondaryContainer);
   transition: width 400ms var(--elementMove);
 }
-.battery.low .fill { background: var(--m3error); }
+.battery.low > .fill { background: var(--m3error); }
 .battery .label {
-  position: relative; font-size: 11px; font-weight: 600; color: #1d1b20;
+  position: relative; font-size: 11px; font-weight: 600; color: var(--m3onSecondaryContainer);
   mix-blend-mode: normal; display: flex; align-items: center;
 }
 .battery .label .icon { font-size: 12px; margin: 0 -1px; }
@@ -441,3 +441,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   to { opacity: 0; transform: translateY(-12px); clip-path: inset(0 0 100% 0 round 12px); }
 }
 .bar-pop.closing, .tray-popup.closing { animation: popUp 170ms cubic-bezier(0.3, 0, 0.8, 0.15) forwards; pointer-events: none; }
+
+/* Battery text keeps one contrast surface; the charge fill sits behind it. */
+.battery .label { background: var(--m3secondaryContainer); border-radius: 8px; padding: 0 3px; }
+.battery-pop { min-width: 220px; }

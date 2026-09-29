@@ -52,6 +52,7 @@ pub const GAP: f32 = 4.0;
 pub enum PopKind {
   Res,
   Media,
+  Battery,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -344,6 +345,14 @@ impl Drop for PopWin {
 
 /// The popup box (styles.css `.res-pop`, `.media-pop`, `.tray-popup`):
 /// `box-shadow: 0 4px 14px rgba(0 0 0 / 35%)`, `colLayer0`, 1 px border.
+pub(super) fn frame_shadow(p: &mut Painter, r: Rect, radius: f32) -> anyhow::Result<()> {
+  for k in 1..=7 {
+    let g = k as f32 * 1.8;
+    p.fill_round(Rect::new(r.x - g, r.y + 4.0 - g, r.w + 2.0 * g, r.h + 2.0 * g), radius + g, Rgba(0, 0, 0, 0.045))?;
+  }
+  Ok(())
+}
+
 fn frame_box(p: &mut Painter, t: &Theme, r: Rect, radius: f32) -> anyhow::Result<()> {
   for k in 1..=7 {
     let g = k as f32 * 1.8;
@@ -446,10 +455,13 @@ fn col_width(p: &mut Painter, c: &Col) -> anyhow::Result<f32> {
 
 /// Box size (DIPs, without `PAD`).
 pub fn res_size(p: &mut Painter, m: &Model, temps: Option<&Temps>) -> anyhow::Result<(f32, f32)> {
-  let cols = res_cols(m, temps);
+  cols_size(p, &res_cols(m, temps))
+}
+
+fn cols_size(p: &mut Painter, cols: &[Col]) -> anyhow::Result<(f32, f32)> {
   let mut w = 28.0 + 18.0 * (cols.len() as f32 - 1.0);
   let mut rows = 0;
-  for c in &cols {
+  for c in cols {
     w += col_width(p, c)?;
     rows = rows.max(c.rows.len());
   }
@@ -457,10 +469,14 @@ pub fn res_size(p: &mut Painter, m: &Model, temps: Option<&Temps>) -> anyhow::Re
 }
 
 pub fn paint_res(p: &mut Painter, m: &Model, t: &Theme, temps: Option<&Temps>, size: (f32, f32)) -> anyhow::Result<()> {
+  paint_cols(p, t, res_cols(m, temps), size)
+}
+
+fn paint_cols(p: &mut Painter, t: &Theme, cols: Vec<Col>, size: (f32, f32)) -> anyhow::Result<()> {
   let r = Rect::new(PAD, PAD, size.0, size.1);
   frame_box(p, t, r, 12.0)?;
   let mut x = r.x + 14.0;
-  for c in res_cols(m, temps) {
+  for c in cols {
     let cw = col_width(p, &c)?;
     let mut y = r.y + 10.0;
     p.icon(c.icon, x + 7.5, y + HEAD_H / 2.0, 15.0, false, t.subtext)?;
@@ -479,6 +495,42 @@ pub fn paint_res(p: &mut Painter, m: &Model, t: &Theme, temps: Option<&Temps>, s
   }
   frame_border(p, t, r, 12.0)?;
   Ok(())
+}
+
+// Same surface, padding, type and hover lifecycle as the resource popup.
+fn battery_cols(m: &Model) -> Vec<Col> {
+  let Some(b) = &m.battery else { return Vec::new() };
+  let time = if b.is_charging { b.time_till_full } else { b.time_till_empty };
+  let state = if b.is_charging { "Şarj oluyor" } else if b.state.eq_ignore_ascii_case("full") { "Tam dolu" } else if matches!(b.state.to_lowercase().as_str(), "discharging" | "empty") { "Pil kullanılıyor" } else { "Veri yok" };
+  let values = [
+    ("battery_full", "Pil", format!("{}%", b.charge_percent.round().clamp(0.0, 100.0))),
+    ("bolt", "Durum", m.tr(state)),
+    ("schedule", if b.is_charging { "Dolmasına kalan" } else { "Bitmesine kalan" }, battery_time(time).unwrap_or_else(|| m.tr("Veri yok"))),
+    ("electric_bolt", "Güç", if b.power_consumption.is_finite() && b.power_consumption.abs() > 0.0 { format!("{:.1} W", b.power_consumption.abs()) } else { m.tr("Veri yok") }),
+  ];
+  vec![Col { icon: "battery_full", head: m.tr("Pil"), rows: values.into_iter().map(|(icon, label, value)| Row {
+    icon, label: format!("{}:", m.tr(label)), value, hot: false,
+  }).collect() }]
+}
+
+fn battery_time(milliseconds: Option<f32>) -> Option<String> {
+  let ms = milliseconds.filter(|ms| ms.is_finite() && *ms > 0.0)?;
+  let mins = (ms as f64 / 60_000.0).ceil() as u64;
+  Some(format!("{}:{:02}", mins / 60, mins % 60))
+}
+
+pub fn battery_size(p: &mut Painter, m: &Model) -> anyhow::Result<(f32, f32)> { cols_size(p, &battery_cols(m)) }
+pub fn paint_battery(p: &mut Painter, m: &Model, t: &Theme, size: (f32, f32)) -> anyhow::Result<()> { paint_cols(p, t, battery_cols(m), size) }
+
+#[cfg(test)]
+mod battery_tests {
+  use super::battery_time;
+  #[test]
+  fn provider_times_are_milliseconds() {
+    assert_eq!(battery_time(Some(5_400_000.0)).as_deref(), Some("1:30"));
+    assert_eq!(battery_time(Some(1.0)).as_deref(), Some("0:01"));
+    for v in [None, Some(0.0), Some(-1.0), Some(f32::NAN)] { assert_eq!(battery_time(v), None); }
+  }
 }
 
 // ---- media (ii media popup)

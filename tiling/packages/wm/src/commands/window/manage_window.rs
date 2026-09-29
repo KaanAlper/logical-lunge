@@ -195,40 +195,32 @@ fn check_is_manageable(
       WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
-    // TODO: Temporary fix for managing Flow Launcher until a force manage
-    // command is added.
-    let is_flow_launcher = native_properties.process_name
-      == "Flow.Launcher"
-      && native_properties.title == "Flow.Launcher";
+    // Ensure window is top-level (i.e. not a child window). Ignore
+    // windows that cannot be focused or if they're unavailable in
+    // task switcher (alt+tab menu).
+    if native_window.has_window_style(WS_CHILD)
+      || native_window
+        .has_window_style_ex(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+    {
+      return Ok(None);
+    }
 
-    if !is_flow_launcher {
-      // Ensure window is top-level (i.e. not a child window). Ignore
-      // windows that cannot be focused or if they're unavailable in
-      // task switcher (alt+tab menu).
-      if native_window.has_window_style(WS_CHILD)
-        || native_window
-          .has_window_style_ex(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
-      {
-        return Ok(None);
-      }
-
-      // Some applications spawn top-level windows for menus that
-      // should be ignored. This includes the autocomplete popup in
-      // Notepad++ and title bar menu in Keepass. Although not
-      // foolproof, these can typically be identified by having an
-      // owner window and no title bar.
-      //
-      // Logical Lunge: unless the window asks for a taskbar button
-      // (`WS_EX_APPWINDOW`), like Windows' own taskbar / alt+tab rule.
-      // Installers and launchers with their own title bar are often owned
-      // by a hidden window; they stayed unmanaged (on every workspace,
-      // behind the tiled windows).
-      if native_window.has_owner_window()
-        && !native_window.has_window_style(WS_CAPTION)
-        && !native_window.has_window_style_ex(WS_EX_APPWINDOW)
-      {
-        return Ok(None);
-      }
+    // Some applications spawn top-level windows for menus that
+    // should be ignored. This includes the autocomplete popup in
+    // Notepad++ and title bar menu in Keepass. Although not
+    // foolproof, these can typically be identified by having an
+    // owner window and no title bar.
+    //
+    // Logical Lunge: unless the window asks for a taskbar button
+    // (`WS_EX_APPWINDOW`), like Windows' own taskbar / alt+tab rule.
+    // Installers and launchers with their own title bar are often owned
+    // by a hidden window; they stayed unmanaged (on every workspace,
+    // behind the tiled windows).
+    if native_window.has_owner_window()
+      && !native_window.has_window_style(WS_CAPTION)
+      && !native_window.has_window_style_ex(WS_EX_APPWINDOW)
+    {
+      return Ok(None);
     }
   }
 
@@ -253,7 +245,7 @@ fn create_window(
 
   let gaps_config = config.value.gaps.clone();
   let window_state = if controllable {
-    window_state_to_create(&native_properties, &nearest_monitor, config)?
+    window_state_to_create(&native_window, &native_properties, &nearest_monitor, config)?
   } else if native_properties.is_minimized {
     WindowState::Minimized
   } else {
@@ -357,6 +349,8 @@ fn create_window(
 ///
 /// Note that maximized windows are initialized as tiling.
 fn window_state_to_create(
+  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+  native_window: &NativeWindow,
   native_properties: &NativeWindowProperties,
   nearest_monitor: &Monitor,
   config: &UserConfig,
@@ -397,7 +391,18 @@ fn window_state_to_create(
   }
 
   // Initialize windows that can't be resized as floating.
-  if !native_properties.is_resizable {
+  #[cfg(target_os = "windows")]
+  let auxiliary = {
+    use wm_platform::{NativeWindowWindowsExt, WS_EX_TOPMOST};
+    // Picture-in-picture, always-on-top panels and owned dialogs are
+    // secondary windows regardless of their application or window title.
+    // Hidden owners used only to group launchers do not imply a dialog.
+    native_window.has_window_style_ex(WS_EX_TOPMOST)
+      || native_window.owner_window().is_some_and(|owner| owner.is_visible().unwrap_or(false))
+  };
+  #[cfg(not(target_os = "windows"))]
+  let auxiliary = false;
+  if !native_properties.is_resizable || auxiliary {
     return Ok(WindowState::Floating(
       config.value.window_behavior.state_defaults.floating.clone(),
     ));

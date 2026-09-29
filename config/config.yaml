@@ -1,4 +1,4 @@
-# end-4 illogical-impulse (Hyprland) kurulumunun Windows karşılığı.
+# Logical Lunge pencere yönetimi ve masaüstü ayarları.
 #
 # Logical Lunge pencere yöneticisinin (lunge-tiling) ayarları: ~\.config\logical-lunge\config.yaml
 # Win10'da Windows kenarlık rengi / köşe yuvarlatma yapamıyor (Win11'e özel API). Mor odak kenarlığını pencere
@@ -132,33 +132,9 @@ window_rules:
     match:
       - window_process: { equals: 'lunge-shell' }
       - window_process: { equals: 'lunge' }
-      - window_process: { equals: 'TaskBarHero' }
-      - window_title: { regex: '[Pp]icture.in.[Pp]icture' }
-        window_class: { regex: 'Chrome_WidgetWin_1|MozillaDialogClass' }
-      - window_process: { equals: 'PowerToys' }
-        window_class: { regex: 'HwndWrapper\[PowerToys\.PowerAccent.*?\]' }
-      - window_title: { equals: 'Command Palette' }
-        window_class: { equals: 'WinUIDesktopWin32WindowClass' }
-      - window_process: { equals: 'PowerToys' }
-        window_title: { regex: '.*? - Peek' }
-      - window_process: { equals: 'Lively' }
-        window_class: { regex: 'HwndWrapper' }
-      - window_process: { equals: 'EXCEL' }
-        window_class: { not_regex: 'XLMAIN' }
-      - window_process: { equals: 'WINWORD' }
-        window_class: { not_regex: 'OpusApp' }
-      - window_process: { equals: 'POWERPNT' }
-        window_class: { not_regex: 'PPTFrameClass' }
 
-  # Genel diyalog sınıfları. Diğer her şey (boyutlanamayan, çerçevesiz açılır, sahipli pencereler,
-  # tam ekran oyunlar) uygulamaya özel kural olmadan çekirdekte pencere özelliklerine göre karar verilir.
-  - commands: ['set-floating --centered']
-    match:
-      - window_class: { equals: 'MozillaDialogClass' }
-      - window_process: { equals: 'SystemSettings' }
-      - window_process: { equals: 'Taskmgr' }
-      - window_title: { regex: '^(Open|Save|Save As|Aç|Kaydet|Farklı Kaydet).*' }
-      - window_class: { equals: '#32770' }
+  # Other applications are classified by window properties, ownership,
+  # resizability and topmost state. Add user-specific rules here if wanted.
 
 binding_modes:
   - name: 'resize'
@@ -248,7 +224,7 @@ keybindings:
   # Kapatma: Hyprland custom'unda olduğu gibi sadece Alt+F4 (Windows'un kendisi yapıyor)
 
   # --- Uygulamalar ---
-  # Super+Enter/T (terminal), Super+W (Zen), E (Explorer), C (VS Code), X (Not Defteri) çekirdekte:
+  # Super+Enter/T (terminal), Super+W (varsayılan tarayıcı), E (Explorer), C (VS Code), X (Not Defteri) çekirdekte:
   # önce farenin altındaki pencereyi odaklıyor (Hyprland dwindle yeni pencereyi oraya açar).
   # Pencere yöneticisinin shell-exec'i boşluklu tırnaklı yolları da ayrıştıramıyordu.
   # %LUNGE_HOME%: Logical Lunge'un kurulum klasörü (çekirdek pencere yöneticisini başlatırken verir)
@@ -279,7 +255,7 @@ borders:
     # Hyprland'deki rounding; çekirdek pencere köşelerini de aynı yarıçapla yuvarlar
     border_radius: 14
     border_z_order: AboveWindow
-    follow_native_border: true
+    follow_native_border: false
     # Windows pencere animasyonları kapalı: kenarlık gecikmeden gelsin
     initialize_delay: 0
     unminimize_delay: 0

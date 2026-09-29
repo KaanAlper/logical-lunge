@@ -412,6 +412,26 @@
         };
         const hide = (why = '?') => { dbg('kapat: ' + why); openSeq.current++; openRef.current = false; setOpen(false); lunge.hideWindow(win).catch(() => {}); };
 
+        // Uygulamanın Windows sağ tık menüsü (helper, yetkisiz: menüden açılanlar da yetkisiz açılır). Menü açıkken odak
+        // helper'dadır, arama menüsü kapanmaz; komut seçilince kapanır, iptalde helper odağı geri verir. Helper cevap
+        // vermeden kapanırsa (çökme) iptal sayılır.
+        const menuOpen = useRef(false);
+        const shellMenu = path => {
+          if (menuOpen.current) return;
+          menuOpen.current = true;
+          let done = false;
+          const finish = invoked => {
+            if (done) return;
+            done = true; menuOpen.current = false;
+            if (invoked) hide('sağ tık menüsünden komut'); else inputRef.current?.focus();
+          };
+          lunge.shellSpawn(HELPER, ['--shell-menu', path]).then(p => {
+            let buf = '';
+            p.onStdout(c => { buf += c; const m = /"invoked":(true|false)/.exec(buf); if (m) finish(m[1] === 'true'); });
+            p.onExit(() => finish(false));
+          }).catch(() => finish(false));
+        };
+
         // Helper pencereyi Win32 ile gizleyip gösterir (Super / Super+V): bu, sayfaya blur/focus olayı göndermez ve
         // 'open' eski kalır. Helper gösterdiğini / gizlediğini uzun yoklamayla (/overview-wait) bildirir: gösterdiyse
         // (bizim show() çağrımız dışında) taze açılış gibi işle ve mod bayrağını oku, gizlediyse kapalı say. Eskiden
@@ -476,7 +496,7 @@
               if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
             });
           };
-          const onBlur = () => hide('odak gitti');
+          const onBlur = () => { if (!menuOpen.current) hide('odak gitti'); };
           window.addEventListener('focus', onFocus);
           window.addEventListener('blur', onBlur);
           return () => { un.then(f => f()); unBar.then(f => f()); window.removeEventListener('focus', onFocus); window.removeEventListener('blur', onBlur); };
@@ -559,7 +579,7 @@
               .filter(x => x.s >= 0)
               .sort((x, y) => y.s - x.s)
               .slice(0, 15)
-              .forEach(({ a }) => push({ key: 'app' + a.path, type: 'Uygulama', name: a.name, img: a.icon, material: 'apps', verb: 'Aç', q: term,
+              .forEach(({ a }) => push({ key: 'app' + a.path, type: 'Uygulama', name: a.name, img: a.icon, material: 'apps', verb: 'Aç', q: term, menu: a.path,
                 exec: async () => { await focusUnderCursor(); spawn('explorer', [a.path]); } }));
           }
           if (!appOnly && term) {
@@ -580,6 +600,7 @@
 
         const onKey = e => {
           if (e.key === 'Escape') { e.preventDefault(); if (query) setQuery(''); else hide(); }
+          else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && results[sel]?.menu) { e.preventDefault(); shellMenu(results[sel].menu); }
           else if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => Math.min(results.length - 1, s + 1)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
           else if (e.key === 'Enter') { e.preventDefault(); exec(results[sel]); }
@@ -627,7 +648,8 @@
                     <div className="results" ref={resultsRef}>
                       {results.map((r, i) => (
                         <div key={r.key} className={`item ${i === sel ? 'selected' : ''}`}
-                             onMouseEnter={() => setSel(i)} onClick={() => exec(r)}>
+                             onMouseEnter={() => setSel(i)} onClick={() => exec(r)}
+                             onContextMenu={e => { e.preventDefault(); if (r.menu) { setSel(i); shellMenu(r.menu); } }}>
                           <div className="ico">
                             {r.img ? <img src={r.img} alt="" />
                               : r.bigText ? <span className="big">{r.bigText}</span>

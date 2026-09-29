@@ -8,11 +8,18 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using LibreHardwareMonitor.Hardware;
 
 static class Program
 {
     const string OUT = @"C:\Users\Public\lunge-temps.json";
+    [StructLayout(LayoutKind.Sequential)]
+    struct PowerStatus { public byte ACLineStatus, BatteryFlag, BatteryLifePercent, SystemStatusFlag; public uint BatteryLifeTime, BatteryFullLifeTime; }
+    [DllImport("kernel32.dll")] static extern bool GetSystemPowerStatus(out PowerStatus status);
+    // Opening GPU sensors can itself wake a discrete GPU. Disable the GPU
+    // subsystem while on battery, rather than returning old NVIDIA samples.
+    static bool ReadGpu() { PowerStatus status; return GetSystemPowerStatus(out status) && status.ACLineStatus == 1; }
 
     static string Num(float? v) { return v.HasValue ? Math.Round(v.Value).ToString(CultureInfo.InvariantCulture) : "null"; }
 
@@ -61,25 +68,18 @@ static class Program
         if (!created) return 0;
 
         Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
-        var pc = new Computer { IsCpuEnabled = true, IsGpuEnabled = true };
+        var pc = new Computer { IsCpuEnabled = true, IsGpuEnabled = ReadGpu() };
         pc.Open();
         var tmp = OUT + ".tmp";
         while (true)
         {
             try
             {
-                foreach (var h in pc.Hardware) {
-                    // NVIDIA GPU'yu sürekli güncelleyerek uyandırmamak için dGpu'yu güncellemiyoruz veya isteğe bağlı yapıyoruz.
-                    // Uyku (D3) modundan çıkıp 20-30W güç çekmesini engellemek için NVIDIA güncellemesini atla.
-                    if (h.HardwareType == HardwareType.GpuNvidia) continue; 
-                    h.Update();
-                }
+                pc.IsGpuEnabled = ReadGpu();
+                foreach (var h in pc.Hardware) h.Update();
                 var hw = pc.Hardware.ToArray();
                 Func<IHardware, bool> isCpu = h => h.HardwareType == HardwareType.Cpu;
                 Func<IHardware, bool> isGpu = h => h.HardwareType == HardwareType.GpuNvidia || h.HardwareType == HardwareType.GpuAmd || h.HardwareType == HardwareType.GpuIntel;
-                // Harici GPU yerine iGPU'yu (Dahili grafik) seçmek pilden tasarruf sağlar
-                var iGpu = hw.FirstOrDefault(h => h.HardwareType == HardwareType.GpuIntel || h.HardwareType == HardwareType.GpuAmd);
-                if (iGpu != null) isGpu = h => h == iGpu;
 
                 var cpu = Find(hw, isCpu, SensorType.Temperature, "CPU Package", "Core (Tctl/Tdie)", "Core Max", "Core Average");
                 var gpu = Find(hw, isGpu, SensorType.Temperature, "GPU Core");

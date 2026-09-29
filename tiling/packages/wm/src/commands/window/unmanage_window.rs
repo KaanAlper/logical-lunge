@@ -7,7 +7,7 @@ use crate::{
     set_focused_descendant,
   },
   models::WindowContainer,
-  traits::{CommonGetters, WindowGetters},
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   wm_state::WmState,
 };
 
@@ -21,6 +21,16 @@ pub fn unmanage_window(
 
   // Get container to switch focus to after the window has been removed.
   let focus_target = state.focus_target_after_removal(&window.clone());
+
+  // Logical Lunge: as in Hyprland, focus leaving a closed tiling window goes
+  // to the window that takes over its space, i.e. the one at its center once
+  // the gap is closed. The focus history is the fallback.
+  let workspace = window.workspace();
+  let freed_center = focus_target
+    .as_ref()
+    .filter(|_| window.state() == WindowState::Tiling)
+    .and_then(|_| window.to_rect().ok())
+    .map(|rect| rect.center_point());
 
   detach_container(window.clone().into())?;
 
@@ -45,6 +55,16 @@ pub fn unmanage_window(
     #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
     unmanaged_handle: window.native().id().0 as isize,
   });
+
+  let focus_target = freed_center
+    .zip(workspace)
+    .and_then(|(center, workspace)| {
+      workspace
+        .descendants()
+        .filter(|c| c.as_tiling_window().is_some())
+        .find(|c| c.to_rect().is_ok_and(|rect| rect.contains_point(&center)))
+    })
+    .or(focus_target);
 
   // Reassign focus to suitable target.
   if let Some(focus_target) = focus_target {

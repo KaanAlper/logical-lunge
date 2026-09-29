@@ -14,6 +14,7 @@ mod icons;
 mod model;
 mod popup;
 mod pops;
+mod palette;
 mod search;
 mod view;
 mod wm;
@@ -325,6 +326,7 @@ struct Ui {
   res: Res,
   icons: Icons,
   model: Model,
+  custom_theme: Option<view::Theme>,
   bars: Vec<Bar>,
   osd: Option<OsdWin>,
   displays: HashMap<String, Display>,
@@ -419,6 +421,7 @@ fn ui_thread(
         res,
         icons: Icons::default(),
         model,
+        custom_theme: None,
         bars: Vec::new(),
         osd: None,
         displays: HashMap::new(),
@@ -717,6 +720,7 @@ impl Ui {
             let tray = matches!(output, ProviderOutput::Systray(_));
             let audio = matches!(output, ProviderOutput::Audio(_));
             let media = matches!(output, ProviderOutput::Media(_));
+            let battery = matches!(output, ProviderOutput::Battery(_));
             self.model.apply(output);
             if tray {
               self.init_pins();
@@ -727,6 +731,7 @@ impl Ui {
             if audio {
               self.audio_osd();
             }
+            if battery { self.pop_render_battery(); }
             if media {
               self.media_seen();
               self.ask_art();
@@ -970,12 +975,15 @@ impl Ui {
     }
   }
 
-  fn theme(&self) -> &'static view::Theme {
-    if self.model.light {
-      &view::LIGHT
-    } else {
-      &view::DARK
-    }
+  fn theme(&self) -> view::Theme {
+    self.custom_theme.unwrap_or(if self.model.light { view::LIGHT } else { view::DARK })
+  }
+
+  fn reload_custom_theme(&mut self) {
+    let prefs = model::prefs(&self.pack_dir);
+    self.custom_theme = Some(palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light));
+    self.redraw_all();
+    self.pops_repaint();
   }
 
   fn redraw(&mut self, i: usize) {
@@ -999,7 +1007,7 @@ impl Ui {
       let mut frame = None;
       gfx::draw_surface(&bar.bg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        match view::paint(&mut p, model, theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
+        match view::paint(&mut p, model, &theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
           Ok(f) => frame = Some(f),
           Err(err) => tracing::warn!("Native bar paint: {:?}", err),
         }
@@ -1017,7 +1025,7 @@ impl Ui {
       }
       gfx::draw_surface(&bar.fg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        if let Err(err) = view::paint_ws(&mut p, model, theme, bar.hover.as_ref()) {
+        if let Err(err) = view::paint_ws(&mut p, model, &theme, bar.hover.as_ref()) {
           tracing::warn!("Native bar paint (workspaces): {:?}", err);
         }
         Ok(())
@@ -1122,8 +1130,10 @@ impl Ui {
       Some("ll:theme-light") => true,
       Some("ll:theme-dark") => false,
       Some("ll:tray-pins") => return self.reload_pins(),
+      Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
       None => {
         self.reload_pins();
+        self.reload_custom_theme();
         model::prefs(&self.pack_dir)["theme"].as_str() == Some("light")
       }
       _ => return,
@@ -1136,8 +1146,7 @@ impl Ui {
       return;
     }
     self.model.light = light;
-    self.redraw_all();
-    self.pops_repaint();
+    self.reload_custom_theme();
   }
 
   fn redraw_all(&mut self) {
@@ -1181,7 +1190,7 @@ impl Ui {
     let mut requests = Vec::new();
     let drawn = gfx::draw_surface(&osd.layer.surface, scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      if let Err(err) = view::paint_osd(&mut p, model, theme, kind, value) {
+      if let Err(err) = view::paint_osd(&mut p, model, &theme, kind, value) {
         tracing::warn!("Native bar OSD paint: {:?}", err);
       }
       Ok(())

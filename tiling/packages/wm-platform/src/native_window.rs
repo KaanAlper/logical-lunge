@@ -156,6 +156,9 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn hwnd(&self) -> HWND;
 
+  /// Owner process of this native window; zero if the handle is no longer valid.
+  fn process_id(&self) -> u32;
+
   /// Gets the class name of the window.
   ///
   /// # Platform-specific
@@ -184,6 +187,9 @@ pub trait NativeWindowWindowsExt {
   ///
   /// This method is only available on Windows.
   fn has_owner_window(&self) -> bool;
+
+  /// Direct owner of this top-level window, if any.
+  fn owner_window(&self) -> Option<NativeWindow>;
 
   /// Whether the window has the given window style flag(s) set.
   ///
@@ -370,6 +376,12 @@ impl NativeWindowWindowsExt for NativeWindow {
     self.inner.hwnd()
   }
 
+  fn process_id(&self) -> u32 {
+    let mut pid = 0;
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(self.hwnd(), Some(&mut pid)); }
+    pid
+  }
+
   fn class_name(&self) -> crate::Result<String> {
     self.inner.class_name()
   }
@@ -384,6 +396,12 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn has_owner_window(&self) -> bool {
     self.inner.has_owner_window()
+  }
+
+  fn owner_window(&self) -> Option<NativeWindow> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER};
+    let owner = unsafe { GetWindow(self.hwnd(), GW_OWNER) };
+    if owner.0 == 0 { None } else { Some(Self::from_handle(owner.0)) }
   }
 
   fn has_window_style(&self, style: WINDOW_STYLE) -> bool {

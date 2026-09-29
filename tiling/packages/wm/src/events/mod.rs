@@ -9,6 +9,10 @@ mod handle_window_moved_or_resized;
 mod handle_window_moved_or_resized_end;
 mod handle_window_shown;
 mod handle_window_title_changed;
+#[cfg(target_os = "windows")]
+mod overlay_policy;
+#[cfg(target_os = "windows")]
+mod transition_overlay;
 
 pub use handle_display_settings_changed::*;
 pub use handle_mouse_move::*;

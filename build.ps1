@@ -1,23 +1,30 @@
-# Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
+﻿# Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
 # Build machine needs: Windows 10/11 x64 (.NET Framework 4.8 csc is built in), Windows 10 SDK (lunge-media.exe),
 # Rust (rustup; tiling and shell), Python 3.12 (packaged tools) and Node.js (translations).
 #
-# Package layout (app\ is copied as is to %LOCALAPPDATA%\Programs\LogicalLunge):
+# Package layout (app\ is copied as is to %ProgramFiles%\LogicalLunge):
 #   app\lunge.exe, lunge-tiling.exe, lunge-tiling-cli.exe, lunge-tiling-watcher.exe, lunge-shell.exe, VERSION,
 #       uninstall.ps1, ui\logical-lunge\*, scripts\*.ps1, tools\{lunge-media.exe, temps\, termcolors\, songrec\}
 #   config\   templates for ~\.config\logical-lunge and the terminal
 #   installer\setup.ps1
-param([switch]$SkipPython, [switch]$SkipRust, [switch]$NoZip)
+param([switch]$SkipPython, [switch]$SkipRust, [switch]$NoZip, [ValidateSet('native-bar', 'web-ui')][string]$Edition)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $root = $PSScriptRoot
 $ver = (Get-Content (Join-Path $root 'VERSION')).Trim()
-$name = "LogicalLunge-$ver"
+$sourceEdition = (Get-Content (Join-Path $root 'EDITION')).Trim()
+if (-not $Edition) { $Edition = $sourceEdition }
+if ($Edition -notin @('native-bar', 'web-ui') -or $Edition -ne $sourceEdition) { throw 'EDITION must match the checked-out source branch.' }
+if ($ver -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid VERSION: $ver" }
+$name = "LogicalLunge-$Edition-$ver"
 $out = Join-Path $root "dist\$name"
 $cache = Join-Path $root 'build'
 New-Item -ItemType Directory -Force $cache | Out-Null
-Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
+$out = [IO.Path]::GetFullPath($out)
+$distRoot = [IO.Path]::GetFullPath((Join-Path $root 'dist')) + [IO.Path]::DirectorySeparatorChar
+if (-not $out.StartsWith($distRoot, [StringComparison]::OrdinalIgnoreCase)) { throw "Unsafe build output: $out" }
+Remove-Item -LiteralPath $out -Recurse -Force -ErrorAction SilentlyContinue
 $app = Join-Path $out 'app'
 $pack = Join-Path $app 'ui\logical-lunge'
 New-Item -ItemType Directory -Force $pack, "$app\scripts", "$app\tools\temps", "$app\tools\songrec", "$app\tools\termcolors", "$out\installer" | Out-Null
@@ -33,16 +40,17 @@ Step 'lunge.exe (core)'
 # File description = the name Task Manager shows for the app (the other parts are grouped under it)
 $nver = ($ver -replace '[^0-9.]', '') + '.0'
 $info = Join-Path $cache 'AssemblyInfo.cs'
-[IO.File]::WriteAllText($info, @"
+$infoText = @"
 using System.Reflection;
-[assembly: AssemblyTitle("Logical Lunge")]
+[assembly: AssemblyTitle("{TITLE}")]
 [assembly: AssemblyProduct("Logical Lunge")]
 [assembly: AssemblyCompany("Logical Lunge")]
 [assembly: AssemblyCopyright("GPL-3.0")]
 [assembly: AssemblyVersion("$nver")]
 [assembly: AssemblyFileVersion("$nver")]
 [assembly: AssemblyInformationalVersion("$ver")]
-"@)
+"@
+[IO.File]::WriteAllText($info, $infoText.Replace('{TITLE}', 'Logical Lunge'))
 & $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:Accessibility.dll "$root\core\lunge.cs" $info
 if ($LASTEXITCODE) { throw 'lunge.exe build failed' }
 
@@ -50,14 +58,16 @@ Step 'lunge-media.exe (album art + seek, WinRT)'
 $winmd = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" -Recurse -Filter Windows.winmd -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\Facade\\' } | Sort-Object { [version]$_.Directory.Name } -Descending | Select-Object -First 1
 if (-not $winmd) { throw 'Windows 10 SDK (UnionMetadata\Windows.winmd) not found' }
 & $csc /nologo /target:winexe /optimize+ "/out:$app\tools\lunge-media.exe" "/r:$($winmd.FullName)" /r:System.Runtime.WindowsRuntime.dll "/r:$fx\Facades\System.Runtime.dll" /nowarn:1701 "$root\tools\lunge-media.cs"
-if ($LASTEXITCODE) { Write-Host 'lunge-media build failed, skipping' -ForegroundColor Yellow }
+if ($LASTEXITCODE) { throw 'lunge-media build failed' }
 
 Step 'lunge-temps.exe (CPU/GPU temperature, LibreHardwareMonitorLib)'
 $lz = Join-Path $cache 'LibreHardwareMonitor.zip'
 if (-not (Test-Path $lz)) { Invoke-WebRequest -UseBasicParsing 'https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip' -OutFile $lz }
 $lx = Join-Path $cache 'lhm'; if (-not (Test-Path "$lx\LibreHardwareMonitorLib.dll")) { Expand-Archive $lz $lx -Force }
-& $csc /nologo /target:winexe /optimize+ "/out:$app\tools\temps\lunge-temps.exe" "/r:$lx\LibreHardwareMonitorLib.dll" "/r:$fx\Facades\netstandard.dll" /r:System.Core.dll "$root\tools\temps\lunge-temps.cs"
-if ($LASTEXITCODE) { Write-Host 'lunge-temps build failed, skipping' -ForegroundColor Yellow }
+$tinfo = Join-Path $cache 'TempsInfo.cs'
+[IO.File]::WriteAllText($tinfo, $infoText.Replace('{TITLE}', 'Logical Lunge Temperatures'))
+& $csc /nologo /target:winexe /optimize+ "/out:$app\tools\temps\lunge-temps.exe" "/r:$lx\LibreHardwareMonitorLib.dll" "/r:$fx\Facades\netstandard.dll" /r:System.Core.dll "$root\tools\temps\lunge-temps.cs" $tinfo
+if ($LASTEXITCODE) { throw 'lunge-temps build failed' }
 
 if (-not $SkipPython) {
     Step 'lunge-songrec.exe + lunge-termcolors.exe (PyInstaller, no Python needed on the target)'
@@ -115,10 +125,10 @@ finally { Pop-Location }
 
 Step 'Scripts, configs, installer'
 Copy-Item "$root\scripts\*.ps1" "$app\scripts\"
-Copy-Item "$root\uninstall.ps1", "$root\VERSION" $app
+Copy-Item "$root\uninstall.ps1", "$root\VERSION", "$root\EDITION" $app
 Copy-Item "$root\config" "$out\config" -Recurse
 Copy-Item "$root\installer\setup.ps1" "$out\installer\"
-Copy-Item "$root\VERSION" $out
+Copy-Item "$root\VERSION", "$root\EDITION" $out
 
 if ($NoZip) { Write-Host "Built $out (no zip)" -ForegroundColor Green; return }
 Step 'Package'

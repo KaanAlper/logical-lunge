@@ -12,6 +12,10 @@ pub fn handle_window_shown(
   state: &mut WmState,
   config: &mut UserConfig,
 ) -> anyhow::Result<()> {
+  #[cfg(target_os = "windows")]
+  if super::transition_overlay::constrain_transition_overlay(&native_window, state)? {
+    return Ok(());
+  }
   let found_window = state.window_from_native(&native_window);
 
   if let Some(window) = found_window {

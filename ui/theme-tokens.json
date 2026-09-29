@@ -1,0 +1,42 @@
+{
+  "dark": {
+    "m3primary": ["#000000", 1],
+    "m3primaryContainer": ["#101010", 0.3],
+    "m3onPrimaryContainer": ["#ffffff", 0.2],
+    "m3secondaryContainer": ["#28262c", 0.2],
+    "m3onSecondaryContainer": ["#ffffff", 0.16],
+    "m3onSurface": ["#e6e0e9", 0.03],
+    "m3onSurfaceVariant": ["#cac4d0", 0.05],
+    "m3outline": ["#938f99", 0.08],
+    "m3outlineVariant": ["#49454f", 0.12],
+    "colLayer0": ["#141218", 0.08],
+    "colLayer0Border": ["#49454f", 0.12],
+    "colLayer1": ["#1d1b20", 0.12],
+    "colLayer1Hover": ["#36323b", 0.15],
+    "colLayer2": ["#211f26", 0.1],
+    "colLayer2Hover": ["#36323b", 0.15],
+    "colLayer3": ["#2b2930", 0.12],
+    "colBackgroundSurfaceContainer": ["#211f26", 0.1],
+    "colSurfaceContainerHigh": ["#2b2930", 0.12]
+  },
+  "light": {
+    "m3primary": ["#000000", 0.6],
+    "m3primaryContainer": ["#ffffff", 0.3],
+    "m3onPrimaryContainer": ["#000000", 0.2],
+    "m3secondaryContainer": ["#ffffff", 0.2],
+    "m3onSecondaryContainer": ["#17151b", 0.05],
+    "m3onSurface": ["#1d1b20", 0.03],
+    "m3onSurfaceVariant": ["#49454f", 0.05],
+    "m3outline": ["#79747e", 0.08],
+    "m3outlineVariant": ["#cac4d0", 0.12],
+    "colLayer0": ["#fef7ff", 0.08],
+    "colLayer0Border": ["#e6e0e9", 0.12],
+    "colLayer1": ["#f3edf7", 0.12],
+    "colLayer1Hover": ["#e6e0e9", 0.15],
+    "colLayer2": ["#f3edf7", 0.1],
+    "colLayer2Hover": ["#e0dae4", 0.15],
+    "colLayer3": ["#ece6f0", 0.12],
+    "colBackgroundSurfaceContainer": ["#f3edf7", 0.1],
+    "colSurfaceContainerHigh": ["#ece6f0", 0.12]
+  }
+}

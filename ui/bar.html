@@ -128,6 +128,8 @@
     <div id="root"></div>
 
     <script type="module">
+      import { batteryDetails } from "../lib/battery.mjs";
+      import { trackMedia as updateMediaClock, mediaPosition } from "../lib/media-clock.mjs";
       import React, { useState, useEffect, useRef, useLayoutEffect, useCallback } from 'react';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
@@ -279,7 +281,7 @@
           onMouseEnter: () => { clearTimeout(popTimer.current); setPop(p => (p && p.closing ? { ...p, closing: false } : p)); },
           onMouseLeave: closePop,
         };
-        useEffect(() => { requestHeight('popup', pop ? BAR_H + (pop.kind === 'media' ? 150 : 130) : BAR_H); }, [pop?.kind]);
+        useEffect(() => { requestHeight('popup', pop ? BAR_H + (pop.kind === 'media' ? 150 : pop.kind === 'battery' ? 160 : 130) : BAR_H); }, [pop?.kind]);
 
         // ---- Uygulama ikonları (overview'ün listesi): workspace noktalarında gösterilir ----
         const [apps, setApps] = useState([]);
@@ -452,7 +454,7 @@
                     {level < 2 && <><span className="sep">•</span><span className="date">{o.day?.formatted}</span></>}
                   </div>
                   {level === 0 && <UtilButtons />}
-                  {level < 2 && <Battery battery={o.battery} />}
+                  {level < 2 && <Battery battery={o.battery} hover={popup('battery')} />}
                 </div>
               </div>
 
@@ -466,9 +468,10 @@
             {osd && <Osd {...osd} />}
             {pop && (
               <div className={`bar-pop ${pop.closing ? 'closing' : ''}`} {...keepPop}
-                   style={{ left: Math.max(8, Math.min(vw - (pop.kind === 'media' ? 360 : 460) - 8, pop.left + pop.width / 2 - (pop.kind === 'media' ? 180 : 230))) }}>
+                   style={{ left: Math.max(8, Math.min(vw - (pop.kind === 'media' ? 360 : pop.kind === 'battery' ? 240 : 460) - 8, pop.left + pop.width / 2 - (pop.kind === 'media' ? 180 : pop.kind === 'battery' ? 120 : 230))) }}>
                 {pop.kind === 'res' && <ResourcesPopup memory={o.memory} cpu={o.cpu} />}
                 {pop.kind === 'media' && <MediaPopup media={o.media} />}
+                {pop.kind === 'battery' && <BatteryPopup battery={o.battery} />}
               </div>
             )}
           </>
@@ -660,11 +663,8 @@
         return artWaiters[title];
       }
       const mediaClock = { key: '', pos: 0, at: 0 };
-      function trackMedia(s) {
-        const key = `${s?.title}|${s?.position}|${s?.isPlaying}`;
-        if (key !== mediaClock.key) Object.assign(mediaClock, { key, pos: s?.position ?? 0, at: Date.now() });
-      }
-      const mediaPos = s => Math.min(s.endTime || Infinity, mediaClock.pos + (s.isPlaying ? (Date.now() - mediaClock.at) / 1000 : 0));
+      const trackMedia = s => updateMediaClock(mediaClock, s);
+      const mediaPos = s => mediaPosition(mediaClock, s);
 
       function MediaPopup({ media }) {
         const s = media?.currentSession;
@@ -816,46 +816,22 @@
         );
       }
 
-      // ii BatteryIndicator.qml (ClippedProgressBar)
-      function Battery({ battery }) {
+      function Battery({ battery, hover }) {
         if (!battery) return null;
-        const p = Math.round(battery.chargePercent);
-        
-        let timeStr = '';
-        if (battery.timeRemaining && typeof battery.timeRemaining === 'object') {
-          timeStr = `${battery.timeRemaining.hours || 0}s ${battery.timeRemaining.minutes || 0}d`;
-        } else if (typeof battery.timeRemaining === 'number') {
-          const hrs = Math.floor(battery.timeRemaining / 3600);
-          const mins = Math.floor((battery.timeRemaining % 3600) / 60);
-          timeStr = `${hrs}s ${mins}d`;
-        }
-
-        let watt = '?';
-        if (battery.chargeRate !== undefined && battery.chargeRate !== 0) watt = Math.abs(battery.chargeRate).toFixed(1);
-        else if (battery.dischargeRate !== undefined && battery.dischargeRate !== 0) watt = Math.abs(battery.dischargeRate).toFixed(1);
-        else if (battery.powerUsage !== undefined) watt = Math.abs(battery.powerUsage).toFixed(1);
-
-        const tooltip = battery.isCharging 
-            ? `Dolmasına kalan: ${timeStr || 'Hesaplanıyor...'}\nŞarj: %${p}\nGüç: ${watt}W`
-            : `Bitmesine kalan: ${timeStr || 'Hesaplanıyor...'}\nŞarj: %${p}\nHarcama: ${watt}W`;
-
-        if (battery.isCharging) {
-          return (
-            <div className="battery charging" title={tooltip} style={{ background: 'transparent', width: 'auto' }}>
-              <Icon name="power" fill style={{ color: '#b69df8', fontSize: 18 }} />
-              <span className="label" style={{ color: '#b69df8', marginLeft: 2, fontSize: 13 }}>{p}%</span>
-            </div>
-          );
-        }
-
-        return (
-          <div className={`battery ${p <= 20 ? 'low' : ''}`} title={tooltip}>
-            <div className="fill" style={{ width: `${p}%` }} />
-            <span className="label" style={{ color: p > 55 ? '#1d1b20' : '#e8def8' }}>
-              {p}%
-            </span>
-          </div>
-        );
+        const p = batteryDetails(battery).percent;
+        return <div className={`battery ${p <= 20 ? 'low' : ''}`} {...hover} aria-label={`${p}%`}>
+          <div className="fill" style={{ width: `${p}%` }} />
+          <span className="label">{battery.isCharging ? <Icon name="bolt" fill /> : p}</span>
+        </div>;
+      }
+      function BatteryPopup({ battery }) {
+        if (!battery) return <div className="res-pop battery-pop">Veri yok</div>;
+        const b = batteryDetails(battery);
+        const rows = [['battery_full', 'Pil', `${b.percent}%`], ['bolt', 'Durum', b.state], ['schedule', b.timeLabel, b.time], ['electric_bolt', 'Güç', b.power]];
+        return <div className="res-pop battery-pop"><div className="res-col">
+          <div className="pop-head"><Icon name="battery_full" />Pil</div>
+          {rows.map(([icon, label, value]) => <div className="pop-row" key={label}><Icon name={icon} /><span>{label}:</span><span className="v">{value}</span></div>)}
+        </div></div>;
       }
 
       // ---- Tray: ii SysTray.qml — sabitlenenler bar'da, diğerleri ok işaretinin altında.

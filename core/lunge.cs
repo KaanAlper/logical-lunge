@@ -1,4 +1,4 @@
-// lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
+﻿// lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
 // süreç olarak açar ve korur (Supervisor, nöbetçiler); pencere yöneticisinin yapamadığı, Hyprland/ii'de olan şeyleri yapar:
 //   1) Workspace geçişinde "slide" animasyonu (Hyprland: animation workspaces, slide, menu_decel)
 //      DWM thumbnail'leri ile: eski workspace'in canlı görüntüsü kayarak çıkar, yenisi girer.
@@ -2363,7 +2363,7 @@ class Dwindle
     int pendAt;
     static readonly HashSet<string> noFreezeProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { Names.Shell, Names.Core, Names.Tiling, "ShellExperienceHost", "SearchUI", "SearchApp", "StartMenuExperienceHost",
-          "LockApp", "TextInputHost", "ApplicationFrameHost", "msedgewebview2", "lunge-songrec", "lunge-termcolors" };
+          "LockApp", "TextInputHost", "ApplicationFrameHost", "lunge-songrec", "lunge-termcolors" };
 
     public void HookNewWindows()
     {
@@ -2434,6 +2434,7 @@ class Dwindle
 
     void OnWinEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("pencere", time);
         if (ev == Native.EVENT_OBJECT_SHOW) { OnWindowShown(hook, ev, hwnd, idObject, idChild, thread, time); return; }
         if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) return;
         try { OnWindowGone(hwnd); } catch (Exception ex) { Slider.Log("gone hook: " + ex.Message); }
@@ -3157,6 +3158,17 @@ static class Prefs
 
     static readonly object loadGate = new object();
     static string theme; // son okunan kabuk teması (null: henüz okunmadı)
+    static string last; // son okunan tercihler; değişince kabuğa ll:prefs (ör. bildirim süreleri hemen uygulanır)
+
+    // Bildirimin ekranda kalma süresi (sn): bilgi / başarı ve uyarı / hata. toast.html'deki varsayılanlar bunlarla aynı.
+    static readonly Dictionary<string, int> ToastDefaults = new Dictionary<string, int> { { "toastInfo", 3 }, { "toastError", 5 } };
+    const int ToastMax = 60;
+
+    public static int ToastSeconds(Dictionary<string, object> p, string key)
+    {
+        object v;
+        return p.TryGetValue(key, out v) && v is int && (int)v >= 1 && (int)v <= ToastMax ? (int)v : ToastDefaults[key];
+    }
 
     public static void Load()
     {
@@ -3172,6 +3184,9 @@ static class Prefs
             string was = theme;
             theme = th;
             if (was != null && was != th) Toasts.Emit("ll:theme-" + th);
+            string all = new JavaScriptSerializer().Serialize(d);
+            if (last != null && last != all) Toasts.Emit("ll:prefs");
+            last = all;
         }
     }
 
@@ -3180,10 +3195,11 @@ static class Prefs
         return new JavaScriptSerializer().Serialize(Read());
     }
 
-    // key: language | clock | animations | gestures | focusColor; değer doğrulanır
+    // key: language | clock | animations | gestures | focusColor | theme | toastInfo | toastError (sn); değer doğrulanır
     public static bool Set(string key, string value)
     {
         object val;
+        int n;
         switch (key)
         {
             case "language":
@@ -3202,6 +3218,10 @@ static class Prefs
             case "theme":
                 if (value != "dark" && value != "light") return false;
                 val = value; break;
+            case "toastInfo":
+            case "toastError":
+                if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) || n < 1 || n > ToastMax) return false;
+                val = n; break;
             default: return false;
         }
         lock (gate)
@@ -3234,7 +3254,7 @@ static class Files
     // Atomik yazma: okuyan (dosya izleyici, kabuk, native bar) yarım yazılmış dosya görmez
     public static bool WriteAtomic(string path, string text)
     {
-        string tmp = path + ".tmp";
+        string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
             System.IO.File.WriteAllText(tmp, text, new UTF8Encoding(false));
@@ -3255,7 +3275,7 @@ static class Files
     }
 }
 
-// Tepsi sabitlemeleri: native bar ve web bar aynı kaydı kullanır (state\tray-pins.json; anahtar = simge ipucunun ilk
+// Tepsi sabitlemeleri (state\tray-pins.json; anahtar = simge ipucunun ilk
 // kelimesi). Değişince kabuğa ll:tray-pins gider.
 static class TrayPins
 {
@@ -3341,6 +3361,8 @@ static class Settings
             { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
             { "animations", !(p.TryGetValue("animations", out anim) && anim is bool && !(bool)anim) },
             { "gestures", !(p.TryGetValue("gestures", out gest) && gest is bool && !(bool)gest) },
+            { "toastInfo", Prefs.ToastSeconds(p, "toastInfo") },
+            { "toastError", Prefs.ToastSeconds(p, "toastError") },
             { "touchpad", Touchpad.Present() },
             { "version", Updater.Installed() },
             { "configDir", Paths.ConfigDir },
@@ -3352,8 +3374,10 @@ static class Settings
     // config.yaml'daki borders.active_color (saydamlık korunur) + pencere yöneticisine yeniden yükle. Kurulumdan beri
     // elle değiştirilmemiş config bu değişiklikten sonra da "bizim" sayılır: güncellemeler yeni sürümünü yazabilir, renk
     // tercihten (prefs.json focusColor) yeniden uygulanır.
+    static readonly object colorGate = new object();
     static Dictionary<string, object> SetFocusColor(string hex)
     {
+        lock (colorGate) {
         if (!System.Text.RegularExpressions.Regex.IsMatch(hex, "^#[0-9a-fA-F]{6}$")) return Result(false);
         hex = hex.ToLowerInvariant();
         string cfg = System.IO.File.ReadAllText(Paths.ConfigFile);
@@ -3363,14 +3387,15 @@ static class Settings
         var re = new System.Text.RegularExpressions.Regex(@"(?m)^(\s*active_color:\s*"")#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?("")");
         if (!re.IsMatch(cfg)) return Result(false);
         string next = re.Replace(cfg, x => x.Groups[1].Value + hex + x.Groups[2].Value + x.Groups[3].Value, 1);
-        System.IO.File.WriteAllText(Paths.ConfigFile, next, new UTF8Encoding(false));
-        if (ours) System.IO.File.WriteAllText(hashFile, Sha256(next));
-        Prefs.Set("focusColor", hex);
+        if (!Files.WriteAtomic(Paths.ConfigFile, next)) return Result(false);
+        if (!Prefs.Set("focusColor", hex)) { Files.WriteAtomic(Paths.ConfigFile, cfg); return Result(false); }
+        if (ours && !Files.WriteAtomic(hashFile, Sha256(next))) Slider.Log("focus color: could not update config hash");
         try { new TilingClient().Command("wm-reload-config"); } catch { }
         Toasts.Emit("ll:theme-color");
         var r = Result(true);
         r["focusColor"] = hex;
         return r;
+        }
     }
 
     static Dictionary<string, object> Part(string key, Process p)
@@ -4169,7 +4194,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4219,9 +4244,18 @@ static class Toasts
             else if (target == "/prefs.json" || target.StartsWith("/prefs.json?")) { body = Prefs.Json(); status = "200 OK"; }
             else if (target.StartsWith("/focus-color?v="))
             {
-                var hex = Uri.UnescapeDataString(target.Substring(15));
-                body = Settings.Cli(new string[] { "--set-focus-color", hex });
-                status = "200 OK";
+                if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else try
+                {
+                    var hex = Uri.UnescapeDataString(target.Substring(15));
+                    body = Settings.Cli(new string[] { "--set-focus-color", hex });
+                    status = "200 OK";
+                }
+                catch (Exception ex)
+                {
+                    body = new JavaScriptSerializer().Serialize(new { ok = false, error = ex.GetBaseException().Message });
+                    status = "500 Internal Server Error";
+                }
             }
             // Tercih yaz (/pref?k=theme&v=light): bar / panel / ayarlar; değer Prefs.Set'te doğrulanır
             else if (target.StartsWith("/pref?"))
@@ -4393,6 +4427,7 @@ class DialogCatcher
 
     void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("iletişim kutusu", time);
         if (idObject != 0 || hwnd == IntPtr.Zero) return;
         try
         {
@@ -4581,6 +4616,7 @@ class Rounder
 
     void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("köşe", time);
         if (idObject != 0 || hwnd == IntPtr.Zero) return; // OBJID_WINDOW
         if (ev == 0x8001) { Forget(hwnd); return; }
         if (ev == Native.EVENT_OBJECT_LOCATIONCHANGE) Dwindle.WindowMoved(hwnd);
@@ -5212,21 +5248,43 @@ class Keys2
 
     // Hyprland keybinds.lua: Super+W tarayıcı, E dosya yöneticisi, C kod editörü, X metin editörü.
     // tiling'in shell-exec'i boşluklu tırnaklı yolları ayrıştıramıyordu ("doesn't have an ending").
-    // Her bilgisayarda çalışsın: tarayıcı = sistemin varsayılanı, kod editörü = bulunan ilk editör
+    // Use user preferences and Windows associations instead of vendor/path lists.
     static readonly Dictionary<string, string> Apps = new Dictionary<string, string>
     {
         { "browser", DefaultBrowser() },
         { "files", "explorer.exe" },
-        { "code", FirstExisting(@"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe", @"%ProgramFiles%\Microsoft VS Code\Code.exe",
-                                @"%LOCALAPPDATA%\Programs\cursor\Cursor.exe", @"%LOCALAPPDATA%\Programs\Windsurf\Windsurf.exe", @"%ProgramFiles%\Notepad++\notepad++.exe") ?? "notepad.exe" },
+        { "code", DefaultEditor() },
         { "editor", "notepad.exe" },
     };
-    // Ayarlar penceresinin "config'i düzenle"si için (VS Code / Cursor / Windsurf / Notepad++, yoksa Not Defteri)
+    // "Edit config": VISUAL/EDITOR executable, registered YAML editor, then Windows text editor.
     public static string CodeEditor { get { return Apps["code"]; } }
-    static string FirstExisting(params string[] paths)
+    static string DefaultEditor()
     {
-        foreach (var p in paths) { var e = Environment.ExpandEnvironmentVariables(p); if (System.IO.File.Exists(e)) return e; }
-        return null;
+        foreach (string key in new[] { "VISUAL", "EDITOR" })
+        {
+            string value = Environment.GetEnvironmentVariable(key);
+            if (string.IsNullOrWhiteSpace(value)) continue;
+            string exe = Environment.ExpandEnvironmentVariables(value.Trim().Trim('"'));
+            if (System.IO.File.Exists(exe)) return exe;
+        }
+        foreach (string ext in new[] { ".yaml", ".yml", ".txt" })
+        {
+            try
+            {
+                string prog = Convert.ToString(Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\" + ext + @"\UserChoice", "ProgId", null));
+                if (string.IsNullOrEmpty(prog)) prog = Convert.ToString(Microsoft.Win32.Registry.GetValue(@"HKEY_CLASSES_ROOT\" + ext, "", null));
+                foreach (string verb in new[] { "edit", "open" })
+                {
+                    string cmd = Convert.ToString(Microsoft.Win32.Registry.GetValue(@"HKEY_CLASSES_ROOT\" + prog + @"\shell\" + verb + @"\command", "", null));
+                    if (string.IsNullOrWhiteSpace(cmd)) continue;
+                    string exe = cmd.StartsWith("\"") ? cmd.Substring(1, cmd.IndexOf('"', 1) - 1) : cmd.Split(' ')[0];
+                    exe = Environment.ExpandEnvironmentVariables(exe);
+                    if (System.IO.File.Exists(exe)) return exe;
+                }
+            }
+            catch { }
+        }
+        return "notepad.exe";
     }
     static string DefaultBrowser()
     {
@@ -5241,7 +5299,8 @@ class Keys2
             }
         }
         catch { }
-        return "msedge.exe";
+        // No registered browser: let the user choose one through Windows.
+        return "ms-settings:defaultapps";
     }
 
     void Launch(string path) { LaunchQueue.Enqueue(path); }
@@ -6353,7 +6412,7 @@ static class RegionSearch
                 rest = rest.Contains("%1") ? rest.Replace("%1", url) : rest + " \"" + url + "\"";
                 launched = UserLaunch.Start(exe, rest.Trim(), Paths.Home);
             }
-            else launched = UserLaunch.Start("msedge.exe", "\"" + url + "\"", Paths.Home);
+            else launched = UserLaunch.Start(url, "", Paths.Home);
         }
         catch { }
         if (!launched) UserLaunch.Start(url, "", Paths.Home);
@@ -7208,6 +7267,52 @@ static class Updater
 
     class Rel { public string Tag, ZipName, ZipUrl, ShaUrl, Notes; public long Size; }
 
+    static string Edition()
+    {
+        try
+        {
+            string edition = System.IO.File.ReadAllText(Paths.In("EDITION")).Trim();
+            if (edition == "native-bar" || edition == "web-ui") return edition;
+        }
+        catch { }
+        // Upgrade from packages made before EDITION existed. Only the web
+        // edition contains a bar widget; prefs.bar alone can be stale.
+        try
+        {
+            var pack = json.DeserializeObject(System.IO.File.ReadAllText(Paths.UiPack("zpack.json"))) as Dictionary<string, object>;
+            foreach (Dictionary<string, object> widget in (object[])pack["widgets"])
+                if (Convert.ToString(widget["name"]) == "bar") return "web-ui";
+        }
+        catch { }
+        return "native-bar";
+    }
+
+    static Rel SelectRelease(System.Collections.IEnumerable releases, string edition)
+    {
+        if (edition != "native-bar" && edition != "web-ui") throw new ArgumentException("Invalid edition");
+        Rel best = null;
+        var pattern = new System.Text.RegularExpressions.Regex("^v([0-9]+\\.[0-9]+\\.[0-9]+)-" + edition + "$");
+        foreach (var item in releases)
+        {
+            var r = item as Dictionary<string, object>;
+            if (r == null || !r.ContainsKey("tag_name") || !r.ContainsKey("assets")) continue;
+            if ((r.ContainsKey("draft") && true.Equals(r["draft"])) || (r.ContainsKey("prerelease") && true.Equals(r["prerelease"]))) continue;
+            string tag = Convert.ToString(r["tag_name"]);
+            var m = pattern.Match(tag);
+            if (!m.Success) continue;
+            string name = "LogicalLunge-" + edition + "-" + m.Groups[1].Value + ".zip";
+            var rel = new Rel { Tag = tag, ZipName = name, Notes = r.ContainsKey("body") ? Convert.ToString(r["body"]) : "" };
+            foreach (Dictionary<string, object> a in (System.Collections.IEnumerable)r["assets"])
+            {
+                string n = Convert.ToString(a["name"]), u = Convert.ToString(a["browser_download_url"]);
+                if (n == name) { rel.ZipUrl = u; rel.Size = Convert.ToInt64(a["size"]); }
+                if (n == name + ".sha256") rel.ShaUrl = u;
+            }
+            if (rel.ZipUrl != null && rel.ShaUrl != null && (best == null || Ver(tag) > Ver(best.Tag))) best = rel;
+        }
+        return best;
+    }
+
     static System.Net.WebClient Client()
     {
         System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072; // TLS 1.2
@@ -7226,17 +7331,21 @@ static class Updater
         {
             // LL_UPDATE_API: sınama için başka bir sürüm adresi (varsayılan GitHub)
             string api = Environment.GetEnvironmentVariable("LL_UPDATE_API");
-            string body = Client().DownloadString(string.IsNullOrEmpty(api) ? "https://api.github.com/repos/" + Repo + "/releases/latest" : api);
-            var r = json.DeserializeObject(body) as Dictionary<string, object>;
-            var rel = new Rel { Tag = Convert.ToString(r["tag_name"]), Notes = r.ContainsKey("body") ? Convert.ToString(r["body"]) : "" };
-            var assets = r["assets"] as System.Collections.IEnumerable;
-            foreach (Dictionary<string, object> a in assets)
+            var releases = new List<object>();
+            int page = 1;
+            while (true)
             {
-                string n = Convert.ToString(a["name"]), u = Convert.ToString(a["browser_download_url"]);
-                if (n.StartsWith("LogicalLunge-") && n.EndsWith(".zip")) { rel.ZipName = n; rel.ZipUrl = u; rel.Size = Convert.ToInt64(a["size"]); }
-                else if (n.EndsWith(".zip.sha256")) rel.ShaUrl = u;
+                string url = string.IsNullOrEmpty(api) ? "https://api.github.com/repos/" + Repo + "/releases?per_page=100&page=" + page : api;
+                object data;
+                using (var c = Client()) data = json.DeserializeObject(c.DownloadString(url));
+                var batch = data as object[];
+                if (batch == null) { releases.Add(data); break; } // single fixture via LL_UPDATE_API
+                releases.AddRange(batch);
+                if (batch.Length < 100 || !string.IsNullOrEmpty(api)) break;
+                page++;
             }
-            if (rel.ZipUrl == null) { err = "none"; return null; }
+            var rel = SelectRelease(releases, Edition());
+            if (rel == null) { err = "none"; return null; }
             return rel;
         }
         catch (System.Net.WebException ex)
@@ -7277,7 +7386,7 @@ static class Updater
             return json.Serialize(d);
         }
         bool avail = Ver(r.Tag) > Ver(cur);
-        d["latest"] = r.Tag.TrimStart('v', 'V'); d["tag"] = r.Tag; d["available"] = avail;
+        d["latest"] = Ver(r.Tag).ToString(3); d["tag"] = r.Tag; d["available"] = avail;
         d["downloaded"] = avail && IsReady(r); d["size"] = r.Size; d["notes"] = Clean(r.Notes); d["error"] = "";
         return json.Serialize(d);
     }
@@ -7310,7 +7419,7 @@ static class Updater
         string err;
         var r = Latest(out err);
         if (r == null || Ver(r.Tag) <= Ver(Installed())) { SetStatus("idle", "", 0, 0, err == "none" ? "" : err); return Status(); }
-        string ver = r.Tag.TrimStart('v', 'V'), zip = ZipPath(r), part = zip + ".part";
+        string ver = Ver(r.Tag).ToString(3), zip = ZipPath(r), part = zip + ".part";
         if (IsReady(r)) { SetStatus("ready", ver, r.Size, r.Size, ""); return Status(); }
         try
         {
@@ -7373,7 +7482,7 @@ static class Updater
                 string actual;
                 using (var sha = System.Security.Cryptography.SHA256.Create())
                 using (var fs = System.IO.File.OpenRead(part)) actual = BitConverter.ToString(sha.ComputeHash(fs)).Replace("-", "");
-                if (expected.Length > 0 && expected != actual) { try { System.IO.File.Delete(part); } catch { } throw new Exception("Sağlama toplamı uyuşmuyor, indirme geçersiz."); }
+                if (expected.Length != 64 || expected != actual) { try { System.IO.File.Delete(part); } catch { } throw new Exception("Sağlama toplamı uyuşmuyor, indirme geçersiz."); }
             }
             System.IO.File.Move(part, zip);
             System.IO.File.WriteAllText(zip + ".ok", r.Tag);
@@ -7482,6 +7591,7 @@ class Switcher : Form
 
     static void OnForeground(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
     {
+        EventLag.Note("alt-tab", time);
         try
         {
             IntPtr root = Native.GetAncestor(hwnd, 2);
@@ -7849,6 +7959,178 @@ class GraphicsPathHelper : IDisposable
 }
 
 // ---------------- Duvar kağıdı (sağ panel > Duvar kağıtları) ----------------
+// Arama menüsündeki bir uygulamanın Windows sağ tık menüsü (Başlat menüsündekiyle aynı: dosya konumunu aç, yönetici
+// olarak çalıştır, sabitle, kaldır ...): lunge.exe --shell-menu <ayrıştırma adı, ör. shell:AppsFolder\kimlik>.
+// Kabuktan yetkisiz başlatılır: menüden açılanlar da yetkisiz açılsın (çekirdek yönetici haklarıyla çalışır). Fare
+// imlecinin yerinde, LL temasının renginde açılır; Shift basılıysa genişletilmiş komutlarla (Explorer'daki gibi).
+// Sonucu hemen stdout'a tek satır yazar ({"invoked":true|false}); iptal edilirse odağı menüden önceki pencereye
+// (arama menüsü) geri verir. Seçilen komut bu süreçte pencere açtıysa (Özellikler) o kapanana dek süreç yaşar.
+static class ShellMenu
+{
+    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem
+    {
+        [PreserveSig] int BindToHandler(IntPtr pbc, [In] ref Guid bhid, [In] ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem ppsi);
+        void GetDisplayName(uint sigdnName, out IntPtr ppszName);
+        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
+        void Compare(IShellItem psi, uint hint, out int piOrder);
+    }
+
+    [ComImport, Guid("000214e4-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IContextMenu
+    {
+        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
+        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
+        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
+    }
+
+    [ComImport, Guid("000214f4-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IContextMenu2
+    {
+        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
+        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
+        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
+        [PreserveSig] int HandleMenuMsg(uint uMsg, IntPtr wParam, IntPtr lParam);
+    }
+
+    [ComImport, Guid("bcfce0a0-ec17-11d0-8d10-00a0c90f2719"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IContextMenu3
+    {
+        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
+        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
+        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
+        [PreserveSig] int HandleMenuMsg(uint uMsg, IntPtr wParam, IntPtr lParam);
+        [PreserveSig] int HandleMenuMsg2(uint uMsg, IntPtr wParam, IntPtr lParam, out IntPtr plResult);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct CMINVOKECOMMANDINFOEX
+    {
+        public int cbSize; public uint fMask; public IntPtr hwnd; public IntPtr lpVerb; public IntPtr lpParameters; public IntPtr lpDirectory;
+        public int nShow; public uint dwHotKey; public IntPtr hIcon; public IntPtr lpTitle; public IntPtr lpVerbW; public IntPtr lpParametersW;
+        public IntPtr lpDirectoryW; public IntPtr lpTitleW; public Native.POINT ptInvoke;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern int SHCreateItemFromParsingName(string path, IntPtr pbc, [In] ref Guid riid, out IShellItem item);
+    [DllImport("user32.dll")] static extern IntPtr CreatePopupMenu();
+    [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr h);
+    [DllImport("user32.dll")] static extern uint TrackPopupMenuEx(IntPtr hmenu, uint flags, int x, int y, IntPtr hwnd, IntPtr tpm);
+    // Menülerin koyu / aydınlık çizimi (uxtheme, 1903+; adı yok, sıra numarasıyla)
+    [DllImport("uxtheme.dll", EntryPoint = "#135")] static extern int SetPreferredAppMode(int mode);
+    [DllImport("uxtheme.dll", EntryPoint = "#136")] static extern void FlushMenuThemes();
+
+    static readonly Guid BHID_SFUIObject = new Guid("3981e225-f559-11d3-8e3a-00c04f6837d5");
+    const uint First = 1, Last = 0x7fff;
+
+    // Alt menüler (Birlikte aç, Gönder) içeriklerini sahip pencereye gelen bu iletilerle doldurur ve çizer
+    sealed class Owner : NativeWindow
+    {
+        public IContextMenu2 Cm2;
+        public IContextMenu3 Cm3;
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x117 || m.Msg == 0x2c || m.Msg == 0x2b || m.Msg == 0x120) // INITMENUPOPUP, MEASUREITEM, DRAWITEM, MENUCHAR
+            {
+                try
+                {
+                    IntPtr res;
+                    if (Cm3 != null && Cm3.HandleMenuMsg2((uint)m.Msg, m.WParam, m.LParam, out res) == 0) { m.Result = res; return; }
+                    if (Cm2 != null && Cm2.HandleMenuMsg((uint)m.Msg, m.WParam, m.LParam) == 0) { m.Result = IntPtr.Zero; return; }
+                }
+                catch { }
+            }
+            base.WndProc(ref m);
+        }
+    }
+
+    public static void Run(string path)
+    {
+        var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+        try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
+        IntPtr prev = Native.GetForegroundWindow();
+        bool invoked = false;
+        Owner owner = null;
+        IntPtr menu = IntPtr.Zero;
+        IContextMenu cm = null;
+        try
+        {
+            object th;
+            try { SetPreferredAppMode(Prefs.Read().TryGetValue("theme", out th) && "light".Equals(th) ? 3 : 2); FlushMenuThemes(); } catch { }
+            Guid iidItem = typeof(IShellItem).GUID, bhid = BHID_SFUIObject, iidCm = typeof(IContextMenu).GUID;
+            IShellItem item;
+            if (SHCreateItemFromParsingName(path, IntPtr.Zero, ref iidItem, out item) != 0 || item == null) return;
+            IntPtr ppv;
+            if (item.BindToHandler(IntPtr.Zero, ref bhid, ref iidCm, out ppv) != 0 || ppv == IntPtr.Zero) return;
+            try { cm = (IContextMenu)Marshal.GetObjectForIUnknown(ppv); } finally { Marshal.Release(ppv); }
+            owner = new Owner { Cm2 = cm as IContextMenu2, Cm3 = cm as IContextMenu3 };
+            owner.CreateHandle(new CreateParams { Caption = "lunge-shell-menu", Style = unchecked((int)0x80000000), ExStyle = 0x80 }); // WS_POPUP, TOOLWINDOW; görünmez
+            menu = CreatePopupMenu();
+            uint flags = (Control.ModifierKeys & Keys.Shift) != 0 ? 0x100u : 0u; // CMF_EXTENDEDVERBS
+            if (cm.QueryContextMenu(menu, 0, First, Last, flags) < 0) return;
+            var pt = Cursor.Position;
+            // Menü dışına tıklanınca kapanması için sahip pencere ön planda olmalı; sonra WM_NULL (TrackPopupMenu belgesi)
+            Native.SetForegroundWindow(owner.Handle);
+            uint cmd = TrackPopupMenuEx(menu, 0x100 | 0x2, pt.X, pt.Y, owner.Handle, IntPtr.Zero); // RETURNCMD, RIGHTBUTTON
+            Native.PostMessage(owner.Handle, 0, IntPtr.Zero, IntPtr.Zero);
+            if (cmd >= First)
+            {
+                invoked = true;
+                so.WriteLine("{\"invoked\":true}");
+                var ci = new CMINVOKECOMMANDINFOEX
+                {
+                    cbSize = Marshal.SizeOf(typeof(CMINVOKECOMMANDINFOEX)),
+                    fMask = 0x4000 | 0x20000000 | 0x100, // UNICODE, PTINVOKE, NOASYNC (süreç komut bitmeden çıkmasın)
+                    hwnd = owner.Handle,
+                    lpVerb = new IntPtr(cmd - First),
+                    lpVerbW = new IntPtr(cmd - First),
+                    nShow = 1, // SW_SHOWNORMAL
+                    ptInvoke = new Native.POINT { X = pt.X, Y = pt.Y },
+                };
+                int hr = cm.InvokeCommand(ref ci);
+                if (hr < 0) Slider.Log("sağ tık menüsü: komut çalışmadı (0x" + hr.ToString("x8") + "): " + path);
+            }
+        }
+        catch (Exception ex) { Slider.Log("sağ tık menüsü: " + ex.GetBaseException().Message + ": " + path); }
+        finally
+        {
+            if (!invoked)
+            {
+                try { so.WriteLine("{\"invoked\":false}"); } catch { }
+                if (prev != IntPtr.Zero) Native.SetForegroundWindow(prev);
+            }
+        }
+        try { if (invoked) WaitForOwnWindows(owner == null ? IntPtr.Zero : owner.Handle); } catch { }
+        if (menu != IntPtr.Zero) DestroyMenu(menu);
+        if (owner != null) owner.DestroyHandle();
+        if (cm != null) Marshal.ReleaseComObject(cm);
+    }
+
+    // Komutun bu süreçte açtığı pencereler (Özellikler) kapanana dek bekle; 3 sn içinde hiç açılmadıysa çık
+    static void WaitForOwnWindows(IntPtr owner)
+    {
+        uint me = (uint)Process.GetCurrentProcess().Id;
+        var start = DateTime.UtcNow;
+        bool seen = false;
+        while (true)
+        {
+            bool any = false;
+            Native.EnumWindows((h, l) =>
+            {
+                uint pid;
+                Native.GetWindowThreadProcessId(h, out pid);
+                if (pid == me && h != owner && Native.IsWindowVisible(h)) { any = true; return false; }
+                return true;
+            }, IntPtr.Zero);
+            if (any) seen = true;
+            else if (seen || (DateTime.UtcNow - start).TotalSeconds > 3) return;
+            Application.DoEvents();
+            Thread.Sleep(100);
+        }
+    }
+}
+
 // Windows'un IDesktopWallpaper API'si: monitör başına ayrı resim ya da tüm masaüstüne yayılan tek resim
 // (Superpaper'ın "span" modu). Hazır öneriler Wallhaven'ın herkese açık API'sinden, yalnızca SFW.
 [ComImport, Guid("B92B56A9-8B55-4E14-9A89-0199BBB6F93B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -7919,7 +8201,7 @@ static class Wallpaper
     }
 
     // Seçilen duvar kağıdı kalıcıdır: başka araçlar (ör. Superpaper) açılışta kendi resmini uygularsa, birkaç dakika
-    // içinde bizim seçimimiz geri yüklenir. Kayıt: satır başına "mod<TAB>yol".
+    // boyunca bizim seçimimiz geri yüklenir. Kayıt: satır başına "mod<TAB>yol".
     static string StatePath { get { return Paths.State(@"wallpaper.txt"); } }
 
     static void SaveState(string path, string mode)
@@ -7937,14 +8219,29 @@ static class Wallpaper
         catch { }
     }
 
+    [DllImport("advapi32.dll")]
+    static extern int RegNotifyChangeKeyValue(IntPtr hKey, bool watchSubtree, uint filter, IntPtr hEvent, bool async);
+
+    // Açılıştan sonraki ~3 dk: masaüstü ayarları (HKCU\Control Panel\Desktop) değiştiği an kontrol edilir; başka bir
+    // aracın resmi 15 sn görünmesin. Bildirim kurulamazsa 5 sn'lik yoklama aynı işi görür.
     public static void StartKeeper()
     {
         var t = new Thread(() =>
         {
             int fixes = 0;
-            for (int i = 0; i < 40 && fixes < 3; i++) // ~3 dk
+            Microsoft.Win32.RegistryKey key = null;
+            var changed = new AutoResetEvent(false);
+            try { key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Control Panel\Desktop"); } catch { }
+            var until = DateTime.UtcNow.AddMinutes(3);
+            for (int i = 0; DateTime.UtcNow < until && fixes < 3; i++)
             {
-                Thread.Sleep(i == 0 ? 15000 : 5000);
+                if (i > 0)
+                {
+                    bool watching = false;
+                    try { watching = key != null && RegNotifyChangeKeyValue(key.Handle.DangerousGetHandle(), false, 4 /* LAST_SET */, changed.SafeWaitHandle.DangerousGetHandle(), true) == 0; } catch { }
+                    changed.WaitOne(5000);
+                    if (watching) Thread.Sleep(300); // aracın ardışık yazmaları bitsin
+                }
                 try
                 {
                     if (!System.IO.File.Exists(StatePath)) return;
@@ -7961,10 +8258,11 @@ static class Wallpaper
                         if (System.IO.Path.GetFileName(cur ?? "") == System.IO.Path.GetFileName(a[1])) continue;
                         SetRaw(a[1], a[0]); fixedOne = true;
                     }
-                    if (fixedOne) fixes++;
+                    if (fixedOne) { fixes++; Slider.Log("duvar kağıdı başka bir araçça değiştirilmişti, seçim geri yüklendi"); }
                 }
                 catch { }
             }
+            if (key != null) key.Close();
         }) { IsBackground = true };
         t.SetApartmentState(ApartmentState.STA);
         t.Start();
@@ -8259,6 +8557,25 @@ static class WarmTerminal
 // Bizim kabuk (shell'deki bar) ayakta mı. Bar 20 sn'den uzun yoksa (shell ya da tiling çöktü / açılamadı) helper
 // güvenli tarafa açılır: Windows görev çubuğu ve Win tuşu (Başlat menüsü) geri gelir, kullanıcı hiçbir zaman barsız,
 // görev çubuğusuz ve Başlat'sız kalmaz. Bar dönünce ikisi yine bizim. (Kısa shell yeniden başlatmaları sayılmaz.)
+// Sistem genelindeki olay kancalarının (WinEvent) gecikmesi: olayın üretildiği an (dwmsEventTime) ile bize ulaştığı an
+// arası. Bir uygulama olay seli ürettiğinde (ör. Görev Yöneticisi'nin listesi yeniden sıralanırken) kuyruk birikirse
+// kaydedilir: bir dahaki kasmanın kaynağı tahminle değil kayıtla bulunsun. Ucuz: çağrı başına bir karşılaştırma.
+static class EventLag
+{
+    static int lastLog, seen;
+
+    public static void Note(string hook, uint time)
+    {
+        int lag = unchecked(Environment.TickCount - (int)time);
+        Interlocked.Increment(ref seen);
+        if (lag < 1000 || lag > 600000) return;
+        int now = Environment.TickCount;
+        int last = lastLog;
+        if (now - last < 5000 || Interlocked.CompareExchange(ref lastLog, now, last) != last) return;
+        Slider.Log("olay kancası gecikti: " + hook + " " + lag + " ms (son kayıttan beri " + Interlocked.Exchange(ref seen, 0) + " olay)");
+    }
+}
+
 static class ShellState
 {
     static volatile bool up = true;
@@ -8736,7 +9053,7 @@ static class TaskbarGuard
     {
         if (cb != null) return;
         FailOpen = failOpen;
-        cb = (hook, ev, h, idObject, idChild, thread, time) => { if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
+        cb = (hook, ev, h, idObject, idChild, thread, time) => { EventLag.Note("görev çubuğu", time); if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
         Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
         Sweep();
         // Yoğunlukta kaçan olay olursa diye seyrek yedek tarama; bar'ın durumu da burada izlenir
@@ -9062,6 +9379,7 @@ static class Program
         // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
+        if (args.Length == 2 && args[0] == "--shell-menu") { ShellMenu.Run(args[1]); return; }
         // lunge.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
         if (args.Length == 2 && args[0] == "--audio-default")
         {
@@ -9656,4 +9974,3 @@ static class Program
         GC.KeepAlive(mutex);
     }
 }
-
