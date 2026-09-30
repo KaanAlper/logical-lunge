@@ -21,6 +21,9 @@ use crate::providers::{
   ProviderFunctionResponse, ProviderInputMsg, RuntimeType,
 };
 
+#[path = "timeline.rs"]
+mod timeline;
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaProviderConfig {}
@@ -506,7 +509,17 @@ impl MediaProvider {
     let album_title = properties.AlbumTitle()?.to_string();
     let album_artist = properties.AlbumArtist()?.to_string();
 
-    session_output.title = (!title.is_empty()).then_some(title);
+    let next_title = (!title.is_empty()).then_some(title);
+    if session_output.title.is_some() && session_output.title != next_title {
+      // A new track can reuse the same Windows session identity. Do not
+      // carry a previous video's timeline through an unavailable snapshot.
+      session_output.start_time = 0;
+      session_output.end_time = 0;
+      session_output.position = 0;
+      session_output.position_seconds = 0.0;
+      session_output.timeline_updated_at = 0;
+    }
+    session_output.title = next_title;
     session_output.artist = (!artist.is_empty()).then_some(artist);
     session_output.album_title =
       (!album_title.is_empty()).then_some(album_title);
@@ -523,14 +536,20 @@ impl MediaProvider {
     session: &GsmtcSession,
   ) -> anyhow::Result<()> {
     let properties = session.GetTimelineProperties()?;
-
-    session_output.start_time =
-      properties.StartTime()?.Duration.max(0) as u64 / 10_000_000;
-    session_output.end_time =
-      properties.EndTime()?.Duration.max(0) as u64 / 10_000_000;
-    session_output.position =
-      properties.Position()?.Duration.max(0) as u64 / 10_000_000;
-    session_output.position_seconds = properties.Position()?.Duration.max(0) as f64 / 10_000_000.0;
+    let start = properties.StartTime()?.Duration.max(0) as u64 / 10_000_000;
+    let end = properties.EndTime()?.Duration.max(0) as u64 / 10_000_000;
+    let position_ticks = properties.Position()?.Duration.max(0);
+    let end_ticks = properties.EndTime()?.Duration.max(0);
+    // Zen emits a 0/0 timeline event between valid snapshots during seeking.
+    // The event source does not make it authoritative. A real seek to 0 has
+    // position 0 with the video duration still present.
+    if !timeline::accept_snapshot(session_output.end_time, position_ticks, end_ticks) {
+      return Ok(());
+    }
+    session_output.start_time = start;
+    if end > 0 { session_output.end_time = end; }
+    session_output.position = position_ticks as u64 / 10_000_000;
+    session_output.position_seconds = position_ticks as f64 / 10_000_000.0;
     // WinRT DateTime uses 100 ns ticks since 1601.
     let at = properties.LastUpdatedTime()?.UniversalTime;
     session_output.timeline_updated_at = if at > 116_444_736_000_000_000 { (at - 116_444_736_000_000_000) / 10_000 } else { 0 };

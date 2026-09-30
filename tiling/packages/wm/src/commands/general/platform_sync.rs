@@ -474,8 +474,12 @@ fn redraw_containers(
       DisplayState::Showing | DisplayState::Shown
     );
 
+    #[cfg(target_os = "windows")]
+    let sync_tiled_fullscreen = state.fake_fullscreen.contains(&window.native().hwnd().0);
+    #[cfg(not(target_os = "windows"))]
+    let sync_tiled_fullscreen = false;
     if let Err(err) =
-      reposition_window(window, *hide_corner, &z_order, is_visible, config)
+      reposition_window(window, *hide_corner, &z_order, is_visible, sync_tiled_fullscreen, config)
     {
       tracing::warn!("Failed to set window position: {}", err);
     }
@@ -531,6 +535,10 @@ fn reposition_window(
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   z_order: &WindowZOrder,
   is_visible: bool,
+  // An application-requested fullscreen has already escaped its tile.
+  // Wait for this corrective move before drawing another frame.
+  #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+  sync_tiled_fullscreen: bool,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let rect = window
@@ -627,8 +635,10 @@ fn reposition_window(
 
       let mut swp_flags = SWP_NOACTIVATE
         | SWP_NOCOPYBITS
-        | SWP_NOSENDCHANGING
-        | SWP_ASYNCWINDOWPOS;
+        | SWP_NOSENDCHANGING;
+      if !sync_tiled_fullscreen {
+        swp_flags |= SWP_ASYNCWINDOWPOS;
+      }
 
       match &window.state() {
         WindowState::Minimized => {

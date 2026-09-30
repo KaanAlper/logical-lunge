@@ -95,6 +95,19 @@ body {
 .body { flex: 1; overflow-y: auto; padding: 0 28px 28px; scrollbar-width: thin; }
 .body::-webkit-scrollbar { width: 8px; }
 .body::-webkit-scrollbar-thumb { background: var(--colLayer2); border-radius: 4px; }
+.apply-float {
+  flex: none; position: relative; z-index: 5;
+  display: flex; align-items: center; gap: 12px;
+  margin: 2px 20px 18px; padding: 10px 12px 10px 16px;
+  background: color-mix(in srgb, var(--colLayer3) 88%, transparent);
+  backdrop-filter: blur(14px);
+  border: 1px solid var(--m3outlineVariant); border-radius: 18px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+}
+.apply-float > .icon { color: var(--m3primary); }
+.apply-float > span { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-weight: 550; }
+.apply-float small { color: var(--m3onSurfaceVariant); font-size: 11px; font-weight: 400; }
+.apply-float .btn { flex: none; }
 
 .qbtn {
   width: 40px; height: 40px; border: 0; border-radius: 999px; display: grid; place-items: center;
@@ -198,3 +211,31 @@ input[type="time"] {
 .about .logo i { position: absolute; background: #d0bcff; border-radius: 5px; }
 .about h2 { margin: 0; font-size: 22px; font-weight: normal; font-variation-settings: 'wght' 560; }
 .about .sub { color: var(--m3onSurfaceVariant); }
+/* Workspace order and monitor assignments */
+.ws-count { display: inline-flex; height: 36px; border: 1px solid var(--m3outlineVariant); border-radius: 12px; overflow: hidden; }
+.ws-count button { width: 34px; border: 0; background: var(--colLayer2); color: var(--m3onSurface); cursor: pointer; font: inherit; }
+.ws-count input { width: 48px; border: 0; background: transparent; color: var(--m3onSurface); text-align: center; font: inherit; outline: none; }
+.ws-count input::-webkit-inner-spin-button, .ws-count input::-webkit-outer-spin-button { appearance: none; }
+.ws-first { min-width: 132px; }
+.ws-order { margin: 10px 4px 0; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--m3onSurfaceVariant); }
+.ws-order > div { display: flex; gap: 4px; flex-wrap: wrap; }
+.ws-order b, .ws-order em { display: grid; place-items: center; min-width: 24px; height: 24px; padding: 0 3px; border-radius: 7px; background: var(--colLayer2); color: var(--m3onSurface); font-style: normal; font-weight: 550; }
+.ws-order b:first-child { background: var(--m3secondaryContainer); color: var(--m3onSecondaryContainer); }
+.ws-error { color: var(--m3error); }
+.ws-saved { color: var(--m3ok); }
+.ws-empty { padding: 20px; color: var(--m3error); }
+.ws-custom-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; }
+.ws-custom-item { min-height: 58px; padding: 7px; border: 1px solid var(--m3outlineVariant); border-radius: 12px; background: var(--colLayer2); color: var(--m3onSurface); display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; cursor: pointer; font: inherit; text-align: left; }
+.ws-custom-item:hover { border-color: var(--m3primary); background: var(--colLayer3); }
+.ws-custom-item:focus-visible { outline: 2px solid var(--m3primary); outline-offset: 2px; }
+.ws-custom-item strong { font-size: 14px; }
+.ws-custom-item span { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--m3onSurfaceVariant); }
+.ws-custom-item i { width: 7px; height: 7px; border-radius: 50%; }
+.ws-custom-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 16px; }
+.ws-inline-error { color: var(--m3error); font-size: 12px; }
+.ws-lens { position: absolute; top: -37px; transform: translateX(-50%); height: 31px; display: flex; align-items: center; gap: 3px; padding: 3px 7px; pointer-events: none; white-space: nowrap; z-index: 6; border: 1px solid var(--m3outlineVariant); border-radius: 11px; background: color-mix(in srgb, var(--colLayer3) 90%, transparent); backdrop-filter: blur(10px); box-shadow: 0 5px 18px rgba(0,0,0,.2); }
+.ws-lens span { width: 28px; text-align: center; font-size: 11px; color: var(--m3onSurfaceVariant); opacity: .58; transition: transform 150ms var(--elementMove), opacity 150ms ease, color 150ms ease; }
+.ws-lens span.near { transform: scale(1.08); opacity: .8; }
+.ws-lens span.center { transform: scale(1.18); opacity: 1; color: var(--m3primary); font-weight: 700; }
+.ws-divider:focus-visible { outline: 2px solid var(--m3primary); outline-offset: 2px; border-radius: 7px; }
+@media (prefers-reduced-motion: reduce) { .ws-lens span { transition: opacity 150ms ease, color 150ms ease; } .ws-lens span.near, .ws-lens span.center { transform: none; } }

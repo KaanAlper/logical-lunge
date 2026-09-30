@@ -1,5 +1,5 @@
-# Logical Lunge - first-install wizard
-#   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-ui/install.ps1 | iex
+Ôªø# Logical Lunge - first-install wizard
+#   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 # Asks for the focus color, the interface language and the clock, downloads the latest release (with a progress bar)
 # and runs installer\setup.ps1 elevated (one UAC prompt) while showing its steps. On an error or Ctrl+C the installer
 # puts everything back the way it was. Nothing is left behind in %TEMP%.
@@ -7,8 +7,7 @@
 #                                 $env:LL_NO_SENSORS = 1    skip the PawnIO driver (CPU temperature)
 #                                 $env:LL_SOURCE = <folder> install from a local build (dist\LogicalLunge-x.y.z)
 #                                 $env:LL_DEFAULTS = 1      no questions (default choices)
-#                                 $env:LL_EDITION = 'native-ui' or 'web-ui' (defaults to the installed edition, else native-ui)
-#                                 $env:LL_PLAIN = 1         numbered prompts (0 = no extras, < = back)
+#                                 $env:LL_PLAIN = 1         simple prompts instead of gum
 #                                 $env:LL_PREVIEW = 1       walk through the wizard, the download and a simulated install;
 #                                                           nothing is stopped or changed, no UAC
 #                                                           (= fail: a failed install, = warn: extras that failed)
@@ -17,63 +16,55 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $repo = 'KaanAlper/logical-lunge'
+$GUM_VER = '2.0.2'
 $E = [char]27
 
 # ---------------------------------------------------------------- texts (Turkish / English)
 $tr = (Get-UICulture).Name -like 'tr*'
-function Get-Texts([bool]$tr) {
-if ($tr) { @{
-        tagline = 'Logical Lunge: ak˝c˝ ve ki˛iselle˛tirilebilir bir Windows masa¸st¸'
-        qEdition = 'Hangi aray¸z¸ kurmak istersin?'; sEdition = 'Aray¸z'
-        native = 'Native: yerel Áizilen hafif bar; dier paneller hen¸z WebView2 kullan˝r'
-        web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle Áizilir'
-        noRelease = 'Bu aray¸z iÁin dorulanabilir bir s¸r¸m hen¸z yay˝mlanmam˝˛.'
-        preparing = 'Haz˝rlan˝yor'; release = 'Son s¸r¸m aran˝yor'
-        welcome = "Logical Lunge'a ho˛ geldin"
-        welcomeBody = "BirkaÁ k˝sa soru soraca˝z, sonra gerisini biz hallederiz. Kurulum s˝ras˝nda Windows bir kez yˆnetici izni isteyecek.`nHer dei˛iklik yedeklenir; bir ˛ey ters giderse ya da vazgeÁersen her ˛ey eski haline dˆner."
-        version = 'S¸r¸m'; size = '›ndirme'
-        qLang = 'Aray¸z hangi dilde olsun?'; systemLang = 'Sistem dili'
-        qColor = 'Vurgu rengi ne olsun? (kabuk ve etkin pencere kenarl˝˝)'; custom = '÷zel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi gˆr¸nm¸yor, ˆrnek: #b69df8'
-        qClock = 'Saat nas˝l gˆr¸ns¸n?'; h24 = '24 saat'; h12 = '12 saat'
-        qExtras = 'Ek bile˛enler (Bo˛luk ile seÁ / kald˝r, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU s˝cakl˝˝: PawnIO s¸r¸c¸s¸'
-        summary = '÷zet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bile˛enler'; none = 'yok'
-        qGo = 'Kural˝m m˝?'; go = 'Kur'; cancel = 'VazgeÁ'
-        downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket dorulan˝yor'; extracting = 'Paket aÁ˝l˝yor'; stopping = 'AÁ˝k masa¸st¸ kapat˝l˝yor'
+$T = if ($tr) { @{
+        tagline = "illogical-impulse'un Windows hali: tek par√ßa, akƒ±cƒ± bir masa√ºst√º"
+        preparing = 'Hazƒ±rlanƒ±yor'; release = 'Son s√ºr√ºm aranƒ±yor'
+        welcome = "Logical Lunge'a ho≈ü geldin"
+        welcomeBody = "Birka√ß kƒ±sa soru soracaƒüƒ±z, sonra gerisini biz hallederiz. Kurulum sƒ±rasƒ±nda Windows bir kez y√∂netici izni isteyecek.`nHer deƒüi≈üiklik yedeklenir; bir ≈üey ters giderse ya da vazge√ßersen her ≈üey eski haline d√∂ner."
+        version = 'S√ºr√ºm'; size = 'ƒ∞ndirme'
+        qLang = 'Aray√ºz hangi dilde olsun?'; systemLang = 'Sistem dili'
+        qColor = 'Odak rengi ne olsun? (etkin pencerenin kenarlƒ±ƒüƒ±)'; custom = '√ñzel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi g√∂r√ºnm√ºyor, √∂rnek: #b69df8'
+        qClock = 'Saat nasƒ±l g√∂r√ºns√ºn?'; h24 = '24 saat'; h12 = '12 saat'
+        qExtras = 'Ek bile≈üenler (x ile se√ß / kaldƒ±r, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sƒ±caklƒ±ƒüƒ±: PawnIO s√ºr√ºc√ºs√º'
+        summary = '√ñzet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bile≈üenler'; none = 'yok'
+        qGo = 'Kuralƒ±m mƒ±?'; go = 'Kur'; cancel = 'Vazge√ß'
+        downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket doƒürulanƒ±yor'; extracting = 'Paket a√ßƒ±lƒ±yor'; stopping = 'A√ßƒ±k masa√ºst√º kapatƒ±lƒ±yor'
         uac = "Windows'un izin penceresini onayla..."
-        installing = 'Logical Lunge kuruluyor'; ctrlc = 'Ctrl+C: vazgeÁ'; rollingBack = 'Dei˛iklikler geri al˝n˝yor...'
-        qStop = 'Kurulumu durdurup her ˛eyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
-        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bile˛enler'; stop = 'Masa¸st¸ durduruluyor'; files = 'Dosyalar kopyalan˝yor'; config = 'Ayarlar˝n yaz˝l˝yor'; migrate = '÷nceki s¸r¸mden ta˛˝n˝yor'; tools = 'Parlakl˝k ve s˝cakl˝k araÁlar˝'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarlar˝'; tasks = 'Ba˛lang˝Á gˆrevleri'; owner = '›lk aÁ˝l˝˛a haz˝rlan˝yor'; finish = 'Son dokunu˛lar' }
-        doneTitle = 'Haz˝r! Logical Lunge kuruldu'
-        doneBody = "Masa¸st¸n birkaÁ saniye iÁinde aÁ˝l˝yor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ã/õ workspace dei˛tir`n  Sa ¸st kˆ˛e       h˝zl˝ ayarlar ve bildirimler`n`nKald˝rmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
-        errTitle = 'Olmad˝, ama merak etme'
-        errBody = "Kurulum '{0}' ad˝m˝nda tak˝ld˝. Bilgisayar˝nda hiÁbir ˛ey yar˝m kalmad˝: yap˝lan dei˛iklikler geri al˝nd˝ ve ˆnceki masa¸st¸n yeniden aÁ˝ld˝."
-        errDetail = 'Ayr˝nt˝'; errLog = 'G¸nl¸k'
-        errRetry = "Ayn˝ komutu yeniden Áal˝˛t˝rarak tekrar deneyebilirsin. Sorun s¸rerse g¸nl¸¸ bizimle payla˛:`nhttps://github.com/$repo/issues"
-        netTitle = '›nternete ula˛amad˝k'; netBody = 'Balant˝n˝ kontrol edip ayn˝ komutu yeniden Áal˝˛t˝r. Bilgisayar˝nda hiÁbir ˛ey dei˛medi.'
-        cancelTitle = 'Kurulumdan vazgeÁildi'; cancelBody = 'Her ˛ey eski haline dˆnd¸, bilgisayar˝nda hiÁbir ˛ey dei˛medi.'
-        uacTitle = '›zin verilmedi'; uacBody = "Windows'un yˆnetici izni olmadan kurulum yap˝lam˝yor. HiÁbir ˛ey dei˛medi; haz˝r olduunda ayn˝ komutu yeniden Áal˝˛t˝r."
+        installing = 'Logical Lunge kuruluyor'; ctrlc = 'Ctrl+C: vazge√ß'; rollingBack = 'Deƒüi≈üiklikler geri alƒ±nƒ±yor...'
+        qStop = 'Kurulumu durdurup her ≈üeyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
+        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bile≈üenler'; stop = 'Masa√ºst√º durduruluyor'; files = 'Dosyalar kopyalanƒ±yor'; config = 'Ayarlarƒ±n yazƒ±lƒ±yor'; migrate = '√ñnceki s√ºr√ºmden ta≈üƒ±nƒ±yor'; tools = 'Parlaklƒ±k ve sƒ±caklƒ±k ara√ßlarƒ±'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarlarƒ±'; tasks = 'Ba≈ülangƒ±√ß g√∂revleri'; owner = 'ƒ∞lk a√ßƒ±lƒ±≈üa hazƒ±rlanƒ±yor'; finish = 'Son dokunu≈ülar' }
+        doneTitle = 'Hazƒ±r! Logical Lunge kuruldu'
+        doneBody = "Masa√ºst√ºn birka√ß saniye i√ßinde a√ßƒ±lƒ±yor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ‚Üê/‚Üí workspace deƒüi≈ütir`n  Saƒü √ºst k√∂≈üe       hƒ±zlƒ± ayarlar ve bildirimler`n`nKaldƒ±rmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
+        errTitle = 'Olmadƒ±, ama merak etme'
+        errBody = "Kurulum '{0}' adƒ±mƒ±nda takƒ±ldƒ±. Bilgisayarƒ±nda hi√ßbir ≈üey yarƒ±m kalmadƒ±: yapƒ±lan deƒüi≈üiklikler geri alƒ±ndƒ± ve √∂nceki masa√ºst√ºn yeniden a√ßƒ±ldƒ±."
+        errDetail = 'Ayrƒ±ntƒ±'; errLog = 'G√ºnl√ºk'
+        errRetry = "Aynƒ± komutu yeniden √ßalƒ±≈ütƒ±rarak tekrar deneyebilirsin. Sorun s√ºrerse g√ºnl√ºƒü√º bizimle payla≈ü:`nhttps://github.com/$repo/issues"
+        netTitle = 'ƒ∞nternete ula≈üamadƒ±k'; netBody = 'Baƒülantƒ±nƒ± kontrol edip aynƒ± komutu yeniden √ßalƒ±≈ütƒ±r. Bilgisayarƒ±nda hi√ßbir ≈üey deƒüi≈ümedi.'
+        cancelTitle = 'Kurulumdan vazge√ßildi'; cancelBody = 'Her ≈üey eski haline d√∂nd√º, bilgisayarƒ±nda hi√ßbir ≈üey deƒüi≈ümedi.'
+        uacTitle = 'ƒ∞zin verilmedi'; uacBody = "Windows'un y√∂netici izni olmadan kurulum yapƒ±lamƒ±yor. Hi√ßbir ≈üey deƒüi≈ümedi; hazƒ±r olduƒüunda aynƒ± komutu yeniden √ßalƒ±≈ütƒ±r."
         oldWin = "Logical Lunge Windows 10 2004 (19041) ya da daha yenisini istiyor; bu bilgisayar {0}."
-        badPkg = '›ndirilen paket bozuk gˆr¸n¸yor (dorulama tutmad˝).'
+        badPkg = 'ƒ∞ndirilen paket bozuk g√∂r√ºn√ºyor (doƒürulama tutmadƒ±).'
         plainPick = 'Numara yaz ve Enter''a bas'; yes = 'e'
-        retrying = 'balant˝ koptu, {0} sn sonra kald˝˝ yerden devam ({1}/5)'
-        warnTitle = 'BirkaÁ ek parÁa kurulamad˝'
-        warnBody = 'Masa¸st¸n tam Áal˝˛˝yor, yaln˝zca bunlar eksik. Ayn˝ komutu sonra yeniden Áal˝˛t˝r˝nca eksikler tamamlan˝r.'
-        xBright = 'Harici monitˆr parlakl˝˝: ControlMyMonitor'
+        retrying = 'baƒülantƒ± koptu, {0} sn sonra kaldƒ±ƒüƒ± yerden devam ({1}/5)'
+        warnTitle = 'Birka√ß ek par√ßa kurulamadƒ±'
+        warnBody = 'Masa√ºst√ºn tam √ßalƒ±≈üƒ±yor, yalnƒ±zca bunlar eksik. Aynƒ± komutu sonra yeniden √ßalƒ±≈ütƒ±rƒ±nca eksikler tamamlanƒ±r.'
+        xBright = 'Harici monit√∂r parlaklƒ±ƒüƒ±: ControlMyMonitor'
     } } else { @{
-        tagline = 'Logical Lunge: a fluid, personal Windows desktop'
-        qEdition = 'Which interface would you like to install?'; sEdition = 'Interface'
-        native = 'Native: a lightweight native bar; other panels still use WebView2'
-        web = 'Web UI: the bar and panels are rendered in React / WebView2 windows'
-        noRelease = 'No verifiable release has been published for this interface yet.'
+        tagline = 'illogical-impulse for Windows: one fluid desktop'
         preparing = 'Getting ready'; release = 'Looking for the latest release'
         welcome = 'Welcome to Logical Lunge'
         welcomeBody = "A few quick questions, then we take care of the rest. Windows will ask for administrator permission once.`nEvery change is backed up; if something goes wrong or you cancel, everything goes back to how it was."
         version = 'Version'; size = 'Download'
         qLang = 'Which language should the interface use?'; systemLang = 'System language'
-        qColor = 'Pick an accent color (shell and active window border)'; custom = 'Custom color...'; qHex = 'Color code (#rrggbb)'; badHex = "That doesn't look like a color code, e.g. #b69df8"
+        qColor = 'Pick a focus color (the border of the active window)'; custom = 'Custom color...'; qHex = 'Color code (#rrggbb)'; badHex = "That doesn't look like a color code, e.g. #b69df8"
         qClock = 'How should the clock look?'; h24 = '24-hour'; h12 = '12-hour'
-        qExtras = 'Extras (Space to toggle, Enter to confirm)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU temperature: PawnIO driver'
-        summary = 'Summary'; sLang = 'Language'; sColor = 'Accent color'; sClock = 'Clock'; sExtras = 'Extras'; none = 'none'
+        qExtras = 'Extras (x to toggle, Enter to confirm)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU temperature: PawnIO driver'
+        summary = 'Summary'; sLang = 'Language'; sColor = 'Focus color'; sClock = 'Clock'; sExtras = 'Extras'; none = 'none'
         qGo = 'Ready to install?'; go = 'Install'; cancel = 'Cancel'
         downloading = 'Downloading Logical Lunge'; verifying = 'Verifying the package'; extracting = 'Unpacking'; stopping = 'Closing the running desktop'
         uac = "Approve Windows' permission prompt..."
@@ -81,7 +72,7 @@ if ($tr) { @{
         qStop = 'Stop the install and put everything back?'; stopYes = 'Yes, stop'; stopNo = 'Keep going'
         steps = @{ check = 'Checking Windows'; runtimes = 'Required components'; stop = 'Stopping the desktop'; files = 'Copying files'; config = 'Writing your settings'; migrate = 'Moving data from the previous version'; tools = 'Brightness and temperature tools'; terminal = 'Installing the terminal'; windows = 'Windows settings'; tasks = 'Startup tasks'; owner = 'Preparing the first start'; finish = 'Finishing touches' }
         doneTitle = 'All set! Logical Lunge is installed'
-        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ã/õ switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
+        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ‚Üê/‚Üí switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
         errTitle = "That didn't work, but don't worry"
         errBody = "The install got stuck at '{0}'. Nothing was left half-done: the changes were undone and your previous desktop was started again."
         errDetail = 'Details'; errLog = 'Log'
@@ -97,8 +88,6 @@ if ($tr) { @{
         warnBody = 'Your desktop works fully; only these are missing. Run the same command again later to complete them.'
         xBright = 'External monitor brightness: ControlMyMonitor'
     } }
-}
-$T = Get-Texts $tr
 $STEP_IDS = 'check', 'runtimes', 'stop', 'files', 'config', 'migrate', 'tools', 'terminal', 'windows', 'tasks', 'owner', 'finish'
 
 # ---------------------------------------------------------------- drawing
@@ -129,22 +118,22 @@ function Box([string]$color, [string]$title, [string]$body) {
     $w = Width; $in = $w - 4
     $b = Fg $color
     Write-Host ''
-    Write-Host ("  $b?" + ('¶' * ($w - 2)) + "?$R")
+    Write-Host ("  $b‚ï≠" + ('‚îÄ' * ($w - 2)) + "‚ïÆ$R")
     if ($title) {
-        Write-Host ("  $b-$R " + "$E[1m" + (Fg $color) + $title.PadRight($in) + "$R $b-$R")
-        Write-Host ("  $b-$R " + (' ' * $in) + " $b-$R")
+        Write-Host ("  $b‚îÇ$R " + "$E[1m" + (Fg $color) + $title.PadRight($in) + "$R $b‚îÇ$R")
+        Write-Host ("  $b‚îÇ$R " + (' ' * $in) + " $b‚îÇ$R")
     }
-    foreach ($l in (Wrap $body $in)) { Write-Host ("  $b-$R " + (Fg $C.text) + $l.PadRight($in) + "$R $b-$R") }
-    Write-Host ("  $b?" + ('¶' * ($w - 2)) + "?$R")
+    foreach ($l in (Wrap $body $in)) { Write-Host ("  $b‚îÇ$R " + (Fg $C.text) + $l.PadRight($in) + "$R $b‚îÇ$R") }
+    Write-Host ("  $b‚ï∞" + ('‚îÄ' * ($w - 2)) + "‚ïØ$R")
 }
 function Banner {
-    if (-not $env:LL_PLAIN -and -not [Console]::IsOutputRedirected) { Clear-Host }
+    Clear-Host
     # figlet "Calvin S"; each line a shade of the accent
     $g = '#d0bcff', '#b69df8', '#977be6'
     $art = @(
-        'T  -¶¨-¶¨T-¶¨-¶¨T    T  T T-¨--¶¨-¶¨',
-        '¶  - -- T--  +¶+-    ¶  - ----- T++ ',
-        '¶=-L¶-L¶-+L¶-+ ++¶-  ¶=-L¶--L-L¶-L¶-')
+        '‚ï¶  ‚îå‚îÄ‚îê‚îå‚îÄ‚îê‚î¨‚îå‚îÄ‚îê‚îå‚îÄ‚îê‚î¨    ‚ï¶  ‚î¨ ‚î¨‚îå‚îê‚îå‚îå‚îÄ‚îê‚îå‚îÄ‚îê',
+        '‚ïë  ‚îÇ ‚îÇ‚îÇ ‚î¨‚îÇ‚îÇ  ‚îú‚îÄ‚î§‚îÇ    ‚ïë  ‚îÇ ‚îÇ‚îÇ‚îÇ‚îÇ‚îÇ ‚î¨‚îú‚î§ ',
+        '‚ï©‚ïê‚ïù‚îî‚îÄ‚îò‚îî‚îÄ‚îò‚î¥‚îî‚îÄ‚îò‚î¥ ‚î¥‚î¥‚îÄ‚îò  ‚ï©‚ïê‚ïù‚îî‚îÄ‚îò‚îò‚îî‚îò‚îî‚îÄ‚îò‚îî‚îÄ‚îò')
     Write-Host ''
     for ($i = 0; $i -lt $art.Count; $i++) { Write-Host ('  ' + (Paint $g[$i] $art[$i])) }
     Write-Host ('  ' + (Paint $C.dim $T.tagline))
@@ -153,127 +142,88 @@ function Banner {
 function Say([string]$sym, [string]$color, [string]$text) { Write-Host ('  ' + (Paint $color $sym) + ' ' + (Paint $C.text $text)) }
 
 # Spinner line redrawn in place while $work runs as a job-free polling loop
-$SPIN = '?', '?', '?', '?', '?', '?', '?', '?', '?', '?'
+$SPIN = '‚†ã', '‚†ô', '‚†π', '‚†∏', '‚†º', '‚†¥', '‚†¶', '‚†ß', '‚†á', '‚†è'
 function Human([double]$b) { if ($b -ge 1MB) { '{0:0.0} MB' -f ($b / 1MB) } else { '{0:0} KB' -f ($b / 1KB) } }
 # Animated bar: a soft highlight runs along the filled part
 function Bar([double]$frac, [int]$width, [int]$tick) {
     $fill = [int][Math]::Floor($frac * $width)
     $s = ''
     for ($i = 0; $i -lt $width; $i++) {
-        if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + '?' }
-        elseif ($i -eq $fill) { $s += (Fg $C.accent) + '?' }
-        else { $s += (Fg '#49454f') + '¶' }
+        if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + '‚îÅ' }
+        elseif ($i -eq $fill) { $s += (Fg $C.accent) + '‚ï∏' }
+        else { $s += (Fg '#49454f') + '‚îÄ' }
     }
     return $s + $R
 }
 
 # ---------------------------------------------------------------- input
+$script:gum = $null
 $script:cancelled = $false
-
-function Show-Menu([string]$Header, [object[]]$Items, [string]$Default, [bool]$Multi, [bool]$IsColor) {
-    if (-not [Environment]::UserInteractive) { return $Default }
-    if ($env:LL_PLAIN -or [Console]::IsInputRedirected) {
-        Write-Host "  $Header"
-        for ($i = 0; $i -lt $Items.Count; $i++) { Write-Host "  $($i + 1). $($Items[$i][0])" }
-        while ($true) {
-            $answer = (Read-Host "$($T.plainPick) [$Default; < = back]").Trim()
-            if ($answer -eq '<') { return 'BACK' }
-            if (-not $answer) { if ($Multi) { return @($Default -split ',' | Where-Object { $_ }) }; return $Default }
-            if ($Multi -and $answer -eq '0') { return @() }
-            $values = @(); $valid = $true
-            foreach ($n in ($answer -split '[, ]+' | Where-Object { $_ })) {
-                $num = 0
-                if (-not [int]::TryParse($n, [ref]$num) -or $num -lt 1 -or $num -gt $Items.Count) { $valid = $false; break }
-                $values += $Items[$num - 1][1]
-            }
-            if ($valid -and $values.Count -and ($Multi -or $values.Count -eq 1)) { return $values }
-        }
+function Assert-Answer([int]$code) { if ($code -eq 130) { $script:cancelled = $true; throw (New-Object OperationCanceledException) } }
+# gum could not draw a prompt (an error, not an answer): this and every later question use the simple prompts
+function Use-PlainPrompts { $script:gum = $null }
+# items: @(@(label, value), ...); returns the chosen value
+function Choose([string]$header, [object[]]$items, [string]$default) {
+    if ($script:gum) {
+        $args2 = @('choose', '--header', $header, '--label-delimiter', '|', '--cursor', '‚ùØ ', '--cursor.foreground', $C.accent, '--header.foreground', $C.accent, '--selected.foreground', $C.accent, '--height', '16')
+        $def = ($items | Where-Object { $_[1] -eq $default } | Select-Object -First 1)
+        if ($def) { $args2 += @('--selected', $def[0]) }
+        foreach ($it in $items) { $args2 += ($it[0] + '|' + $it[1]) }
+        $out = & $script:gum @args2
+        Assert-Answer $LASTEXITCODE
+        if ($LASTEXITCODE -eq 0 -and $out) { return ([string]$out).Trim() }
+        Use-PlainPrompts
     }
-    $sel = 0
-    for ($i = 0; $i -lt $Items.Count; $i++) { if ($Items[$i][1] -eq $Default) { $sel = $i } }
-    $selected = @()
-    if ($Multi -and $Default) { $selected = $Default -split ',' | Where-Object { $_ } }
-
-    $drawn = 0
-    while ($true) {
-        if ($drawn -gt 0) { Write-Host -NoNewline "$E[$($drawn)A" }
-        $out = ""
-        $out += "  " + (Paint $C.accent $Header) + "`n"
-        
-        $accent = if ($IsColor) { $Items[$sel][1] } else { $C.accent }
-        if ($IsColor -and $Items[$sel][1] -eq 'custom') { $accent = $C.accent }
-
-        for ($i = 0; $i -lt $Items.Count; $i++) {
-            $isSel = ($i -eq $sel)
-            $prefix = if ($Multi) { if ($selected -contains $Items[$i][1]) { "? " } else { "? " } } else { "  " }
-            $cur = if ($isSel) { Paint $accent "? " } else { "  " }
-            $text = if ($isSel) { Paint $accent $Items[$i][0] } else { $Items[$i][0] }
-            
-            if ($IsColor -and $Items[$i][1] -ne 'custom') {
-                $text = (Paint $Items[$i][1] "--") + " " + $text
-            }
-            $out += "  " + $cur + $prefix + $text + "$E[K`n"
-        }
-        Write-Host -NoNewline $out
-        $drawn = $Items.Count + 1
-
-        $k = [Console]::ReadKey($true)
-        if ($k.Key -eq 'UpArrow') { $sel = ($sel - 1 + $Items.Count) % $Items.Count }
-        elseif ($k.Key -eq 'DownArrow') { $sel = ($sel + 1) % $Items.Count }
-        elseif ($k.Key -eq 'LeftArrow') { Write-Host -NoNewline "$E[$($drawn)A$E[J"; return 'BACK' }
-        elseif ($k.Key -eq 'Spacebar' -and $Multi) {
-            $val = $Items[$sel][1]
-            if ($selected -contains $val) { $selected = @($selected | Where-Object { $_ -ne $val }) }
-            else { $selected += $val }
-        }
-        elseif ($k.Key -eq 'Enter') {
-            Write-Host -NoNewline "$E[$($drawn)A$E[J"
-            if ($Multi) { return $selected } else { return $Items[$sel][1] }
-        }
-        elseif ($k.Key -eq 'C' -and ($k.Modifiers -band [ConsoleModifiers]::Control)) {
-            $script:cancelled = $true; throw (New-Object OperationCanceledException)
-        }
-    }
-}
-
-function Choose([string]$header, [object[]]$items, [string]$default) { return Show-Menu $header $items $default $false $false }
-function Multi([string]$header, [object[]]$items, [string[]]$selected) { return Show-Menu $header $items ($selected -join ',') $true $false }
-function Confirm([string]$prompt, [string]$yes, [string]$no, [bool]$default = $true) {
-    $ans = Show-Menu $prompt @(@($yes, 'y'), @($no, 'n')) $(if ($default) { 'y' } else { 'n' }) $false $false
-    if ($ans -eq 'BACK') { return 'BACK' }
-    return ($ans -eq 'y')
-}
-function Is-Confirmed($answer) { return ($answer -is [bool] -and $answer) }
-function Ask([string]$header, [string]$placeholder, [string]$value) {
     Write-Host ('  ' + (Paint $C.accent $header))
-    Write-Host -NoNewline ('  ' + (Paint $C.accent '? '))
-    $ans = Read-Host
-    if ($ans -eq '') { $ans = if ($value) { $value } else { $placeholder } }
-    return $ans.Trim()
+    for ($i = 0; $i -lt $items.Count; $i++) { Write-Host ('    ' + (Paint $C.dim "$($i + 1))") + ' ' + $items[$i][0] + $(if ($items[$i][1] -eq $default) { Paint $C.accent '  ‚óè' })) }
+    $a = Read-Host ('  ' + $T.plainPick)
+    $n = 0
+    if ([int]::TryParse($a, [ref]$n) -and $n -ge 1 -and $n -le $items.Count) { return $items[$n - 1][1] }
+    return $default
 }
-
-# Channel identity is part of both the tag and asset name. Never use /latest:
-# a newer release of the other interface must not switch the user's installation.
-function Select-EditionRelease([object[]]$releases, [string]$edition) {
-    if ($edition -notin @('native-ui', 'web-ui')) { throw "Invalid edition: $edition" }
-    $pattern = '^v(\d+\.\d+\.\d+)-' + [regex]::Escape($edition) + '$'
-    $best = $null; $version = [version]'0.0.0'
-    foreach ($rel in $releases) {
-        if ($rel.draft -or $rel.prerelease -or $rel.tag_name -notmatch $pattern) { continue }
-        $v = [version]$Matches[1]; $name = "LogicalLunge-$edition-$($Matches[1]).zip"
-        $zip = @($rel.assets | Where-Object { $_.name -eq $name })
-        $sha = @($rel.assets | Where-Object { $_.name -eq "$name.sha256" })
-        if ($zip.Count -eq 1 -and $sha.Count -eq 1 -and (!$best -or $v -gt $version)) { $best = $rel; $version = $v }
+function Multi([string]$header, [object[]]$items, [string[]]$selected) {
+    if ($script:gum) {
+        $args2 = @('choose', '--no-limit', '--header', $header, '--cursor', '‚ùØ ', '--cursor.foreground', $C.accent, '--header.foreground', $C.accent, '--selected.foreground', $C.accent, '--selected-prefix', '‚óÜ ', '--unselected-prefix', '‚óá ', '--cursor-prefix', '‚óá ')
+        if ($selected.Count) { $args2 += @('--selected', (($items | Where-Object { $selected -contains $_[1] } | ForEach-Object { $_[0] }) -join ',')) }
+        foreach ($it in $items) { $args2 += $it[0] }
+        $out = & $script:gum @args2
+        Assert-Answer $LASTEXITCODE
+        if ($LASTEXITCODE -eq 0) {
+            $labels = @($out | Where-Object { $_ })
+            return @($items | Where-Object { $labels -contains $_[0] } | ForEach-Object { $_[1] })
+        }
+        Use-PlainPrompts
     }
-    return $best
+    $res = @()
+    foreach ($it in $items) {
+        $a = Read-Host ('  ' + $it[0] + ' [' + $T.yes + '/n]')
+        if ($a -eq '' -or $a -like "$($T.yes)*" -or $a -like 'y*') { $res += $it[1] }
+    }
+    return $res
 }
-function Get-EditionRelease([string]$edition) {
-    $all = @(); $page = 1
-    do {
-        $batch = @(Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 -Headers @{ 'User-Agent' = 'LogicalLunge-Install' } "https://api.github.com/repos/$repo/releases?per_page=100&page=$page")
-        $all += $batch; $page++
-    } while ($batch.Count -eq 100)
-    Select-EditionRelease $all $edition
+function Ask([string]$header, [string]$placeholder, [string]$value) {
+    if ($script:gum) {
+        # Windows PowerShell drops an empty argument, so --value goes only with a value (an empty one made gum
+        # read --char-limit as the value, fail, and the color question repeat forever)
+        $args2 = @('input', '--header', $header, '--placeholder', $placeholder, '--char-limit', '7', '--prompt', '‚ùØ ', '--prompt.foreground', $C.accent, '--header.foreground', $C.accent, '--cursor.foreground', $C.accent)
+        if ($value) { $args2 += @('--value', $value) }
+        $out = & $script:gum @args2
+        Assert-Answer $LASTEXITCODE
+        if ($LASTEXITCODE -eq 0) { return ([string]$out).Trim() }
+        Use-PlainPrompts
+    }
+    return (Read-Host ('  ' + $header)).Trim()
+}
+function Confirm([string]$prompt, [string]$yes, [string]$no, [bool]$default = $true) {
+    if ($script:gum) {
+        $d = if ($default) { '--default=true' } else { '--default=false' }
+        & $script:gum confirm $prompt --affirmative $yes --negative $no $d --prompt.foreground $C.accent --selected.background $C.accent --selected.foreground '#21005d'
+        if ($LASTEXITCODE -eq 130) { return $false }
+        if ($LASTEXITCODE -le 1) { return ($LASTEXITCODE -eq 0) }
+        Use-PlainPrompts
+    }
+    $a = Read-Host ("  $prompt [" + $T.yes + '/n]')
+    return ($a -eq '' -or $a -like "$($T.yes)*" -or $a -like 'y*')
 }
 
 # ---------------------------------------------------------------- download with an animated progress bar
@@ -304,10 +254,7 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
                             $frac = if ($total -gt 0) { [Math]::Min(1.0, [double]$done / $total) } else { 0 }
                             $speed = if ($sw.Elapsed.TotalSeconds -gt 0.3) { (Human (($done - $have) / $sw.Elapsed.TotalSeconds)) + '/s' } else { '' }
                             $pct = if ($total -gt 0) { '{0,3:0}%' -f ($frac * 100) } else { '' }
-                            $info = ((Human $done) + $(if ($total -gt 0) { ' / ' + (Human $total) }) + '  ' + $speed)
-                            $bw = 16
-                            try { $bw = [Math]::Max(5, [Math]::Min(40, [Console]::WindowWidth - 14 - $label.Length - $pct.Length - $info.Length)) } catch {}
-                            Write-Host -NoNewline ("`r  " + (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + $label + '  ' + (Bar $frac $bw $tick) + ' ' + (Paint $C.text $pct) + '  ' + (Paint $C.dim $info) + "$E[K")
+                            Write-Host -NoNewline ("`r  " + (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + $label + '  ' + (Bar $frac 28 $tick) + ' ' + (Paint $C.text $pct) + '  ' + (Paint $C.dim ((Human $done) + $(if ($total -gt 0) { ' / ' + (Human $total) }) + '  ' + $speed)) + "$E[K")
                         }
                     }
                 }
@@ -315,7 +262,7 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
             }
             finally { $res.Dispose() }
             if ($total -gt 0 -and $done -lt $total) { throw "the connection closed at $(Human $done) of $(Human $total)" }
-            Write-Host ("`r  " + (Paint $C.ok '?') + ' ' + $label + '  ' + (Paint $C.dim (Human (Get-Item $dst).Length)) + "$E[K")
+            Write-Host ("`r  " + (Paint $C.ok '‚úì') + ' ' + $label + '  ' + (Paint $C.dim (Human (Get-Item $dst).Length)) + "$E[K")
             return
         }
         catch [OperationCanceledException] { throw }
@@ -330,19 +277,19 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
             }
             if ($try -eq 5) { break }
             for ($w = 2 * $try; $w -gt 0; $w--) {
-                Write-Host -NoNewline ("`r  " + (Paint $C.warn '?') + ' ' + $label + '  ' + (Paint $C.dim ($T.retrying -f $w, ($try + 1))) + "$E[K")
+                Write-Host -NoNewline ("`r  " + (Paint $C.warn '‚Üª') + ' ' + $label + '  ' + (Paint $C.dim ($T.retrying -f $w, ($try + 1))) + "$E[K")
                 for ($k = 0; $k -lt 10; $k++) { Start-Sleep -Milliseconds 100; Poll-CtrlC }
             }
         }
     }
     throw $last
 }
-# A short step: "? label" while it runs, then ? / ? in place
+# A short step: "‚óå label" while it runs, then ‚úì / ‚úó in place
 function With-Spinner([string]$label, [scriptblock]$sb) {
-    Write-Host -NoNewline ('  ' + (Paint $C.accent '?') + ' ' + $label)
+    Write-Host -NoNewline ('  ' + (Paint $C.accent '‚óå') + ' ' + $label)
     # (not $r: variable names ignore case, and $R is the colour reset Paint appends)
-    try { $result = & $sb; Write-Host ("`r  " + (Paint $C.ok '?') + ' ' + $label + "$E[K"); return $result }
-    catch { Write-Host ("`r  " + (Paint $C.err '?') + ' ' + $label + "$E[K"); throw }
+    try { $result = & $sb; Write-Host ("`r  " + (Paint $C.ok '‚úì') + ' ' + $label + "$E[K"); return $result }
+    catch { Write-Host ("`r  " + (Paint $C.err '‚úó') + ' ' + $label + "$E[K"); throw }
 }
 # Ctrl+C while we draw: treated as input so that it can be confirmed instead of killing the install half-way
 function Poll-CtrlC {
@@ -378,92 +325,80 @@ try {
     $build = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
     if ($build -lt 19041) { Box $C.err $T.errTitle ($T.oldWin -f $build); return }
 
+    # gum (the prompts): downloaded to %TEMP%, removed at the end; without it the prompts are simple numbered menus
+    if ($interactive -and -not $env:LL_PLAIN) {
+        try {
+            With-Spinner $T.preparing {
+                $gz = Join-Path $work 'gum.zip'
+                $base = "https://github.com/charmbracelet/gum/releases/download/v$GUM_VER"
+                (New-Object Net.WebClient).DownloadFile("$base/gum_${GUM_VER}_Windows_x86_64.zip", $gz)
+                $sums = (New-Object Net.WebClient).DownloadString("$base/checksums.txt")
+                $want = ($sums -split "`n" | Where-Object { $_ -match "gum_${GUM_VER}_Windows_x86_64\.zip$" } | Select-Object -First 1) -split '\s+' | Select-Object -First 1
+                if (-not $want -or $want.ToUpper() -ne (Get-FileHash $gz -Algorithm SHA256).Hash) { throw 'gum checksum' }
+                Expand-Archive $gz (Join-Path $work 'gum') -Force
+                $script:gum = (Get-ChildItem (Join-Path $work 'gum') -Recurse -Filter gum.exe | Select-Object -First 1).FullName
+            } | Out-Null
+        }
+        catch { $script:gum = $null }
+    }
 
-    # Identify the edition before looking for its release.
+    # the release to install
     $src = $env:LL_SOURCE; $zipUrl = $null; $shaUrl = $null; $zipSize = 0; $ver = $null
-    $edition = $env:LL_EDITION
-    if ($src) {
-        $ver = [IO.File]::ReadAllText((Join-Path $src 'VERSION')).Trim()
-        $sourceEdition = [IO.File]::ReadAllText((Join-Path $src 'EDITION')).Trim()
-        if ($edition -and $edition -ne $sourceEdition) { throw 'LL_SOURCE and LL_EDITION do not match.' }
-        $edition = $sourceEdition
+    if ($src) { $ver = try { [IO.File]::ReadAllText((Join-Path $src 'VERSION')).Trim() } catch { '?' } }
+    else {
+        try {
+            $rel = With-Spinner $T.release { Invoke-RestMethod -UseBasicParsing -Headers @{ 'User-Agent' = 'LogicalLunge-Install' } "https://api.github.com/repos/$repo/releases/latest" }
+        }
+        catch { Box $C.err $T.netTitle $T.netBody; return }
+        $asset = $rel.assets | Where-Object { $_.name -like 'LogicalLunge-*.zip' } | Select-Object -First 1
+        if (-not $asset) { Box $C.err $T.netTitle $T.netBody; return }
+        $zipUrl = $asset.browser_download_url; $zipSize = [long]$asset.size; $ver = $rel.tag_name
+        $sha = $rel.assets | Where-Object { $_.name -eq "$($asset.name).sha256" } | Select-Object -First 1
+        if ($sha) { $shaUrl = $sha.browser_download_url }
     }
-    if (-not $edition) {
-        $marker = Join-Path $env:ProgramFiles 'LogicalLunge\EDITION'
-        if (Test-Path $marker) { $edition = [IO.File]::ReadAllText($marker).Trim() }
-        else { $edition = 'native-ui' }
-    }
-    if ($edition -notin @('native-ui', 'web-ui')) { throw "Invalid edition: $edition" }
 
-    Box $C.accent $T.welcome $T.welcomeBody
+    Box $C.accent $T.welcome ($T.welcomeBody + "`n`n" + "$($T.version): $ver" + $(if ($zipSize) { "   $($T.size): $(Human $zipSize)" }))
     Write-Host ''
 
     # ------------------------------------------------------------ choices
-    $choice = [ordered]@{ language = 'system'; clock = '24'; focusColor = '#b69df8'; edition = $edition }
+    $choice = [ordered]@{ language = 'system'; clock = '24'; focusColor = '#b69df8' }
     $extras = @('terminal', 'sensors')
     if ($env:LL_NO_TERMINAL) { $extras = @($extras | Where-Object { $_ -ne 'terminal' }) }
     if ($env:LL_NO_SENSORS) { $extras = @($extras | Where-Object { $_ -ne 'sensors' }) }
     if ($interactive) {
         $sysName = (Get-UICulture).NativeName
-        $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('T¸rkÁe', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('FranÁais', 'fr'), @('EspaÒol', 'es'), @('Italiano', 'it'), @('PortuguÍs', 'pt'),
-            @('??????? (Russian)', 'ru'), @('?????????? (Ukrainian)', 'uk'), @('Polski', 'pl'), @('??? (Japanese)', 'ja'), @('?? (Chinese)', 'zh'), @('??? (Korean)', 'ko'), @('??????? (Arabic)', 'ar'))
-        $now = Get-Date
-        
-        $step = 0
-        while ($step -lt 6) {
-            Banner
-            $colors = if ($tr) { @(@('Mor (varsay˝lan)', '#b69df8'), @('Mavi', '#8ab4f8'), @('Camgˆbei', '#7fd4c9'), @('Ye˛il', '#a6d189'), @('Pembe', '#f5a3c7'), @('Turuncu', '#ffb77c'), @('K˝rm˝z˝', '#f28b82')) }
-                      else { @(@('Purple (default)', '#b69df8'), @('Blue', '#8ab4f8'), @('Teal', '#7fd4c9'), @('Green', '#a6d189'), @('Pink', '#f5a3c7'), @('Orange', '#ffb77c'), @('Red', '#f28b82')) }
-            $clocks = @(@("$($T.h24)   $($now.ToString('HH:mm'))", '24'), @("$($T.h12)   $($now.ToString('h:mm tt', [Globalization.CultureInfo]::InvariantCulture))", '12'))
-            if ($step -eq 0) {
-                $ans = Choose $T.qLang $langs $choice.language
-                if ($ans -eq 'BACK') { $script:cancelled = $true; throw (New-Object OperationCanceledException) }
-                $choice.language = $ans
-                $tr = $ans -eq 'tr' -or ($ans -eq 'system' -and (Get-UICulture).Name -like 'tr*')
-                $T = Get-Texts $tr
-                $step++
-            } elseif ($step -eq 1) {
-                if ($src) { $step++; continue }
-                $ans = Choose $T.qEdition @(@($T.native, 'native-ui'), @($T.web, 'web-ui')) $choice.edition
-                if ($ans -eq 'BACK') { $step-- } else { $choice.edition = $ans; $step++ }
-            } elseif ($step -eq 2) {
-                $cItems = @($colors | ForEach-Object { , @($_[0], $_[1]) }) + , @($T.custom, 'custom')
-                $ans = Show-Menu $T.qColor $cItems $choice.focusColor $false $true
-                if ($ans -eq 'BACK') { $step = if ($src) { 0 } else { 1 } }
-                elseif ($ans -eq 'custom') {
-                    $hex = Ask $T.qHex '#b69df8' ''
-                    if ($hex -notmatch '^#') { $hex = '#' + $hex }
-                    if ($hex -match '^#[0-9a-fA-F]{6}$') { $choice.focusColor = $hex.ToLower(); $C.accent = $choice.focusColor; $step++ }
-                    else { Say '!' $C.warn $T.badHex; Start-Sleep 2 }
-                } else { $choice.focusColor = $ans; $C.accent = $choice.focusColor; $step++ }
-            } elseif ($step -eq 3) {
-                $ans = Choose $T.qClock $clocks $choice.clock
-                if ($ans -eq 'BACK') { $step-- } else { $choice.clock = $ans; $step++ }
-            } elseif ($step -eq 4) {
-                $ans = Multi $T.qExtras @(@($T.xTerm, 'terminal'), @($T.xSensors, 'sensors')) $extras
-                if ($ans -is [string] -and $ans -eq 'BACK') { $step-- } else { $extras = @($ans | Where-Object { $_ }); $step++ }
-            } elseif ($step -eq 5) {
-                $langLabel = ($langs | Where-Object { $_[1] -eq $choice.language } | Select-Object -First 1)[0]
-                $extraText = if ($extras.Count) { (@($extras | ForEach-Object { if ($_ -eq 'terminal') { $T.xTerm } else { $T.xSensors } }) -join "`n  ") } else { $T.none }
-                Box $C.accent $T.summary ("$($T.sEdition): $($choice.edition)`n$($T.sLang): $langLabel`n$($T.sColor): $($choice.focusColor)`n$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })`n$($T.sExtras):`n  $extraText")
-                Write-Host ''
-                $ans = Confirm $T.qGo $T.go $T.cancel $true
-                if ($ans -is [string] -and $ans -eq 'BACK') { $step-- } elseif (-not $ans) { $script:cancelled = $true; throw (New-Object OperationCanceledException) } else { $step++ }
-            }
-        }
-    }
+        $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('T√ºrk√ße', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Fran√ßais', 'fr'), @('Espa√±ol', 'es'), @('Italiano', 'it'), @('Portugu√™s', 'pt'),
+            @('–†—É—Å—Å–∫–∏–π (Russian)', 'ru'), @('–£–∫—Ä–∞—ó–Ω—Å—å–∫–∞ (Ukrainian)', 'uk'), @('Polski', 'pl'), @('Êó•Êú¨Ë™û (Japanese)', 'ja'), @('‰∏≠Êñá (Chinese)', 'zh'), @('ÌïúÍµ≠Ïñ¥ (Korean)', 'ko'), @('ÿßŸÑÿπÿ±ÿ®Ÿäÿ© (Arabic)', 'ar'))
+        $choice.language = Choose $T.qLang $langs 'system'
+        $langLabel = ($langs | Where-Object { $_[1] -eq $choice.language } | Select-Object -First 1)[0]
+        Say '‚úì' $C.ok "$($T.sLang): $langLabel"
 
-    if (-not $src) {
-        try { $rel = With-Spinner $T.release { Get-EditionRelease $choice.edition } }
-        catch { Box $C.err $T.netTitle $T.netBody; return }
-        if (-not $rel) { Box $C.warn $T.release $T.noRelease; return }
-        $ver = $rel.tag_name
-        $releaseVersion = ([string]$rel.tag_name) -replace ('-' + [regex]::Escape($choice.edition) + '$'), '' -replace '^v', ''
-        $asset = $rel.assets | Where-Object { $_.name -eq "LogicalLunge-$($choice.edition)-$releaseVersion.zip" } | Select-Object -First 1
-        $sha = $rel.assets | Where-Object { $_.name -eq "$($asset.name).sha256" } | Select-Object -First 1
-        $zipUrl = $asset.browser_download_url; $zipSize = [long]$asset.size; $shaUrl = $sha.browser_download_url
+        $colors = if ($tr) { @(@('Mor (varsayƒ±lan)', '#b69df8'), @('Mavi', '#8ab4f8'), @('Camg√∂beƒüi', '#7fd4c9'), @('Ye≈üil', '#a6d189'), @('Pembe', '#f5a3c7'), @('Turuncu', '#ffb77c'), @('Kƒ±rmƒ±zƒ±', '#f28b82')) }
+                  else { @(@('Purple (default)', '#b69df8'), @('Blue', '#8ab4f8'), @('Teal', '#7fd4c9'), @('Green', '#a6d189'), @('Pink', '#f5a3c7'), @('Orange', '#ffb77c'), @('Red', '#f28b82')) }
+        Write-Host ('  ' + (($colors | ForEach-Object { (Paint $_[1] '‚ñà‚ñà') + ' ' + (Paint $C.dim $_[0]) }) -join '  '))
+        $pick = Choose $T.qColor (@($colors | ForEach-Object { , @(($_[0] + '  ' + $_[1]), $_[1]) }) + , @($T.custom, 'custom')) '#b69df8'
+        for ($try = 1; $pick -eq 'custom'; $try++) {
+            $hex = Ask $T.qHex '#b69df8' ''
+            if ($hex -notmatch '^#') { $hex = '#' + $hex }
+            if ($hex -match '^#[0-9a-fA-F]{6}$') { $pick = $hex.ToLower() }
+            elseif ($try -ge 3) { $pick = '#b69df8' }   # the default instead of asking forever
+            else { Say '!' $C.warn $T.badHex }
+        }
+        $choice.focusColor = $pick
+        Say '‚úì' $C.ok ("$($T.sColor): " + (Paint $pick '‚ñà‚ñà') + ' ' + $pick)
+
+        $now = Get-Date
+        $choice.clock = Choose $T.qClock @(@("$($T.h24)   $($now.ToString('HH:mm'))", '24'), @("$($T.h12)   $($now.ToString('h:mm tt', [Globalization.CultureInfo]::InvariantCulture))", '12')) '24'
+        Say '‚úì' $C.ok "$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })"
+
+        $extras = @(Multi $T.qExtras @(@($T.xTerm, 'terminal'), @($T.xSensors, 'sensors')) $extras)
+        $extraText = if ($extras.Count) { (@($extras | ForEach-Object { if ($_ -eq 'terminal') { $T.xTerm } else { $T.xSensors } }) -join "`n  ") } else { $T.none }
+
+        Box $C.accent $T.summary ("$($T.sLang): $langLabel`n$($T.sColor): $($choice.focusColor)`n$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })`n$($T.sExtras):`n  $extraText")
+        Write-Host ''
+        if (-not (Confirm $T.qGo $T.go $T.cancel $true)) { $script:cancelled = $true; throw (New-Object OperationCanceledException) }
+        Write-Host ''
     }
-    Say '?' $C.accent "$($T.version): $ver ($($choice.edition))"
 
     # ------------------------------------------------------------ package
     # no console input (redirected, LL_DEFAULTS in a pipeline): Ctrl+C then simply ends the script
@@ -477,7 +412,7 @@ try {
             $ok = With-Spinner $T.verifying {
                 $raw = (New-Object Net.WebClient).DownloadString($shaUrl)
                 $expected = ($raw -split '\s+')[0].Trim().ToUpper()
-                ($expected -match '^[0-9A-F]{64}$') -and ($expected -eq (Get-FileHash $zip -Algorithm SHA256).Hash)
+                (-not $expected) -or ($expected -eq (Get-FileHash $zip -Algorithm SHA256).Hash)
             }
             if (-not $ok) { Box $C.err $T.errTitle $T.badPkg; return }
         }
@@ -486,8 +421,6 @@ try {
         if (-not $src) { Box $C.err $T.errTitle $T.badPkg; return }
     }
     if (-not (Test-Path (Join-Path $src 'installer\setup.ps1'))) { Box $C.err $T.errTitle $T.badPkg; return }
-    if ([IO.File]::ReadAllText((Join-Path $src 'EDITION')).Trim() -ne $choice.edition -or
-        -not (Test-Path (Join-Path $src 'app\lunge.exe'))) { Box $C.err $T.errTitle $T.badPkg; return }
     Poll-CtrlC
 
     # ------------------------------------------------------------ stop the running desktop (as the user)
@@ -495,11 +428,7 @@ try {
     $running = (Get-Process lunge, lunge-tiling, lunge-shell, ll-helper -ErrorAction SilentlyContinue) -or
         ((Get-Process glazewm -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $env:USERPROFILE '.glzr\logical-lunge')))
     if ($running -and -not $preview) {
-        With-Spinner $T.stopping {
-            $lungeExe = Join-Path $src 'app\lunge.exe'
-            $stop = Start-Process $lungeExe -ArgumentList '--stop-desktop' -WindowStyle Hidden -Wait -PassThru
-            if ($stop.ExitCode -ne 0) { throw "Could not stop Logical Lunge ($($stop.ExitCode))." }
-        } | Out-Null
+        With-Spinner $T.stopping { & (Join-Path $src 'app\lunge.exe') --stop-desktop | Out-Null } | Out-Null
         $stopped = $true
     }
 
@@ -538,7 +467,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
             '-ProgressFile', "`"$progressFile`"", '-CancelFile', "`"$cancelFile`"", '-FailAt', $(if ($failAt) { $failAt } else { '""' }))
     }
     else {
-        Say '?' $C.accent $T.uac
+        Say '‚óè' $C.accent $T.uac
         try { $script:setup = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList $args2 }
         catch {
             if ($stopped) { Start-Desktop-Again }
@@ -560,7 +489,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         if ($script:ctrlC -and -not $asked -and -not $done) {
             $asked = $true
             Write-Host -NoNewline "$E[?25h"; Write-Host ''
-            if (Is-Confirmed (Confirm $T.qStop $T.stopYes $T.stopNo $false)) { New-Item -ItemType File -Force $cancelFile | Out-Null }
+            if (Confirm $T.qStop $T.stopYes $T.stopNo $false) { New-Item -ItemType File -Force $cancelFile | Out-Null }
             else { $script:ctrlC = $false; $asked = $false }
             Write-Host -NoNewline "$E[?25l"
             for ($i = 0; $i -lt $lines; $i++) { Write-Host '' }
@@ -571,13 +500,13 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $out = "$E[$($lines)A"
         for ($i = 0; $i -lt $STEP_IDS.Count; $i++) {
             $label = $T.steps[$STEP_IDS[$i]]
-            if ($i + 1 -lt $n -or ($state -eq 'done')) { $row = (Paint $C.ok '?') + ' ' + (Paint $C.dim $label) }
+            if ($i + 1 -lt $n -or ($state -eq 'done')) { $row = (Paint $C.ok '‚úì') + ' ' + (Paint $C.dim $label) }
             elseif ($i + 1 -eq $n -and $state -eq 'running') {
                 $row = (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + (Paint $C.text $label)
                 if ($p.file -and $p.size) { $row += '  ' + (Bar ([double]$p.done / [double]$p.size) 18 $tick) + ' ' + (Paint $C.dim ('{0,3:0}%' -f (100 * [double]$p.done / [double]$p.size))) }
             }
-            elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '?') + ' ' + (Paint $C.text $label) }
-            else { $row = (Paint '#49454f' '∑') + ' ' + (Paint '#6f6a75' $label) }
+            elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '‚úó') + ' ' + (Paint $C.text $label) }
+            else { $row = (Paint '#49454f' '¬∑') + ' ' + (Paint '#6f6a75' $label) }
             $out += "`r  $row$E[K`n"
         }
         $foot = if ($state -eq 'rollback' -or (Test-Path $cancelFile)) { Paint $C.warn $T.rollingBack } else { Paint $C.dim $T.ctrlC }
@@ -596,7 +525,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $warn = @($p.warn | Where-Object { $_ })
         if ($warn.Count) {
             $names = @{ terminal = $T.xTerm; sensors = $T.xSensors; brightness = $T.xBright }
-            $list = @($warn | ForEach-Object { 'ï ' + $(if ($names.ContainsKey([string]$_)) { $names[[string]$_] } else { [string]$_ }) }) -join "`n"
+            $list = @($warn | ForEach-Object { '‚Ä¢ ' + $(if ($names.ContainsKey([string]$_)) { $names[[string]$_] } else { [string]$_ }) }) -join "`n"
             Box $C.warn $T.warnTitle ($list + "`n`n" + $T.warnBody + "`n$($T.errLog): $log")
         }
     }
@@ -625,7 +554,7 @@ finally {
     try { [Console]::TreatControlCAsInput = $false } catch {}
     Write-Host -NoNewline "$E[?25h$R"
     try { [Console]::OutputEncoding = $oldOut } catch {}
-    # nothing stays in %TEMP%: the package and progress files
+    # nothing stays in %TEMP%: gum, the package, the progress files
     if (Test-Path $work) { Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue }
     Write-Host ''
 }

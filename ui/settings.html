@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="tr">
   <head>
     <meta charset="utf-8" />
@@ -146,7 +146,7 @@
       const COLORS = [['Mor', '#b69df8'], ['Mavi', '#8ab4f8'], ['Camgöbeği', '#7fd4c9'], ['Yeşil', '#a6d189'], ['Pembe', '#f5a3c7'], ['Turuncu', '#ffb77c'], ['Kırmızı', '#f28b82']];
       const LANGS = [['system', 'Sistem dili'], ['tr', 'Türkçe'], ['en', 'English'], ['de', 'Deutsch'], ['fr', 'Français'], ['es', 'Español'], ['it', 'Italiano'], ['pt', 'Português'],
         ['ru', 'Русский'], ['uk', 'Українська'], ['pl', 'Polski'], ['ja', '日本語'], ['zh', '中文'], ['ko', '한국어'], ['ar', 'العربية']];
-      const SECTIONS = [['look', 'palette', 'Görünüm'], ['lang', 'translate', 'Dil ve saat'], ['keys', 'keyboard', 'Kısayollar'], ['night', 'nightlight', 'Gece ışığı'],
+      const SECTIONS = [['look', 'palette', 'Görünüm'], ['workspaces', 'grid_view', 'Workspace'], ['lang', 'translate', 'Dil ve saat'], ['keys', 'keyboard', 'Kısayollar'], ['night', 'nightlight', 'Gece ışığı'],
         ['health', 'monitor_heart', 'Sistem sağlığı'], ['adv', 'tune', 'Gelişmiş'], ['about', 'info', 'Hakkında']];
 
       function formatUptime(sec) {
@@ -177,8 +177,420 @@
         );
       }
 
+      // ---------------------------------------------------------------- Workspace
+        function WorkspacesPage({ s, update }) {
+          const [mode, setMode] = useState('divider');
+          const ws = s.workspaces || [];
+          const [wsCount, setWsCount] = useState(30);
+          useEffect(() => { if (ws.length) setWsCount(ws.length); }, [ws.length]);
+          const [firstWorkspace, setFirstWorkspace] = useState(1);
+          useEffect(() => { if (ws.length) setFirstWorkspace(Number(ws[0].name)); }, [ws[0]?.name]);
+          const orderedWs = [...ws].sort((a, b) =>
+            ((Number(a.name) - firstWorkspace + ws.length) % ws.length) -
+            ((Number(b.name) - firstWorkspace + ws.length) % ws.length));
+          const previewHead = orderedWs.length > 14 ? orderedWs.slice(0, 10) : orderedWs;
+          const previewTail = orderedWs.length > 14 ? orderedWs.slice(-2) : [];
+          const hiddenCount = orderedWs.length - previewHead.length - previewTail.length;
+
+          const mons = Array.isArray(s.monitors) ? s.monitors : [];
+          const numMons = mons.length;
+          const legacyBindings = numMons > 0 && ws.length > 0 &&
+            ws.every(w => Number.isInteger(w.bind_to_monitor) && w.bind_to_monitor >= 1 && w.bind_to_monitor <= numMons) &&
+            ws.some(w => w.bind_to_monitor === numMons);
+
+          const [dividers, setDividers] = useState([]);
+          const [segMon, setSegMon] = useState([]);
+          const [saved, setSaved] = useState(false);
+          const [busy, setBusy] = useState(false);
+          const [error, setError] = useState('');
+          const [dragging, setDragging] = useState(null);
+          const [hoverPct, setHoverPct] = useState(null);
+          const [customMap, setCustomMap] = useState({});
+          const layoutKey = ws.map(w => `${w.name}:${w.bind_to_monitor}`).join('|') + '/' + mons.map(m => m.index).join('|');
+          useEffect(() => {
+            if (!ws.length || !mons.length) return;
+            const valid = new Set(mons.map(m => m.index));
+            const map = Object.fromEntries(ws.map(w => [w.name, legacyBindings ? w.bind_to_monitor - 1 :
+              valid.has(w.bind_to_monitor) ? w.bind_to_monitor : mons[0].index]));
+            setCustomMap(map);
+            const boundaries = [];
+            const order = [map[ws[0].name]];
+            for (let i = 1; i < ws.length; i++) if (map[ws[i].name] !== map[ws[i - 1].name]) {
+              boundaries.push(i); order.push(map[ws[i].name]);
+            }
+            if (boundaries.length === mons.length - 1 && new Set(order).size === mons.length) {
+              setDividers(boundaries); setSegMon(order);
+            } else {
+              setDividers(mons.slice(1).map((_, i) => Math.max(1, Math.floor(ws.length * (i + 1) / mons.length))));
+              setSegMon(mons.map(m => m.index));
+            }
+          }, [layoutKey]);
+
+          const saveMap = async (map, count = null, first = firstWorkspace) => {
+            if (busy) return;
+            setBusy(true); setError(''); setSaved(false);
+            try {
+              const args = ['--set-workspaces'];
+              if (count !== null) args.push('count:' + count);
+              args.push('first:' + first);
+              Object.entries(map || {}).forEach(([k, v]) => { if (Number(k) <= (count ?? ws.length)) args.push(k + ':' + v); });
+              const result = json(await helper(args));
+              if (!result?.ok) throw new Error(result?.error || 'Değişiklik uygulanamadı.');
+              const fresh = json(await helper(['--settings-get']));
+              if (!fresh?.workspaces) throw new Error('Yeni ayar okunamadı.');
+              update({ workspaces: fresh.workspaces, monitors: fresh.monitors });
+              if (map) setCustomMap(map);
+              setSaved(true);
+              setTimeout(() => setSaved(false), 2500);
+            } catch (e) { setError(e.message || 'Değişiklik uygulanamadı.'); }
+            finally { setBusy(false); }
+          };
+
+          const saveCount = () => {
+            const count = Math.min(100, Math.max(numMons, Number(wsCount) || ws.length));
+            if (!Number.isInteger(count)) { setError('Geçerli bir sayı girin.'); return; }
+            saveMap(null, count, firstWorkspace <= count ? firstWorkspace : 1);
+          };
+
+          const applyDivider = () => {
+            let map = {};
+            orderedWs.forEach((w, i) => {
+              let seg = 0;
+              while (seg < dividers.length && i >= dividers[seg]) seg++;
+              map[w.name] = segMon[seg] ?? mons[seg]?.index;
+            });
+            saveMap(map);
+          };
+
+          // --- Number line ---
+          const lineRef = useRef(null);
+          const total = ws.length;
+
+          const getRect = () => lineRef.current ? lineRef.current.getBoundingClientRect() : null;
+          const toPercent = val => total ? val / total * 100 : 0;
+
+          const fromClientX = (clientX) => {
+            const rect = getRect();
+            if (!rect) return 0;
+            const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            return Math.round(pct * total);
+          };
+
+          const onPointerDown = (e, idx) => {
+            e.preventDefault();
+            e.currentTarget.setPointerCapture(e.pointerId);
+            setDragging(idx);
+          };
+          const onPointerMove = (e) => {
+            const rect = getRect();
+            if (!rect) return;
+            const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            if (e.pointerType === 'mouse' || e.pointerType === 'pen') setHoverPct(pct);
+
+            if (dragging !== null) {
+              const val = fromClientX(e.clientX);
+              const minV = dragging > 0 ? dividers[dragging - 1] + 1 : 1;
+              const maxV = dragging < dividers.length - 1 ? dividers[dragging + 1] - 1 : total - 1;
+              const clamped = Math.max(minV, Math.min(maxV, val));
+              if (clamped !== dividers[dragging]) {
+                const d = [...dividers];
+                d[dragging] = clamped;
+                setDividers(d);
+              }
+            }
+          };
+          const onPointerUp = () => { setDragging(null); setHoverPct(null); };
+          const onPointerLeave = () => { if (dragging === null) setHoverPct(null); };
+
+          const segColors = ['var(--m3primary)', '#4fc3f7', '#81c784', '#ffb74d', '#e57373', '#ba68c8'];
+
+          const segments = Array.from({length: numMons}).map((_, seg) => {
+            const start = seg === 0 ? 0 : dividers[seg - 1];
+            const end = seg === numMons - 1 ? total : dividers[seg];
+            return { start, end, count: end - start };
+          });
+          const lensIndex = hoverPct === null ? null : Math.max(1, Math.min(total, Math.round(hoverPct * total)));
+          const lensWidth = getRect()?.width || 500;
+          const lensLeft = Math.max(Math.min(110, lensWidth / 2), Math.min(lensWidth - Math.min(110, lensWidth / 2), (hoverPct || 0) * lensWidth));
+
+          // Smart label visibility: only show labels that won't overlap
+          const buildLabels = () => {
+            const rect = getRect();
+            const containerW = rect ? rect.width : 500;
+            const minGap = 28; // minimum pixels between label centers
+            const labels = [];
+            // Always show 1 and total
+            // Then show divider values, then multiples of 5, then fill near hover
+            const candidates = new Set();
+            candidates.add(1);
+            candidates.add(total);
+            dividers.forEach(d => candidates.add(d));
+            for (let t = 5; t < total; t += 5) candidates.add(t);
+            // Sort and filter by minimum pixel distance
+            const sorted = [...candidates].sort((a, b) => a - b);
+            let lastPx = -Infinity;
+            for (const val of sorted) {
+              const px = (toPercent(val) / 100) * containerW;
+              if (px - lastPx >= minGap || val === 1 || val === total) {
+                // Check that 1 and total don't clash with neighbors
+                if ((val === 1 || val === total) && Math.abs(px - lastPx) < minGap / 2 && labels.length > 0) continue;
+                labels.push(val);
+                lastPx = px;
+              }
+            }
+            return labels;
+          };
+
+          if (!total || !numMons) return <div className="card ws-empty">{s.workspaceError || 'Çalışma alanları veya monitörler okunamadı. Pencere yöneticisini kontrol edin.'}</div>;
+
+          return (
+            <>
+              <div className="sec-title">Genel</div>
+              <div className="card">
+                <Row icon="grid_view" label="Çalışma alanı sayısı" sub={`${ws.length} alan tanımlı; en az ${numMons} olmalı.`}>
+                  <div className="ws-count">
+                    <button type="button" aria-label="Bir azalt" disabled={busy || wsCount <= numMons} onClick={() => setWsCount(x => Math.max(numMons, Number(x) - 1))}>−</button>
+                    <input type="number" min={numMons} max="100" value={wsCount} aria-label="Çalışma alanı sayısı" onChange={e => setWsCount(e.target.value)} />
+                    <button type="button" aria-label="Bir artır" disabled={busy || wsCount >= 100} onClick={() => setWsCount(x => Math.min(100, Number(x) + 1))}>+</button>
+                  </div>
+                  <button className="btn tonal" disabled={busy || Number(wsCount) === ws.length} onClick={saveCount}>Kaydet</button>
+                </Row>
+                <Row icon="first_page" label="İlk sıradaki çalışma alanı" sub="Sıra buradan başlar; alanların adları değişmez.">
+                  <div className="ws-count ws-start">
+                    <button type="button" aria-label="Başlangıç alanını azalt" disabled={busy || firstWorkspace <= 1} onClick={() => setFirstWorkspace(x => Math.max(1, x - 1))}>−</button>
+                    <input type="number" min="1" max={total} value={firstWorkspace} aria-label="İlk sıradaki çalışma alanı" onFocus={e => e.target.select()} onChange={e => setFirstWorkspace(Math.min(total, Math.max(1, Number(e.target.value) || 1)))} />
+                    <button type="button" aria-label="Başlangıç alanını artır" disabled={busy || firstWorkspace >= total} onClick={() => setFirstWorkspace(x => Math.min(total, x + 1))}>+</button>
+                  </div>
+                  <button className="btn tonal" disabled={busy || firstWorkspace === Number(ws[0]?.name)} onClick={() => saveMap(null)}>Sırayı kaydet</button>
+                </Row>
+              </div>
+              <div className="ws-order" aria-label="Çalışma alanı sırası">
+                <span>Sıra önizlemesi</span>
+                <div>{previewHead.map(w => <b key={w.name}>{w.name}</b>)}{hiddenCount > 0 && <em>+{hiddenCount}</em>}{previewTail.map(w => <b key={w.name}>{w.name}</b>)}</div>
+              </div>
+              {error && <div className="note ws-error" role="alert"><Icon name="error" />{error}</div>}
+              {saved && <div className="note ws-saved" role="status"><Icon name="check_circle" />Kaydedildi</div>}
+
+              <div className="sec-title">Çoklu Monitör Desteği</div>
+              <div className="card">
+                <Row icon="desktop_windows" label="Bağlı monitörler" sub={mons.map((m, i) => `Monitör ${i + 1}: ${m.name} (${m.w}×${m.h})`).join(' · ') || 'Bilgi alınamadı'}>
+                  <span style={{ opacity: 0.6, fontSize: '0.85em', fontWeight: 600 }}>{numMons}</span>
+                </Row>
+                <Row icon="splitscreen" label="Dağıtım şekli" sub="Çalışma alanlarını monitörlere nasıl dağıtacağınızı seçin">
+                  <Seg items={[['divider', 'Aralıklar', 'align_vertical_center'], ['custom', 'Tek tek', 'touch_app']]} value={mode} onChange={setMode} />
+                </Row>
+              </div>
+              {legacyBindings && <div className="note"><Icon name="info" />Eski monitör numaraları bulundu. Dağılımı kaydettiğinde geçerli monitör indekslerine dönüştürülecek.</div>}
+
+              {mode === 'divider' && (
+                <>
+                  <div className="sec-title">Dağılım Çizelgesi</div>
+                  <div className="card">
+                    <div style={{ padding: '20px' }}>
+                      <div className="sub" style={{ marginBottom: '16px' }}>
+                        Ayraçları sürükleyerek sıralı çalışma alanlarını monitörlere bölün.
+                      </div>
+
+                      {/* === Number line === */}
+                      <div ref={lineRef}
+                        style={{ position: 'relative', height: '52px', userSelect: 'none', touchAction: 'none', cursor: 'default', marginTop: '38px', marginBottom: '4px' }}
+                        onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerLeave={onPointerLeave}>
+
+                        {lensIndex !== null && <div className="ws-lens" style={{ left: lensLeft }} aria-hidden="true">
+                          {[-2, -1, 0, 1, 2].map(offset => {
+                            const item = orderedWs[lensIndex - 1 + offset];
+                            return <span key={offset} className={offset === 0 ? 'center' : Math.abs(offset) === 1 ? 'near' : ''}>{item?.name ?? '·'}</span>;
+                          })}
+                        </div>}
+
+                        {/* Track background */}
+                        <div style={{ position: 'absolute', top: '14px', left: 0, right: 0, height: '10px', borderRadius: '5px', background: 'rgba(255,255,255,0.06)' }} />
+
+                        {/* Colored segment fills */}
+                        {segments.map((seg, i) => {
+                          const l = toPercent(seg.start);
+                          const r = toPercent(seg.end);
+                          return <div key={i} style={{
+                            position: 'absolute',
+                            top: '14px',
+                            left: l + '%',
+                            width: Math.max(0, r - l) + '%',
+                            height: '10px',
+                            background: segColors[i % segColors.length],
+                            opacity: 0.4,
+                            borderRadius: i === 0 ? '5px 0 0 5px' : i === numMons - 1 ? '0 5px 5px 0' : '0',
+                            transition: dragging !== null ? 'none' : 'left 0.12s ease-out, width 0.12s ease-out',
+                          }} />;
+                        })}
+
+                        {/* Tick marks */}
+                        {Array.from({length: total - 1}).map((_, i) => {
+                          const tick = i + 1;
+                          const isMajor = tick % 5 === 0;
+                          const isDivider = dividers.includes(tick);
+                          if (isDivider) return null;
+                          const pos = toPercent(tick);
+                          return <div key={tick} style={{
+                            position: 'absolute',
+                            left: pos + '%',
+                            top: isMajor ? '26px' : '28px',
+                            width: '1px',
+                            height: isMajor ? '6px' : '3px',
+                            background: `rgba(255,255,255,${isMajor ? 0.25 : 0.1})`,
+                            transition: dragging !== null ? 'none' : 'left 0.12s ease-out',
+                          }} />;
+                        })}
+
+                        {/* Labels (collision-free) */}
+                        {buildLabels().map(val => {
+                          const pos = toPercent(val);
+                          const isDividerVal = dividers.includes(val);
+                          return <span key={val} style={{
+                            position: 'absolute',
+                            left: pos + '%',
+                            top: '36px',
+                            transform: 'translateX(-50%)',
+                            fontSize: '0.6em',
+                            opacity: isDividerVal ? 0.9 : 0.45,
+                            fontWeight: isDividerVal ? 600 : 400,
+                            color: isDividerVal ? 'var(--m3primary)' : '',
+                            transition: dragging !== null ? 'none' : 'left 0.12s ease-out, opacity 0.2s',
+                            pointerEvents: 'none',
+                            whiteSpace: 'nowrap',
+                          }}>{orderedWs[val - 1]?.name}</span>;
+                        })}
+
+                        {/* Divider handles */}
+                        {dividers.map((val, idx) => {
+                          const pos = toPercent(val);
+                          const isActive = dragging === idx;
+                          return (
+                            <button key={idx} type="button" className="ws-divider"
+                              aria-label={`Monitör sınırı ${idx + 1}: ${val} çalışma alanından sonra`}
+                              style={{
+                                position: 'absolute',
+                                left: `calc(${pos}% - 12px)`,
+                                top: '4px',
+                                width: '24px',
+                                height: '34px',
+                                cursor: 'ew-resize',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                alignItems: 'center',
+                                zIndex: 3,
+                                border: 0,
+                                padding: 0,
+                                background: 'transparent',
+                                transition: dragging !== null ? 'none' : 'left 0.12s ease-out',
+                              }}
+                              onPointerDown={e => onPointerDown(e, idx)}
+                              onKeyDown={e => {
+                                const delta = e.key === 'ArrowLeft' ? -1 : e.key === 'ArrowRight' ? 1 : 0;
+                                if (!delta) return;
+                                e.preventDefault();
+                                setDividers(old => {
+                                  const next = [...old];
+                                  next[idx] = Math.max(idx ? old[idx - 1] + 1 : 1,
+                                    Math.min(idx < old.length - 1 ? old[idx + 1] - 1 : total - 1, old[idx] + delta));
+                                  return next;
+                                });
+                              }}>
+                              {/* Handle bar */}
+                              <div style={{
+                                width: isActive ? '6px' : '3px',
+                                height: '20px',
+                                borderRadius: '2px',
+                                background: isActive ? '#fff' : 'rgba(255,255,255,0.65)',
+                                boxShadow: isActive ? '0 0 8px rgba(255,255,255,0.4)' : 'none',
+                                transition: 'width 0.12s, background 0.12s',
+                              }} />
+                              {/* Value badge */}
+                              <span style={{
+                                fontSize: '0.65em',
+                                fontWeight: 600,
+                                marginTop: '1px',
+                                pointerEvents: 'none',
+                                background: isActive ? 'var(--m3primary)' : 'rgba(255,255,255,0.12)',
+                                padding: '1px 5px',
+                                borderRadius: '3px',
+                                color: isActive ? '#000' : 'rgba(255,255,255,0.8)',
+                                transition: 'all 0.12s',
+                              }}>{val}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Segment → Monitor assignments */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
+                        {segments.map((seg, i) => (
+                          <div key={i} style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '12px',
+                            padding: '10px 14px',
+                            background: 'var(--colLayer2)',
+                            borderRadius: '10px',
+                            borderLeft: `3px solid ${segColors[i % segColors.length]}`,
+                          }}>
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontWeight: 500, fontSize: '0.9em' }}>Workspace {orderedWs[seg.start]?.name}–{orderedWs[seg.end - 1]?.name}</div>
+                              <div className="sub" style={{ fontSize: '0.8em' }}>{seg.count} çalışma alanı</div>
+                            </div>
+                            <select className="sel" value={segMon[i] ?? mons[i]?.index} onChange={e => {
+                              let n = [...segMon];
+                              n[i] = parseInt(e.target.value);
+                              setSegMon(n);
+                            }}>
+                              {mons.map((m, j) => <option key={m.index} value={m.index}>Monitör {j + 1} · {m.name} ({m.w}×{m.h})</option>)}
+                            </select>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '14px', gap: '8px', alignItems: 'center' }}>
+                        {error && <span className="ws-inline-error">{error}</span>}
+                        <button className="btn primary" disabled={busy} onClick={applyDivider}>Dağılımı uygula</button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {mode === 'custom' && (
+                <>
+                  <div className="sec-title">Tek tek atama</div>
+                  <div className="card">
+                    <div style={{ padding: '20px' }}>
+                      <div className="sub" style={{ marginBottom: '16px' }}>
+                        Kutucuğa tıklayarak monitör seçin. Değişiklikleri birlikte kaydedebilirsiniz.
+                      </div>
+                      <div className="ws-custom-grid">
+                        {orderedWs.map(w => {
+                          const mIdx = customMap[w.name] ?? mons[0].index;
+                          const position = Math.max(0, mons.findIndex(m => m.index === mIdx));
+                          const mon = mons[position];
+                          return <button key={w.name} type="button" className="ws-custom-item"
+                            title={`Workspace ${w.name} · Monitör ${position + 1}: ${mon.name}`}
+                            aria-label={`Workspace ${w.name}, Monitör ${position + 1}. Değiştirmek için tıklayın.`}
+                            onClick={() => setCustomMap(prev => ({ ...prev, [w.name]: mons[(position + 1) % numMons].index }))}>
+                            <strong>{w.name}</strong>
+                            <span><i style={{ background: segColors[position % segColors.length] }} />M{position + 1}</span>
+                          </button>;
+                        })}
+                      </div>
+                      <div className="ws-custom-actions">{error && <span className="ws-inline-error">{error}</span>}<button className="btn primary" disabled={busy} onClick={() => saveMap(customMap)}>Atamaları kaydet</button></div>
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          );
+        }
+
+
       // ---------------------------------------------------------------- Görünüm
-      function LookPage({ s, update }) {
+        function LookPage({ s, update }) {
         const [theme, setTheme] = useState(window.llTheme?.get?.() ?? 'dark');
         const [hex, setHex] = useState('');
         const [bad, setBad] = useState(false);
@@ -236,7 +648,7 @@
             <div className="sec-title">Hareket</div>
             <div className="card">
               <Row icon="animation" label="Animasyonlar" sub="Workspace kaymaları, pencere açma / kapama / taşıma ve menü geçişleri">
-                <Switch on={s.animations !== false} onChange={v => helper(['--set-pref', 'animations', String(v)]).then(() => update({ animations: v, dirty: true })).catch(() => {})} />
+                <Switch on={s.animations !== false} onChange={v => helper(['--set-pref', 'animations', String(v)]).then(() => update({ animations: v })).catch(() => {})} />
               </Row>
               {/* Yalnızca dokunmatik yüzeyli bilgisayarlarda; çekirdek hemen uygular */}
               {s.touchpad && (
@@ -253,7 +665,6 @@
                 <Icon name="chevron_right" />
               </Row>
             </div>
-            {s.dirty && <ApplyNote />}
           </>
         );
       }
@@ -284,9 +695,9 @@
       // Arayüz tercihleri kabuk yeniden açılınca uygulanır (pencere yöneticisi ve animasyonlar hemen)
       function ApplyNote() {
         return (
-          <div className="note">
-            <Icon name="info" />
-            <span style={{ flex: 1 }}>Arayüzdeki değişiklikler kabuk yeniden açılınca uygulanır.</span>
+          <div className="apply-float" role="status">
+            <Icon name="pending_actions" />
+            <span>Arayüz değişiklikleri hazır<small>Kabuğu yeniden açınca uygulanır.</small></span>
             <button className="btn" onClick={() => helper(['--restart-shell']).catch(() => {})}><Icon name="refresh" />Şimdi uygula</button>
           </div>
         );
@@ -314,7 +725,6 @@
                 <Seg items={[['24', `24 saat · ${t24}`], ['12', `12 saat · ${t12}`]]} value={s.clock || '24'} onChange={v => set('clock', v)} />
               </Row>
             </div>
-            {s.dirty && <ApplyNote />}
           </>
         );
       }
@@ -525,6 +935,7 @@
               </div>
               <div className="body">
                 {page === 'look' && <LookPage s={s} update={update} />}
+                {page === 'workspaces' && <WorkspacesPage s={s} update={update} />}
                 {page === 'lang' && <LangPage s={s} update={update} />}
                 {page === 'keys' && <KeysPage close={hide} />}
                 {page === 'night' && <NightPage />}
@@ -532,6 +943,7 @@
                 {page === 'adv' && <AdvancedPage s={s} />}
                 {page === 'about' && <AboutPage s={s} close={hide} />}
               </div>
+              {s.dirty && <ApplyNote />}
             </div>
           </div>
         );

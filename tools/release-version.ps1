@@ -1,7 +1,7 @@
 param([string]$Edition, [string]$BaseVersion, [string[]]$Tags)
 
 function Get-NextReleaseVersion([string]$base, [string]$edition, [string[]]$tags) {
-    if ($edition -notin @('native-bar', 'web-ui')) { throw "Invalid edition: $edition" }
+    if ($edition -notin @('native-ui', 'web-ui')) { throw "Invalid edition: $edition" }
     if ($base -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid VERSION: $base" }
     $next = [version]$base
     $pattern = '^v(\d+\.\d+\.\d+)-' + [regex]::Escape($edition) + '$'

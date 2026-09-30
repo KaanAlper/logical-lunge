@@ -1,14 +1,18 @@
 use anyhow::Context;
 use tracing::{info, warn};
 #[cfg(target_os = "windows")]
-use wm_common::{HideMethod, ParsedConfig};
-use wm_common::{WindowRuleEvent, WmEvent};
+use wm_common::HideMethod;
+use wm_common::{ParsedConfig, WindowRuleEvent, WmEvent};
 #[cfg(target_os = "windows")]
 use wm_platform::NativeWindowWindowsExt;
 
 use crate::{
-  commands::{window::run_window_rules, workspace::sort_workspaces},
-  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
+  commands::{
+    container::move_container_within_tree,
+    window::run_window_rules,
+    workspace::{activate_workspace, sort_workspaces},
+  },
+  traits::{CommonGetters, PositionGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm::WindowManager,
   wm_state::WmState,
@@ -21,7 +25,6 @@ pub fn reload_config(
   info!("Config reloaded.");
 
   // Keep reference to old config for comparison.
-  #[cfg(target_os = "windows")]
   let old_config = config.value.clone();
 
   // Re-evaluate user config file and set its values in state.
@@ -48,6 +51,7 @@ pub fn reload_config(
   }
 
   update_workspace_configs(state, config)?;
+  reconcile_workspace_monitors(state, config, &old_config)?;
 
   update_container_gaps(state, config);
 
@@ -103,6 +107,55 @@ pub fn reload_config(
     config,
   )?;
 
+  Ok(())
+}
+
+/// Apply changed monitor bindings to workspaces that are already active.
+/// Reloading config used to update their metadata only, so assignments
+/// appeared saved while windows stayed on the old display.
+fn reconcile_workspace_monitors(
+  state: &mut WmState,
+  config: &UserConfig,
+  old_config: &ParsedConfig,
+) -> anyhow::Result<()> {
+  let monitors = state.monitors();
+  for workspace in state.workspaces() {
+    let Some(index) = workspace.config().bind_to_monitor else { continue };
+    if old_config.workspaces.iter().find(|item| item.name == workspace.config().name)
+      .is_some_and(|old| old.bind_to_monitor == Some(index)) { continue; }
+    let Some(target) = monitors.get(index as usize) else {
+      warn!("Workspace {} targets missing monitor {index}.", workspace.config().name);
+      continue;
+    };
+    if workspace.monitor().is_some_and(|monitor| monitor.id() == target.id()) {
+      continue;
+    }
+    move_container_within_tree(
+      &workspace.clone().into(),
+      &target.clone().into(),
+      target.child_count(),
+      state,
+    )?;
+    for window in workspace
+      .descendants()
+      .filter_map(|container| container.as_window_container().ok())
+    {
+      window.set_has_pending_dpi_adjustment(true);
+      window.set_floating_placement(
+        window.floating_placement().translate_to_center(&workspace.to_rect()?),
+      );
+    }
+    state.emit_event(WmEvent::WorkspaceUpdated {
+      updated_workspace: workspace.to_dto()?,
+    });
+  }
+  for monitor in &monitors {
+    if monitor.child_count() == 0 {
+      activate_workspace(None, Some(monitor.clone()), state, config)?;
+    }
+    sort_workspaces(monitor, config)?;
+  }
+  state.pending_sync.queue_container_to_redraw(state.root_container.clone());
   Ok(())
 }
 

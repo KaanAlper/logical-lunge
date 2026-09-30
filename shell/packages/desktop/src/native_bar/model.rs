@@ -1,7 +1,7 @@
 //! What the bar shows: provider outputs, window manager state, clock and the
 //! user's preferences (language, 12 / 24 h clock, theme).
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, time::{SystemTime, UNIX_EPOCH}};
 
 use windows::{
   core::{HSTRING, PCWSTR, PWSTR},
@@ -96,7 +96,12 @@ impl Model {
       Some(a) => format!("{} • {}", title, a),
       None => title.to_string(),
     };
-    let progress = if s.end_time > 0 { (s.position as f32 / s.end_time as f32).min(1.0) } else { 0.0 };
+    let mut position = s.position_seconds;
+    if s.is_playing && s.timeline_updated_at > 0 {
+      let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+      position += (now - s.timeline_updated_at as f64 / 1000.0).max(0.0) * s.playback_rate;
+    }
+    let progress = if s.end_time > 0 { (position / s.end_time as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
     Some((text, progress, s.is_playing))
   }
 

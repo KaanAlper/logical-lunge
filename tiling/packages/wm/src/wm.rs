@@ -116,6 +116,15 @@ impl WindowManager {
         handle_mouse_move(&event, state, config)
       }
       PlatformEvent::Window(window_event) => match window_event {
+        WindowEvent::Created { window, .. } => {
+          #[cfg(target_os = "windows")]
+          {
+            let _ = crate::events::constrain_transition_overlay(&window, state)?;
+          }
+          #[cfg(not(target_os = "windows"))]
+          let _ = window;
+          Ok(())
+        }
         WindowEvent::Focused { window, .. } => {
           handle_window_focused(&window, state, config)
         }

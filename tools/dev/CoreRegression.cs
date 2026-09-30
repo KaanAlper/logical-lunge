@@ -37,8 +37,8 @@ static class CoreRegression
         Check(Request("GET", "/focus-color?v=invalid", "http://127.0.0.1:6124").Contains("405"), "Color writes must require POST");
         Check(Request("POST", "/focus-color?v=invalid", "https://example.invalid").Contains("403"), "Foreign origin was accepted");
         var releases = new List<object>();
-        foreach (string tag in new[] { "v0.2.9-native-bar", "v0.2.10-native-bar", "v9.0.0-web-ui" }) {
-            string edition = tag.EndsWith("web-ui") ? "web-ui" : "native-bar";
+        foreach (string tag in new[] { "v0.2.9-native-ui", "v0.2.10-native-ui", "v9.0.0-web-ui" }) {
+            string edition = tag.EndsWith("web-ui") ? "web-ui" : "native-ui";
             string version = tag.Substring(1).Split('-')[0];
             string name = "LogicalLunge-" + edition + "-" + version + ".zip";
             releases.Add(new Dictionary<string, object> {
@@ -48,8 +48,8 @@ static class CoreRegression
                 }}
             });
         }
-        var rel = Call(typeof(Updater), "SelectRelease", releases, "native-bar");
-        Check((string)rel.GetType().GetField("Tag").GetValue(rel) == "v0.2.10-native-bar", "Updater switched editions or compared versions as text");
+        var rel = Call(typeof(Updater), "SelectRelease", releases, "native-ui");
+        Check((string)rel.GetType().GetField("Tag").GetValue(rel) == "v0.2.10-native-ui", "Updater switched editions or compared versions as text");
         Console.WriteLine("PASS: core routing, origin, method and release selection");
     }
 }

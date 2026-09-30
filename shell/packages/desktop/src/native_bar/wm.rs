@@ -13,7 +13,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 const URL: &str = "ws://127.0.0.1:6123";
 const EVENTS: &str = "focus_changed focused_container_moved workspace_activated \
   workspace_deactivated workspace_updated window_managed window_unmanaged monitor_added \
-  monitor_updated monitor_removed binding_modes_changed tiling_direction_changed pause_changed";
+  monitor_updated monitor_removed binding_modes_changed tiling_direction_changed pause_changed user_config_changed";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WmWindow {
@@ -47,6 +47,7 @@ pub struct WmMonitor {
 pub struct WmState {
   pub connected: bool,
   pub monitors: Vec<WmMonitor>,
+  pub workspace_order: Vec<String>,
   /// Focused container: `Some((process, title))` for a window, `None` for a workspace.
   pub focused_window: Option<(String, String)>,
   pub paused: bool,
@@ -154,6 +155,8 @@ async fn query_all(tx: &mut Tx, rx: &mut Rx, again: &mut bool) -> Option<WmState
   let paused = request(tx, rx, "query paused", again).await;
 
   let mut state = WmState { connected: true, ..Default::default() };
+  state.workspace_order = monitors["workspaceOrder"].as_array().into_iter().flatten()
+    .filter_map(|name| name.as_str().map(str::to_string)).collect();
   for m in monitors["monitors"].as_array().into_iter().flatten() {
     state.monitors.push(WmMonitor {
       device_name: m["deviceName"].as_str().unwrap_or("").to_string(),

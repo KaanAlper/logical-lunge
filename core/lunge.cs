@@ -1,4 +1,4 @@
-﻿// lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
+// lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
 // süreç olarak açar ve korur (Supervisor, nöbetçiler); pencere yöneticisinin yapamadığı, Hyprland/ii'de olan şeyleri yapar:
 //   1) Workspace geçişinde "slide" animasyonu (Hyprland: animation workspaces, slide, menu_decel)
 //      DWM thumbnail'leri ile: eski workspace'in canlı görüntüsü kayarak çıkar, yenisi girer.
@@ -136,6 +136,7 @@ static class Native
     [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
     [DllImport("user32.dll")] public static extern bool RedrawWindow(IntPtr h, IntPtr rect, IntPtr rgn, uint flags);
     [DllImport("gdi32.dll")] public static extern IntPtr CreateRoundRectRgn(int l, int t, int r, int b, int w, int h);
+    [DllImport("gdi32.dll")] public static extern IntPtr CreateRectRgn(int l, int t, int r, int b);
     [DllImport("gdi32.dll")] public static extern bool DeleteObject(IntPtr o);
     [DllImport("user32.dll")] public static extern int GetWindowRgnBox(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
@@ -290,6 +291,27 @@ class TilingClient
         if (data == null) return list;
         foreach (var m in (object[])data["monitors"]) list.Add((Dictionary<string, object>)m);
         return list;
+    }
+
+    public List<Dictionary<string, object>> Workspaces()
+    {
+        var res = Send("query workspaces");
+        var list = new List<Dictionary<string, object>>();
+        if (res == null || !J.Bool(res, "success")) return list;
+        object data, items;
+        if (!res.TryGetValue("data", out data) || !(data is Dictionary<string, object>)) return list;
+        if (!((Dictionary<string, object>)data).TryGetValue("workspaces", out items) || !(items is object[])) return list;
+        foreach (var item in (object[])items) if (item is Dictionary<string, object>) list.Add((Dictionary<string, object>)item);
+        return list;
+    }
+
+    public bool TryCommand(string cmd, out string error)
+    {
+        var response = Send("command " + cmd);
+        if (response == null) { error = "Pencere yöneticisine ulaşılamadı."; return false; }
+        if (!J.Bool(response, "success")) { error = J.Str(response, "error"); return false; }
+        error = null;
+        return true;
     }
 
     public void Command(string cmd) { Send("command " + cmd); }
@@ -744,7 +766,18 @@ class Slider
     // Süreler ve eğriler config.yaml'dan (Anims): kayma 520 ms menu_decel (Hyprland workspaces speed 7 ~700 ms, kuyruğu
     // kısaltıldı), taşı+takip 340 ms, pencere hareketi 300 ms emphasizedDecel, açılış popin %80
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
-    const int MAX_WS = 30;             // tiling config'deki workspace sayısı (next/prev sarması için)
+    static string AdjacentWorkspace(string current, int direction)
+    {
+        try {
+            List<WorkspaceConfigText.Entry> entries;
+            string error;
+            if (WorkspaceConfigText.TryRead(System.IO.File.ReadAllText(Paths.ConfigFile), out entries, out error)) {
+                int index = entries.FindIndex(entry => entry.Number.ToString() == current);
+                if (index >= 0) return entries[(index + direction + entries.Count) % entries.Count].Number.ToString();
+            }
+        } catch { }
+        return null;
+    }
 
     readonly TilingClient tiling;
     // Her monitörün kendi katmanı hazır ve gizli bekler (Warm): tek katmanı başka monitöre taşımak yeniden boyutlama ve
@@ -1765,8 +1798,8 @@ class Slider
             int cur0;
             if (int.TryParse(oldName, out cur0))
             {
-                if (lastCmd == "focus --next-workspace") otherTarget = (cur0 % MAX_WS + 1).ToString();
-                else if (lastCmd == "focus --prev-workspace") otherTarget = ((cur0 + MAX_WS - 2) % MAX_WS + 1).ToString();
+                if (lastCmd == "focus --next-workspace") otherTarget = AdjacentWorkspace(oldName, 1);
+                else if (lastCmd == "focus --prev-workspace") otherTarget = AdjacentWorkspace(oldName, -1);
             }
         }
         Dictionary<string, object> otherMon = null, otherWs = null, warpMon = null, warpWs = null;
@@ -1851,8 +1884,8 @@ class Slider
             int cur;
             if (int.TryParse(oldName, out cur))
             {
-                if (focusCmd == "focus --next-workspace") predicted = (cur % MAX_WS + 1).ToString();
-                else if (focusCmd == "focus --prev-workspace") predicted = ((cur + MAX_WS - 2) % MAX_WS + 1).ToString();
+                if (focusCmd == "focus --next-workspace") predicted = AdjacentWorkspace(oldName, 1);
+                else if (focusCmd == "focus --prev-workspace") predicted = AdjacentWorkspace(oldName, -1);
             }
         }
         if (predicted != null && (commands.Length == 1 || moveFollow))
@@ -2094,8 +2127,10 @@ class Slider
         var mon = FocusedMonitor(mons, out oldWs);
         int cur;
         if (mon == null || oldWs == null || !int.TryParse(J.Str(oldWs, "name"), out cur)) return false;
-        string prevName = cur > 1 && !LivesElsewhere(mons, mon, (cur - 1).ToString()) ? (cur - 1).ToString() : null;
-        string nextName = cur < MAX_WS && !LivesElsewhere(mons, mon, (cur + 1).ToString()) ? (cur + 1).ToString() : null;
+        string prevCandidate = AdjacentWorkspace(cur.ToString(), -1);
+        string nextCandidate = AdjacentWorkspace(cur.ToString(), 1);
+        string prevName = prevCandidate != null && !LivesElsewhere(mons, mon, prevCandidate) ? prevCandidate : null;
+        string nextName = nextCandidate != null && !LivesElsewhere(mons, mon, nextCandidate) ? nextCandidate : null;
 
         int mx = J.Int(mon, "x"), my = J.Int(mon, "y"), mw = J.Int(mon, "width"), mh = J.Int(mon, "height");
         int barH = BarPx(mx + mw / 2, my + mh / 2);
@@ -3326,6 +3361,10 @@ static class Settings
             case "--settings-get": return Js.Serialize(Get());
             case "--set-focus-color": return Js.Serialize(SetFocusColor(a.Length > 1 ? a[1] : ""));
             case "--set-pref": return Js.Serialize(Result(a.Length > 2 && Prefs.Set(a[1], a[2])));
+            case "--set-workspaces":
+                var arr = new string[a.Length - 1];
+                Array.Copy(a, 1, arr, 0, arr.Length);
+                return Js.Serialize(SetWorkspaces(arr));
             case "--health": return Js.Serialize(Health());
             case "--edit-config": return Js.Serialize(Result(UserLaunch.Start(Keys2.CodeEditor, "\"" + Paths.ConfigFile + "\"", Paths.ConfigDir)));
             case "--wm":
@@ -3354,6 +3393,16 @@ static class Settings
         var m = System.Text.RegularExpressions.Regex.Match(cfg, @"(?m)^\s*active_color:\s*""(#[0-9a-fA-F]{6})");
         object lang, clock, anim, gest;
         // Bu komut ayrı bir süreçte çalışır: Prefs yüklenmemiştir (animasyonlar kapalıyken de "açık" görünüyordu)
+        var workspaces = new List<Dictionary<string, object>>();
+        List<WorkspaceConfigText.Entry> entries;
+        string workspaceError;
+        if (WorkspaceConfigText.TryRead(cfg, out entries, out workspaceError))
+            foreach (var entry in entries) {
+                var item = new Dictionary<string, object> { { "name", entry.Number.ToString() } };
+                if (entry.Monitor.HasValue) item["bind_to_monitor"] = entry.Monitor.Value;
+                workspaces.Add(item);
+            }
+
         return new Dictionary<string, object>
         {
             { "focusColor", m.Success ? m.Groups[1].Value.ToLowerInvariant() : "#b69df8" },
@@ -3368,7 +3417,37 @@ static class Settings
             { "configDir", Paths.ConfigDir },
             { "configFile", Paths.ConfigFile },
             { "logsDir", Paths.LogsDir },
+            { "workspaces", workspaces },
+            { "monitors", MonitorList() },
+            { "workspaceError", workspaceError },
         };
+    }
+
+    static List<Dictionary<string, object>> MonitorList()
+    {
+        var list = new List<Dictionary<string, object>>();
+        var monitors = new TilingClient().Monitors();
+        var devices = new List<string>();
+        foreach (var monitor in monitors) devices.Add(J.Str(monitor, "deviceName"));
+        var friendly = MonitorFriendlyNames.Read(devices);
+        for (int i = 0; i < monitors.Count; i++)
+        {
+            var m = monitors[i];
+            string device = J.Str(m, "deviceName");
+            string raw = device.StartsWith("\\\\.\\") ? device.Substring(4) : device;
+            string model;
+            if (!friendly.TryGetValue(device, out model)) model = raw;
+            list.Add(new Dictionary<string, object> {
+                { "index", i },
+                { "name", model },
+                { "deviceName", raw },
+                { "w", J.Int(m, "width") },
+                { "h", J.Int(m, "height") },
+                { "x", J.Int(m, "x") },
+                { "y", J.Int(m, "y") },
+            });
+        }
+        return list;
     }
 
     // config.yaml'daki borders.active_color (saydamlık korunur) + pencere yöneticisine yeniden yükle. Kurulumdan beri
@@ -3396,6 +3475,79 @@ static class Settings
         r["focusColor"] = hex;
         return r;
         }
+    }
+
+    static Dictionary<string, object> SetWorkspaces(string[] mappings)
+    {
+        lock (colorGate) {
+        var map = new Dictionary<int, int>();
+        int? count = null;
+        int? first = null;
+        foreach (var mapping in mappings) {
+            var parts = mapping.Split(':');
+            int number, monitor;
+            if (parts.Length != 2 || !int.TryParse(parts[1], out monitor))
+                return WorkspaceFailure("Geçersiz çalışma alanı ayarı.");
+            if (parts[0] == "count") count = monitor;
+            else if (parts[0] == "first") first = monitor;
+            else if (int.TryParse(parts[0], out number) && !map.ContainsKey(number)) map[number] = monitor;
+            else return WorkspaceFailure("Geçersiz veya tekrarlanan çalışma alanı numarası.");
+        }
+        var client = new TilingClient();
+        var monitors = client.Monitors();
+        if (monitors.Count == 0) return WorkspaceFailure("Pencere yöneticisine ulaşılamadı.");
+        string cfg = System.IO.File.ReadAllText(Paths.ConfigFile);
+        List<WorkspaceConfigText.Entry> current;
+        string error;
+        if (!WorkspaceConfigText.TryRead(cfg, out current, out error)) return WorkspaceFailure(error);
+        if (count.HasValue && count.Value < current.Count) {
+            foreach (var active in client.Workspaces()) {
+                int number;
+                if (int.TryParse(J.Str(active, "name"), out number) && number > count.Value)
+                    return WorkspaceFailure("Önce kaldırılacak çalışma alanlarını kapatın veya daha küçük bir numaraya taşıyın.");
+            }
+        }
+        string next;
+        if (!WorkspaceConfigText.TryRewrite(cfg, count, first, map, monitors.Count, out next, out error))
+            return WorkspaceFailure(error);
+        if (next == cfg) return Result(true);
+        string hashFile = Paths.State("config.sha256");
+        bool managed = false;
+        try { managed = System.IO.File.Exists(hashFile) && System.IO.File.ReadAllText(hashFile).Trim() == Sha256(cfg); } catch { }
+        if (!Files.WriteAtomic(Paths.ConfigFile, next)) return WorkspaceFailure("config.yaml yazılamadı.");
+        if (!client.TryCommand("wm-reload-config", out error)) {
+            Files.WriteAtomic(Paths.ConfigFile, cfg);
+            string ignored; client.TryCommand("wm-reload-config", out ignored);
+            return WorkspaceFailure("Pencere yöneticisi ayarı kabul etmedi: " + error);
+        }
+        // The reload command is complete only when active workspaces have
+        // actually moved to their configured monitors.
+        var expected = new Dictionary<string, int>();
+        foreach (var assignment in map) expected[assignment.Key.ToString()] = assignment.Value;
+        var after = client.Monitors();
+        bool verified = after.Count == monitors.Count;
+        for (int i = 0; i < after.Count && verified; i++)
+            foreach (Dictionary<string, object> workspace in J.Children(after[i])) {
+                int target;
+                string name = J.Str(workspace, "name");
+                if (expected.TryGetValue(name, out target) && target != i) { verified = false; break; }
+            }
+        if (!verified) {
+            Files.WriteAtomic(Paths.ConfigFile, cfg);
+            string ignored; client.TryCommand("wm-reload-config", out ignored);
+            return WorkspaceFailure("Monitör atamaları uygulanamadı; önceki ayar geri yüklendi.");
+        }
+        if (managed && !Files.WriteAtomic(hashFile, Sha256(next)))
+            Slider.Log("workspace settings: could not update config hash");
+        return Result(true);
+        }
+    }
+
+    static Dictionary<string, object> WorkspaceFailure(string message)
+    {
+        var response = Result(false);
+        response["error"] = message;
+        return response;
     }
 
     static Dictionary<string, object> Part(string key, Process p)
@@ -4675,11 +4827,19 @@ class Rounder
         var screen = MonitorOf(h);
         bool full = wp.showCmd == 3 || (fr.Left <= screen.Left && fr.Top <= screen.Top && fr.Right >= screen.Right && fr.Bottom >= screen.Bottom);
 
-        // Başlık ya da kalın çerçevesi olmayan pencere (tarayıcı video tam ekranı başlığı kaldırır) yuvarlanmaz. Önceden
-        // yuvarladıysak bölgeyi kaldır: eski (döşeme boyutundaki) bölge kalınca monitörü kaplayan tam ekran video
-        // döşeme boyutunda kırpılıyordu.
+        // A managed tile keeps its screen-space slot even when an application
+        // briefly expands its own window to the monitor for video fullscreen.
+        // Clip that transition to the tile; explicit WM fullscreen clears the
+        // slot and remains a genuine monitor-wide window.
+        Native.RECT slot;
+        bool tiledSlot = Slot(h, out slot) && slot.Right > screen.Left && slot.Left < screen.Right
+            && slot.Bottom > screen.Top && slot.Top < screen.Bottom
+            && (slot.Left > screen.Left || slot.Top > screen.Top || slot.Right < screen.Right || slot.Bottom < screen.Bottom);
+        // Borderless video in a tile is clipped square. Ordinary captioned
+        // windows keep their rounded corners.
         bool sysCaption = SystemCaption(h, fr);
-        if (full || ((style & Native.WS_CAPTION) != Native.WS_CAPTION && (style & 0x00040000) == 0) || sysCaption)
+        bool borderless = (style & Native.WS_CAPTION) != Native.WS_CAPTION && (style & 0x00040000) == 0;
+        if (((full || borderless) && !tiledSlot) || sysCaption)
         {
             // bizim koyduğumuz; başlığı Windows'un çizdiği pencerede önceki çekirdeğin koyup bıraktığı bölge de kalkar
             Native.RECT rb;
@@ -4690,8 +4850,8 @@ class Rounder
         // Pencere yöneticisi döşenmiş pencerenin yuvasını pencere özelliği olarak yazar (LungeSlotLT/RB). Yuvasından
         // büyük kalan pencere (en küçük boyutu yuvaya sığmıyor) yuvaya kesilir: komşusunun üstüne binmez, taşan
         // yere tıklama komşuya gider. Kenarlık da aynı kesilmiş alana çizilir.
-        Native.RECT vis = fr, slot;
-        if (Slot(h, out slot))
+        Native.RECT vis = fr;
+        if (tiledSlot)
         {
             var c = new Native.RECT { Left = Math.Max(fr.Left, slot.Left), Top = Math.Max(fr.Top, slot.Top), Right = Math.Min(fr.Right, slot.Right), Bottom = Math.Min(fr.Bottom, slot.Bottom) };
             if (c.Right > c.Left && c.Bottom > c.Top) vis = c;
@@ -4720,7 +4880,8 @@ class Rounder
 
         int l = vis.Left - wr.Left, t = vis.Top - wr.Top;
         int r = l + (vis.Right - vis.Left), b = t + (vis.Bottom - vis.Top);
-        IntPtr rgn = Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
+        IntPtr rgn = full || borderless ? Native.CreateRectRgn(l, t, r + 1, b + 1)
+            : Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
         if (Native.SetWindowRgn(h, rgn, true) == 0)
         {
             Slider.Log("SetWindowRgn failed " + ProcName(h) + " err=" + Marshal.GetLastWin32Error());
@@ -7272,7 +7433,7 @@ static class Updater
         try
         {
             string edition = System.IO.File.ReadAllText(Paths.In("EDITION")).Trim();
-            if (edition == "native-bar" || edition == "web-ui") return edition;
+            if (edition == "native-ui" || edition == "web-ui") return edition;
         }
         catch { }
         // Upgrade from packages made before EDITION existed. Only the web
@@ -7284,12 +7445,12 @@ static class Updater
                 if (Convert.ToString(widget["name"]) == "bar") return "web-ui";
         }
         catch { }
-        return "native-bar";
+        return "native-ui";
     }
 
     static Rel SelectRelease(System.Collections.IEnumerable releases, string edition)
     {
-        if (edition != "native-bar" && edition != "web-ui") throw new ArgumentException("Invalid edition");
+        if (edition != "native-ui" && edition != "web-ui") throw new ArgumentException("Invalid edition");
         Rel best = null;
         var pattern = new System.Text.RegularExpressions.Regex("^v([0-9]+\\.[0-9]+\\.[0-9]+)-" + edition + "$");
         foreach (var item in releases)
@@ -9782,7 +9943,7 @@ static class Program
         if (args.Length == 1 && args[0] == "--restart-shell") { Supervisor.RequestFromCore("restart-shell"); return; }
         // Ayarlar penceresi: --settings-get | --set-focus-color #rrggbb | --set-pref <anahtar> <değer> | --health |
         //                    --edit-config | --wm wm-reload-config|wm-redraw   -> JSON
-        if (args.Length >= 1 && (args[0] == "--settings-get" || args[0] == "--set-focus-color" || args[0] == "--set-pref" || args[0] == "--health" || args[0] == "--edit-config" || args[0] == "--wm"))
+        if (args.Length >= 1 && (args[0] == "--settings-get" || args[0] == "--set-focus-color" || args[0] == "--set-pref" || args[0] == "--set-workspaces" || args[0] == "--health" || args[0] == "--edit-config" || args[0] == "--wm"))
         {
             string st;
             try { st = Settings.Cli(args); }

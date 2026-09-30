@@ -71,6 +71,8 @@ pub struct FocusedData {
 #[serde(rename_all = "camelCase")]
 pub struct MonitorsData {
   pub monitors: Vec<ContainerDto>,
+  #[serde(default)]
+  pub workspace_order: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

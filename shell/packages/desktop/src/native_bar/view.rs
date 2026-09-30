@@ -702,16 +702,23 @@ fn media(p: &mut Painter, m: &Model, t: &Theme, r: Rect) -> anyhow::Result<()> {
 
 /// (first workspace shown, index of the focused one) -- pages of 10.
 fn ws_page(m: &Model) -> (u32, usize) {
-  let current: u32 = m.wm.focused_workspace().and_then(|w| w.name.parse().ok()).unwrap_or(1).max(1);
-  let base = (current - 1) / SHOWN as u32 * SHOWN as u32;
-  (base, (current - base - 1) as usize)
+  let current = m.wm.focused_workspace().map(|w| w.name.as_str()).unwrap_or("1");
+  let position = m.wm.workspace_order.iter().position(|name| name == current)
+    .unwrap_or_else(|| current.parse::<usize>().unwrap_or(1).saturating_sub(1));
+  let base = position / SHOWN * SHOWN;
+  (base as u32, position - base)
+}
+
+fn ws_name(m: &Model, position: usize) -> Option<u32> {
+  if m.wm.workspace_order.is_empty() { return Some(position as u32 + 1); }
+  m.wm.workspace_order.get(position)?.parse().ok()
 }
 
 fn occupied(m: &Model, base: u32) -> Vec<bool> {
   (0..SHOWN)
     .map(|i| {
-      let n = (base + i as u32 + 1).to_string();
-      m.wm.all_workspaces().any(|w| w.name == n && w.biggest.is_some())
+      ws_name(m, base as usize + i).is_some_and(|n|
+        m.wm.all_workspaces().any(|w| w.name == n.to_string() && w.biggest.is_some()))
     })
     .collect()
 }
@@ -740,7 +747,9 @@ fn workspaces(p: &mut Painter, m: &Model, t: &Theme, track: Rect, f: &mut Frame)
   }
   for i in 0..SHOWN {
     let cell = Rect::new(track.x + i as f32 * WS, track.y, WS, WS);
-    f.hits.push(Hit { rect: cell, kind: HitKind::Workspace(base + i as u32 + 1) });
+    if let Some(name) = ws_name(m, base as usize + i) {
+      f.hits.push(Hit { rect: cell, kind: HitKind::Workspace(name) });
+    }
   }
   Ok(())
 }
@@ -758,7 +767,7 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>) 
   let occ = occupied(m, base);
   let active = |i: usize| m.wm.connected && i == idx;
   for i in 0..SHOWN {
-    let n = base + i as u32 + 1;
+    let Some(n) = ws_name(m, base as usize + i) else { continue };
     let cell = Rect::new(i as f32 * WS, 0.0, WS, WS);
     let (cx, cy) = (cell.x + WS / 2.0, cell.y + WS / 2.0);
     if hover == Some(&HitKind::Workspace(n)) {

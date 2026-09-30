@@ -13,6 +13,8 @@ mod handle_window_title_changed;
 mod overlay_policy;
 #[cfg(target_os = "windows")]
 mod transition_overlay;
+#[cfg(target_os = "windows")]
+pub(crate) use transition_overlay::constrain_transition_overlay;
 
 pub use handle_display_settings_changed::*;
 pub use handle_mouse_move::*;

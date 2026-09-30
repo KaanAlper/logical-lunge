@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { batteryTime, batteryDetails } from '../../ui/lib/battery.mjs';
 import { trackMedia, mediaPosition } from '../../ui/lib/media-clock.mjs';
+import { appIconFor } from '../../ui/lib/app-icons.js';
+assert.equal(appIconFor([
+  { name: 'Internet Explorer', path: 'shell:AppsFolder\\Microsoft.InternetExplorer.Default', icon: 'browser' },
+  { name: 'Dosya Gezgini', also: 'File Explorer', path: 'shell:AppsFolder\\Microsoft.Windows.Explorer', icon: 'folder' },
+], 'explorer'), 'folder');
 assert.equal(batteryTime(5400000), '1:30');
 for (const value of [undefined, null, 0, -1, NaN, Infinity]) assert.equal(batteryTime(value), null);
 const battery = { chargePercent: 48.7, isCharging: true, state: 'charging', powerConsumption: 25.6, timeTillFull: 5400000 };

@@ -1,4 +1,4 @@
-﻿# Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
+# Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
 # Build machine needs: Windows 10/11 x64 (.NET Framework 4.8 csc is built in), Windows 10 SDK (lunge-media.exe),
 # Rust (rustup; tiling and shell), Python 3.12 (packaged tools) and Node.js (translations).
 #
@@ -7,7 +7,7 @@
 #       uninstall.ps1, ui\logical-lunge\*, scripts\*.ps1, tools\{lunge-media.exe, temps\, termcolors\, songrec\}
 #   config\   templates for ~\.config\logical-lunge and the terminal
 #   installer\setup.ps1
-param([switch]$SkipPython, [switch]$SkipRust, [switch]$NoZip, [ValidateSet('native-bar', 'web-ui')][string]$Edition)
+param([switch]$SkipPython, [switch]$SkipRust, [switch]$NoZip, [ValidateSet('native-ui', 'web-ui')][string]$Edition)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -15,7 +15,7 @@ $root = $PSScriptRoot
 $ver = (Get-Content (Join-Path $root 'VERSION')).Trim()
 $sourceEdition = (Get-Content (Join-Path $root 'EDITION')).Trim()
 if (-not $Edition) { $Edition = $sourceEdition }
-if ($Edition -notin @('native-bar', 'web-ui') -or $Edition -ne $sourceEdition) { throw 'EDITION must match the checked-out source branch.' }
+if ($Edition -notin @('native-ui', 'web-ui') -or $Edition -ne $sourceEdition) { throw 'EDITION must match the checked-out source branch.' }
 if ($ver -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid VERSION: $ver" }
 $name = "LogicalLunge-$Edition-$ver"
 $out = Join-Path $root "dist\$name"
@@ -51,7 +51,7 @@ using System.Reflection;
 [assembly: AssemblyInformationalVersion("$ver")]
 "@
 [IO.File]::WriteAllText($info, $infoText.Replace('{TITLE}', 'Logical Lunge'))
-& $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:Accessibility.dll "$root\core\lunge.cs" $info
+& $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:Accessibility.dll "$root\core\lunge.cs" "$root\core\WorkspaceConfigText.cs" "$root\core\MonitorFriendlyNames.cs" $info
 if ($LASTEXITCODE) { throw 'lunge.exe build failed' }
 
 Step 'lunge-media.exe (album art + seek, WinRT)'

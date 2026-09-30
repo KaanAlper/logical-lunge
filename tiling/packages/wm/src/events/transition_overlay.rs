@@ -7,7 +7,15 @@ use super::overlay_policy::{is_transition_overlay, OverlayFacts};
 
 /// Keep a passive monitor-sized effect inside the tile that owns it.
 /// Effects drawn inside the app's surface follow the ordinary tiled geometry path.
-pub(super) fn constrain_transition_overlay(native: &NativeWindow, state: &WmState) -> anyhow::Result<bool> {
+pub(crate) fn constrain_transition_overlay(native: &NativeWindow, state: &mut WmState) -> anyhow::Result<bool> {
+  let handle = native.hwnd().0;
+  if let Some(tile) = state.transition_moves.get(&handle) {
+    if native.frame()? == *tile {
+      state.transition_moves.remove(&handle);
+      tracing::warn!("Passive transition move completed: {handle}");
+    }
+    return Ok(true);
+  }
   if state.is_paused || state.window_from_native(native).is_some() { return Ok(false); }
   // Cheap checks first: avoid querying geometry/processes for ordinary windows.
   if !native.has_window_style_ex(WS_EX_LAYERED)
@@ -38,6 +46,15 @@ pub(super) fn constrain_transition_overlay(native: &NativeWindow, state: &WmStat
     child: native.has_window_style(WS_CHILD),
   }) { return Ok(false); }
   native.set_slot(Some(&tile))?;
-  native.set_window_pos(&WindowZOrder::TopMost, &tile, SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE)?;
+  tracing::warn!("Passive transition candidate: {handle}, frame={frame:?}, tile={tile:?}, related={related}");
+  // SetWindowRgn sends synchronous position messages to the foreign UI thread.
+  // That blocked for ~180 ms in traces, allowing the monitor-wide effect to
+  // paint before the move was even requested. Queue the move first instead.
+  state.transition_moves.insert(handle, tile.clone());
+  if let Err(err) = native.set_window_pos(&WindowZOrder::TopMost, &tile, SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE) {
+    state.transition_moves.remove(&handle);
+    return Err(err.into());
+  }
+  tracing::warn!("Passive transition move queued: {handle}");
   Ok(true)
 }
