@@ -38,7 +38,7 @@ Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Web UI branch'imizi t
 Open **PowerShell** and paste · **PowerShell**'i aç ve yapıştır:
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
 A short wizard asks for the interface edition, accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back. · Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
@@ -98,7 +98,7 @@ Windows desktop integration requires handling these cases:
 **One command** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
 A short wizard asks for the interface edition, accent color, language and 12/24-hour clock and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
@@ -206,7 +206,7 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 ### Kurulum
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
 Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini, 12/24 saati ve ek bileşenleri sorar; Windows **bir kez** izin ister, gerisini yükleyici yapar. Her değişiklik önce yedeklenir: bir adım başarısız olursa ya da Ctrl+C ile vazgeçersen önceki dosyalar, ayarlar, kayıt defteri değerleri ve görevler geri konur, önceki masaüstün yeniden açılır. Uygulama `%ProgramFiles%\LogicalLunge` (korumalı klasör: çekirdek ve pencere yöneticisi, kısayollar ve pencere yönetimi yönetici pencerelerinde de çalışsın diye yönetici haklarıyla çalışır; kabuk ve açtığın her program senin haklarınla), ayarların `~\.config\logical-lunge`, veriler ve tek ortak log klasörü `%LOCALAPPDATA%\LogicalLunge` altında. **Güncelleme:** sağ paneldeki güncelle düğmesi ya da aynı komutu tekrar çalıştırmak; 0.1.x kurulumları (`~\.glzr`) yeni klasörlere taşınır; başka uygulamaların kullanabileceği eski araç yolları korunur. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.
