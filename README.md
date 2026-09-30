@@ -2,9 +2,9 @@
 
 # Logical Lunge
 
-**A personal Windows desktop with tiling, a native bar or an optional web interface.**
+**A personal Windows desktop with tiling and a blazing fast native bar.**
 
-Döşemeli pencere yönetimi, native bar veya isteğe bağlı web arayüzü ile kişisel Windows masaüstü.
+Döşemeli pencere yönetimi ve yüksek performanslı native bar ile kişisel Windows masaüstü.
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%C2%B7%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](#compatibility)
 [![App](https://img.shields.io/badge/one%20app-lunge.exe-8B5CF6?style=flat-square)](#how-it-works)
@@ -21,22 +21,17 @@ Döşemeli pencere yönetimi, native bar veya isteğe bağlı web arayüzü ile 
 > [!NOTE]
 > Logical Lunge is one application (`lunge.exe`) with its own window manager and shell. Parts of it are derived from open-source projects (see [Credits](#credits--teşekkürler) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); the whole project is GPL-3.0.
 
-## 🧭 Status · Durum
+## 🚀 Status · Durum
 
-**English.** The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are native Windows programs. The Super menu, sidebar, settings, notifications and on-screen keyboard are still web widgets (WebView2) hosted by `lunge-shell`; they are being rewritten natively one by one, and each web version is removed once its native one is done:
+**English.** You are on the `native-bar` branch, our primary development line for maximum performance. The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are completely native Windows programs. The bar is drawn with Direct2D + DirectComposition, bypassing WebView completely for zero-lag compositor animations. The remaining widgets (Super menu, sidebar, settings) are still web-based but are being rewritten natively one by one.
 
 ### 🌐 Try the Live Web Demo
-Curious how it feels before installing? We built a **[Live Web Demo](https://logical-lunge-web-demo.vercel.app/)**! It runs the exact same React-based UI in your browser with mocked system data (CPU, RAM, Workspaces, Settings). You can interact with the top bar, settings, sidebar, and see the tiling windows in action right on the web.
+Curious how it feels before installing? We built a **[Live Web Demo](https://logical-lunge-web-demo.vercel.app/)** based on our Web UI branch! It runs the exact same design in your browser with mocked system data (CPU, RAM, Workspaces, Settings). The native version you install from this branch looks and behaves exactly the same, but runs with native performance.
 
-- **Native bar (done):** a bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. If it fails it builds itself again inside the shell; if it keeps failing, Windows' taskbar comes back.
-- **Next:** native Super menu (its search is done), sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
-- **Branches:** `native-bar` is the native development line; `web-ui` remains a supported, selectable WebView interface. Both have separate release streams. `main` is not used for these releases.
+**Türkçe.** Şu an maksimum performans odaklı geliştirme hattımız olan `native-bar` branch'indesiniz. Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar tamamen native Windows programlarıdır. Bar, WebView kullanılmadan Direct2D + DirectComposition ile çizilir ve animasyonlar sıfır gecikmeyle birleştiricide (compositor) çalışır. Geriye kalan widget'lar (Super menüsü, sağ panel, ayarlar) şimdilik web tabanlıdır ancak tek tek native olarak yeniden yazılmaktadır.
 
-**Türkçe.** Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar native Windows programları. Super menüsü, sağ panel, ayarlar, bildirimler ve ekran klavyesi hâlâ `lunge-shell` içinde çalışan web widget'ları (WebView2); tek tek native olarak yeniden yazılıyorlar, her birinin web sürümü native'i bitince kaldırılıyor:
-
-- **Native bar (bitti):** bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Arızalanırsa shell'in içinde kendini yeniden kurar; arızası sürerse Windows görev çubuğu geri gelir.
-- **Sırada:** native Super menüsü (araması bitti), sağ panel ve diğer paneller; ardından Logical Lunge'ın Windows'un üstünde değil, Explorer'ın yerine doğrudan Windows kabuğu olarak çalışması.
-- **Branch'ler:** `native-bar` native geliştirme hattı; `web-ui` desteklenen, seçilebilir WebView arayüzüdür. Her hattın ayrı release akışı vardır. Bu sürümler için `main` kullanılmaz.
+### 🌐 Canlı Web Demosunu Dene
+Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Web UI branch'imizi temel alan bir **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)** hazırladık! Arayüzün tasarımını sahte (mock) verilerle (CPU, RAM, Pencere dizilimleri) doğrudan tarayıcında çalıştırır. Bu branch'ten kuracağın native sürüm de görsel ve işlevsel olarak tamamen aynıdır, sadece native Windows performansıyla çalışır.
 
 ## ⚡ Quick install · Hızlı kurulum
 
@@ -207,9 +202,6 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 - **Terminal**: WezTerm (JetBrains Mono Nerd Font, çizgi imleç, duvar kağıdından üretilen Material You renkleri) içinde **fish** + **starship**.
 - **Doğrudan masaüstüne açılış**: kabuk hazır olana kadar duvar kağıdı perdesi; Windows görev çubuğu ve Başlat menüsü hiç görünmez — diğer monitörlerde de, bir uygulama görev çubuğu düğmesini yanıp söndürdüğünde de (Super tuşu yalnızca program açıkken kabuğundur).
 - **Kendini toparlar**: pencere yöneticisi çöker ya da donarsa, bar çökerse, çekirdek çöker ya da donarsa o parça kendiliğinden yeniden başlar (diğer workspace'lerde gizli kalan pencereler önce geri gelir). Bar bir sebeple yoksa, dönene kadar Windows görev çubuğu ve Başlat menüsü (Win tuşu) geri gelir; hiçbir zaman eli kolu bağlı kalmazsın. **Masaüstünü yenile** (oturum ekranı, sağ panel ya da Başlat menüsündeki *Logical Lunge'u yeniden başlat*) komut satırı bilmeden her şeyi temiz baştan başlatır.
-
-### 🌐 Canlı Web Demosunu Dene
-Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Uygulamanın **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)**'nu hazırladık! Arayüzün birebir aynısını, sahte (mock) verilerle (CPU, RAM, Pencere dizilimleri, Ayarlar) doğrudan tarayıcında çalıştırır. Sağ menüyü, üst barı, ayarları ve pencerelerin çalışma mantığını kurmadan test edebilirsin.
 
 ### Kurulum
 
