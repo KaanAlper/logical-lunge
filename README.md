@@ -2,9 +2,9 @@
 
 # Logical Lunge
 
-**A personal Windows desktop with tiling, a native bar or an optional web interface.**
+**One blazing-fast native core. Two distinct interface experiences.**
 
-Döşemeli pencere yönetimi, native bar veya isteğe bağlı web arayüzü ile kişisel Windows masaüstü.
+Tek bir yüksek performanslı çekirdek. İki farklı arayüz deneyimi.
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%C2%B7%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](#compatibility)
 [![App](https://img.shields.io/badge/one%20app-lunge.exe-8B5CF6?style=flat-square)](#how-it-works)
@@ -19,24 +19,21 @@ Döşemeli pencere yönetimi, native bar veya isteğe bağlı web arayüzü ile 
 </div>
 
 > [!NOTE]
-> Logical Lunge is one application (`lunge.exe`) with its own window manager and shell. Parts of it are derived from open-source projects (see [Credits](#credits--teşekkürler) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); the whole project is GPL-3.0.
+> Logical Lunge is a complete Windows desktop environment replacement. It uses a single core window manager (`lunge.exe` and `lunge-tiling`), but offers two different interface paradigms developed on parallel branches.
 
-## 🧭 Status · Durum
+## 🔀 Choose Your Experience · Deneyimini Seç
 
-**English.** The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are native Windows programs. The Super menu, sidebar, settings, notifications and on-screen keyboard are still web widgets (WebView2) hosted by `lunge-shell`; they are being rewritten natively one by one, and each web version is removed once its native one is done:
+Because we believe in choice, the UI is split across two active development branches. Both share the exact same underlying native Rust window manager, but render their graphics differently:
+
+| ⚡ Native UI (`native-ui` branch) | 🎨 Web UI (`web-ui` branch) |
+| :--- | :--- |
+| **Zero Input Lag:** Drawn purely with Direct2D & DirectComposition. | **Infinitely Customizable:** Built with React, HTML, and CSS (WebView2). |
+| **Max Performance:** Bypasses web engines for compositor-level animations. | **Themeable:** Easily write your own CSS themes and layouts. |
+| **Best for:** Laptops saving battery, gaming PCs maximizing resources. | **Best for:** Web developers and power users who love to tweak UIs. |
+| 👉 **[Explore Native UI Code](https://github.com/KaanAlper/logical-lunge/tree/native-ui)** | 👉 **[Explore Web UI Code](https://github.com/KaanAlper/logical-lunge/tree/web-ui)** |
 
 ### 🌐 Try the Live Web Demo
 Curious how it feels before installing? We built a **[Live Web Demo](https://logical-lunge-web-demo.vercel.app/)**! It runs the exact same React-based UI in your browser with mocked system data (CPU, RAM, Workspaces, Settings). You can interact with the top bar, settings, sidebar, and see the tiling windows in action right on the web.
-
-- **Native bar (done):** a bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. If it fails it builds itself again inside the shell; if it keeps failing, Windows' taskbar comes back.
-- **Next:** native Super menu (its search is done), sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
-- **Branches:** `native-ui` is the native development line; `web-ui` remains a supported, selectable WebView interface. Both have separate release streams. `main` is not used for these releases.
-
-**Türkçe.** Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar native Windows programları. Super menüsü, sağ panel, ayarlar, bildirimler ve ekran klavyesi hâlâ `lunge-shell` içinde çalışan web widget'ları (WebView2); tek tek native olarak yeniden yazılıyorlar, her birinin web sürümü native'i bitince kaldırılıyor:
-
-- **Native bar (bitti):** bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Arızalanırsa shell'in içinde kendini yeniden kurar; arızası sürerse Windows görev çubuğu geri gelir.
-- **Sırada:** native Super menüsü (araması bitti), sağ panel ve diğer paneller; ardından Logical Lunge'ın Windows'un üstünde değil, Explorer'ın yerine doğrudan Windows kabuğu olarak çalışması.
-- **Branch'ler:** `native-ui` native geliştirme hattı; `web-ui` desteklenen, seçilebilir WebView arayüzüdür. Her hattın ayrı release akışı vardır. Bu sürümler için `main` kullanılmaz.
 
 ## ⚡ Quick install · Hızlı kurulum
 
