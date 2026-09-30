@@ -19,11 +19,15 @@ Tek bir yüksek performanslı çekirdek. İki farklı arayüz deneyimi.
 </div>
 
 > [!NOTE]
-> Logical Lunge is a complete Windows desktop environment replacement. It uses a single core window manager (`lunge.exe` and `lunge-tiling`), but offers two different interface paradigms developed on parallel branches.
+> Logical Lunge is one application (`lunge.exe`) with its own window manager and shell. Parts of it are derived from open-source projects (see [Credits](#credits--teşekkürler) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); the whole project is GPL-3.0.
 
-## 🔀 Choose Your Experience · Deneyimini Seç
+---
 
-Because we believe in choice, the UI is split across two active development branches. Both share the exact same underlying native Rust window manager, but render their graphics differently:
+## English
+
+### 🔀 Choose Your Experience
+
+Logical Lunge is a complete Windows desktop environment replacement. It uses a single core window manager (`lunge.exe` and `lunge-tiling`), but offers two different interface paradigms developed on parallel branches.
 
 | ⚡ Native UI (`native-ui` branch) | 🎨 Web UI (`web-ui` branch) |
 | :--- | :--- |
@@ -32,35 +36,31 @@ Because we believe in choice, the UI is split across two active development bran
 | **Best for:** Laptops saving battery, gaming PCs maximizing resources. | **Best for:** Web developers and power users who love to tweak UIs. |
 | 👉 **[Explore Native UI Code](https://github.com/KaanAlper/logical-lunge/tree/native-ui)** | 👉 **[Explore Web UI Code](https://github.com/KaanAlper/logical-lunge/tree/web-ui)** |
 
-### 🌐 Try the Live Web Demo
+#### 🌐 Try the Live Web Demo
 Curious how it feels before installing? We built a **[Live Web Demo](https://logical-lunge-web-demo.vercel.app/)**! It runs the exact same React-based UI in your browser with mocked system data (CPU, RAM, Workspaces, Settings). You can interact with the top bar, settings, sidebar, and see the tiling windows in action right on the web.
 
-## ⚡ Quick install · Hızlı kurulum
+### ⚡ Quick install
 
-Open **PowerShell** and paste · **PowerShell**'i aç ve yapıştır:
+Open **PowerShell** and paste:
 
 ```powershell
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-A short wizard asks for the interface edition, accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back. · Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
+A short wizard asks for the interface edition, accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back.
 
----
-
-## Interface editions / Arayüz seçenekleri
+### Interface editions
 
 | Edition | Interface | Release tag / Package |
 |---|---|---|
-| `native-ui` | Direct2D native bar; other panels still use WebView2. Native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
-| `web-ui` | React / WebView2 bar and panels. React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
+| `native-ui` | Direct2D native bar; other panels still use WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
+| `web-ui` | React / WebView2 bar and panels. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
 
-Both currently run alongside Explorer. Replacing Explorer is a future native milestone. / İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
+Both currently run alongside Explorer. Replacing Explorer is a future native milestone.
 
-The shared installer downloads the latest complete, non-draft release for the selected edition and verifies its SHA-256. The updater stays on the installed edition. The Release action can publish either edition or both; each version sequence advances independently. / Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Release action iki sürümü ayrı ayrı veya birlikte yayımlayabilir; sürüm numaraları bağımsız ilerler.
+The shared installer downloads the latest complete, non-draft release for the selected edition and verifies its SHA-256. The updater stays on the installed edition. The Release action can publish either edition or both; each version sequence advances independently.
 
-Set `$env:LL_EDITION = 'native-ui'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions. / Varsayılan arayüzü `$env:LL_EDITION = 'native-ui'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
-
-## English
+Set `$env:LL_EDITION = 'native-ui'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions.
 
 ### What this is
 
@@ -187,6 +187,43 @@ Needs Rust (rustup; the toolchain is pinned in `tiling/` and `shell/`), the Wind
 ---
 
 ## Türkçe
+
+### 🔀 Deneyimini Seç
+
+Logical Lunge tam bir Windows masaüstü ortamıdır. Tek bir pencere yöneticisi çekirdeği (`lunge.exe` ve `lunge-tiling`) kullanır, ancak paralel branch'lerde geliştirilen iki farklı arayüz deneyimi sunar.
+
+| ⚡ Native UI (`native-ui` branch'i) | 🎨 Web UI (`web-ui` branch'i) |
+| :--- | :--- |
+| **Sıfır Gecikme:** Tamamen Direct2D ve DirectComposition ile çizilir. | **Sınırsız Özelleştirme:** React, HTML ve CSS (WebView2) ile inşa edilmiştir. |
+| **Maksimum Performans:** Animasyonlar için web motorlarını atlar, doğrudan birleştiricide çalışır. | **Tema Desteği:** Kendi CSS temalarınızı ve düzenlerinizi kolayca yazabilirsiniz. |
+| **Kimin için:** Pil tasarrufu isteyen laptoplar, kaynakları maksimize eden oyuncular. | **Kimin için:** Arayüz kurcalamayı seven Web geliştiricileri ve power user'lar. |
+| 👉 **[Native UI Kodlarını İncele](https://github.com/KaanAlper/logical-lunge/tree/native-ui)** | 👉 **[Web UI Kodlarını İncele](https://github.com/KaanAlper/logical-lunge/tree/web-ui)** |
+
+#### 🌐 Canlı Web Demosunu Dene
+Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Uygulamanın **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)**'nu hazırladık! Arayüzün birebir aynısını, sahte (mock) verilerle doğrudan tarayıcında çalıştırır.
+
+### ⚡ Hızlı kurulum
+
+**PowerShell**'i aç ve yapıştır:
+
+```powershell
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+```
+
+Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
+
+### Arayüz seçenekleri
+
+| Sürüm | Arayüz | Release tag / Paket |
+|---|---|---|
+| `native-ui` | Direct2D native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
+| `web-ui` | React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
+
+İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
+
+Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Release action iki sürümü ayrı ayrı veya birlikte yayımlayabilir; sürüm numaraları bağımsız ilerler.
+
+Varsayılan arayüzü `$env:LL_EDITION = 'native-ui'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
 
 ### Bu nedir
 
