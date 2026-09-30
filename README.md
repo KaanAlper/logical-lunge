@@ -38,7 +38,7 @@ Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Doğrudan bu branch'i
 Open **PowerShell** and paste · **PowerShell**'i aç ve yapıştır:
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/web-ui/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
 A short wizard asks for the interface edition, accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back. · Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
