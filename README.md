@@ -21,44 +21,36 @@ Döşemeli pencere yönetimi ve yüksek performanslı native bar ile kişisel Wi
 > [!NOTE]
 > Logical Lunge is one application (`lunge.exe`) with its own window manager and shell. Parts of it are derived from open-source projects (see [Credits](#credits--teşekkürler) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); the whole project is GPL-3.0.
 
-## 🚀 Status · Durum
+---
 
-**English.** You are on the `native-ui` branch, our primary development line for maximum performance. The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are completely native Windows programs. The bar is drawn with Direct2D + DirectComposition, bypassing WebView completely for zero-lag compositor animations. The remaining widgets (Super menu, sidebar, settings) are still web-based but are being rewritten natively one by one.
+## English
 
-### 🌐 Try the Live Web Demo
+### 🚀 Status
+You are on the `native-ui` branch, our primary development line for maximum performance. The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are completely native Windows programs. The bar is drawn with Direct2D + DirectComposition, bypassing WebView completely for zero-lag compositor animations. The remaining widgets (Super menu, sidebar, settings) are still web-based but are being rewritten natively one by one.
+
+#### 🌐 Try the Live Web Demo
 Curious how it feels before installing? We built a **[Live Web Demo](https://logical-lunge-web-demo.vercel.app/)** based on our Web UI branch! It runs the exact same design in your browser with mocked system data (CPU, RAM, Workspaces, Settings). The native version you install from this branch looks and behaves exactly the same, but runs with native performance.
 
-**Türkçe.** Şu an maksimum performans odaklı geliştirme hattımız olan `native-ui` branch'indesiniz. Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar tamamen native Windows programlarıdır. Bar, WebView kullanılmadan Direct2D + DirectComposition ile çizilir ve animasyonlar sıfır gecikmeyle birleştiricide (compositor) çalışır. Geriye kalan widget'lar (Super menüsü, sağ panel, ayarlar) şimdilik web tabanlıdır ancak tek tek native olarak yeniden yazılmaktadır.
-
-### 🌐 Canlı Web Demosunu Dene
-Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Web UI branch'imizi temel alan bir **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)** hazırladık! Arayüzün tasarımını sahte (mock) verilerle (CPU, RAM, Pencere dizilimleri) doğrudan tarayıcında çalıştırır. Bu branch'ten kuracağın native sürüm de görsel ve işlevsel olarak tamamen aynıdır, sadece native Windows performansıyla çalışır.
-
-## ⚡ Quick install · Hızlı kurulum
-
-Open **PowerShell** and paste · **PowerShell**'i aç ve yapıştır:
+### ⚡ Quick install
+Open **PowerShell** and paste:
 
 ```powershell
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-A short wizard asks for the interface edition, accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back. · Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
+A short wizard asks for the interface edition, accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back.
 
----
-
-## Interface editions / Arayüz seçenekleri
-
+### Interface editions
 | Edition | Interface | Release tag / Package |
 |---|---|---|
-| `native-ui` | Direct2D native bar; other panels still use WebView2. Native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
-| `web-ui` | React / WebView2 bar and panels. React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
+| `native-ui` | Direct2D native bar; other panels still use WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
+| `web-ui` | React / WebView2 bar and panels. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
 
-Both currently run alongside Explorer. Replacing Explorer is a future native milestone. / İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
+Both currently run alongside Explorer. Replacing Explorer is a future native milestone.
 
-The shared installer downloads the latest complete, non-draft release for the selected edition and verifies its SHA-256. The updater stays on the installed edition. The Release action can publish either edition or both; each version sequence advances independently. / Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Release action iki sürümü ayrı ayrı veya birlikte yayımlayabilir; sürüm numaraları bağımsız ilerler.
+The shared installer downloads the latest complete, non-draft release for the selected edition and verifies its SHA-256. The updater stays on the installed edition. The Release action can publish either edition or both; each version sequence advances independently.
 
-Set `$env:LL_EDITION = 'native-ui'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions. / Varsayılan arayüzü `$env:LL_EDITION = 'native-ui'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
-
-## English
+Set `$env:LL_EDITION = 'native-ui'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions.
 
 ### What this is
 
@@ -185,6 +177,33 @@ Needs Rust (rustup; the toolchain is pinned in `tiling/` and `shell/`), the Wind
 ---
 
 ## Türkçe
+
+### 🚀 Durum
+Şu an maksimum performans odaklı geliştirme hattımız olan `native-ui` branch'indesiniz. Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar tamamen native Windows programlarıdır. Bar, WebView kullanılmadan Direct2D + DirectComposition ile çizilir ve animasyonlar sıfır gecikmeyle birleştiricide (compositor) çalışır. Geriye kalan widget'lar (Super menüsü, sağ panel, ayarlar) şimdilik web tabanlıdır ancak tek tek native olarak yeniden yazılmaktadır.
+
+#### 🌐 Canlı Web Demosunu Dene
+Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Web UI branch'imizi temel alan bir **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)** hazırladık! Arayüzün tasarımını sahte (mock) verilerle (CPU, RAM, Pencere dizilimleri) doğrudan tarayıcında çalıştırır. Bu branch'ten kuracağın native sürüm de görsel ve işlevsel olarak tamamen aynıdır, sadece native Windows performansıyla çalışır.
+
+### ⚡ Hızlı kurulum
+**PowerShell**'i aç ve yapıştır:
+
+```powershell
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+```
+
+Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
+
+### Arayüz seçenekleri
+| Sürüm | Arayüz | Release tag / Paket |
+|---|---|---|
+| `native-ui` | Direct2D native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
+| `web-ui` | React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
+
+İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
+
+Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Release action iki sürümü ayrı ayrı veya birlikte yayımlayabilir; sürüm numaraları bağımsız ilerler.
+
+Varsayılan arayüzü `$env:LL_EDITION = 'native-ui'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
 
 ### Bu nedir
 
