@@ -9,6 +9,7 @@ Döşemeli pencere yönetimi, native bar veya isteğe bağlı web arayüzü ile 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%C2%B7%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](#compatibility)
 [![App](https://img.shields.io/badge/one%20app-lunge.exe-8B5CF6?style=flat-square)](#how-it-works)
 [![Languages](https://img.shields.io/badge/UI-13%20languages-2A59FF?style=flat-square)](#languages)
+[![Live Demo](https://img.shields.io/badge/Live-Web_Demo-000000?style=flat-square&logo=vercel&logoColor=white)](https://logical-lunge-web-demo.vercel.app/)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
 
 <!-- Screenshots are added after the first clean-machine test run (docs/screenshots/). -->
@@ -23,6 +24,9 @@ Döşemeli pencere yönetimi, native bar veya isteğe bağlı web arayüzü ile 
 ## 🧭 Status · Durum
 
 **English.** The core (`lunge.exe`, C#), the window manager (`lunge-tiling`, Rust) and the bar are native Windows programs. The Super menu, sidebar, settings, notifications and on-screen keyboard are still web widgets (WebView2) hosted by `lunge-shell`; they are being rewritten natively one by one, and each web version is removed once its native one is done:
+
+### 🌐 Try the Live Web Demo
+Curious how it feels before installing? We built a **[Live Web Demo](https://logical-lunge-web-demo.vercel.app/)**! It runs the exact same React-based UI in your browser with mocked system data (CPU, RAM, Workspaces, Settings). You can interact with the top bar, settings, sidebar, and see the tiling windows in action right on the web.
 
 - **Native bar (done):** a bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. If it fails it builds itself again inside the shell; if it keeps failing, Windows' taskbar comes back.
 - **Next:** native Super menu (its search is done), sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
@@ -203,6 +207,9 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 - **Terminal**: WezTerm (JetBrains Mono Nerd Font, çizgi imleç, duvar kağıdından üretilen Material You renkleri) içinde **fish** + **starship**.
 - **Doğrudan masaüstüne açılış**: kabuk hazır olana kadar duvar kağıdı perdesi; Windows görev çubuğu ve Başlat menüsü hiç görünmez — diğer monitörlerde de, bir uygulama görev çubuğu düğmesini yanıp söndürdüğünde de (Super tuşu yalnızca program açıkken kabuğundur).
 - **Kendini toparlar**: pencere yöneticisi çöker ya da donarsa, bar çökerse, çekirdek çöker ya da donarsa o parça kendiliğinden yeniden başlar (diğer workspace'lerde gizli kalan pencereler önce geri gelir). Bar bir sebeple yoksa, dönene kadar Windows görev çubuğu ve Başlat menüsü (Win tuşu) geri gelir; hiçbir zaman eli kolu bağlı kalmazsın. **Masaüstünü yenile** (oturum ekranı, sağ panel ya da Başlat menüsündeki *Logical Lunge'u yeniden başlat*) komut satırı bilmeden her şeyi temiz baştan başlatır.
+
+### 🌐 Canlı Web Demosunu Dene
+Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Uygulamanın **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)**'nu hazırladık! Arayüzün birebir aynısını, sahte (mock) verilerle (CPU, RAM, Pencere dizilimleri, Ayarlar) doğrudan tarayıcında çalıştırır. Sağ menüyü, üst barı, ayarları ve pencerelerin çalışma mantığını kurmadan test edebilirsin.
 
 ### Kurulum
 
