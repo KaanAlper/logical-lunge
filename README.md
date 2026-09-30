@@ -2,9 +2,9 @@
 
 # Logical Lunge
 
-**One blazing-fast native core. Two distinct interface experiences.**
+**The ultimate Hyprland experience for Windows.** (One core, two interfaces).
 
-Tek bir yüksek performanslı çekirdek. İki farklı arayüz deneyimi.
+Windows için kusursuz Hyprland deneyimi. (Tek çekirdek, iki arayüz).
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%C2%B7%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](#compatibility)
 [![App](https://img.shields.io/badge/one%20app-lunge.exe-8B5CF6?style=flat-square)](#how-it-works)
@@ -19,7 +19,7 @@ Tek bir yüksek performanslı çekirdek. İki farklı arayüz deneyimi.
 </div>
 
 > [!NOTE]
-> Logical Lunge is one application (`lunge.exe`) with its own window manager and shell. Parts of it are derived from open-source projects (see [Credits](#credits--teşekkürler) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); the whole project is GPL-3.0.
+> Logical Lunge brings the **Hyprland experience to Windows**. It is a complete desktop environment with its own native window manager (`lunge.exe` and `lunge-tiling`), high-performance graphics, and limitless customization. (GPL-3.0, see [Credits](#credits--teşekkürler)).
 
 ---
 
