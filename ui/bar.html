@@ -733,8 +733,10 @@
         const [dir, setDir] = useState(0);
 
         const current = parseInt(tiling?.focusedWorkspace?.name ?? '1', 10) || 1;
-        const base = Math.floor((current - 1) / SHOWN) * SHOWN;
-        const idx = current - base - 1;
+        const order = tiling?.workspaceOrder?.length ? tiling.workspaceOrder.map(Number) : Array.from({ length: 30 }, (_, i) => i + 1);
+        const position = Math.max(0, order.indexOf(current));
+        const base = Math.floor(position / SHOWN) * SHOWN;
+        const idx = position - base;
 
         useLayoutEffect(() => {
           if (prevIdx.current !== null && prevIdx.current !== idx) setDir(idx > prevIdx.current ? 1 : -1);
@@ -745,7 +747,7 @@
 
         const big = biggestWindows(tiling);
         const occupied = new Set(Object.keys(big).map(n => parseInt(n, 10)));
-        const slots = Array.from({ length: SHOWN }, (_, i) => base + i + 1);
+        const slots = Array.from({ length: SHOWN }, (_, i) => order[base + i] ?? null);
 
         const runs = [];
         slots.forEach((n, i) => {
@@ -776,6 +778,7 @@
             ))}
             <div className="ws-active" style={{ left: idx * WS + MARGIN, right: (SHOWN - idx - 1) * WS + MARGIN, transition }} />
             {slots.map((n, i) => {
+              if (n === null) return <div key={`empty-${i}`} className="ws" aria-hidden="true" />;
               const b = big[String(n)];
               const ic = b ? (iconFor(b.proc) || winIconOf(b.handle, bumpIcons)) : null;
               return (

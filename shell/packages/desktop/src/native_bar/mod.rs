@@ -1,4 +1,4 @@
-//! Native bar (docs/native-bar.md): the ii bar drawn with Direct2D into
+//! Native bar (docs/native-ui.md): the ii bar drawn with Direct2D into
 //! DirectComposition surfaces, without a WebView.
 //!
 //! Runs on its own thread with a Win32 message loop. Data comes from the
@@ -73,7 +73,7 @@ use crate::providers::{
   SetVolumeArgs,
 };
 
-const HASH_PREFIX: &str = "native-bar:";
+const HASH_PREFIX: &str = "native-ui:";
 const WM_APP_WAKE: u32 = WM_APP + 1;
 const WM_APP_REBUILD: u32 = WM_APP + 2;
 /// the tray panel's click-away hooks: close it
@@ -144,7 +144,7 @@ fn fail(why: &str) {
 /// restarts a shell that died). Three or more: this start uses the web bar.
 /// The record is cleared once a native bar has run for a minute.
 pub fn crash_loop() -> bool {
-  let path = state_dir().join("native-bar-starts");
+  let path = state_dir().join("native-ui-starts");
   let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
   let mut starts: Vec<u64> = std::fs::read_to_string(&path)
     .unwrap_or_default()
@@ -159,7 +159,7 @@ pub fn crash_loop() -> bool {
 }
 
 fn stable() {
-  let _ = std::fs::remove_file(state_dir().join("native-bar-starts"));
+  let _ = std::fs::remove_file(state_dir().join("native-ui-starts"));
 }
 
 fn send(msg: Msg) {
@@ -245,7 +245,7 @@ pub fn start(
 
   let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
   let ready = ready_tx.clone();
-  std::thread::Builder::new().name("native-bar".into()).spawn(move || {
+  std::thread::Builder::new().name("native-ui".into()).spawn(move || {
     if let Err(err) = ui_thread(rx, wm_cmd, manager, rt, opts, ready) {
       tracing::error!("Native bar stopped: {:?}", err);
       if READY.load(Ordering::Acquire) {

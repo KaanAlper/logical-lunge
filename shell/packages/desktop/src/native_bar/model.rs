@@ -1,7 +1,7 @@
 //! What the bar shows: provider outputs, window manager state, clock and the
 //! user's preferences (language, 12 / 24 h clock, theme).
 
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, time::{SystemTime, UNIX_EPOCH}};
 
 use windows::{
   core::{HSTRING, PCWSTR, PWSTR},
@@ -36,7 +36,7 @@ pub struct Model {
   pub pins: Option<Vec<String>>,
   /// The tray panel is open (the arrow points up).
   pub tray_open: bool,
-  hour12: bool,
+  pub hour12: bool,
   /// Language of the date and of `tr()`: prefs.json, else the Windows UI language.
   locale: String,
   /// Turkish source text -> translation (empty for Turkish).
@@ -96,7 +96,12 @@ impl Model {
       Some(a) => format!("{} • {}", title, a),
       None => title.to_string(),
     };
-    let progress = if s.end_time > 0 { (s.position as f32 / s.end_time as f32).min(1.0) } else { 0.0 };
+    let mut position = s.position_seconds;
+    if s.is_playing && s.timeline_updated_at > 0 {
+      let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+      position += (now - s.timeline_updated_at as f64 / 1000.0).max(0.0) * s.playback_rate;
+    }
+    let progress = if s.end_time > 0 { (position / s.end_time as f64).clamp(0.0, 1.0) as f32 } else { 0.0 };
     Some((text, progress, s.is_playing))
   }
 
@@ -185,10 +190,9 @@ impl Model {
   }
 }
 
-/// Pins follow the tooltip's first word, not the icon id (ids change between
-/// runs) -- same key as the web bar.
 /// A tray icon's pin key: its tooltip's first word; without a tooltip the
-/// owner's exe name (the id changes between runs). Same as ui/bar.html.
+/// owner's exe name (the icon id changes between runs). The old web bar used
+/// the same key, so its saved pins still match.
 pub fn pin_key(ic: &SystrayOutputIcon) -> String {
   let src = if !ic.tooltip.trim().is_empty() {
     ic.tooltip.as_str()
@@ -255,6 +259,32 @@ fn load_dict(pack_dir: &Path, locale: &str) -> HashMap<String, String> {
     .zip(vals.iter())
     .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
     .collect()
+}
+
+/// Local clock time of a Unix timestamp, in the user's 12 / 24 h setting
+/// (clipboard entries in the Super menu).
+pub fn clock_at(unix: i64, hour12: bool) -> String {
+  use windows::Win32::{
+    Foundation::{FILETIME, SYSTEMTIME},
+    System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
+  };
+  let ticks = ((unix.max(0) as u64) + 11_644_473_600) * 10_000_000;
+  let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+  let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+  unsafe {
+    if FileTimeToSystemTime(&ft, &mut utc).is_err() || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err() {
+      return String::new();
+    }
+    let mut buf = [0u16; 64];
+    let n = GetTimeFormatEx(
+      &HSTRING::from(""),
+      TIME_FORMAT_FLAGS(0),
+      Some(&local),
+      &HSTRING::from(if hour12 { "h:mm tt" } else { "HH:mm" }),
+      Some(&mut buf),
+    );
+    String::from_utf16_lossy(&buf[..(n.max(1) - 1) as usize])
+  }
 }
 
 fn format_time(pattern: &str) -> String {

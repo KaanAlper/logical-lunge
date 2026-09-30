@@ -366,7 +366,7 @@ function createDateProvider(config) {
 const TILING_EVENTS = [
   'focus_changed', 'focused_container_moved', 'workspace_activated', 'workspace_deactivated', 'workspace_updated',
   'window_managed', 'window_unmanaged', 'monitor_added', 'monitor_updated', 'monitor_removed',
-  'binding_modes_changed', 'tiling_direction_changed', 'pause_changed',
+  'binding_modes_changed', 'tiling_direction_changed', 'pause_changed', 'user_config_changed',
 ];
 
 function createTilingProvider(config) {
@@ -420,7 +420,7 @@ function createTilingProvider(config) {
     }
 
     async function monitorState() {
-      const [{ monitors: wmMonitors }, { windows }] = await Promise.all([client.query('monitors'), client.query('windows')]);
+      const [{ monitors: wmMonitors, workspaceOrder }, { windows }] = await Promise.all([client.query('monitors'), client.query('windows')]);
       const here = monitors.currentMonitor ?? monitors.primaryMonitor ?? { x: 0, y: 0 };
       const current = wmMonitors.reduce((a, b) => (getCoordinateDistance(here, a) <= getCoordinateDistance(here, b) ? a : b));
       const focusedMonitor = wmMonitors.find(m => m.hasFocus);
@@ -429,6 +429,7 @@ function createTilingProvider(config) {
         focusedWorkspace: focusedMonitor?.children.find(w => w.hasFocus),
         currentWorkspaces: current.children,
         allWorkspaces: wmMonitors.flatMap(m => m.children),
+        workspaceOrder,
         focusedMonitor,
         currentMonitor: current,
         allMonitors: wmMonitors,

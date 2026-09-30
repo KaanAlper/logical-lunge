@@ -7,7 +7,14 @@ use super::overlay_policy::{is_transition_overlay, OverlayFacts};
 
 /// Keep a passive monitor-sized effect inside the tile that owns it.
 /// Effects drawn inside the app's surface follow the ordinary tiled geometry path.
-pub(super) fn constrain_transition_overlay(native: &NativeWindow, state: &WmState) -> anyhow::Result<bool> {
+pub(super) fn constrain_transition_overlay(native: &NativeWindow, state: &mut WmState) -> anyhow::Result<bool> {
+  let handle = native.hwnd().0;
+  if let Some(tile) = state.transition_moves.get(&handle) {
+    if native.frame()? == *tile {
+      state.transition_moves.remove(&handle);
+    }
+    return Ok(true);
+  }
   if state.is_paused || state.window_from_native(native).is_some() { return Ok(false); }
   // Cheap checks first: avoid querying geometry/processes for ordinary windows.
   if !native.has_window_style_ex(WS_EX_LAYERED)
@@ -38,6 +45,12 @@ pub(super) fn constrain_transition_overlay(native: &NativeWindow, state: &WmStat
     child: native.has_window_style(WS_CHILD),
   }) { return Ok(false); }
   native.set_slot(Some(&tile))?;
-  native.set_window_pos(&WindowZOrder::TopMost, &tile, SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE)?;
+  // SetWindowRgn sends synchronous position messages to the foreign UI thread.
+  // Traces showed ~180 ms before a move could even be requested. Queue it first.
+  state.transition_moves.insert(handle, tile.clone());
+  if let Err(err) = native.set_window_pos(&WindowZOrder::TopMost, &tile, SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE) {
+    state.transition_moves.remove(&handle);
+    return Err(err.into());
+  }
   Ok(true)
 }

@@ -228,6 +228,7 @@ impl IpcServer {
         }
         QueryCommand::Monitors => {
           ClientResponseData::Monitors(MonitorsData {
+            workspace_order: config.value.workspaces.iter().map(|workspace| workspace.name.clone()).collect(),
             monitors: wm
               .state
               .monitors()

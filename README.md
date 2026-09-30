@@ -49,14 +49,14 @@ A short wizard asks for the interface edition, accent color, language and clock,
 
 | Edition | Interface | Release tag / Package |
 |---|---|---|
-| `native-bar` | Direct2D native bar; other panels still use WebView2. Native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-bar` / `LogicalLunge-native-bar-X.Y.Z.zip` |
+| `native-ui` | Direct2D native bar; other panels still use WebView2. Native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
 | `web-ui` | React / WebView2 bar and panels. React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
 
 Both currently run alongside Explorer. Replacing Explorer is a future native milestone. / İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
 
 The shared installer downloads the latest complete, non-draft release for the selected edition and verifies its SHA-256. The updater stays on the installed edition. The Release action can publish either edition or both; each version sequence advances independently. / Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Release action iki sürümü ayrı ayrı veya birlikte yayımlayabilir; sürüm numaraları bağımsız ilerler.
 
-Set `$env:LL_EDITION = 'native-bar'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions. / Varsayılan arayüzü `$env:LL_EDITION = 'native-bar'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
+Set `$env:LL_EDITION = 'native-ui'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions. / Varsayılan arayüzü `$env:LL_EDITION = 'native-ui'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
 
 ## English
 
@@ -98,7 +98,7 @@ Windows desktop integration requires handling these cases:
 **One command** (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-ui/install.ps1 | iex
 ```
 
 A short wizard asks for the interface edition, accent color, language and 12/24-hour clock and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
@@ -206,7 +206,7 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 ### Kurulum
 
 ```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-bar/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-ui/install.ps1 | iex
 ```
 
 Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini, 12/24 saati ve ek bileşenleri sorar; Windows **bir kez** izin ister, gerisini yükleyici yapar. Her değişiklik önce yedeklenir: bir adım başarısız olursa ya da Ctrl+C ile vazgeçersen önceki dosyalar, ayarlar, kayıt defteri değerleri ve görevler geri konur, önceki masaüstün yeniden açılır. Uygulama `%ProgramFiles%\LogicalLunge` (korumalı klasör: çekirdek ve pencere yöneticisi, kısayollar ve pencere yönetimi yönetici pencerelerinde de çalışsın diye yönetici haklarıyla çalışır; kabuk ve açtığın her program senin haklarınla), ayarların `~\.config\logical-lunge`, veriler ve tek ortak log klasörü `%LOCALAPPDATA%\LogicalLunge` altında. **Güncelleme:** sağ paneldeki güncelle düğmesi ya da aynı komutu tekrar çalıştırmak; 0.1.x kurulumları (`~\.glzr`) yeni klasörlere taşınır; başka uygulamaların kullanabileceği eski araç yolları korunur. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*. Değiştirilen tüm Windows ayarları (görev çubuğu, masaüstü simgeleri, Snap, Win kısayolları) eski haline döner, kurulumdan önceki ayar dosyaların geri gelir. Logical Lunge'ın kendi ayarlarının ve verilerinin (config'ler, pano geçmişi, kısayollar, duvar kağıtları) de silinip silinmeyeceği sorulur.

@@ -12,6 +12,7 @@ pub fn handle_window_destroyed(
   native_window_id: WindowId,
   state: &mut WmState,
 ) -> anyhow::Result<()> {
+  state.transition_moves.remove(&native_window_id.0);
   // Logical Lunge: forget an ignored window when it closes. The list only
   // grew (every PiP, Office popup and shell window stayed in it), each focus
   // event searched it, and a reused handle made a new window "ignored".

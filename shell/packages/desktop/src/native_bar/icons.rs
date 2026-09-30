@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Direct2D::ID2D1Bitmap1;
 use super::gfx::Gfx;
 
 /// An entry of the Super menu's app list (`apps.json`, scripts/build-apps.ps1).
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct App {
   #[serde(default)]
   pub(super) name: String,
@@ -91,6 +91,21 @@ impl Icons {
     !self.apps.is_empty()
   }
 
+  /// The Super menu's app list.
+  pub fn apps(&self) -> &[App] {
+    &self.apps
+  }
+
+  /// An app list entry's icon (the Super menu's results).
+  pub fn app(&mut self, gfx: &Gfx, i: usize) -> Option<ID2D1Bitmap1> {
+    let k = format!("app:{}", i);
+    if !self.bitmaps.contains_key(&k) {
+      let bmp = self.apps.get(i)?.icon.as_deref().and_then(data_url_bytes).and_then(|b| gfx.bitmap(&b).ok());
+      self.bitmaps.insert(k.clone(), bmp);
+    }
+    self.bitmaps.get(&k).cloned().flatten()
+  }
+
   fn match_app(&self, proc: &str) -> Option<usize> {
     let p = proc.to_lowercase();
     let fp = flat(&p);
@@ -116,6 +131,10 @@ impl Icons {
       }
       let name = flat(&a.name);
       let mut score = 0;
+      // Prefer an exact AppsFolder identity segment over a fuzzy display
+      // name. This also works when Windows localizes an application's name.
+      let identity = a.path.rsplit(|c| c == '\\' || c == '.').next().map(flat).unwrap_or_default();
+      if usable(&fp) && identity == fp { score = fp.len() * 4; }
       for cand in [name.clone(), flat(a.exe.as_deref().unwrap_or(""))] {
         if usable(&cand) && fp.starts_with(&cand) {
           score = score.max(cand.len() * 2);
@@ -124,7 +143,7 @@ impl Icons {
       if score == 0 && usable(&name) && pw.contains(&name) {
         score = name.len();
       }
-      if score == 0 && usable(&fp) && words(&a.name).contains(&fp) {
+      if score == 0 && usable(&fp) && (words(&a.name).contains(&fp) || a.also.as_deref().is_some_and(|s| words(s).contains(&fp))) {
         score = fp.len();
       }
       if score > best_score {
@@ -288,5 +307,16 @@ mod tests {
   fn base64() {
     assert_eq!(base64_decode("aGVsbG8="), Some(b"hello".to_vec()));
     assert_eq!(data_url_bytes("data:image/png;base64,aGk="), Some(b"hi".to_vec()));
+  }
+  #[test]
+  fn localized_shell_identity_beats_fuzzy_browser_name() {
+    let mut i = Icons::default();
+    let mut browser = app("Internet Explorer", None);
+    browser.path = "shell:AppsFolder\\Microsoft.InternetExplorer.Default".into();
+    let mut folder = app("Dosya Gezgini", None);
+    folder.also = Some("File Explorer".into());
+    folder.path = "shell:AppsFolder\\Microsoft.Windows.Explorer".into();
+    i.set_apps(vec![browser, folder]);
+    assert_eq!(i.match_app("explorer"), Some(1));
   }
 }

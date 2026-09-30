@@ -57,6 +57,9 @@ pub struct WmState {
   /// Native handles of apps displaying fullscreen content inside their tile.
   pub fake_fullscreen: std::collections::HashSet<isize>,
 
+  /// Passive visual windows awaiting their asynchronous move into a managed tile.
+  pub transition_moves: std::collections::HashMap<isize, Rect>,
+
   /// Logical Lunge: where every window is, kept for a restart.
   pub layout_memory: crate::layout_memory::LayoutMemory,
 
@@ -97,6 +100,7 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       fake_fullscreen: std::collections::HashSet::new(),
+      transition_moves: std::collections::HashMap::new(),
       layout_memory: crate::layout_memory::LayoutMemory::default(),
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),

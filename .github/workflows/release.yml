@@ -1,14 +1,14 @@
 name: Release
 
-# Run from native-bar or web-ui. main is not a release source.
+# Run from native-ui or web-ui. main is not a release source.
 on:
   workflow_dispatch:
     inputs:
       edition:
         description: "Interface to publish"
         type: choice
-        options: [native-bar, web-ui, both]
-        default: native-bar
+        options: [native-ui, web-ui, both]
+        default: native-ui
         required: true
       notes:
         description: "Release notes (optional)"
@@ -29,8 +29,8 @@ jobs:
           EDITION: ${{ inputs.edition }}
         run: |
           case "$EDITION" in
-            both) echo 'editions=["native-bar","web-ui"]' >> "$GITHUB_OUTPUT" ;;
-            native-bar|web-ui) echo "editions=[\"$EDITION\"]" >> "$GITHUB_OUTPUT" ;;
+            both) echo 'editions=["native-ui","web-ui"]' >> "$GITHUB_OUTPUT" ;;
+            native-ui|web-ui) echo "editions=[\"$EDITION\"]" >> "$GITHUB_OUTPUT" ;;
             *) exit 1 ;;
           esac
 

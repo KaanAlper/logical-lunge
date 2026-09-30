@@ -16,6 +16,15 @@ static class Program
             var mgr = GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask().Result;
             var session = mgr.GetCurrentSession();
             if (session == null) return;
+            if (args.Length == 1 && args[0] == "--timeline")
+            {
+                var t = session.GetTimelineProperties();
+                var p = session.GetPlaybackInfo();
+                var timelineWriter = new StreamWriter(Console.OpenStandardOutput());
+                timelineWriter.Write("{\"source\":\"" + session.SourceAppUserModelId.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\",\"positionTicks\":" + t.Position.Ticks + ",\"updatedTicks\":" + t.LastUpdatedTime.ToFileTime() + ",\"endTicks\":" + t.EndTime.Ticks + ",\"status\":\"" + p.PlaybackStatus + "\"}");
+                timelineWriter.Flush();
+                return;
+            }
             if (args.Length == 2 && args[0] == "--seek")
             {
                 double sec = double.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture);

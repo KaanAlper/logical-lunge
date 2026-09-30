@@ -35,11 +35,16 @@ export function appIconFor(apps, proc) {
     if (!a.icon) continue;
     const name = flat(a.name);
     let score = 0;
+    // A localized display name can hide the process name. The final segment
+    // of a Shell AppsFolder identity is a stronger match than a fuzzy word
+    // (Explorer must not inherit Internet Explorer's icon).
+    const identity = flat((a.path || '').split(/[\\.]/).at(-1));
+    if (usable(fp) && identity === fp) score = fp.length * 4;
     for (const cand of [name, flat(a.exe)]) {
       if (usable(cand) && fp.startsWith(cand)) score = Math.max(score, cand.length * 2);
     }
     if (!score && usable(name) && pw.includes(name)) score = name.length;
-    if (!score && usable(fp) && words(a.name).includes(fp)) score = fp.length;
+    if (!score && usable(fp) && (words(a.name).includes(fp) || words(a.also).includes(fp))) score = fp.length;
     if (score > bestScore) { bestScore = score; best = a.icon; }
   }
   return best;
