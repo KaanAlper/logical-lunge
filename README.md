@@ -34,7 +34,7 @@ Curious how it feels? We built a **[Live Web Demo](https://logical-lunge-web-dem
 Open **PowerShell** and paste:
 
 ```powershell
-$env:LL_EDITION="web-ui"; irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
 A short wizard asks for your accent color, language and clock, then one admin prompt; everything else downloads and installs on its own. If anything fails (or you press Ctrl+C) everything is put back.
@@ -174,7 +174,7 @@ Kurmadan önce masaüstü düzeninin nasıl hissettirdiğini merak ediyor musun?
 **PowerShell**'i aç ve yapıştır:
 
 ```powershell
-$env:LL_EDITION="web-ui"; irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
 Kısa bir sihirbaz arayüz vurgu rengini, dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner.
