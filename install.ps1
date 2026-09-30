@@ -7,7 +7,7 @@
 #                                 $env:LL_NO_SENSORS = 1    skip the PawnIO driver (CPU temperature)
 #                                 $env:LL_SOURCE = <folder> install from a local build (dist\LogicalLunge-x.y.z)
 #                                 $env:LL_DEFAULTS = 1      no questions (default choices)
-#                                 $env:LL_EDITION = 'native-bar' or 'web-ui' (defaults to the installed edition, else native-bar)
+#                                 $env:LL_EDITION = 'native-ui' or 'web-ui' (defaults to the installed edition, else native-ui)
 #                                 $env:LL_PLAIN = 1         numbered prompts (0 = no extras, < = back)
 #                                 $env:LL_PREVIEW = 1       walk through the wizard, the download and a simulated install;
 #                                                           nothing is stopped or changed, no UAC
@@ -255,7 +255,7 @@ function Ask([string]$header, [string]$placeholder, [string]$value) {
 # Channel identity is part of both the tag and asset name. Never use /latest:
 # a newer release of the other interface must not switch the user's installation.
 function Select-EditionRelease([object[]]$releases, [string]$edition) {
-    if ($edition -notin @('native-bar', 'web-ui')) { throw "Invalid edition: $edition" }
+    if ($edition -notin @('native-ui', 'web-ui')) { throw "Invalid edition: $edition" }
     $pattern = '^v(\d+\.\d+\.\d+)-' + [regex]::Escape($edition) + '$'
     $best = $null; $version = [version]'0.0.0'
     foreach ($rel in $releases) {
@@ -391,9 +391,9 @@ try {
     if (-not $edition) {
         $marker = Join-Path $env:ProgramFiles 'LogicalLunge\EDITION'
         if (Test-Path $marker) { $edition = [IO.File]::ReadAllText($marker).Trim() }
-        else { $edition = 'native-bar' }
+        else { $edition = 'native-ui' }
     }
-    if ($edition -notin @('native-bar', 'web-ui')) { throw "Invalid edition: $edition" }
+    if ($edition -notin @('native-ui', 'web-ui')) { throw "Invalid edition: $edition" }
 
     Box $C.accent $T.welcome $T.welcomeBody
     Write-Host ''
@@ -424,7 +424,7 @@ try {
                 $step++
             } elseif ($step -eq 1) {
                 if ($src) { $step++; continue }
-                $ans = Choose $T.qEdition @(@($T.native, 'native-bar'), @($T.web, 'web-ui')) $choice.edition
+                $ans = Choose $T.qEdition @(@($T.native, 'native-ui'), @($T.web, 'web-ui')) $choice.edition
                 if ($ans -eq 'BACK') { $step-- } else { $choice.edition = $ans; $step++ }
             } elseif ($step -eq 2) {
                 $cItems = @($colors | ForEach-Object { , @($_[0], $_[1]) }) + , @($T.custom, 'custom')

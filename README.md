@@ -30,13 +30,13 @@ Curious how it feels before installing? We built a **[Live Web Demo](https://log
 
 - **Native bar (done):** a bar drawn with Direct2D + DirectComposition, no WebView; its animations run in the compositor. If it fails it builds itself again inside the shell; if it keeps failing, Windows' taskbar comes back.
 - **Next:** native Super menu (its search is done), sidebar and the other panels, then Logical Lunge running as the Windows shell itself (in place of Explorer) instead of on top of it.
-- **Branches:** `native-bar` is the native development line; `web-ui` remains a supported, selectable WebView interface. Both have separate release streams. `main` is not used for these releases.
+- **Branches:** `native-ui` is the native development line; `web-ui` remains a supported, selectable WebView interface. Both have separate release streams. `main` is not used for these releases.
 
 **Türkçe.** Çekirdek (`lunge.exe`, C#), pencere yöneticisi (`lunge-tiling`, Rust) ve bar native Windows programları. Super menüsü, sağ panel, ayarlar, bildirimler ve ekran klavyesi hâlâ `lunge-shell` içinde çalışan web widget'ları (WebView2); tek tek native olarak yeniden yazılıyorlar, her birinin web sürümü native'i bitince kaldırılıyor:
 
 - **Native bar (bitti):** bar, WebView'suz, Direct2D + DirectComposition ile çiziliyor; animasyonları birleştiricide çalışıyor. Arızalanırsa shell'in içinde kendini yeniden kurar; arızası sürerse Windows görev çubuğu geri gelir.
 - **Sırada:** native Super menüsü (araması bitti), sağ panel ve diğer paneller; ardından Logical Lunge'ın Windows'un üstünde değil, Explorer'ın yerine doğrudan Windows kabuğu olarak çalışması.
-- **Branch'ler:** `native-bar` native geliştirme hattı; `web-ui` desteklenen, seçilebilir WebView arayüzüdür. Her hattın ayrı release akışı vardır. Bu sürümler için `main` kullanılmaz.
+- **Branch'ler:** `native-ui` native geliştirme hattı; `web-ui` desteklenen, seçilebilir WebView arayüzüdür. Her hattın ayrı release akışı vardır. Bu sürümler için `main` kullanılmaz.
 
 ## ⚡ Quick install · Hızlı kurulum
 
@@ -54,14 +54,14 @@ A short wizard asks for the interface edition, accent color, language and clock,
 
 | Edition | Interface | Release tag / Package |
 |---|---|---|
-| `native-bar` | Direct2D native bar; other panels still use WebView2. Native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-bar` / `LogicalLunge-native-bar-X.Y.Z.zip` |
+| `native-ui` | Direct2D native bar; other panels still use WebView2. Native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
 | `web-ui` | React / WebView2 bar and panels. React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
 
 Both currently run alongside Explorer. Replacing Explorer is a future native milestone. / İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
 
 The shared installer downloads the latest complete, non-draft release for the selected edition and verifies its SHA-256. The updater stays on the installed edition. The Release action can publish either edition or both; each version sequence advances independently. / Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Release action iki sürümü ayrı ayrı veya birlikte yayımlayabilir; sürüm numaraları bağımsız ilerler.
 
-Set `$env:LL_EDITION = 'native-bar'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions. / Varsayılan arayüzü `$env:LL_EDITION = 'native-bar'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
+Set `$env:LL_EDITION = 'native-ui'` or `'web-ui'` to select the default edition; add `$env:LL_DEFAULTS = 1` to skip questions. / Varsayılan arayüzü `$env:LL_EDITION = 'native-ui'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
 
 ## English
 
