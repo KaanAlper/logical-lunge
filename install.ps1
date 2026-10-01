@@ -1,5 +1,5 @@
 ﻿# Logical Lunge - first-install wizard
-#   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-ui/install.ps1 | iex
 # Asks for the focus color, the interface language and the clock, downloads the latest release (with a progress bar)
 # and runs installer\setup.ps1 elevated (one UAC prompt) while showing its steps. On an error or Ctrl+C the installer
 # puts everything back the way it was. Nothing is left behind in %TEMP%.
@@ -24,6 +24,7 @@ $tr = (Get-UICulture).Name -like 'tr*'
 function Get-Texts([bool]$tr) {
 if ($tr) { @{
         tagline = 'Logical Lunge: akıcı ve kişiselleştirilebilir bir Windows masaüstü'
+        tagline = 'Logical Lunge: akıcı ve kişiselleştirilebilir bir Windows masaüstü'
         qEdition = 'Hangi arayüzü kurmak istersin?'; sEdition = 'Arayüz'
         native = 'Native: yerel çizilen hafif bar; diğer paneller henüz WebView2 kullanır'
         web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle çizilir'
@@ -44,7 +45,7 @@ if ($tr) { @{
         qStop = 'Kurulumu durdurup her şeyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
         steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bileşenler'; stop = 'Masaüstü durduruluyor'; files = 'Dosyalar kopyalanıyor'; config = 'Ayarların yazılıyor'; migrate = 'Önceki sürümden taşınıyor'; tools = 'Parlaklık ve sıcaklık araçları'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarları'; tasks = 'Başlangıç görevleri'; owner = 'İlk açılışa hazırlanıyor'; finish = 'Son dokunuşlar' }
         doneTitle = 'Hazır! Logical Lunge kuruldu'
-        doneBody = "Masaüstün birkaç saniye içinde açılıyor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ‹/› workspace değiştir`n  Sağ üst köşe       hızlı ayarlar ve bildirimler`n`nKaldırmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
+        doneBody = "Masaüstün birkaç saniye içinde açılıyor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ←/→ workspace değiştir`n  Sağ üst köşe       hızlı ayarlar ve bildirimler`n`nKaldırmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
         errTitle = 'Olmadı, ama merak etme'
         errBody = "Kurulum '{0}' adımında takıldı. Bilgisayarında hiçbir şey yarım kalmadı: yapılan değişiklikler geri alındı ve önceki masaüstün yeniden açıldı."
         errDetail = 'Ayrıntı'; errLog = 'Günlük'
@@ -60,6 +61,7 @@ if ($tr) { @{
         warnBody = 'Masaüstün tam çalışıyor, yalnızca bunlar eksik. Aynı komutu sonra yeniden çalıştırınca eksikler tamamlanır.'
         xBright = 'Harici monitör parlaklığı: ControlMyMonitor'
     } } else { @{
+        tagline = 'Logical Lunge: a fluid, personal Windows desktop'
         tagline = 'Logical Lunge: a fluid, personal Windows desktop'
         qEdition = 'Which interface would you like to install?'; sEdition = 'Interface'
         native = 'Native: a lightweight native bar; other panels still use WebView2'
@@ -81,7 +83,7 @@ if ($tr) { @{
         qStop = 'Stop the install and put everything back?'; stopYes = 'Yes, stop'; stopNo = 'Keep going'
         steps = @{ check = 'Checking Windows'; runtimes = 'Required components'; stop = 'Stopping the desktop'; files = 'Copying files'; config = 'Writing your settings'; migrate = 'Moving data from the previous version'; tools = 'Brightness and temperature tools'; terminal = 'Installing the terminal'; windows = 'Windows settings'; tasks = 'Startup tasks'; owner = 'Preparing the first start'; finish = 'Finishing touches' }
         doneTitle = 'All set! Logical Lunge is installed'
-        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ‹/› switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
+        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ←/→ switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
         errTitle = "That didn't work, but don't worry"
         errBody = "The install got stuck at '{0}'. Nothing was left half-done: the changes were undone and your previous desktop was started again."
         errDetail = 'Details'; errLog = 'Log'
@@ -129,22 +131,22 @@ function Box([string]$color, [string]$title, [string]$body) {
     $w = Width; $in = $w - 4
     $b = Fg $color
     Write-Host ''
-    Write-Host ("  $b?" + ('¦' * ($w - 2)) + "?$R")
+    Write-Host ("  $b╭" + ('─' * ($w - 2)) + "╮$R")
     if ($title) {
-        Write-Host ("  $b-$R " + "$E[1m" + (Fg $color) + $title.PadRight($in) + "$R $b-$R")
-        Write-Host ("  $b-$R " + (' ' * $in) + " $b-$R")
+        Write-Host ("  $b│$R " + "$E[1m" + (Fg $color) + $title.PadRight($in) + "$R $b│$R")
+        Write-Host ("  $b│$R " + (' ' * $in) + " $b│$R")
     }
-    foreach ($l in (Wrap $body $in)) { Write-Host ("  $b-$R " + (Fg $C.text) + $l.PadRight($in) + "$R $b-$R") }
-    Write-Host ("  $b?" + ('¦' * ($w - 2)) + "?$R")
+    foreach ($l in (Wrap $body $in)) { Write-Host ("  $b│$R " + (Fg $C.text) + $l.PadRight($in) + "$R $b│$R") }
+    Write-Host ("  $b╰" + ('─' * ($w - 2)) + "╯$R")
 }
 function Banner {
     if (-not $env:LL_PLAIN -and -not [Console]::IsOutputRedirected) { Clear-Host }
     # figlet "Calvin S"; each line a shade of the accent
     $g = '#d0bcff', '#b69df8', '#977be6'
     $art = @(
-        'T  -¦¬-¦¬T-¦¬-¦¬T    T  T T-¬--¦¬-¦¬',
-        '¦  - -- T--  +¦+-    ¦  - ----- T++ ',
-        '¦=-L¦-L¦-+L¦-+ ++¦-  ¦=-L¦--L-L¦-L¦-')
+        '╦  ┌─┐┌─┐┬┌─┐┌─┐┬    ╦  ┬ ┬┌┐┌┌─┐┌─┐',
+        '║  │ ││ ┬││  ├─┤│    ║  │ │││││ ┬├┤ ',
+        '╩═╝└─┘└─┘┴└─┘┴ ┴┴─┘  ╩═╝└─┘┘└┘└─┘└─┘')
     Write-Host ''
     for ($i = 0; $i -lt $art.Count; $i++) { Write-Host ('  ' + (Paint $g[$i] $art[$i])) }
     Write-Host ('  ' + (Paint $C.dim $T.tagline))
@@ -153,16 +155,16 @@ function Banner {
 function Say([string]$sym, [string]$color, [string]$text) { Write-Host ('  ' + (Paint $color $sym) + ' ' + (Paint $C.text $text)) }
 
 # Spinner line redrawn in place while $work runs as a job-free polling loop
-$SPIN = '?', '?', '?', '?', '?', '?', '?', '?', '?', '?'
+$SPIN = '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'
 function Human([double]$b) { if ($b -ge 1MB) { '{0:0.0} MB' -f ($b / 1MB) } else { '{0:0} KB' -f ($b / 1KB) } }
 # Animated bar: a soft highlight runs along the filled part
 function Bar([double]$frac, [int]$width, [int]$tick) {
     $fill = [int][Math]::Floor($frac * $width)
     $s = ''
     for ($i = 0; $i -lt $width; $i++) {
-        if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + '?' }
-        elseif ($i -eq $fill) { $s += (Fg $C.accent) + '?' }
-        else { $s += (Fg '#49454f') + '¦' }
+        if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + '━' }
+        elseif ($i -eq $fill) { $s += (Fg $C.accent) + '╸' }
+        else { $s += (Fg '#49454f') + '─' }
     }
     return $s + $R
 }
@@ -205,12 +207,12 @@ function Show-Menu([string]$Header, [object[]]$Items, [string]$Default, [bool]$M
 
         for ($i = 0; $i -lt $Items.Count; $i++) {
             $isSel = ($i -eq $sel)
-            $prefix = if ($Multi) { if ($selected -contains $Items[$i][1]) { "? " } else { "? " } } else { "  " }
-            $cur = if ($isSel) { Paint $accent "? " } else { "  " }
+            $prefix = if ($Multi) { if ($selected -contains $Items[$i][1]) { "◆ " } else { "◇ " } } else { "  " }
+            $cur = if ($isSel) { Paint $accent "❯ " } else { "  " }
             $text = if ($isSel) { Paint $accent $Items[$i][0] } else { $Items[$i][0] }
             
             if ($IsColor -and $Items[$i][1] -ne 'custom') {
-                $text = (Paint $Items[$i][1] "--") + " " + $text
+                $text = (Paint $Items[$i][1] "██") + " " + $text
             }
             $out += "  " + $cur + $prefix + $text + "$E[K`n"
         }
@@ -246,7 +248,7 @@ function Confirm([string]$prompt, [string]$yes, [string]$no, [bool]$default = $t
 function Is-Confirmed($answer) { return ($answer -is [bool] -and $answer) }
 function Ask([string]$header, [string]$placeholder, [string]$value) {
     Write-Host ('  ' + (Paint $C.accent $header))
-    Write-Host -NoNewline ('  ' + (Paint $C.accent '? '))
+    Write-Host -NoNewline ('  ' + (Paint $C.accent '❯ '))
     $ans = Read-Host
     if ($ans -eq '') { $ans = if ($value) { $value } else { $placeholder } }
     return $ans.Trim()
@@ -315,7 +317,7 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
             }
             finally { $res.Dispose() }
             if ($total -gt 0 -and $done -lt $total) { throw "the connection closed at $(Human $done) of $(Human $total)" }
-            Write-Host ("`r  " + (Paint $C.ok '?') + ' ' + $label + '  ' + (Paint $C.dim (Human (Get-Item $dst).Length)) + "$E[K")
+            Write-Host ("`r  " + (Paint $C.ok '✓') + ' ' + $label + '  ' + (Paint $C.dim (Human (Get-Item $dst).Length)) + "$E[K")
             return
         }
         catch [OperationCanceledException] { throw }
@@ -330,19 +332,19 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
             }
             if ($try -eq 5) { break }
             for ($w = 2 * $try; $w -gt 0; $w--) {
-                Write-Host -NoNewline ("`r  " + (Paint $C.warn '?') + ' ' + $label + '  ' + (Paint $C.dim ($T.retrying -f $w, ($try + 1))) + "$E[K")
+                Write-Host -NoNewline ("`r  " + (Paint $C.warn '↻') + ' ' + $label + '  ' + (Paint $C.dim ($T.retrying -f $w, ($try + 1))) + "$E[K")
                 for ($k = 0; $k -lt 10; $k++) { Start-Sleep -Milliseconds 100; Poll-CtrlC }
             }
         }
     }
     throw $last
 }
-# A short step: "? label" while it runs, then ? / ? in place
+# A short step: "◌ label" while it runs, then ✓ / ✗ in place
 function With-Spinner([string]$label, [scriptblock]$sb) {
-    Write-Host -NoNewline ('  ' + (Paint $C.accent '?') + ' ' + $label)
+    Write-Host -NoNewline ('  ' + (Paint $C.accent '◌') + ' ' + $label)
     # (not $r: variable names ignore case, and $R is the colour reset Paint appends)
-    try { $result = & $sb; Write-Host ("`r  " + (Paint $C.ok '?') + ' ' + $label + "$E[K"); return $result }
-    catch { Write-Host ("`r  " + (Paint $C.err '?') + ' ' + $label + "$E[K"); throw }
+    try { $result = & $sb; Write-Host ("`r  " + (Paint $C.ok '✓') + ' ' + $label + "$E[K"); return $result }
+    catch { Write-Host ("`r  " + (Paint $C.err '✗') + ' ' + $label + "$E[K"); throw }
 }
 # Ctrl+C while we draw: treated as input so that it can be confirmed instead of killing the install half-way
 function Poll-CtrlC {
@@ -406,7 +408,7 @@ try {
     if ($interactive) {
         $sysName = (Get-UICulture).NativeName
         $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Français', 'fr'), @('Español', 'es'), @('Italiano', 'it'), @('Português', 'pt'),
-            @('??????? (Russian)', 'ru'), @('?????????? (Ukrainian)', 'uk'), @('Polski', 'pl'), @('??? (Japanese)', 'ja'), @('?? (Chinese)', 'zh'), @('??? (Korean)', 'ko'), @('??????? (Arabic)', 'ar'))
+            @('Русский (Russian)', 'ru'), @('Українська (Ukrainian)', 'uk'), @('Polski', 'pl'), @('日本語 (Japanese)', 'ja'), @('中文 (Chinese)', 'zh'), @('한국어 (Korean)', 'ko'), @('العربية (Arabic)', 'ar'))
         $now = Get-Date
         
         $step = 0
@@ -463,7 +465,7 @@ try {
         $sha = $rel.assets | Where-Object { $_.name -eq "$($asset.name).sha256" } | Select-Object -First 1
         $zipUrl = $asset.browser_download_url; $zipSize = [long]$asset.size; $shaUrl = $sha.browser_download_url
     }
-    Say '?' $C.accent "$($T.version): $ver ($($choice.edition))"
+    Say '✓' $C.accent "$($T.version): $ver ($($choice.edition))"
 
     # ------------------------------------------------------------ package
     # no console input (redirected, LL_DEFAULTS in a pipeline): Ctrl+C then simply ends the script
@@ -538,7 +540,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
             '-ProgressFile', "`"$progressFile`"", '-CancelFile', "`"$cancelFile`"", '-FailAt', $(if ($failAt) { $failAt } else { '""' }))
     }
     else {
-        Say '?' $C.accent $T.uac
+        Say '●' $C.accent $T.uac
         try { $script:setup = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList $args2 }
         catch {
             if ($stopped) { Start-Desktop-Again }
@@ -571,12 +573,12 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $out = "$E[$($lines)A"
         for ($i = 0; $i -lt $STEP_IDS.Count; $i++) {
             $label = $T.steps[$STEP_IDS[$i]]
-            if ($i + 1 -lt $n -or ($state -eq 'done')) { $row = (Paint $C.ok '?') + ' ' + (Paint $C.dim $label) }
+            if ($i + 1 -lt $n -or ($state -eq 'done')) { $row = (Paint $C.ok '✓') + ' ' + (Paint $C.dim $label) }
             elseif ($i + 1 -eq $n -and $state -eq 'running') {
                 $row = (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + (Paint $C.text $label)
                 if ($p.file -and $p.size) { $row += '  ' + (Bar ([double]$p.done / [double]$p.size) 18 $tick) + ' ' + (Paint $C.dim ('{0,3:0}%' -f (100 * [double]$p.done / [double]$p.size))) }
             }
-            elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '?') + ' ' + (Paint $C.text $label) }
+            elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '✗') + ' ' + (Paint $C.text $label) }
             else { $row = (Paint '#49454f' '·') + ' ' + (Paint '#6f6a75' $label) }
             $out += "`r  $row$E[K`n"
         }
