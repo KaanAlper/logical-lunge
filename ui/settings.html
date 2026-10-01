@@ -373,7 +373,7 @@
 
               <div className="sec-title">Çoklu Monitör Desteği</div>
               <div className="card">
-                <Row icon="desktop_windows" label="Bağlı monitörler" sub={mons.map((m, i) => `Monitör ${i + 1}: ${m.name} (${m.w}×${m.h})`).join(' · ') || 'Bilgi alınamadı'}>
+                <Row icon="desktop_windows" label="Bağlı monitörler" sub={mons.map(m => `${m.name} · ${m.w}×${m.h}`).join(' · ') || 'Bilgi alınamadı'}>
                   <span style={{ opacity: 0.6, fontSize: '0.85em', fontWeight: 600 }}>{numMons}</span>
                 </Row>
                 <Row icon="splitscreen" label="Dağıtım şekli" sub="Çalışma alanlarını monitörlere nasıl dağıtacağınızı seçin">
@@ -542,7 +542,7 @@
                               n[i] = parseInt(e.target.value);
                               setSegMon(n);
                             }}>
-                              {mons.map((m, j) => <option key={m.index} value={m.index}>Monitör {j + 1} · {m.name} ({m.w}×{m.h})</option>)}
+                              {mons.map(m => <option key={m.index} value={m.index}>{m.name} · {m.w}×{m.h}</option>)}
                             </select>
                           </div>
                         ))}
@@ -571,11 +571,11 @@
                           const position = Math.max(0, mons.findIndex(m => m.index === mIdx));
                           const mon = mons[position];
                           return <button key={w.name} type="button" className="ws-custom-item"
-                            title={`Workspace ${w.name} · Monitör ${position + 1}: ${mon.name}`}
-                            aria-label={`Workspace ${w.name}, Monitör ${position + 1}. Değiştirmek için tıklayın.`}
+                            title={`Workspace ${w.name} · ${mon.name} · ${mon.w}×${mon.h}`}
+                            aria-label={`Workspace ${w.name}, ${mon.name}, ${mon.w}×${mon.h}. Değiştirmek için tıklayın.`}
                             onClick={() => setCustomMap(prev => ({ ...prev, [w.name]: mons[(position + 1) % numMons].index }))}>
                             <strong>{w.name}</strong>
-                            <span><i style={{ background: segColors[position % segColors.length] }} />M{position + 1}</span>
+                            <span><i style={{ background: segColors[position % segColors.length] }} /><span className="ws-monitor-name">{mon.name}</span></span>
                           </button>;
                         })}
                       </div>
