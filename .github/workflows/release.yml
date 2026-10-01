@@ -1,6 +1,7 @@
 name: Release
 
-# Run from native-ui or web-ui. main is not a release source.
+# Dispatch from main. Application source comes from the selected edition;
+# the shared installer always comes from main.
 on:
   workflow_dispatch:
     inputs:
@@ -91,6 +92,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Checkout the shared installer from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: shared-installer
+          sparse-checkout: installer/setup.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Put the shared installer into the edition package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path shared-installer/installer/setup.ps1)) { throw 'Shared installer missing on main' }
+          New-Item -ItemType Directory -Force installer | Out-Null
+          Copy-Item shared-installer/installer/setup.ps1 installer/setup.ps1 -Force
 
       - name: Build package
         shell: pwsh
