@@ -24,7 +24,6 @@ $tr = (Get-UICulture).Name -like 'tr*'
 function Get-Texts([bool]$tr) {
 if ($tr) { @{
         tagline = 'Logical Lunge: akıcı ve kişiselleştirilebilir bir Windows masaüstü'
-        tagline = 'Logical Lunge: akıcı ve kişiselleştirilebilir bir Windows masaüstü'
         qEdition = 'Hangi arayüzü kurmak istersin?'; sEdition = 'Arayüz'
         native = 'Native: yerel çizilen hafif bar; diğer paneller henüz WebView2 kullanır'
         web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle çizilir'
@@ -61,7 +60,6 @@ if ($tr) { @{
         warnBody = 'Masaüstün tam çalışıyor, yalnızca bunlar eksik. Aynı komutu sonra yeniden çalıştırınca eksikler tamamlanır.'
         xBright = 'Harici monitör parlaklığı: ControlMyMonitor'
     } } else { @{
-        tagline = 'Logical Lunge: a fluid, personal Windows desktop'
         tagline = 'Logical Lunge: a fluid, personal Windows desktop'
         qEdition = 'Which interface would you like to install?'; sEdition = 'Interface'
         native = 'Native: a lightweight native bar; other panels still use WebView2'
