@@ -24,7 +24,7 @@ use crate::common::macos::WindowExtMacOs;
 #[cfg(target_os = "windows")]
 use crate::common::windows::{remove_app_bar, WindowExtWindows};
 use crate::{
-  app_settings::AppSettings,
+  app_settings::{with_pack_widgets, AppSettings, SHELL_PACK},
   asset_server::create_init_url,
   common::PathExt,
   monitor_state::{Monitor, MonitorState},
@@ -580,13 +580,27 @@ impl WidgetFactory {
   }
 
   /// Opens presets that are configured to be launched on startup.
-  /// Logical Lunge: an entry whose widget is no longer in its pack (a panel
-  /// that became native, still listed in an older settings file) is skipped.
+  /// Logical Lunge: every widget of the shell's own pack starts, even one an
+  /// older settings file does not list; an entry whose widget is no longer in
+  /// its pack (a panel that became native, still listed in an older settings
+  /// file) is skipped.
   pub async fn startup(&self, native_overview: bool) -> anyhow::Result<()> {
-    let startup_configs = self.app_settings.startup_configs().await;
+    let own_widgets = self
+      .widget_pack_manager
+      .widget_pack_by_id(SHELL_PACK)
+      .await
+      .map(|pack| {
+        pack.config.widgets.into_iter().map(|w| w.name).collect::<Vec<_>>()
+      })
+      .unwrap_or_default();
+    let startup_configs = with_pack_widgets(
+      self.app_settings.startup_configs().await,
+      SHELL_PACK,
+      own_widgets,
+    );
 
     for startup_config in startup_configs {
-      if native_overview && startup_config.pack == "logical-lunge" && startup_config.widget == "overview" {
+      if native_overview && startup_config.pack == SHELL_PACK && startup_config.widget == "overview" {
         tracing::info!("Native overview is ready; skipping its WebView widget.");
         continue;
       }

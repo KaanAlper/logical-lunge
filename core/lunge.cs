@@ -5205,7 +5205,7 @@ class Keys2
     readonly Control ui;
     readonly Slider slider;
     Native.LowLevelKeyboardProc proc;
-    bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected, dockChord;
+    bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected, dockChord, dockMasked;
     int winVk = VK_LWIN, lastWinEvent;
 
     public static Keys2 Instance;
@@ -5305,6 +5305,17 @@ class Keys2
 
     static void SuppressStart() { Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK); }
 
+    // Super+Alt (Dock): Win yutulurken Alt odaktaki uygulamaya gider; uygulama bunu tek başına bir Alt basışı sanıp
+    // menüsünü açar (Zen/Firefox menü çubuğu, Gezgin'in kısayol harfleri). Alt'ın basılışı ile bırakılışı arasına
+    // atanmamış bir tuş girince Windows menüyü açmaz (Başlat menüsünü bastıran hileyle aynı). Kombinasyon başına bir kez:
+    // Alt'ın otomatik tekrarı yeniden enjekte etmesin.
+    void MaskAltMenu()
+    {
+        if (dockMasked) return;
+        dockMasked = true;
+        SuppressStart();
+    }
+
     public static volatile int LastHookTick = Environment.TickCount;
 
     // Süre ölçümü: kanca Windows'un sınırını (~300 ms) aşarsa tuş işlenmeden uygulamaya gider, tekrarlarsa kanca sessizce
@@ -5362,12 +5373,15 @@ class Keys2
                 // Win'den önce basılı tutulan Ctrl/Shift/Alt da "kombinasyon" sayılır
                 modifierWhileWin = Down(VK_CONTROL) || Down(VK_SHIFT) || Down(VK_MENU);
                 dockChord = Down(VK_MENU) && !Down(VK_CONTROL) && !Down(VK_SHIFT);
+                dockMasked = false;
+                if (dockChord) MaskAltMenu();
             }
             if (isUp)
             {
                 bool toggleDock = dockChord && !otherKeyWhileWin && !Binds.Capturing;
                 winDown = false;
                 dockChord = false;
+                dockMasked = false;
                 if (winInjected)
                 {
                     winInjected = false;
@@ -5395,7 +5409,7 @@ class Keys2
             if (isModifier)
             {
                 modifierWhileWin = true;
-                if ((vk == VK_MENU || vk == 0xA4 || vk == 0xA5) && !otherKeyWhileWin && !Down(VK_CONTROL) && !Down(VK_SHIFT)) dockChord = true;
+                if ((vk == VK_MENU || vk == 0xA4 || vk == 0xA5) && !otherKeyWhileWin && !Down(VK_CONTROL) && !Down(VK_SHIFT)) { dockChord = true; MaskAltMenu(); }
                 if (vk == VK_CONTROL || vk == VK_SHIFT || vk == 0xA2 || vk == 0xA3 || vk == 0xA0 || vk == 0xA1) dockChord = false;
             }
             else { otherKeyWhileWin = true; dockChord = false; }
