@@ -121,6 +121,7 @@ enum Msg {
   Core(Option<String>),
   /// the clipboard history (Super menu, `;`)
   Clips(Vec<search::Clip>),
+  Files(String, Result<Vec<crate::everything::FileHit>, String>),
   /// song recognition ended
   SongRecDone,
   /// an app's context menu closed: whether a command was chosen
@@ -934,6 +935,7 @@ impl Ui {
         Msg::Art(title, bytes) => self.got_art(title, bytes),
         Msg::Core(evt) => self.core_event(evt),
         Msg::Clips(clips) => self.overview_clips(clips),
+        Msg::Files(query, result) => self.overview_files(query, result),
         Msg::SongRecDone => self.songrec_done(),
         Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
         Msg::Wm(state) => {

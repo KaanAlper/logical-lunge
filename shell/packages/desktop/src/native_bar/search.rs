@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use super::icons::App;
+use crate::everything::FileHit;
 
 /// ii Config.options.search.prefix
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub enum Prefix {
   Shell,
   Web,
   Clip,
+  File,
 }
 
 impl Prefix {
@@ -29,6 +31,7 @@ impl Prefix {
       Some('$') => Prefix::Shell,
       Some('?') => Prefix::Web,
       Some(';') => Prefix::Clip,
+      Some('#') => Prefix::File,
       _ => Prefix::Default,
     }
   }
@@ -43,6 +46,7 @@ impl Prefix {
       Prefix::Shell => "terminal",
       Prefix::Web => "travel_explore",
       Prefix::Clip => "content_paste",
+      Prefix::File => "folder_open",
     }
   }
 }
@@ -734,6 +738,8 @@ pub enum Act {
   None,
   /// open an app list entry (`explorer <path>`)
   Launch(String),
+  /// open an indexed file or folder with its registered Windows handler
+  OpenPath(String),
   /// scripts\run.ps1 <mode> <text>: "run", "term" (terminal command), "url"
   Script(&'static str, String),
   Copy(String),
@@ -799,6 +805,29 @@ fn web_search(term: &str) -> Act {
   Act::Script("url", format!("{}{}", SEARCH_ENGINE, encode_uri_component(term)))
 }
 
+pub fn file_term(query: &str) -> Option<&str> {
+  match Prefix::of(query) {
+    Prefix::File => Some(query.strip_prefix('#').unwrap_or("").trim()),
+    Prefix::Default if query.trim().chars().count() >= 2 => Some(query.trim()),
+    _ => None,
+  }
+}
+
+pub fn file_items(hits: &[FileHit]) -> Vec<Item> {
+  hits.iter().map(|hit| {
+    let mut item = Item::new(
+      format!("file:{}", hit.full_path),
+      if hit.is_dir { "Klasör" } else { "Dosya" },
+      hit.name.clone(),
+      Glyph::Material(if hit.is_dir { "folder" } else { "draft" }),
+      "Aç",
+      Act::OpenPath(hit.full_path.clone()),
+    );
+    item.sub = hit.path.clone();
+    item
+  }).collect()
+}
+
 /// The result list for `query` (ui/overview.html `results`). `time` formats
 /// a clipboard entry's time (the locale's clock).
 pub fn results(query: &str, apps: &[App], clips: &[Clip], time: &dyn Fn(i64) -> String) -> Vec<Item> {
@@ -858,6 +887,12 @@ pub fn results(query: &str, apps: &[App], clips: &[Clip], time: &dyn Fn(i64) -> 
     Prefix::Web => {
       let s = rest.trim();
       out.push(Item::new("web", "Web araması", s, Glyph::Material("travel_explore"), "Ara", web_search(s)));
+      return out;
+    }
+    Prefix::File => {
+      if rest.trim().is_empty() {
+        out.push(Item::new("file-hint", "Dosya", "Dosya veya klasör adı yaz…", Glyph::Material("folder_open"), "", Act::None));
+      }
       return out;
     }
     Prefix::Default | Prefix::App | Prefix::Math => {}
@@ -1003,6 +1038,16 @@ mod tests {
     let r = results("ins", &apps, &[], &|_| String::new());
     assert_eq!(r[0].name, "Instagram");
     assert_eq!(r[0].act, Act::Launch("shell:AppsFolder\\Instagram".into()));
+  }
+
+  #[test]
+  fn file_prefix_keeps_command_search_separate() {
+    assert_eq!(file_term("# rapor"), Some("rapor"));
+    assert_eq!(file_term("fire"), Some("fire"));
+    assert_eq!(file_term("/dark"), None);
+    assert!(results("# rapor", &[], &[], &|_| String::new()).is_empty());
+    let hits = vec![FileHit { name: "rapor.txt".into(), path: "C:\\Belgeler".into(), full_path: "C:\\Belgeler\\rapor.txt".into(), is_dir: false }];
+    assert_eq!(file_items(&hits)[0].act, Act::OpenPath("C:\\Belgeler\\rapor.txt".into()));
   }
 
   #[test]

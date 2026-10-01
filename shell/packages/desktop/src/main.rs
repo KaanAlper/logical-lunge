@@ -34,6 +34,8 @@ mod app_settings;
 mod asset_server;
 mod cli;
 mod commands;
+mod everything;
+mod screensaver;
 mod common;
 mod monitor_state;
 #[cfg(windows)]
@@ -105,6 +107,9 @@ async fn main() -> anyhow::Result<()> {
       commands::shell_spawn,
       commands::shell_write,
       commands::shell_kill,
+      commands::everything_search,
+      commands::screensaver_state,
+      commands::screensaver_set,
     ])
     .build(tauri::generate_context!())?;
 

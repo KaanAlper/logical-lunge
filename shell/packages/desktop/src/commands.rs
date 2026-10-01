@@ -1,6 +1,23 @@
 use std::{collections::HashMap, sync::Arc};
 
 use tauri::{State, Window};
+use crate::everything::FileHit;
+
+#[tauri::command]
+pub async fn everything_search(query: String, max_results: Option<u32>) -> Result<Vec<FileHit>, String> {
+  tokio::task::spawn_blocking(move || crate::everything::query(&query, max_results.unwrap_or(10)))
+    .await.map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn screensaver_state() -> Result<crate::screensaver::State, String> {
+  tokio::task::spawn_blocking(crate::screensaver::state).await.map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+pub async fn screensaver_set(enabled: bool, minutes: u32, secure: bool, selected: String) -> Result<crate::screensaver::State, String> {
+  tokio::task::spawn_blocking(move || crate::screensaver::set(enabled, minutes, secure, &selected)).await.map_err(|err| err.to_string())?
+}
 
 #[cfg(target_os = "macos")]
 use crate::common::macos::WindowExtMacOs;

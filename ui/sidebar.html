@@ -134,6 +134,7 @@
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
+      import { invoke } from '@tauri-apps/api/core';
       import BugReportDialog from '../bug-report.jsx';
 
       const win = lunge.currentWidget().tauriWindow;
@@ -498,8 +499,67 @@
                 <WallRow wide items={spanItems} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom('span')} onPick={it => applyItem(it, 'span')} />
               </div>
             )}
+            <ScreenSaverSection />
             <div className="wall-credit">Öneriler: wallhaven.cc (yalnızca güvenli içerik)</div>
           </Page>
+        );
+      }
+
+      function ScreenSaverSection() {
+        const [draft, setDraft] = useState(null);
+        const [saved, setSaved] = useState(null);
+        const [busy, setBusy] = useState(false);
+        const [error, setError] = useState('');
+        useEffect(() => {
+          let alive = true;
+          invoke('screensaver_state').then(state => { if (alive) { setDraft(state); setSaved(state); } })
+            .catch(e => { if (alive) setError(String(e)); });
+          return () => { alive = false; };
+        }, []);
+        const saveScreenSaver = async () => {
+          if (!draft || busy) return;
+          setBusy(true); setError('');
+          try {
+            const state = await invoke('screensaver_set', {
+              enabled: draft.enabled, minutes: Number(draft.minutes), secure: draft.secure, selected: draft.selected,
+            });
+            setSaved(state); setDraft(state);
+          } catch (e) { setError(String(e)); }
+          finally { setBusy(false); }
+        };
+        const update = part => setDraft(d => ({ ...d, ...part }));
+        const changed = draft && saved && (draft.enabled !== saved.enabled || draft.minutes !== saved.minutes
+          || draft.secure !== saved.secure || draft.selected !== saved.selected);
+        return (
+          <div className="wall-sec saver-sec">
+            <div className="kb-gtitle"><Icon name="screensaver" />Ekran koruyucu</div>
+            {!draft && !error && <div className="kb-hint">Windows ayarları okunuyor…</div>}
+            {draft && <>
+              <label className="saver-switch"><span>Etkin</span><input type="checkbox" checked={draft.enabled}
+                onChange={e => update({ enabled: e.target.checked })} /></label>
+              <div className="saver-fields">
+                <label>Koruyucu
+                  <select value={draft.selected} onChange={e => update({ selected: e.target.value })}>
+                    <option value="">Seçin</option>
+                    {draft.choices.map(choice => <option key={choice.path} value={choice.path}>{choice.name}</option>)}
+                  </select>
+                </label>
+                <label>Bekleme süresi
+                  <span className="saver-minutes"><input type="number" min="1" max="120" value={draft.minutes}
+                    onChange={e => update({ minutes: e.target.value })} /> dakika</span>
+                </label>
+              </div>
+              <label className="saver-switch"><span>Dönüşte oturum açma iste</span><input type="checkbox" checked={draft.secure}
+                onChange={e => update({ secure: e.target.checked })} /></label>
+              <div className="saver-actions">
+                <button className="chip" disabled={!draft.selected} onClick={() => lunge.shellSpawn(draft.selected, ['/c']).catch(e => setError(String(e)))}>
+                  <Icon name="tune" />Seçenekler</button>
+                <button className="chip on" disabled={!changed || busy} onClick={saveScreenSaver}>
+                  <Icon name={busy ? 'progress_activity' : 'check'} />{busy ? 'Kaydediliyor…' : 'Uygula'}</button>
+              </div>
+            </>}
+            {error && <div className="kb-msg error"><Icon name="error" />{error}</div>}
+          </div>
         );
       }
 
@@ -1043,9 +1103,8 @@
         const altLook = def.alt && expanded; // ii: altAction varken geniş kutucuğun zemini koyu kalır, ikon dairesi renklenir
         const available = def.available !== false;
         const cls = ['qt', expanded ? 'expanded' : 'single', def.toggled ? 'toggled' : '', altLook ? 'alt' : '', edit ? 'editing' : '', available ? '' : 'disabled', active ? 'menu-open' : '', def.hidden ? 'ghosted' : ''].join(' ');
-        const width = `calc((100% - ${SPACING * (COLUMNS - 1)}px) / ${COLUMNS} * ${size} + ${SPACING * (size - 1)}px)`;
         return (
-          <button className={cls} style={{ width, height: CELL_H }} title={def.name} data-qt={type}
+          <button className={cls} style={{ flex: `${size} 1 0`, minWidth: 0, height: CELL_H }} title={def.name} data-qt={type}
             onClick={() => (edit ? onEditClick() : !available ? null : (expanded && def.menu) ? def.menu() : def.action())}
             onContextMenu={e => { e.preventDefault(); if (edit) onEditSize(); else if (def.menu) def.menu(); }}
             onWheel={e => { if (edit) { e.preventDefault(); onEditWheel(e.deltaY > 0 ? 1 : -1); } }}>

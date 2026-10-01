@@ -3,7 +3,7 @@
 //! ui/overview.css, results from `search.rs`, the responsibility map in
 //! docs/native-overview.md.
 
-use std::{collections::HashMap, os::windows::process::CommandExt, path::PathBuf, time::Duration};
+use std::{collections::HashMap, os::windows::process::CommandExt, path::PathBuf, sync::atomic::{AtomicU64, Ordering}, time::Duration};
 
 use serde_json::{json, Value};
 use windows::{
@@ -48,6 +48,7 @@ use super::{
 /// ii searchWidthCollapsed / searchWidth with the margins and the two buttons
 const W_COLLAPSED: f32 = 356.0;
 const W_EXPANDED: f32 = 560.0;
+static FILE_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
 /// bar (40) + elevationMargin (10): ii opens the overview under the bar
 const TOP: f32 = 50.0;
 const BAR: f32 = 56.0;
@@ -235,6 +236,8 @@ pub struct Overview {
   pub menu_open: bool,
   pub edit: Edit,
   results: Vec<Item>,
+  files_query: String,
+  files: Option<Result<Vec<crate::everything::FileHit>, String>>,
   sel: usize,
   /// first row shown (the list scrolls past 11 rows)
   first: usize,
@@ -327,6 +330,8 @@ impl Overview {
         menu_open: false,
         edit: Edit::default(),
         results: Vec::new(),
+        files_query: String::new(),
+        files: None,
         sel: 0,
         first: 0,
         clips: Vec::new(),
@@ -380,10 +385,48 @@ impl Overview {
   pub fn refresh(&mut self, apps: &[App], hour12: bool) -> bool {
     let text = self.edit.text();
     let clip_mode = Prefix::of(&text) == Prefix::Clip;
+    if self.files_query != text {
+      self.files_query = text.clone();
+      self.files = None;
+    }
     self.results = search::results(&text, apps, &self.clips, &|t| model::clock_at(t, hour12));
+    self.add_file_results();
     self.sel = 0;
     self.first = 0;
     clip_mode
+  }
+
+  fn add_file_results(&mut self) {
+    let Some(result) = &self.files else { return };
+    match result {
+      Ok(hits) => {
+        if Prefix::of(&self.files_query) == Prefix::File { self.results.clear(); }
+        let files = search::file_items(hits);
+        let at = self.results.iter().position(|it| it.key == "run").unwrap_or(self.results.len());
+        self.results.splice(at..at, files);
+        if self.results.is_empty() && Prefix::of(&self.files_query) == Prefix::File {
+          let mut item = search::results("#", &[], &[], &|_| String::new()).remove(0);
+          item.name = "Dosya bulunamadı".into();
+          self.results.push(item);
+        }
+      }
+      Err(_) => {
+        if Prefix::of(&self.files_query) == Prefix::File {
+          self.results = search::results("#", &[], &[], &|_| String::new());
+          self.results[0].name = "Everything çalışmıyor".into();
+        }
+      }
+    }
+  }
+
+  fn set_files(&mut self, query: &str, result: Result<Vec<crate::everything::FileHit>, String>) -> bool {
+    if !self.shown || self.edit.text() != query { return false; }
+    self.files = Some(result);
+    self.results.retain(|it| !it.key.starts_with("file:") && it.key != "file-hint");
+    self.add_file_results();
+    self.sel = self.sel.min(self.results.len().saturating_sub(1));
+    self.keep_visible();
+    true
   }
 
   pub fn set_clips(&mut self, clips: Vec<Clip>, apps: &[App], hour12: bool) {
@@ -1188,6 +1231,7 @@ impl Ui {
     if clip_mode {
       self.overview_load_clips();
     }
+    self.overview_request_files();
     // drawn before it is shown: no empty frame
     self.overview_render();
     let Some(o) = self.overview.as_mut() else { return false };
@@ -1196,6 +1240,7 @@ impl Ui {
   }
 
   pub(super) fn overview_hide(&mut self) {
+    FILE_SEARCH_GENERATION.fetch_add(1, Ordering::AcqRel);
     if let Some(o) = self.overview.as_mut() {
       if o.shown {
         if o.pressed_window.take().is_some() {
@@ -1357,6 +1402,7 @@ impl Ui {
         if clip_mode {
           self.overview_load_clips();
         }
+        self.overview_request_files();
         self.overview_render();
       }
       Do::Hide => self.overview_hide(),
@@ -1404,6 +1450,26 @@ impl Ui {
         }
       }
       Do::Menu(path) => self.overview_menu(path),
+    }
+  }
+
+  fn overview_request_files(&self) {
+    let token = FILE_SEARCH_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    let Some(query) = self.overview.as_ref().map(|o| o.edit.text()) else { return };
+    let Some(term) = search::file_term(&query).filter(|term| !term.is_empty()).map(str::to_owned) else { return };
+    std::thread::spawn(move || {
+      std::thread::sleep(Duration::from_millis(110));
+      if FILE_SEARCH_GENERATION.load(Ordering::Acquire) != token { return; }
+      let result = crate::everything::query(&term, 8);
+      if FILE_SEARCH_GENERATION.load(Ordering::Acquire) == token {
+        super::send(Msg::Files(query, result));
+      }
+    });
+  }
+
+  pub(super) fn overview_files(&mut self, query: String, result: Result<Vec<crate::everything::FileHit>, String>) {
+    if self.overview.as_mut().is_some_and(|o| o.set_files(&query, result)) {
+      self.overview_render();
     }
   }
 
@@ -1499,6 +1565,13 @@ impl Ui {
             let _ = std::process::Command::new(exe).arg("--focus-under-cursor").creation_flags(CREATE_NO_WINDOW).status();
           }
           spawn("explorer", &[&path]);
+        });
+      }
+      Act::OpenPath(path) => {
+        std::thread::spawn(move || {
+          if let Some(exe) = core_api::core_exe() {
+            let _ = std::process::Command::new(exe).args(["--launch", &path]).creation_flags(CREATE_NO_WINDOW).status();
+          }
         });
       }
       Act::Script(mode, text) => {
