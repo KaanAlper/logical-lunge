@@ -13,6 +13,9 @@ use crate::common::{read_and_parse_json, PathExt};
 
 pub const VERSION_NUMBER: &str = env!("VERSION_NUMBER");
 
+/// Logical Lunge: ID of the shell's own widget pack.
+pub const SHELL_PACK: &str = "logical-lunge";
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsValue {
@@ -100,8 +103,9 @@ impl AppSettings {
     })
   }
 
-  /// Default settings: the Logical Lunge shell's widgets (the same list
-  /// the installer writes).
+  /// Default settings: the Logical Lunge shell's widgets. This only seeds a
+  /// new settings file; widgets added to the pack later start anyway (see
+  /// `with_pack_widgets`).
   fn default_value() -> AppSettingsValue {
     AppSettingsValue {
       schema: None,
@@ -117,7 +121,7 @@ impl AppSettings {
       ]
       .into_iter()
       .map(|widget| StartupConfig {
-        pack: "logical-lunge".into(),
+        pack: SHELL_PACK.into(),
         widget: widget.into(),
         preset: "default".into(),
       })
@@ -140,5 +144,71 @@ impl AppSettings {
   /// Returns the widget configs to open on startup.
   pub async fn startup_configs(&self) -> Vec<StartupConfig> {
     self.value.lock().await.startup_configs.clone()
+  }
+}
+
+/// Logical Lunge: adds every widget of `pack` that `configs` does not list
+/// yet, with its default preset. The settings file is written once, on the
+/// first start, so without this a panel added in a later version never
+/// starts for anyone who installed an earlier one.
+pub fn with_pack_widgets(
+  mut configs: Vec<StartupConfig>,
+  pack: &str,
+  widgets: impl IntoIterator<Item = String>,
+) -> Vec<StartupConfig> {
+  for widget in widgets {
+    if !configs.iter().any(|c| c.pack == pack && c.widget == widget) {
+      configs.push(StartupConfig {
+        pack: pack.into(),
+        widget,
+        preset: "default".into(),
+      });
+    }
+  }
+  configs
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{with_pack_widgets, StartupConfig};
+
+  fn entry(pack: &str, widget: &str, preset: &str) -> StartupConfig {
+    StartupConfig {
+      pack: pack.into(),
+      widget: widget.into(),
+      preset: preset.into(),
+    }
+  }
+
+  #[test]
+  fn adds_pack_widgets_an_older_settings_file_does_not_list() {
+    let old = vec![
+      entry("logical-lunge", "overview", "default"),
+      entry("logical-lunge", "toast", "default"),
+    ];
+    let merged = with_pack_widgets(
+      old,
+      "logical-lunge",
+      ["overview", "toast", "dock"].map(String::from),
+    );
+    assert_eq!(
+      merged,
+      vec![
+        entry("logical-lunge", "overview", "default"),
+        entry("logical-lunge", "toast", "default"),
+        entry("logical-lunge", "dock", "default"),
+      ]
+    );
+  }
+
+  #[test]
+  fn keeps_listed_entries_and_other_packs_as_they_are() {
+    let old = vec![
+      entry("other", "dock", "wide"),
+      entry("logical-lunge", "dock", "custom"),
+    ];
+    let merged =
+      with_pack_widgets(old.clone(), "logical-lunge", ["dock".to_string()]);
+    assert_eq!(merged, old);
   }
 }

@@ -24,7 +24,7 @@ use crate::common::macos::WindowExtMacOs;
 #[cfg(target_os = "windows")]
 use crate::common::windows::{remove_app_bar, WindowExtWindows};
 use crate::{
-  app_settings::AppSettings,
+  app_settings::{with_pack_widgets, AppSettings, SHELL_PACK},
   asset_server::create_init_url,
   common::PathExt,
   monitor_state::{Monitor, MonitorState},
@@ -585,9 +585,22 @@ impl WidgetFactory {
   }
 
   /// Logical Lunge: the startup widgets except `skip` (the web bar when the
-  /// native bar is up).
+  /// native bar is up). Every widget of the shell's own pack starts, even
+  /// one an older settings file does not list.
   pub async fn startup_skipping(&self, skip: &[&str]) -> anyhow::Result<()> {
-    let startup_configs = self.app_settings.startup_configs().await;
+    let own_widgets = self
+      .widget_pack_manager
+      .widget_pack_by_id(SHELL_PACK)
+      .await
+      .map(|pack| {
+        pack.config.widgets.into_iter().map(|w| w.name).collect::<Vec<_>>()
+      })
+      .unwrap_or_default();
+    let startup_configs = with_pack_widgets(
+      self.app_settings.startup_configs().await,
+      SHELL_PACK,
+      own_widgets,
+    );
 
     for startup_config in startup_configs {
       if skip.contains(&startup_config.widget.as_str()) {
