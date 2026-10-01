@@ -224,12 +224,13 @@ input[type="time"] {
 .ws-error { color: var(--m3error); }
 .ws-saved { color: var(--m3ok); }
 .ws-empty { padding: 20px; color: var(--m3error); }
-.ws-custom-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 8px; }
+.ws-custom-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 .ws-custom-item { min-height: 58px; padding: 7px; border: 1px solid var(--m3outlineVariant); border-radius: 12px; background: var(--colLayer2); color: var(--m3onSurface); display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between; cursor: pointer; font: inherit; text-align: left; }
 .ws-custom-item:hover { border-color: var(--m3primary); background: var(--colLayer3); }
 .ws-custom-item:focus-visible { outline: 2px solid var(--m3primary); outline-offset: 2px; }
 .ws-custom-item strong { font-size: 14px; }
-.ws-custom-item span { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--m3onSurfaceVariant); }
+.ws-custom-item span { display: flex; align-items: center; gap: 5px; max-width: 100%; font-size: 11px; color: var(--m3onSurfaceVariant); }
+.ws-custom-item .ws-monitor-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-custom-item i { width: 7px; height: 7px; border-radius: 50%; }
 .ws-custom-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 16px; }
 .ws-inline-error { color: var(--m3error); font-size: 12px; }

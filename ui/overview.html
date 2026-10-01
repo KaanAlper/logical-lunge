@@ -726,6 +726,18 @@
         (tiling.allMonitors ?? []).forEach(m => (m.children ?? []).forEach(ws => { monOf[ws.name] = m; walk(ws, ws.name); }));
 
         const run = cmd => tiling.runCommand(cmd).catch(() => {});
+        const focusWindow = async (id, workspace) => {
+          onDone();
+          try {
+            // Focusing a container in a hidden workspace can expose that single
+            // window while leaving the old workspace's windows on screen.
+            // Switch the displayed workspace first, then focus its container.
+            if (workspace !== tiling.focusedWorkspace?.name) {
+              await tiling.runCommand(`focus --workspace ${workspace}`);
+            }
+            await tiling.runCommand(`focus --container-id ${id}`);
+          } catch (error) { console.error('Workspace window focus failed', error); }
+        };
 
         return (
           <div className="overview" style={{ gridTemplateColumns: `repeat(${cols}, ${W}px)` }}>
@@ -758,7 +770,7 @@
                            draggable
                            onDragStart={e => { setDrag(w.id); e.dataTransfer.effectAllowed = 'move'; }}
                            onDragEnd={() => setDrag(null)}
-                           onClick={e => { e.stopPropagation(); run(`focus --container-id ${w.id}`); onDone(); }}>
+                           onClick={e => { e.stopPropagation(); focusWindow(w.id, n); }}>
                         {ic ? <img src={ic} alt="" /> : <span className="icon fallback">web_asset</span>}
                       </div>
                     );
