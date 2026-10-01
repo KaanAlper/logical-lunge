@@ -31,6 +31,28 @@ internal static class MonitorFriendlyNames
         return match.Success ? "DISPLAY\\" + match.Groups[1].Value + "\\" + match.Groups[2].Value : null;
     }
 
+    // WMI monitor rows (WmiMonitorID, WmiMonitorBrightness, ...) are named "<key>_<n>". The keys of the monitors on
+    // one adapter ("\\.\DISPLAY1"); empty when Windows exposes none.
+    internal static List<string> InstanceKeys(string adapter)
+    {
+        var keys = new List<string>();
+        try {
+            for (uint i = 0; i < 8; i++) {
+                var device = new DisplayDevice { cb = Marshal.SizeOf(typeof(DisplayDevice)) };
+                if (!EnumDisplayDevices(adapter, i, ref device, 1)) break;
+                var key = Key(device.DeviceID);
+                if (key != null) keys.Add(key);
+            }
+        } catch { }
+        return keys;
+    }
+
+    internal static bool IsInstanceOf(string instanceName, string key)
+    {
+        return instanceName != null && key != null &&
+            (instanceName.StartsWith(key + "_", StringComparison.OrdinalIgnoreCase) || instanceName.Equals(key, StringComparison.OrdinalIgnoreCase));
+    }
+
     internal static Dictionary<string, string> Read(IEnumerable<string> adapterNames)
     {
         var models = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -49,21 +71,14 @@ internal static class MonitorFriendlyNames
 
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var adapter in adapterNames) {
-            try {
-                for (uint i = 0; i < 8; i++) {
-                    var device = new DisplayDevice { cb = Marshal.SizeOf(typeof(DisplayDevice)) };
-                    if (!EnumDisplayDevices(adapter, i, ref device, 1)) break;
-                    var key = Key(device.DeviceID);
-                    if (key == null) continue;
-                    foreach (var model in models)
-                        if (model.Key.StartsWith(key + "_", StringComparison.OrdinalIgnoreCase) ||
-                            model.Key.Equals(key, StringComparison.OrdinalIgnoreCase)) {
-                            result[adapter] = model.Value;
-                            break;
-                        }
-                    if (result.ContainsKey(adapter)) break;
-                }
-            } catch { }
+            foreach (var key in InstanceKeys(adapter)) {
+                foreach (var model in models)
+                    if (IsInstanceOf(model.Key, key)) {
+                        result[adapter] = model.Value;
+                        break;
+                    }
+                if (result.ContainsKey(adapter)) break;
+            }
         }
         return result;
     }
