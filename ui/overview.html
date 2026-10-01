@@ -415,6 +415,8 @@
         // helper süreciyle. Mod, pencere görünmeden ÖNCE uygulanır: yoksa önce düz arama görünüp sonra ";" geliyordu.
         // Her bekleme sınırlı: cevap gelmezse düz arama (sınırsız bekleme açılışı kilitliyordu).
         const withTimeout = (p, ms, fallback) => Promise.race([p, new Promise(r => setTimeout(() => r(fallback), ms))]);
+        // Açılış modunun arama kutusundaki öneki: ";" pano (Super+V), "#" dosya araması (Super+S), aksi halde boş
+        const modeQuery = m => (m === ';' || m === '#' ? m : '');
         const readMode = async () => {
           try {
             const ctl = new AbortController();
@@ -446,7 +448,7 @@
           setSel(0); setOpen(true); setEnterKey(k => k + 1); // hemen açık say: odak olayları yeni açılış başlatmasın
           const m = await readMode();
           if (my !== openSeq.current) return;
-          setQuery(m === ';' ? ';' : '');
+          setQuery(modeQuery(m));
           await visible;
           if (my !== openSeq.current) return;
           try { await win.show(); await win.setFocus(); } catch {}
@@ -489,7 +491,7 @@
             lunge.setWebviewVisible(true);
             if (!openRef.current) showRef.current('çekirdek gösterdi');
             else readMode().then(m => {
-              if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
+              if (m) { setQuery(modeQuery(m)); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
             });
           };
           const hidden = () => { dbg('çekirdek gizledi'); openSeq.current++; openRef.current = false; setOpen(false); lunge.markHidden(win); };
@@ -535,7 +537,7 @@
             // Helper pencereyi kendisi gizleyip yeniden gösterdiyse (Super / Super+V ile kapatma) blur gelmez ve
             // 'open' eski kalır: helper'ın bıraktığı mod bayrağına göre taze açılmış gibi davran.
             readMode().then(m => {
-              if (m) { setQuery(m === ';' ? ';' : ''); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
+              if (m) { setQuery(modeQuery(m)); setSel(0); setEnterKey(k => k + 1); setTimeout(() => inputRef.current?.focus(), 30); }
             });
           };
           const onBlur = () => { if (!menuOpen.current) hide('odak gitti'); };

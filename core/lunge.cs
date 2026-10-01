@@ -4910,6 +4910,7 @@ static class Binds
         { "terminal", "Super+Enter" }, { "terminal-alt", "Super+T" },
         { "browser", "Super+W" }, { "files", "Super+E" }, { "code", "Super+C" }, { "editor", "Super+X" },
         { "close", "Alt+F4" }, { "screenshot", "Print" }, { "screenshot-screen", "Ctrl+Print" }, { "clipboard", "Super+V" },
+        { "file-search", "Super+S" },
     };
 
     static readonly object gate = new object();
@@ -5335,6 +5336,7 @@ class Keys2
             if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) HideOverview(ov);
         }
         if (act == "clipboard") { ui.BeginInvoke((Action)ToggleClipboard); return true; }
+        if (act == "file-search") { ui.BeginInvoke((Action)ToggleFileSearch); return true; }
         // Parmak hareketleri (dokunmatik yüzey): overview ve sağ panel (panel kabukta: olay bildirim akışıyla gider)
         if (act == "overview") { ui.BeginInvoke((Action)ToggleOverview); return true; }
         if (act == "sidebar") { Toasts.Emit("ll:sidebar-right-toggle"); return true; }
@@ -5465,7 +5467,7 @@ class Keys2
 
     // Overview'u önce saydam göster; widget helper'ın bıraktığı mod bayrağını okuyup arayüzü kurunca (bayrak silinir)
     // görünür yap. Aksi halde önce düz arama, sonra ";" pano modu görünüyordu.
-    // Overview modu bayrağı: bir kez okunur ve silinir ("" ya da ";" = pano)
+    // Overview modu bayrağı: bir kez okunur ve silinir ("" ya da ";" = pano, "#" = dosya araması)
     public static string TakeOverviewMode()
     {
         string f = Paths.State(@"overview-mode.txt");
@@ -5590,12 +5592,18 @@ class Keys2
     }
 
     // Super+V: overview'u pano modunda (";" öneki) aç; açıkken tekrar basınca kapat
-    static void ToggleClipboard()
+    static void ToggleClipboard() { ToggleInMode(";"); }
+
+    // Super+S: Super menüsü dosya aramasıyla açılır (# öneki); öneki bilmeyen de dosya aramasını bulsun
+    static void ToggleFileSearch() { ToggleInMode("#"); }
+
+    // Menü bu kısayolla açıkken aynı kısayol kapatır; değilse menü o modda açılır
+    static void ToggleInMode(string mode)
     {
         IntPtr h = Native.FindWindow(null, "lunge-overview");
         if (h == IntPtr.Zero) return;
         if (Native.IsWindowVisible(h) && Native.GetForegroundWindow() == h) { HideOverview(h); return; }
-        ShowOverviewInMode(h, ";");
+        ShowOverviewInMode(h, mode);
     }
 
     static void ToggleOverview()
@@ -9683,7 +9691,7 @@ static class Program
                     case "--clip-clear": ct = ClipHistory.Clear(); break;
                     case "--overview-mode":
                     {
-                        ct = Keys2.TakeOverviewMode(); // bir kez okunur ve silinir: "" ya da ";" (pano)
+                        ct = Keys2.TakeOverviewMode(); // bir kez okunur ve silinir: "", ";" (pano) ya da "#" (dosya araması)
                         break;
                     }
                     default: ct = "{\"error\":\"unknown\"}"; break;
