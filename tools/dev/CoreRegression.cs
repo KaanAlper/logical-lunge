@@ -50,6 +50,13 @@ static class CoreRegression
         }
         var rel = Call(typeof(Updater), "SelectRelease", releases, "native-ui");
         Check((string)rel.GetType().GetField("Tag").GetValue(rel) == "v0.2.10-native-ui", "Updater switched editions or compared versions as text");
+        string display = Uri.EscapeDataString(@"\\.\DISPLAY1");
+        Check(Request("POST", "/brightness?dev=" + Uri.EscapeDataString(@"C:\x"), "http://127.0.0.1:6124").Contains("400"), "Brightness accepted a device that is not a display");
+        Check(Request("GET", "/brightness?dev=" + display + "&v=50", "http://127.0.0.1:6124").Contains("405"), "Brightness writes must require POST");
+        Check(Request("POST", "/brightness?dev=" + display + "&v=50", "https://example.invalid").Contains("403"), "Brightness accepted a foreign origin");
+        Check((string)Call(typeof(MonitorFriendlyNames), "Key", @"\\?\DISPLAY#BOE0812#4&2a3b5c7d&0&UID8388688#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}") == @"DISPLAY\BOE0812\4&2a3b5c7d&0&UID8388688", "Monitor interface ID was not reduced to its WMI key");
+        Check(MonitorFriendlyNames.IsInstanceOf(@"DISPLAY\BOE0812\4&2a3b5c7d&0&UID8388688_0", @"DISPLAY\BOE0812\4&2a3b5c7d&0&UID8388688"), "The panel's WMI row was not matched to its monitor");
+        Check(!MonitorFriendlyNames.IsInstanceOf(@"DISPLAY\BOE0812\4&2a3b5c7d&0&UID8388689_0", @"DISPLAY\BOE0812\4&2a3b5c7d&0&UID8388688"), "Another monitor's WMI row was matched");
         string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-core-test-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(dir);
         try {

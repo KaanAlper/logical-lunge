@@ -1,7 +1,8 @@
-//! Brightness (WMI on laptops, DDC/CI on monitors, through
-//! `scripts\brightness.ps1`) and gamma (`lunge.exe --gamma`) of one monitor,
-//! with the web bar's single axis: gamma 0..100 below brightness 0..100.
-//! Reads and writes run on their own threads; writes are debounced.
+//! Brightness (WMI on laptops, DDC/CI on monitors, through the core's
+//! `/brightness`) and gamma (`lunge.exe --gamma`) of one monitor, with the web
+//! bar's single axis: gamma 0..100 below brightness 0..100. Reads and writes
+//! run on their own threads; writes are debounced. An older core without
+//! `/brightness` falls back to `scripts\brightness.ps1`.
 
 use std::{
   os::windows::process::CommandExt,
@@ -51,6 +52,39 @@ fn core(args: &[&str]) -> Option<String> {
   Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The core answers in-process (one WMI or DDC/CI call); the script it
+/// replaces started PowerShell and two WMI queries per wheel step, which
+/// lagged by up to a second on laptops.
+fn brightness_path(device: &str) -> String {
+  format!("/brightness?dev={}", device.replace('\\', "%5C"))
+}
+
+/// Ok(None): this monitor's brightness cannot be set. Err: the core did not
+/// answer (an older core), so the script is used instead.
+fn core_read(device: &str) -> Result<Option<i32>, ()> {
+  let (status, body) =
+    super::core_api::post(&brightness_path(device)).ok_or(())?;
+  if status != 200 {
+    return Err(());
+  }
+  let v: serde_json::Value =
+    serde_json::from_slice(&body).map_err(|_| ())?;
+  Ok(v["value"].as_i64().map(|n| n as i32))
+}
+
+fn core_write(device: &str, value: i32) -> bool {
+  let path = format!("{}&v={}", brightness_path(device), value);
+  matches!(super::core_api::post(&path), Some((204, _)))
+}
+
+fn script_brightness(args: &[&str]) -> Option<String> {
+  let script = install_dir()?.join("scripts").join("brightness.ps1");
+  let script = script.to_string_lossy().into_owned();
+  let mut all = vec!["--ps", script.as_str()];
+  all.extend_from_slice(args);
+  core(&all)
+}
+
 impl Display {
   pub fn new(device: String) -> Self {
     Self {
@@ -77,11 +111,11 @@ impl Display {
     let send2 = send.clone();
     let dev2 = device.clone();
     std::thread::spawn(move || {
-      let script = install_dir().map(|d| d.join("scripts").join("brightness.ps1"));
-      let value = script.and_then(|s| {
-        core(&["--ps", &s.to_string_lossy(), "get", &format!("{}\\Monitor0", device)])
+      let value = core_read(&device).unwrap_or_else(|()| {
+        script_brightness(&["get", &format!("{}\\Monitor0", device)])
+          .and_then(|v| v.parse().ok())
       });
-      send(Update::Brightness(device, value.and_then(|v| v.parse().ok())));
+      send(Update::Brightness(device, value));
     });
     std::thread::spawn(move || {
       if let Some(json) = core(&["--gamma", &dev2]) {
@@ -137,11 +171,11 @@ impl Display {
     let counter = self.brightness_gen.clone();
     let device = self.device.clone();
     std::thread::spawn(move || {
-      std::thread::sleep(Duration::from_millis(120));
-      if counter.load(Ordering::SeqCst) == gen {
-        if let Some(s) = install_dir().map(|d| d.join("scripts").join("brightness.ps1")) {
-          core(&["--ps", &s.to_string_lossy(), "set", &v.to_string(), &format!("{}\\Monitor0", device)]);
-        }
+      // short: the core applies the latest value of a burst on its own
+      std::thread::sleep(Duration::from_millis(40));
+      if counter.load(Ordering::SeqCst) == gen && !core_write(&device, v) {
+        let monitor = format!("{}\\Monitor0", device);
+        script_brightness(&["set", &v.to_string(), &monitor]);
       }
     });
   }

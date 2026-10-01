@@ -51,7 +51,7 @@ using System.Reflection;
 [assembly: AssemblyInformationalVersion("$ver")]
 "@
 [IO.File]::WriteAllText($info, $infoText.Replace('{TITLE}', 'Logical Lunge'))
-& $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:Accessibility.dll "$root\core\lunge.cs" "$root\core\WorkspaceConfigText.cs" "$root\core\MonitorFriendlyNames.cs" "$root\core\SettingsFile.cs" $info
+& $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:Accessibility.dll "$root\core\lunge.cs" "$root\core\WorkspaceConfigText.cs" "$root\core\MonitorFriendlyNames.cs" "$root\core\SettingsFile.cs" "$root\core\Brightness.cs" $info
 if ($LASTEXITCODE) { throw 'lunge.exe build failed' }
 
 Step 'lunge-media.exe (album art + seek, WinRT)'

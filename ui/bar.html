@@ -216,7 +216,20 @@
       // Bar hangi monitördeyse onun parlaklığı (pencere yöneticisinin currentMonitor.deviceName)
       let MONITOR = 'Primary';
       let brightnessCache = null;
+      let brightnessUnsupported = false; // çekirdek "bu monitörde ayarlanamıyor" dedi: tekerlek yalnızca gamayı değiştirir
+      // Çekirdek tek bir WMI / DDC/CI çağrısıyla cevaplar (betik her adımda PowerShell açıyordu, dizüstünde gecikiyordu);
+      // cevap vermezse (eski çekirdek) betik kullanılır
+      const brightnessUrl = v => `http://127.0.0.1:6131/brightness?dev=${encodeURIComponent(MONITOR.split('\\Monitor')[0])}${v === undefined ? '' : `&v=${v}`}`;
       async function readBrightness() {
+        try {
+          const r = await fetch(brightnessUrl(), { method: 'POST', cache: 'no-store' });
+          if (r.ok) {
+            const { value } = await r.json();
+            brightnessUnsupported = typeof value !== 'number';
+            if (!brightnessUnsupported) brightnessCache = value;
+            return brightnessCache;
+          }
+        } catch {}
         try {
           const out = await psFile('brightness.ps1', ['get', MONITOR]);
           const v = parseInt(out.stdout.trim(), 10);
@@ -241,7 +254,12 @@
         brightnessCache = v;
         lastBrightnessSet = Date.now();
         clearTimeout(brightnessTimer);
-        brightnessTimer = setTimeout(() => psFile('brightness.ps1', ['set', String(v), MONITOR]).catch(() => {}), 120);
+        // kısa: art arda gelen değerlerin sonuncusunu çekirdek kendisi uygular
+        brightnessTimer = setTimeout(() => {
+          fetch(brightnessUrl(v), { method: 'POST', cache: 'no-store' })
+            .then(r => { if (r.status !== 204) throw new Error(`HTTP ${r.status}`); })
+            .catch(() => psFile('brightness.ps1', ['set', String(v), MONITOR]).catch(() => {}));
+        }, 40);
       }
 
       createRoot(document.getElementById('root')).render(<App />);
@@ -294,6 +312,7 @@
           if (!devName) return;
           MONITOR = `${devName}\\Monitor0`;
           brightnessCache = null;
+          brightnessUnsupported = false;
           readGamma();
           // Parlaklık DDC/CI'dan okunması ~0.5 sn sürüyor: ilk tekerlekte beklememek için önceden oku,
           // arada bir tazele (başka yerden değiştirilirse de güncel kalsın)
@@ -381,7 +400,7 @@
             showOsd('gamma', gammaCache);
             return;
           }
-          const cur = brightnessCache ?? (await readBrightness());
+          const cur = brightnessCache ?? (brightnessUnsupported ? null : await readBrightness());
           if (cur === null || cur === undefined) {
             // DDC desteklemeyen ekran: yalnızca gama
             setGamma(Math.max(0, Math.min(100, gammaCache + (up ? 5 : -5))));

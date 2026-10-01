@@ -4346,7 +4346,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/brightness?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4421,6 +4421,29 @@ static class Toasts
             {
                 var m = System.Text.RegularExpressions.Regex.Match(target, @"^/tray-pins\?(if-missing=1&)?v=([^&\s]{2,6000})$");
                 status = m.Success && TrayPins.Write(Uri.UnescapeDataString(m.Groups[2].Value), m.Groups[1].Success) ? "204 No Content" : "400 Bad Request";
+            }
+            // Parlaklık (bar tekerleği): /brightness?dev=\\.\DISPLAY1 okur -> {"value":N} ya da {"value":null} (ayarlanamıyor);
+            // &v=0..100 ile POST yazar (arka planda, monitör başına son değer kazanır)
+            else if (target.StartsWith("/brightness?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/brightness\?dev=([^&\s]{1,64})(?:&v=(\d{1,3}))?$");
+                string dev = m.Success ? Uri.UnescapeDataString(m.Groups[1].Value) : "";
+                if (!System.Text.RegularExpressions.Regex.IsMatch(dev, @"^\\\\\.\\DISPLAY\d{1,2}$")) status = "400 Bad Request";
+                else if (m.Groups[2].Success)
+                {
+                    if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                    else { Brightness.Set(dev, int.Parse(m.Groups[2].Value)); status = "204 No Content"; }
+                }
+                else
+                {
+                    try
+                    {
+                        int? v = Brightness.Get(dev);
+                        body = "{\"value\":" + (v.HasValue ? v.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null") + "}";
+                        status = "200 OK";
+                    }
+                    catch (Exception ex) { body = "{\"value\":null}"; status = "500 Internal Server Error"; Slider.Log("parlaklık okunamadı: " + ex.Message); }
+                }
             }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {
