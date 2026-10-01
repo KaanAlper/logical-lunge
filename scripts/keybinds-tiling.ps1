@@ -1,7 +1,7 @@
-﻿# Kısayol düzenleyicisi için pencere yöneticisi kısayolları (config.yaml > keybindings). Çıktı JSON.
-#   keybinds-gwm.ps1 list                 -> [{"index":0,"commands":[...],"bindings":["Super+F", ...]}]
-#   keybinds-gwm.ps1 set <index> <combo>  -> ilk kısayolu değiştirir (diğerleri kalır), config'i yeniden yükler
-#   keybinds-gwm.ps1 reset                -> ilk düzenlemeden önce saklanan özgün kısayollara döner
+# Kısayol düzenleyicisi için pencere yöneticisi kısayolları (config.yaml > keybindings). Çıktı JSON.
+#   keybinds-tiling.ps1 list                 -> [{"index":0,"commands":[...],"bindings":["Super+F", ...]}]
+#   keybinds-tiling.ps1 set <index> <combo>  -> ilk kısayolu değiştirir (diğerleri kalır), config'i yeniden yükler
+#   keybinds-tiling.ps1 reset                -> ilk düzenlemeden önce saklanan özgün kısayollara döner
 param([string]$Action = 'list', [int]$Index = -1, [string]$Combo = '')
 
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
