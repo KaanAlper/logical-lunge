@@ -548,6 +548,16 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .wall-tile.busy { box-shadow: 0 0 0 2px var(--m3primary); }
 .wall-empty { font-size: 13px; color: var(--m3onSurfaceVariant); align-self: center; padding: 0 8px; }
 .wall-credit { font-size: 11px; color: var(--m3outline); text-align: center; }
+.saver-sec { padding: 14px; gap: 12px; }
+.saver-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.saver-switch input { width: 18px; height: 18px; accent-color: var(--m3primary); cursor: pointer; }
+.saver-fields { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(100px, 1fr); gap: 10px; }
+.saver-fields label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; color: var(--m3onSurfaceVariant); }
+.saver-fields select, .saver-minutes { height: 38px; min-width: 0; border: 1px solid var(--m3outlineVariant); border-radius: 12px; background: var(--colLayer2); color: var(--m3onSurface); padding: 0 10px; font-size: 13px; }
+.saver-minutes { display: flex; align-items: center; gap: 5px; }
+.saver-minutes input { width: 52px; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
+.saver-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.saver-actions .chip:disabled { opacity: .45; cursor: default; }
 
 /* Ses / mikrofon kartı (ii AudioDialog) */
 .au-vol { display: flex; align-items: center; gap: 10px; padding: 4px 6px 6px; }

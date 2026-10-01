@@ -133,6 +133,7 @@
       import * as lunge from 'lunge/shell';
       import { appIconFor, winIconOf } from 'lunge/apps';
       import { listen, emit } from '@tauri-apps/api/event';
+      import { invoke } from '@tauri-apps/api/core';
 
       // Super menüsünün uygulama listesi çekirdekten (kullanıcının veri klasöründe; kurulum klasörü korumalı).
       // Çekirdek o an başlıyorsa birkaç kez yeniden denenir.
@@ -140,7 +141,11 @@
         for (let i = 0; i < tries; i++) {
           try {
             const r = await fetch('http://127.0.0.1:6131/apps.json', { method: 'POST', cache: 'no-store' });
-            if (r.ok) return await r.json();
+            if (r.ok) {
+              const list = await r.json();
+              // The first launch may respond with [] while the indexer is still running.
+              if (Array.isArray(list) && list.length) return list;
+            }
           } catch {}
           await new Promise(res => setTimeout(res, 1000 * (i + 1)));
         }
@@ -154,7 +159,7 @@
       const providers = lunge.createProviderGroup({ tiling: { type: 'tiling' } });
 
       // ii Config.options.search.prefix
-      const PREFIX = { action: '/', app: '>', math: '=', shell: '$', web: '?', clip: ';' };
+      const PREFIX = { action: '/', app: '>', math: '=', shell: '$', web: '?', clip: ';', file: '#' };
       const SEARCH_ENGINE = 'https://www.google.com/search?q=';
       const LL = '{{INSTALL_ESC}}\\scripts';
 
@@ -301,7 +306,17 @@
         { name: 'restart', desc: 'Yeniden başlat', run: () => spawn('shutdown', ['/r', '/t', '0']) },
         { name: 'shutdown', desc: 'Kapat', run: () => spawn('shutdown', ['/s', '/t', '0']) },
         { name: 'reload', desc: 'Pencere yöneticisi ayarlarını yenile', run: tiling => tiling?.runCommand('wm-reload-config') },
-        { name: 'apps', desc: 'Uygulama listesini yenile', run: () => lunge.shellExec(HELPER, ['--ps', `${LL}\\build-apps.ps1`]).then(() => window.__llLoadApps?.()).catch(() => {}) },
+        { name: 'apps', desc: 'Uygulama listesini yenile', run: async () => {
+          try {
+            const run = await lunge.shellExec(HELPER, ['--ps', `${LL}\\build-apps.ps1`]);
+            if (run.code != null && run.code !== 0) throw new Error(`PowerShell ${run.code}`);
+            const list = await window.__llLoadApps?.();
+            if (!list?.length) throw new Error('Uygulama listesi boş.');
+            toast({ kind: 'ok', title: 'Uygulama listesi yenilendi', body: `${list.length} uygulama`, icon: 'apps' });
+          } catch (error) {
+            toast({ kind: 'error', title: 'Uygulamalar alınamadı', body: error.message || String(error), icon: 'error' });
+          }
+        } },
       ];
 
       // ---- ii services/SongRec.qml: çalan müziği tanı (Shazam). ii Linux'ta songrec kullanır; burada
@@ -354,6 +369,19 @@
         const [tiling, setTiling] = useState(providers.outputMap.tiling);
         // ii "overviewClipboardToggle" / cliphist: ";" öneki pano geçmişini listeler (Super+V)
         const [clips, setClips] = useState([]);
+        const [fileSearch, setFileSearch] = useState({ query: '', hits: [], error: '' });
+        useEffect(() => {
+          const term = query.startsWith(PREFIX.file) ? query.slice(1).trim() : query.trim();
+          const eligible = query.startsWith(PREFIX.file) || !Object.values(PREFIX).some(p => query.startsWith(p));
+          if (!open || !eligible || term.length < (query.startsWith(PREFIX.file) ? 1 : 2)) { setFileSearch({ query: '', hits: [], error: '' }); return; }
+          let cancelled = false;
+          const timer = setTimeout(() => {
+            invoke('everything_search', { query: term, maxResults: 8 })
+              .then(hits => { if (!cancelled) setFileSearch({ query, hits, error: '' }); })
+              .catch(error => { if (!cancelled) setFileSearch({ query, hits: [], error: String(error) }); });
+          }, 110);
+          return () => { cancelled = true; clearTimeout(timer); };
+        }, [open, query]);
         const clipMode = query.startsWith(PREFIX.clip);
         const loadClips = async () => {
           try { const r = await lunge.shellExec(HELPER, ['--clip-list']); setClips(JSON.parse((r.stdout || '').trim() || '[]')); }
@@ -365,10 +393,23 @@
 
         useEffect(() => { providers.onOutput(() => setTiling(providers.outputMap.tiling)); }, []);
 
-        const loadApps = () => loadAppList().then(setApps).catch(() => {});
+        const loadingApps = useRef(null);
+        const loadApps = () => {
+          if (loadingApps.current) return loadingApps.current;
+          loadingApps.current = loadAppList().then(list => {
+            if (list.length) setApps(list);
+            return list;
+          }).catch(() => []).finally(() => { loadingApps.current = null; });
+          return loadingApps.current;
+        };
         window.__llLoadApps = loadApps;
         const songRunning = useSongRec();
         useEffect(() => { loadApps(); }, []);
+        useEffect(() => {
+          if (!open || apps.length) return;
+          const timer = setInterval(loadApps, 5000);
+          return () => clearInterval(timer);
+        }, [open, apps.length]);
 
         // Açılış modu (Super+V -> ";"): helper'ın bıraktığı tek seferlik bayrak. Önce yerel HTTP ile (anında), olmazsa
         // helper süreciyle. Mod, pencere görünmeden ÖNCE uygulanır: yoksa önce düz arama görünüp sonra ";" geliyordu.
@@ -398,6 +439,7 @@
           dbg('aç: ' + why);
           openRef.current = true;
           const my = ++openSeq.current;
+          if (!apps.length) loadApps();
           // Sayfa hemen görünür yapılır: çekirdek pencereyi saydam gösterip bu sayfa hazır olunca opak yapıyor, çizim
           // mod okunurken başlasın
           const visible = lunge.setWebviewVisible(true);
@@ -550,6 +592,18 @@
             push({ key: 'web', type: 'Web araması', name: s, material: 'travel_explore', verb: 'Ara', exec: () => runScript('url', SEARCH_ENGINE + encodeURIComponent(s)) });
             return out;
           }
+          const fileOnly = q.startsWith(PREFIX.file);
+          const fileItems = fileSearch.query === q ? fileSearch.hits.map(hit => ({
+            key: 'file:' + hit.fullPath, type: hit.isDir ? 'Klasör' : 'Dosya', name: hit.name,
+            sub: hit.path, material: hit.isDir ? 'folder' : 'draft', verb: 'Aç',
+            exec: () => spawn(HELPER, ['--launch', hit.fullPath]),
+          })) : [];
+          if (fileOnly) {
+            if (fileItems.length) return fileItems;
+            return [{ key: 'file-hint', type: 'Dosya', name: !q.slice(1).trim() ? 'Dosya veya klasör adı yaz…'
+              : fileSearch.query !== q ? 'Dosyalar aranıyor…' : fileSearch.error ? 'Everything çalışmıyor' : 'Dosya bulunamadı',
+              material: 'folder_open', verb: '', stay: true, exec: () => {} }];
+          }
 
           const appOnly = q.startsWith(PREFIX.app);
           const mathOnly = q.startsWith(PREFIX.math);
@@ -588,8 +642,9 @@
             push({ key: 'web', type: 'Web araması', name: term, material: 'travel_explore', verb: 'Ara',
               exec: () => runScript('url', SEARCH_ENGINE + encodeURIComponent(term)) });
           }
+          out.splice(out.findIndex(x => x.key === 'run') < 0 ? out.length : out.findIndex(x => x.key === 'run'), 0, ...fileItems);
           return out;
-        }, [query, apps, tiling, clips]);
+        }, [query, apps, tiling, clips, fileSearch]);
 
         useEffect(() => { setSel(0); }, [query]);
         useEffect(() => {
@@ -614,8 +669,8 @@
 
         const prefixType = query.startsWith(PREFIX.action) ? 'action' : query.startsWith(PREFIX.app) ? 'app'
           : query.startsWith(PREFIX.math) ? 'math' : query.startsWith(PREFIX.shell) ? 'shell'
-          : query.startsWith(PREFIX.web) ? 'web' : query.startsWith(PREFIX.clip) ? 'clip' : 'default';
-        const prefixIcon = { action: 'settings_suggest', app: 'apps', math: 'calculate', shell: 'terminal', web: 'travel_explore', clip: 'content_paste', default: 'search' }[prefixType];
+          : query.startsWith(PREFIX.web) ? 'web' : query.startsWith(PREFIX.clip) ? 'clip' : query.startsWith(PREFIX.file) ? 'file' : 'default';
+        const prefixIcon = { action: 'settings_suggest', app: 'apps', math: 'calculate', shell: 'terminal', web: 'travel_explore', clip: 'content_paste', file: 'folder_open', default: 'search' }[prefixType];
 
         // ii: searchWidthCollapsed 210, searchWidth 360 (+ kenar boşlukları ve butonlar)
         const width = (query ? 360 : 210) + 10 + 6 + 40 + 6 + 40 + 40 + 4;
