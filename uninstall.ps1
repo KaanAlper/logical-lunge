@@ -97,6 +97,15 @@ if ($installed -contains 'pawnio') {
     $pw = Join-Path $APP 'tools\temps\PawnIO_setup.exe'
     if (Test-Path $pw) { Start-Process $pw -ArgumentList '-uninstall', '-silent' -Wait }
 }
+if ($installed -contains 'everything') {
+    Log '==> Removing Everything (file search)'
+    $ev = Join-Path $APP 'tools\everything\Everything.exe'
+    # only the copy the installer put next to our tools (an Everything the user installed is left alone); its
+    # process and service hold the folder, so both go before the app folder is removed
+    Get-CimInstance Win32_Process -Filter "Name = 'Everything.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -eq $ev } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $ev) { & $ev -uninstall-service | Out-Null }
+}
 if ($installed -contains 'fonts') {
     Log '==> Removing JetBrainsMono Nerd Font'
     Get-ChildItem "$env:WINDIR\Fonts" -Filter 'JetBrainsMonoNerdFont-*.ttf' -ErrorAction SilentlyContinue | ForEach-Object {
