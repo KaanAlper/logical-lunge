@@ -270,7 +270,7 @@ function Select-EditionRelease([object[]]$releases, [string]$edition) {
 function Get-EditionRelease([string]$edition) {
     $all = @(); $page = 1
     do {
-        $batch = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 -Headers @{ 'User-Agent' = 'LogicalLunge-Install' } "https://api.github.com/repos/$repo/releases?per_page=100&page=$page")
+        $batch = Invoke-RestMethod -UseBasicParsing -TimeoutSec 30 -Headers @{ 'User-Agent' = 'LogicalLunge-Install' } "https://api.github.com/repos/$repo/releases?per_page=100&page=$page"
         $all += $batch; $page++
     } while ($batch.Count -eq 100)
     Select-EditionRelease $all $edition
