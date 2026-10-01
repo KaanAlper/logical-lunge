@@ -16,6 +16,7 @@ param(
     [Parameter(Mandatory = $true)][string]$UserName,    # DOMAIN\user
     [switch]$NoTerminal,                                # skip WezTerm + MSYS2 fish
     [switch]$NoSensors,                                 # skip PawnIO driver (CPU temperature)
+    [switch]$NoEverything,                              # skip Everything (file search in the Super menu)
     [string]$Choices,                                   # first-install choices (JSON: focusColor, language, clock)
     [string]$ProgressFile,                              # progress for the installer UI (JSON, rewritten per step)
     [string]$CancelFile                                 # the installer UI creates it to cancel (rolled back)
@@ -31,6 +32,9 @@ $NERDFONT_VER = 'v3.5.1'
 $STARSHIP_VER = 'v1.26.0'
 $EZA_VER = 'v0.23.5'
 $FZF_VER = 'v0.58.0'
+# voidtools publishes the hash next to each download (Everything-<version>.sha256); checked before it is unpacked
+$EVERYTHING_VER = '1.4.1.1032'
+$EVERYTHING_SHA256 = '698df475ec44e638f66f1b6a32d28fea613cec78d3b6310e6abe53431eeb940c'
 
 $LOCAL = Join-Path $UserProfile 'AppData\Local'
 $APP = Join-Path $env:ProgramFiles 'LogicalLunge'
@@ -186,6 +190,7 @@ $script:configSaved = $false
 $script:prefsSaved = $false
 $script:hashSaved = $false
 $script:explorerRestarted = $false
+$script:everythingService = $null                    # Everything.exe whose service this run installed
 function Remember-Created([string]$p) { if (-not (Test-Path $p)) { [void]$script:created.Add($p) } }
 function Move-Tracked([string]$from, [string]$to) {
     New-Item -ItemType Directory -Force (Split-Path $to) | Out-Null
@@ -274,6 +279,10 @@ function Undo-Install {
     Log ''; Log '==> Rolling back'
     Progress 'rollback' $null
     Stop-Parts
+    # the file search service this run installed (its folder goes with the created paths below)
+    if ($script:everythingService) {
+        try { & $script:everythingService -uninstall-service | Out-Null } catch { Log "    Everything service: $($_.Exception.Message)" }
+    }
     Start-Sleep -Milliseconds 300
     if ($script:ownedSaved) {
         foreach ($rel in $OWNED) { $p = Join-Path $APP $rel; if (Test-Path $p) { Remove-Item $p -Recurse -Force -ErrorAction SilentlyContinue } }
@@ -498,7 +507,7 @@ try {
 
     if ($script:stepId -eq 'migrate') { Step-Progress 99 }
     # ------------------------------------------------------------ tools
-    Step 'tools' 'Installing the brightness and sensor tools'
+    Step 'tools' 'Installing the brightness, sensor and file search tools'
     $temps = Join-Path $APP 'tools\temps'
     Optional 'brightness' {
         $cmm = Join-Path $APP 'tools\ControlMyMonitor.exe'
@@ -521,6 +530,40 @@ try {
             Copy-Item $pw (Join-Path $temps 'PawnIO_setup.exe') -Force
             Start-Process $pw -ArgumentList '-install', '-silent' -Wait
             Mark-Installed 'pawnio'
+        }
+    }
+    # File search: the Super menu's # prefix asks a running Everything over its IPC window. A copy the user already has
+    # (any version or instance) is used as it is; otherwise the pinned build goes next to the other tools. Its service
+    # indexes the NTFS volumes, so Everything itself runs unelevated like the shell, which its IPC needs (Windows drops
+    # messages from an unelevated program to an elevated window). It starts at the user's sign-in, and the shell starts
+    # it when a file search finds it closed.
+    if (-not $NoEverything) {
+        Step-Progress 88
+        Optional 'everything' {
+            $own = Join-Path $APP 'tools\everything\Everything.exe'
+            if (-not (Test-Path $own)) {
+                $theirs = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ } |
+                    ForEach-Object { Join-Path $_ 'Everything\Everything.exe' } | Where-Object { Test-Path $_ }
+                if ($theirs -or (Get-Process everything -ErrorAction SilentlyContinue)) { Log '    Everything is already installed; the file search uses it'; return }
+                $zip = Get-File "https://www.voidtools.com/Everything-$EVERYTHING_VER.x64.zip" "Everything-$EVERYTHING_VER.x64.zip" 96
+                if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $EVERYTHING_SHA256) {
+                    Remove-Item $zip, "$zip.ok" -Force -ErrorAction SilentlyContinue
+                    throw "Everything-$EVERYTHING_VER.x64.zip does not match its published SHA-256"
+                }
+                $dir = Split-Path $own
+                Remember-Created $dir
+                Expand-Archive $zip $dir -Force
+                # Settings and index in the user's AppData (Program Files is read-only for the user), no update prompts.
+                # Only on the first install: these need Everything closed. Out-Null makes PowerShell wait for each
+                # command (Everything is a GUI program).
+                & $own -app-data -disable-update-notification | Out-Null
+            }
+            if (-not (Get-Service Everything -ErrorAction SilentlyContinue)) {
+                $script:everythingService = $own
+                & $own -install-service | Out-Null
+            }
+            Mark-Installed 'everything'
+            Set-Reg "$HKU\Software\Microsoft\Windows\CurrentVersion\Run" 'Everything' "`"$own`" -startup" 'String'
         }
     }
 

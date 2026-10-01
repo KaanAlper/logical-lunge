@@ -71,7 +71,7 @@ A Windows desktop environment with tiling window management, a bar, side panels,
 - **Bar**: workspaces with app icons (any window without a known app shows its own icon), resources (RAM / swap / CPU / **CPU & GPU temperature**), media with album art and seeking, tray with drag-to-pin, clock, battery, scroll-to-change brightness (left edge) and volume (right edge) with an OSD.
 - **Right sidebar**: Android-style quick toggles (Wi-Fi, Ethernet, Bluetooth, keep-awake, mic, audio, night light with schedule + intensity, dark mode, screenshot, on-screen keyboard, do-not-disturb) with slide-down cards, notifications, calendar with month/year picker, to-do and pomodoro timer.
 - **Shortcuts editor** and **wallpaper picker** built into the sidebar (per-monitor or one image spanning all monitors — Superpaper-style *superscreen*).
-- **Super overview**: fuzzy app search (localized names + icons), calculator (`sqrt(9)`, `5!`, `2^10`, `50%`), `/actions`, `$shell`, `?web`, **Google Lens** region search, **music recognition** (Shazam), workspace previews.
+- **Super overview**: fuzzy app search (localized names + icons), calculator (`sqrt(9)`, `5!`, `2^10`, `50%`), `/actions`, `$shell`, `?web`, **Google Lens** region search, **music recognition** (Shazam), **file search** (`#`, every indexed drive through Everything), workspace previews.
 - **Screenshot tool** (Print): select a region, then annotate — pen, circle, rectangle, colors — copy or save as.
 - **Ctrl+Print**: the whole monitor under the mouse, copied to the clipboard and saved to `Pictures\Screenshots` without asking.
 - **Clipboard history** (Super+V): text and images, searchable, opens in the Super search box with the `;` prefix.
@@ -103,12 +103,13 @@ Windows desktop integration requires handling these cases:
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-A short wizard asks for the interface edition, accent color, language and 12/24-hour clock and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
+A short wizard asks for the interface edition, accent color, language and 12/24-hour clock and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza, LibreHardwareMonitor and Everything (checked against its published SHA-256; an Everything you already have is used instead), installs the shell, backs up and applies the Windows settings, and starts the desktop.
 
 | Option (set before running) | Effect |
 |---|---|
 | `$env:LL_NO_TERMINAL = 1` | Skip WezTerm + fish + fonts |
 | `$env:LL_NO_SENSORS = 1` | Skip the PawnIO driver (no CPU temperature) |
+| `$env:LL_NO_EVERYTHING = 1` | Skip Everything (no file search with `#` in the Super menu) |
 | `$env:LL_DEFAULTS = 1` | No questions: default choices |
 | `$env:LL_PLAIN = 1` | Simple numbered prompts instead of the TUI |
 
@@ -234,7 +235,7 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 - **Bar**: uygulama simgeli workspace'ler (bilinmeyen pencerede pencerenin kendi simgesi), kaynaklar (RAM / swap / CPU / **CPU & GPU sıcaklığı**), kapaklı ve sarılabilir medya, sürükleyerek sabitlenen tepsi, saat, pil, sol kenarda kaydırınca parlaklık, sağ kenarda ses (OSD'li).
 - **Sağ panel**: Android tarzı hızlı ayarlar (Wi-Fi, Ethernet, Bluetooth, uyanık tut, mikrofon, ses, zamanlamalı ve yoğunluk ayarlı gece ışığı, karanlık mod, ekran alıntısı, ekran klavyesi, sessiz) ve alta kayan kartlar; bildirimler; ay/yıl seçicili takvim; yapılacaklar; zamanlayıcı.
 - Panelde **kısayol düzenleyici** ve **duvar kağıdı seçici** (monitör başına ya da tüm monitörlere yayılan tek resim, Superpaper'daki gibi).
-- **Super menüsü**: bulanık uygulama arama, hesap makinesi, `/eylemler`, `$komut`, `?web`, **Google Lens**, **müzik tanıma** (Shazam), workspace önizlemeleri.
+- **Super menüsü**: bulanık uygulama arama, hesap makinesi, `/eylemler`, `$komut`, `?web`, **Google Lens**, **müzik tanıma** (Shazam), **dosya araması** (`#`, Everything ile indekslenen bütün diskler), workspace önizlemeleri.
 - **Ekran alıntısı** (Print): alan seç, üzerine kalem / çember / dikdörtgen / renkle çiz, kopyala ya da kaydet.
 - **Animasyonlar**: kaygan workspace geçişleri, pencere açma/kapama/taşıma animasyonları, kayarak açılıp kapanan popup'lar. Süreler ve bezier eğrileri config'teki `animations:` bölümünde Hyprland'in `bezier =` / `animation =` satırları gibi ayarlanır (kaydedince geçerli); gizli widget'lar hiç çizmez.
 - **Dokunmatik yüzey hareketleri** (hassas dokunmatik yüzey): 3 parmak yana workspace'i parmakla birlikte kaydırır (üçte birini geçip bırakınca ya da hızlı fiskeyle geçer), 3 parmak yukarı overview, aşağı sağ panel, 4 parmak odaktaki pencereyi taşır. Windows'un kendi 3/4 parmak kaydırmalarını yükleyici kapatır (kaldırınca geri gelir); **Ayarlar → Görünüm**'deki anahtar hareketleri kapatır.
@@ -272,6 +273,7 @@ Windows 10 22H2 üzerinde geliştirildi ve denendi. Windows 11'i tüm bileşenle
 | [WezTerm](https://github.com/wezterm/wezterm) · [fish](https://fishshell.com) · [starship](https://starship.rs) · [eza](https://github.com/eza-community/eza) · [MSYS2](https://www.msys2.org) | Terminal | MIT · GPL-2.0 · ISC · EUPL-1.2 · BSD-3-Clause |
 | [Nerd Fonts](https://github.com/ryanoasis/nerd-fonts) (JetBrains Mono) | Terminal font | OFL-1.1 |
 | [NirSoft ControlMyMonitor](https://www.nirsoft.net/utils/control_my_monitor.html) | DDC/CI brightness | Freeware |
+| [Everything](https://www.voidtools.com) (voidtools) | File index behind the Super menu's file search (queried over its IPC; search UI inspired by [srwi/EverythingToolbar](https://github.com/srwi/EverythingToolbar)) | Freeware |
 | [shazamio](https://github.com/shazamio/ShazamIO) · [materialyoucolor](https://github.com/T-Dynamos/materialyoucolor-python) | Music recognition · Material You colors | MIT · MIT |
 | [Wallhaven](https://wallhaven.cc) | Wallpaper suggestions (safe-for-work only) | per image |
 

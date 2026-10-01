@@ -5,6 +5,7 @@
 # puts everything back the way it was. Nothing is left behind in %TEMP%.
 # Options (set before running):  $env:LL_NO_TERMINAL = 1   skip WezTerm + fish
 #                                 $env:LL_NO_SENSORS = 1    skip the PawnIO driver (CPU temperature)
+#                                 $env:LL_NO_EVERYTHING = 1 skip Everything (file search in the Super menu)
 #                                 $env:LL_SOURCE = <folder> install from a local build (dist\LogicalLunge-x.y.z)
 #                                 $env:LL_DEFAULTS = 1      no questions (default choices)
 #                                 $env:LL_EDITION = 'native-ui' or 'web-ui' (defaults to the installed edition, else native-ui)
@@ -35,14 +36,14 @@ if ($tr) { @{
         qLang = 'Arayüz hangi dilde olsun?'; systemLang = 'Sistem dili'
         qColor = 'Vurgu rengi ne olsun? (kabuk ve etkin pencere kenarlığı)'; custom = 'Özel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi görünmüyor, örnek: #b69df8'
         qClock = 'Saat nasıl görünsün?'; h24 = '24 saat'; h12 = '12 saat'
-        qExtras = 'Ek bileşenler (Boşluk ile seç / kaldır, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sıcaklığı: PawnIO sürücüsü'
+        qExtras = 'Ek bileşenler (Boşluk ile seç / kaldır, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sıcaklığı: PawnIO sürücüsü'; xEverything = 'Dosya araması: Everything (Super menüsünde #)'
         summary = 'Özet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bileşenler'; none = 'yok'
         qGo = 'Kuralım mı?'; go = 'Kur'; cancel = 'Vazgeç'
         downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket doğrulanıyor'; extracting = 'Paket açılıyor'; stopping = 'Açık masaüstü kapatılıyor'
         uac = "Windows'un izin penceresini onayla..."
         installing = 'Logical Lunge kuruluyor'; ctrlc = 'Ctrl+C: vazgeç'; rollingBack = 'Değişiklikler geri alınıyor...'
         qStop = 'Kurulumu durdurup her şeyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
-        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bileşenler'; stop = 'Masaüstü durduruluyor'; files = 'Dosyalar kopyalanıyor'; config = 'Ayarların yazılıyor'; migrate = 'Önceki sürümden taşınıyor'; tools = 'Parlaklık ve sıcaklık araçları'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarları'; tasks = 'Başlangıç görevleri'; owner = 'İlk açılışa hazırlanıyor'; finish = 'Son dokunuşlar' }
+        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bileşenler'; stop = 'Masaüstü durduruluyor'; files = 'Dosyalar kopyalanıyor'; config = 'Ayarların yazılıyor'; migrate = 'Önceki sürümden taşınıyor'; tools = 'Parlaklık, sıcaklık ve dosya araması'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarları'; tasks = 'Başlangıç görevleri'; owner = 'İlk açılışa hazırlanıyor'; finish = 'Son dokunuşlar' }
         doneTitle = 'Hazır! Logical Lunge kuruldu'
         doneBody = "Masaüstün birkaç saniye içinde açılıyor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ←/→ workspace değiştir`n  Sağ üst köşe       hızlı ayarlar ve bildirimler`n`nKaldırmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
         errTitle = 'Olmadı, ama merak etme'
@@ -72,14 +73,14 @@ if ($tr) { @{
         qLang = 'Which language should the interface use?'; systemLang = 'System language'
         qColor = 'Pick an accent color (shell and active window border)'; custom = 'Custom color...'; qHex = 'Color code (#rrggbb)'; badHex = "That doesn't look like a color code, e.g. #b69df8"
         qClock = 'How should the clock look?'; h24 = '24-hour'; h12 = '12-hour'
-        qExtras = 'Extras (Space to toggle, Enter to confirm)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU temperature: PawnIO driver'
+        qExtras = 'Extras (Space to toggle, Enter to confirm)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU temperature: PawnIO driver'; xEverything = 'File search: Everything (# in the Super menu)'
         summary = 'Summary'; sLang = 'Language'; sColor = 'Accent color'; sClock = 'Clock'; sExtras = 'Extras'; none = 'none'
         qGo = 'Ready to install?'; go = 'Install'; cancel = 'Cancel'
         downloading = 'Downloading Logical Lunge'; verifying = 'Verifying the package'; extracting = 'Unpacking'; stopping = 'Closing the running desktop'
         uac = "Approve Windows' permission prompt..."
         installing = 'Installing Logical Lunge'; ctrlc = 'Ctrl+C: cancel'; rollingBack = 'Putting everything back...'
         qStop = 'Stop the install and put everything back?'; stopYes = 'Yes, stop'; stopNo = 'Keep going'
-        steps = @{ check = 'Checking Windows'; runtimes = 'Required components'; stop = 'Stopping the desktop'; files = 'Copying files'; config = 'Writing your settings'; migrate = 'Moving data from the previous version'; tools = 'Brightness and temperature tools'; terminal = 'Installing the terminal'; windows = 'Windows settings'; tasks = 'Startup tasks'; owner = 'Preparing the first start'; finish = 'Finishing touches' }
+        steps = @{ check = 'Checking Windows'; runtimes = 'Required components'; stop = 'Stopping the desktop'; files = 'Copying files'; config = 'Writing your settings'; migrate = 'Moving data from the previous version'; tools = 'Brightness, temperature and file search'; terminal = 'Installing the terminal'; windows = 'Windows settings'; tasks = 'Startup tasks'; owner = 'Preparing the first start'; finish = 'Finishing touches' }
         doneTitle = 'All set! Logical Lunge is installed'
         doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ←/→ switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
         errTitle = "That didn't work, but don't worry"
@@ -401,9 +402,10 @@ try {
 
     # ------------------------------------------------------------ choices
     $choice = [ordered]@{ language = 'system'; clock = '24'; focusColor = '#b69df8'; edition = $edition }
-    $extras = @('terminal', 'sensors')
+    $extras = @('terminal', 'sensors', 'everything')
     if ($env:LL_NO_TERMINAL) { $extras = @($extras | Where-Object { $_ -ne 'terminal' }) }
     if ($env:LL_NO_SENSORS) { $extras = @($extras | Where-Object { $_ -ne 'sensors' }) }
+    if ($env:LL_NO_EVERYTHING) { $extras = @($extras | Where-Object { $_ -ne 'everything' }) }
     if ($interactive) {
         $sysName = (Get-UICulture).NativeName
         $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Français', 'fr'), @('Español', 'es'), @('Italiano', 'it'), @('Português', 'pt'),
@@ -441,11 +443,12 @@ try {
                 $ans = Choose $T.qClock $clocks $choice.clock
                 if ($ans -eq 'BACK') { $step-- } else { $choice.clock = $ans; $step++ }
             } elseif ($step -eq 4) {
-                $ans = Multi $T.qExtras @(@($T.xTerm, 'terminal'), @($T.xSensors, 'sensors')) $extras
+                $ans = Multi $T.qExtras @(@($T.xTerm, 'terminal'), @($T.xSensors, 'sensors'), @($T.xEverything, 'everything')) $extras
                 if ($ans -is [string] -and $ans -eq 'BACK') { $step-- } else { $extras = @($ans | Where-Object { $_ }); $step++ }
             } elseif ($step -eq 5) {
                 $langLabel = ($langs | Where-Object { $_[1] -eq $choice.language } | Select-Object -First 1)[0]
-                $extraText = if ($extras.Count) { (@($extras | ForEach-Object { if ($_ -eq 'terminal') { $T.xTerm } else { $T.xSensors } }) -join "`n  ") } else { $T.none }
+                $extraNames = @{ terminal = $T.xTerm; sensors = $T.xSensors; everything = $T.xEverything }
+                $extraText = if ($extras.Count) { (@($extras | ForEach-Object { $extraNames[[string]$_] }) -join "`n  ") } else { $T.none }
                 Box $C.accent $T.summary ("$($T.sEdition): $($choice.edition)`n$($T.sLang): $langLabel`n$($T.sColor): $($choice.focusColor)`n$($T.sClock): $(if ($choice.clock -eq '12') { $T.h12 } else { $T.h24 })`n$($T.sExtras):`n  $extraText")
                 Write-Host ''
                 $ans = Confirm $T.qGo $T.go $T.cancel $true
@@ -514,6 +517,7 @@ try {
         '-Choices', "`"$choicesFile`"", '-ProgressFile', "`"$progressFile`"", '-CancelFile', "`"$cancelFile`"")
     if ($extras -notcontains 'terminal') { $args2 += '-NoTerminal' }
     if ($extras -notcontains 'sensors') { $args2 += '-NoSensors' }
+    if ($extras -notcontains 'everything') { $args2 += '-NoEverything' }
     if ($preview) {
         # the steps of setup.ps1 played by an ordinary hidden process: same progress file, same cancel file
         $sim = Join-Path $work 'preview-setup.ps1'
@@ -532,7 +536,7 @@ foreach ($id in 'check', 'runtimes', 'stop', 'files', 'config', 'migrate', 'tool
         P $p; Start-Sleep -Milliseconds $(if ($id -eq 'files') { 120 } else { 35 })
     }
 }
-if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn = @('terminal', 'sensors') } } else { P @{ state = 'done'; step = 'finish'; n = 12 } }
+if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn = @('terminal', 'sensors', 'everything') } } else { P @{ state = 'done'; step = 'finish'; n = 12 } }
 '@, (New-Object Text.UTF8Encoding $false))
         $failAt = switch ($env:LL_PREVIEW) { 'fail' { 'tools' } 'warn' { 'terminal' } default { '' } }
         $script:setup = Start-Process powershell.exe -WindowStyle Hidden -PassThru -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$sim`"",
@@ -608,7 +612,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         # optional parts that failed (terminal, sensors, brightness): the desktop is installed, these are reported
         $warn = @($p.warn | Where-Object { $_ })
         if ($warn.Count) {
-            $names = @{ terminal = $T.xTerm; sensors = $T.xSensors; brightness = $T.xBright }
+            $names = @{ terminal = $T.xTerm; sensors = $T.xSensors; brightness = $T.xBright; everything = $T.xEverything }
             $list = @($warn | ForEach-Object { '• ' + $(if ($names.ContainsKey([string]$_)) { $names[[string]$_] } else { [string]$_ }) }) -join "`n"
             Box $C.warn $T.warnTitle ($list + "`n`n" + $T.warnBody + "`n$($T.errLog): $log")
         }
