@@ -54,7 +54,7 @@ use windows::{
         GetDpiForMonitor, SetThreadDpiAwarenessContext,
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, MDT_EFFECTIVE_DPI,
       },
-      Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT},
+      Input::KeyboardAndMouse::{GetAsyncKeyState, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_CONTROL, VK_LWIN, VK_RWIN},
       WindowsAndMessaging::*,
     },
   },
@@ -103,6 +103,7 @@ const TIMER_TEST_FAIL: usize = 13;
 /// test only: waits for the app list before `LL_NATIVE_OVERVIEW_SHOT`
 const TIMER_SNAPSHOT: usize = 14;
 const TIMER_DRAG_DWELL: usize = 15;
+const TIMER_WS_NUMBERS: usize = 16;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -429,6 +430,8 @@ struct Ui {
   pins_file: PathBuf,
   last_wheel: Instant,
   last_ws_wheel: Instant,
+  /// Brief numeric workspace overlay after Ctrl+Super navigation.
+  numbers_until: Option<Instant>,
   /// device of the bar last scrolled for volume, and when
   volume_wheel: Option<(String, Instant)>,
   last_volume: Option<(u32, bool)>,
@@ -531,6 +534,7 @@ fn ui_thread(
         pins_file,
         last_wheel: Instant::now(),
         last_ws_wheel: Instant::now(),
+        numbers_until: None,
         volume_wheel: None,
         last_volume: None,
         last_mic: None,
@@ -716,6 +720,11 @@ impl Ui {
               self.slide(workspace.to_string());
             }
           }
+        }
+        WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
+          let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_WS_NUMBERS) };
+          self.numbers_until = None;
+          self.redraw_all();
         }
         WM_APP_REBUILD => {
           // monitors / DPI change in bursts: rebuild once they settle
@@ -939,6 +948,13 @@ impl Ui {
         Msg::SongRecDone => self.songrec_done(),
         Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
         Msg::Wm(state) => {
+          let changed = self.model.wm.focused_workspace().map(|w| w.name.as_str())
+            != state.focused_workspace().map(|w| w.name.as_str());
+          if changed && unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) < 0
+            && (GetAsyncKeyState(VK_LWIN.0 as i32) < 0 || GetAsyncKeyState(VK_RWIN.0 as i32) < 0) } {
+            self.numbers_until = Some(Instant::now() + Duration::from_millis(700));
+            unsafe { SetTimer(self.msg_hwnd, TIMER_WS_NUMBERS, 700, None) };
+          }
           self.model.wm = state;
           overview_dirty = true;
         }
@@ -1213,6 +1229,7 @@ impl Ui {
 
   fn redraw_inner(&mut self, i: usize) -> windows::core::Result<()> {
     let theme = self.theme();
+    let show_numbers = self.numbers_until.is_some_and(|until| Instant::now() < until);
     let mut requests = Vec::new();
     {
       let Ui { gfx, fonts, res, icons, model, bars, .. } = self;
@@ -1239,7 +1256,7 @@ impl Ui {
       }
       gfx::draw_surface(&bar.fg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        if let Err(err) = view::paint_ws(&mut p, model, &theme, bar.hover.as_ref()) {
+        if let Err(err) = view::paint_ws(&mut p, model, &theme, bar.hover.as_ref(), show_numbers) {
           tracing::warn!("Native bar paint (workspaces): {:?}", err);
         }
         Ok(())

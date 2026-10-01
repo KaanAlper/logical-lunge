@@ -755,7 +755,7 @@ pub const PILL_MARGIN: f32 = MARGIN;
 pub const CELL: f32 = WS;
 
 /// Top layer of the workspaces, in track coordinates: hover, app icons / dots.
-pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>) -> anyhow::Result<()> {
+pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, show_numbers: bool) -> anyhow::Result<()> {
   let (base, idx) = ws_page(m);
   let occ = occupied(m, base);
   let active = |i: usize| m.wm.connected && i == idx;
@@ -766,29 +766,30 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>) 
     if hover == Some(&HitKind::Workspace(n)) {
       p.fill_round(cell.inset(2.0, 2.0), WS, t.primary.alpha(0.10))?;
     }
+    let c = if active(i) {
+      t.on_primary
+    } else if occ[i] {
+      t.on_sec_container
+    } else {
+      t.inactive
+    };
+    if show_numbers {
+      p.text(&n.to_string(), cell, TextStyle { size: 11.0, weight: 600.0 }, c, Align::Center, true)?;
+      continue;
+    }
+    // The workspace dot remains visible; the app icon is a small badge at
+    // its lower right, still within this 26-DIP cell.
+    p.fill_circle(cx, cy, 4.7 / 2.0, c)?;
     // ii showAppIcons: the biggest window's icon (workspaceIconSize 26 * 0.69)
     let big = m.wm.all_workspaces().find(|w| w.name == n.to_string()).and_then(|w| w.biggest.as_ref());
-    let mut drawn = false;
     if let Some(win) = big {
       let (bmp, ask) = p.icons.for_window(p.gfx, &win.process, win.handle);
       if let Some(h) = ask {
         p.requests.push(h);
       }
       if let Some(bmp) = bmp {
-        let d = if active(i) { 18.0 * 1.05 } else { 18.0 };
-        p.image_circle(&bmp, cx, cy, d, if active(i) { 1.0 } else { 0.7 })?;
-        drawn = true;
+        p.image_circle(&bmp, cx + 6.0, cy + 6.0, 8.5, if active(i) { 1.0 } else { 0.8 })?;
       }
-    }
-    if !drawn {
-      let c = if active(i) {
-        t.on_primary
-      } else if occ[i] {
-        t.on_sec_container
-      } else {
-        t.inactive
-      };
-      p.fill_circle(cx, cy, 4.7 / 2.0, c)?;
     }
   }
   Ok(())

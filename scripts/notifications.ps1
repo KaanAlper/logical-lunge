@@ -4,6 +4,10 @@ param([int]$Limit = 150)
 
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $sqlite = Join-Path $env:USERPROFILE 'scoop\apps\sqlite\current\sqlite3.exe'
+if (-not (Test-Path $sqlite)) {
+    $command = Get-Command sqlite3.exe -ErrorAction SilentlyContinue
+    if ($command) { $sqlite = $command.Source }
+}
 $src = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Notifications'
 $tmp = Join-Path $env:TEMP 'll-wpn'
 if (-not (Test-Path $sqlite)) { '[]'; exit }
