@@ -383,11 +383,13 @@ try {
     }
     # placeholders -> this user's paths
     $esc = $UserProfile.Replace('\', '\\'); $appEsc = $APP.Replace('\', '\\')
-    Get-ChildItem $PACK -File -Include *.html, *.js, *.json, *.css -Recurse | ForEach-Object {
+    Get-ChildItem -LiteralPath $PACK -File -Recurse | Where-Object { $_.Extension -in '.html', '.js', '.json', '.css' } | ForEach-Object {
         $t = [IO.File]::ReadAllText($_.FullName)
         $n = $t.Replace('{{INSTALL_ESC}}', $appEsc).Replace('{{INSTALL}}', $APP).Replace('{{USERPROFILE_ESC}}', $esc).Replace('{{USERPROFILE}}', $UserProfile)
         if ($n -ne $t) { [IO.File]::WriteAllText($_.FullName, $n, $UTF8) }
     }
+    $unresolved = Get-ChildItem -LiteralPath $PACK -File -Recurse | Where-Object { $_.Extension -in '.html', '.js', '.json', '.css' } | Where-Object { Select-String -LiteralPath $_.FullName -Pattern '\{\{(?:INSTALL(?:_ESC)?|USERPROFILE(?:_ESC)?)\}\}' -Quiet } | Select-Object -First 1
+    if ($unresolved) { throw "Unresolved install path marker: $($unresolved.FullName)" }
     # The shell starts only our widgets (no BOM: serde_json rejects it)
     $startupWidgets = @('overview', 'sidebar-right', 'settings', 'toast', 'osk', 'update', 'session')
     if ($edition -eq 'web-ui') { $startupWidgets = @('bar') + $startupWidgets }
