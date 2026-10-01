@@ -1223,7 +1223,8 @@ impl Ui {
 
   fn overview_prepare(&mut self, mode: &str) -> bool {
     if !self.overview_prepare_window() { return false; }
-    let text = if mode == ";" { ";" } else { "" };
+    // ";" clipboard (Super+V), "#" file search (Super+S): the box opens with that prefix
+    let text = if mode == ";" || mode == "#" { mode } else { "" };
     let Some(o) = self.overview.as_mut() else { return false };
     o.reset(text);
     let apps = self.icons.apps().to_vec();
