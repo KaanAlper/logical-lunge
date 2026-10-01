@@ -5160,28 +5160,25 @@ static class Binds
         try { System.IO.File.WriteAllText(System.IO.Path.Combine(CaptureDir, "capture.res"), combo ?? ""); } catch { }
     }
 
-    // Kullanıcı değerini yaz (varsayılana eşitse dosyadan çıkar); id "" ise hepsini sıfırla
-    public static void Set(string id, string combo)
+    // Kullanıcı değerini yaz (varsayılana eşitse dosyadan çıkar); id "" ise hepsini sıfırla. false: yazılmadı
+    // (bilinmeyen kısayol, dosya okunamadı ya da yazılamadı); okunamayan dosyanın üstüne yazmak diğer özel kısayolları silerdi.
+    public static bool Set(string id, string combo)
     {
         var d = new Dictionary<string, object>();
-        try
-        {
-            if (id != "" && System.IO.File.Exists(FilePath))
-            {
-                var old = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(FilePath));
-                if (old != null) foreach (var kv in old) d[kv.Key] = kv.Value;
-            }
-        }
-        catch { }
         if (id != "")
         {
             string def = null;
             for (int i = 0; i < Defaults.GetLength(0); i++) if (Defaults[i, 0] == id) def = Defaults[i, 1];
-            if (def == null) return;
+            if (def == null) return false;
+            if (!SettingsFile.TryReadForUpdate(FilePath,
+                    text => new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(text) ?? new Dictionary<string, object>(),
+                    () => new Dictionary<string, object>(), out d))
+                return false;
             if (combo == def) d.Remove(id); else d[id] = combo;
         }
-        System.IO.File.WriteAllText(FilePath, new JavaScriptSerializer().Serialize(d));
+        if (!Files.WriteAtomic(FilePath, new JavaScriptSerializer().Serialize(d))) return false;
         Load();
+        return true;
     }
 
     // lunge.exe --keybinds -> [{"id","combo","default"}] (düzenleyici için)
@@ -6330,28 +6327,39 @@ static class NightLight
     //   manual: açıkken hep; after: "from" saatinden sabah 07:00'ye kadar; range: from–to aralığında
     public static Dictionary<string, string> Settings()
     {
-        var d = new Dictionary<string, string> { { "on", "0" }, { "level", "50" }, { "mode", "manual" }, { "from", "20:00" }, { "to", "07:00" } };
-        try
+        // Gösterim ve uygulama için hoşgörülü okuma: okunamazsa varsayılanlar (Set bunların üstüne yazmaz)
+        try { return System.IO.File.Exists(StateFile) ? Parse(System.IO.File.ReadAllText(StateFile)) : Defaults(); }
+        catch { return Defaults(); }
+    }
+    static Dictionary<string, string> Defaults()
+    {
+        return new Dictionary<string, string> { { "on", "0" }, { "level", "50" }, { "mode", "manual" }, { "from", "20:00" }, { "to", "07:00" } };
+    }
+    static Dictionary<string, string> Parse(string text)
+    {
+        var d = Defaults();
+        foreach (var line in text.Split('\n'))
         {
-            foreach (var line in System.IO.File.ReadAllLines(StateFile))
-            {
-                var t = line.Trim();
-                if (t == "1" || t == "0") { d["on"] = t; continue; } // eski biçim
-                int eq = t.IndexOf('=');
-                if (eq > 0) d[t.Substring(0, eq)] = t.Substring(eq + 1);
-            }
+            var t = line.Trim();
+            if (t == "1" || t == "0") { d["on"] = t; continue; } // eski biçim
+            int eq = t.IndexOf('=');
+            if (eq > 0) d[t.Substring(0, eq)] = t.Substring(eq + 1);
         }
-        catch { }
         return d;
     }
-    public static void Set(string key, string value)
+    // false: yazılmadı. Okunamayan durum dosyasının üstüne varsayılanlarla yazmak zamanlamayı ve yoğunluğu sıfırlardı.
+    public static bool Set(string key, string value)
     {
-        var d = Settings(); d[key] = value;
+        Dictionary<string, string> d;
+        if (!SettingsFile.TryReadForUpdate(StateFile, Parse, Defaults, out d)) return false;
+        d[key] = value;
         var lines = new List<string>(); foreach (var kv in d) lines.Add(kv.Key + "=" + kv.Value);
-        System.IO.File.WriteAllLines(StateFile, lines.ToArray());
+        // Yerinde yazma: ana çekirdeğin izleyicisi Changed/Created dinliyor; atomik değiştirme Renamed üretirdi
+        try { System.IO.File.WriteAllLines(StateFile, lines.ToArray()); } catch { return false; }
         // Ana helper çalışıyorsa dosyadaki değişikliği görüp yumuşak geçişle uygular (burada anında uygulamak "bam" diye
         // değiştiriyordu); yoksa hemen uygula.
         if (!MainRunning()) Apply(Active);
+        return true;
     }
     static bool MainRunning()
     {
@@ -9756,9 +9764,14 @@ static class Program
             so.Write(got ?? ""); so.Flush();
             return;
         }
-        // lunge.exe --bind <id> <combo> | --bind-reset
-        if (args.Length == 3 && args[0] == "--bind") { Binds.Set(args[1], args[2]); return; }
-        if (args.Length == 1 && args[0] == "--bind-reset") { Binds.Set("", null); return; }
+        // lunge.exe --bind <id> <combo> | --bind-reset -> {"ok":true|false} (düzenleyici sonucu buna göre gösterir)
+        if ((args.Length == 3 && args[0] == "--bind") || (args.Length == 1 && args[0] == "--bind-reset"))
+        {
+            bool ok = args.Length == 3 ? Binds.Set(args[1], args[2]) : Binds.Set("", null);
+            var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            so.Write(ok ? "{\"ok\":true}" : "{\"ok\":false}"); so.Flush();
+            return;
+        }
         if (args.Length == 1 && args[0] == "--keybinds")
         {
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
