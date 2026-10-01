@@ -192,7 +192,8 @@ function Show-Menu([string]$Header, [object[]]$Items, [string]$Default, [bool]$M
     $sel = 0
     for ($i = 0; $i -lt $Items.Count; $i++) { if ($Items[$i][1] -eq $Default) { $sel = $i } }
     $selected = @()
-    if ($Multi -and $Default) { $selected = $Default -split ',' | Where-Object { $_ } }
+    # @(): with a single default the pipeline returns a plain string, and += would then join two names into one
+    if ($Multi -and $Default) { $selected = @($Default -split ',' | Where-Object { $_ }) }
 
     $drawn = 0
     while ($true) {
