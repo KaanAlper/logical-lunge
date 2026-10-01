@@ -212,9 +212,21 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   transition: width 400ms var(--elementMove);
 }
 .battery.low > .fill { background: var(--m3error); }
+.battery .label-layer {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--m3onSecondaryContainer);
+}
+.battery .label-layer.filled {
+  clip-path: inset(0 calc(100% - var(--battery-pct)) 0 0);
+  color: var(--m3secondaryContainer);
+  pointer-events: none;
+}
 .battery .label {
-  position: relative; font-size: 11px; font-weight: 600; color: var(--m3onSecondaryContainer);
-  mix-blend-mode: normal; display: flex; align-items: center;
+  box-sizing: border-box; min-width: 22px; height: 16px;
+  border: 1px solid currentColor; border-radius: 8px;
+  font-size: 11px; font-weight: 600;
+  display: flex; align-items: center; justify-content: center;
 }
 .battery .label .icon { font-size: 12px; margin: 0 -1px; }
 
@@ -442,6 +454,4 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 }
 .bar-pop.closing, .tray-popup.closing { animation: popUp 170ms cubic-bezier(0.3, 0, 0.8, 0.15) forwards; pointer-events: none; }
 
-/* Battery text keeps one contrast surface; the charge fill sits behind it. */
-.battery .label { background: var(--m3secondaryContainer); border-radius: 8px; padding: 0 3px; }
 .battery-pop { min-width: 220px; }

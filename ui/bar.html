@@ -822,9 +822,12 @@
       function Battery({ battery, hover }) {
         if (!battery) return null;
         const p = batteryDetails(battery).percent;
-        return <div className={`battery ${p <= 20 ? 'low' : ''}`} {...hover} aria-label={`${p}%`}>
+        const plugged = battery.isPlugged ?? battery.isCharging;
+        const mark = () => plugged ? <Icon name="bolt" fill /> : p;
+        return <div className={`battery ${p <= 20 && !plugged ? 'low' : ''}`} {...hover} aria-label={`${p}%`} style={{ '--battery-pct': `${p}%` }}>
           <div className="fill" style={{ width: `${p}%` }} />
-          <span className="label">{battery.isCharging ? <Icon name="bolt" fill /> : p}</span>
+          <span className="label-layer"><span className="label">{mark()}</span></span>
+          <span className="label-layer filled" aria-hidden="true"><span className="label">{mark()}</span></span>
         </div>;
       }
       function BatteryPopup({ battery }) {
