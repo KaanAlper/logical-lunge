@@ -1,4 +1,4 @@
-# Logical Lunge - main installer (runs elevated, launched by install.ps1 or scripts\update-install.ps1).
+ï»¿# Logical Lunge - main installer (runs elevated, launched by install.ps1 or scripts\update-install.ps1).
 # Everything the desktop needs is installed and configured here with a single UAC prompt. Every Windows setting that
 # is changed is backed up first so uninstall.ps1 can restore it. If anything fails or the install is cancelled, the
 # previous state is put back (app files, config, registry, tasks) and the previous desktop is started again.
@@ -244,7 +244,7 @@ function Set-FocusColor([string]$text, [string]$hex) {
 function Get-FocusColor([string]$text) { $m = [regex]::Match($text, '(?m)^\s*active_color:\s*"(#[0-9a-fA-F]{6})'); if ($m.Success) { $m.Groups[1].Value } else { $null } }
 function Repair-LegacyWindowRules([string]$text) {
     # Remove only our former title-only dialog rule; keep custom rules intact.
-    $bad = "- window_title: { regex: '^(Open|Save|Save As|Aç|Kaydet|Farklý Kaydet).*' }"
+    $bad = "- window_title: { regex: '^(Open|Save|Save As|AÃ§|Kaydet|FarklÄ± Kaydet).*' }"
     $text = [regex]::Replace($text, '(?m)^[ \t]*' + [regex]::Escape($bad) + '[ \t]*\r?\n', '')
     # Managed tiled windows keep their outline when browser fullscreen drops its caption.
     return [regex]::Replace($text, '(?m)^([ \t]*follow_native_border:)[ \t]*true([ \t]*(?:#[^\r\n]*)?)(?=\r?$)', '$1 false$2')
@@ -548,7 +548,7 @@ try {
             if (-not (Get-ChildItem $wfonts -Filter 'JetBrainsMonoNerdFont-*.ttf' -ErrorAction SilentlyContinue)) {
                 $fz = Gh-Asset 'ryanoasis/nerd-fonts' $NERDFONT_VER 'JetBrainsMono.zip' 38
                 $tmp = Join-Path $DL 'font'; Expand-Archive $fz $tmp -Force
-                # WezTerm yalnýz kendi font klasörüne bakar (sistemdeki yüzlerce fontu taramak açýlýþý 1.6 s yavaþlatýyordu)
+                # WezTerm yalnÄ±z kendi font klasÃ¶rÃ¼ne bakar (sistemdeki yÃ¼zlerce fontu taramak aÃ§Ä±lÄ±ÅŸÄ± 1.6 s yavaÅŸlatÄ±yordu)
                 New-Item -ItemType Directory -Force $wfonts | Out-Null
                 Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | Copy-Item -Destination $wfonts -Force
                 Get-ChildItem $tmp -Filter 'JetBrainsMonoNerdFont-*.ttf' | ForEach-Object {
@@ -563,7 +563,7 @@ try {
             if (-not (Test-Path $bin)) { Remember-Created $bin; New-Item -ItemType Directory -Force $bin | Out-Null }
             if (-not (Test-Path (Join-Path $bin 'starship.exe'))) { Expand-Archive (Gh-Asset 'starship/starship' $STARSHIP_VER 'starship-x86_64-pc-windows-msvc.zip' 52) $bin -Force }
             if (-not (Test-Path (Join-Path $bin 'eza.exe'))) { Expand-Archive (Gh-Asset 'eza-community/eza' $EZA_VER 'eza.exe_x86_64-pc-windows-gnu.zip' 58) $bin -Force }
-            if (-not (Test-Path (Join-Path $bin 'fzf.exe'))) { Expand-Archive (Gh-Asset 'junegunn/fzf' $FZF_VER "fzf-$($FZF_VER.TrimStart('v'))-windows_amd64.zip" 64) $bin -Force }   # themecolor seçicisi
+            if (-not (Test-Path (Join-Path $bin 'fzf.exe'))) { Expand-Archive (Gh-Asset 'junegunn/fzf' $FZF_VER "fzf-$($FZF_VER.TrimStart('v'))-windows_amd64.zip" 64) $bin -Force }   # themecolor seÃ§icisi
             Step-Progress 65
             Add-UserPath $bin
             New-Item -ItemType Directory -Force (Join-Path $UserProfile '.config\fish\functions') | Out-Null
@@ -707,7 +707,7 @@ try {
     $sm = Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge'
     New-Item -ItemType Directory -Force $sm | Out-Null
     Get-ChildItem $sm -Filter *.lnk | Remove-Item -Force
-    $name = if ((Get-UICulture).Name -like 'tr*') { "Logical Lunge'u yeniden baþlat" } else { 'Restart Logical Lunge' }
+    $name = if ((Get-UICulture).Name -like 'tr*') { "Logical Lunge'u yeniden baÅŸlat" } else { 'Restart Logical Lunge' }
     $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $sm "$name.lnk"))
     $lnk.TargetPath = Join-Path $APP 'lunge.exe'
     $lnk.Arguments = '--restart-desktop'
