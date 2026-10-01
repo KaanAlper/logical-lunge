@@ -3604,6 +3604,118 @@ static class Settings
     }
 }
 
+// Hata raporu ekleri: her çağrı tek dosyayı toplar. UI ancak gerçek içerik
+// döndüğünde o dosyayı hazır sayar; boş stdout ya da hata metni log değildir.
+static class BugReports
+{
+    static readonly JavaScriptSerializer Js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+    const int MaxLogBytes = 192 * 1024;
+
+    public static string File(string kind)
+    {
+        var result = new Dictionary<string, object> { { "ok", false }, { "kind", kind } };
+        try
+        {
+            string text;
+            if (kind == "blackbox")
+            {
+                string path = System.IO.Path.Combine(Paths.LogsDir, "core.log");
+                long before = System.IO.File.Exists(path) ? new System.IO.FileInfo(path).Length : 0;
+                PerfGuard.DumpNow("hata raporu istendi");
+                text = ReadFrom(path, before, MaxLogBytes);
+                int start = text.LastIndexOf("KARA KUTU: hata raporu istendi", StringComparison.Ordinal);
+                if (start < 0) throw new System.IO.IOException("Yeni kara kutu kaydı oluşturulamadı.");
+                text = text.Substring(start);
+            }
+            else
+            {
+                string filename;
+                switch (kind)
+                {
+                    case "core": filename = "core.log"; break;
+                    case "shell": filename = "shell.log"; break;
+                    case "tiling": filename = "tiling.log"; break;
+                    default: throw new ArgumentException("Bilinmeyen günlük türü.");
+                }
+                text = ReadFrom(System.IO.Path.Combine(Paths.LogsDir, filename), -1, MaxLogBytes);
+            }
+            if (string.IsNullOrWhiteSpace(text)) throw new System.IO.IOException("Günlük boş veya erişilemiyor.");
+            result["ok"] = true;
+            result["text"] = text;
+            result["bytes"] = Encoding.UTF8.GetByteCount(text);
+        }
+        catch (Exception ex) { result["error"] = ex.GetBaseException().Message; }
+        return Js.Serialize(result);
+    }
+
+    static string ReadFrom(string path, long start, int limit)
+    {
+        using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read,
+            System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+        {
+            long offset = start < 0 ? Math.Max(0, fs.Length - limit) : start;
+            if (offset > fs.Length) throw new System.IO.IOException("Günlük toplama sırasında değişti.");
+            fs.Seek(offset, System.IO.SeekOrigin.Begin);
+            using (var sr = new System.IO.StreamReader(fs, Encoding.UTF8, true))
+            {
+                // A tail may begin midway through a UTF-8 line.
+                if (start < 0 && offset > 0) sr.ReadLine();
+                string text = sr.ReadToEnd();
+                if (text.Length > limit) text = text.Substring(text.Length - limit);
+                return text;
+            }
+        }
+    }
+
+    static string WmiName(string query)
+    {
+        try
+        {
+            using (var search = new System.Management.ManagementObjectSearcher(query))
+            {
+                var names = new List<string>();
+                foreach (System.Management.ManagementObject item in search.Get())
+                {
+                    using (item)
+                    {
+                        string name = Convert.ToString(item["Name"]);
+                        if (!string.IsNullOrWhiteSpace(name) && !names.Contains(name)) names.Add(name);
+                    }
+                }
+                return string.Join(", ", names.ToArray());
+            }
+        }
+        catch { return ""; }
+    }
+
+    public static string Device()
+    {
+        string os = Environment.OSVersion.VersionString;
+        try
+        {
+            using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
+            {
+                if (key != null) os = Convert.ToString(key.GetValue("ProductName")) + " "
+                    + Convert.ToString(key.GetValue("DisplayVersion")) + " (" + Convert.ToString(key.GetValue("CurrentBuild")) + ")";
+            }
+        }
+        catch { }
+        string ram = "";
+        try
+        {
+            using (var search = new System.Management.ManagementObjectSearcher("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem"))
+                foreach (System.Management.ManagementObject item in search.Get())
+                    using (item) { ram = Math.Round(Convert.ToDouble(item["TotalPhysicalMemory"]) / (1024 * 1024 * 1024), 1) + " GB"; break; }
+        }
+        catch { }
+        return Js.Serialize(new Dictionary<string, object> {
+            { "os", os }, { "cpu", WmiName("SELECT Name FROM Win32_Processor") },
+            { "gpu", WmiName("SELECT Name FROM Win32_VideoController") }, { "ram", ram },
+            { "appVersion", Updater.Installed() }
+        });
+    }
+}
+
 static class ConfigWatch
 {
     static System.IO.FileSystemWatcher watcher;
@@ -9652,6 +9764,13 @@ static class Program
         }
         // lunge.exe --black-box: o anki performans durumunu (işlemci / GPU / parçalar) log'a yaz
         if (args.Length == 1 && args[0] == "--black-box") { PerfGuard.DumpNow("elle istendi"); return; }
+        if ((args.Length == 2 && args[0] == "--bug-report-file") || (args.Length == 1 && args[0] == "--bug-report-device"))
+        {
+            string report = args[0] == "--bug-report-device" ? BugReports.Device() : BugReports.File(args[1]);
+            var output = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            output.Write(report); output.Flush();
+            return;
+        }
         // lunge.exe --switcher-demo: Alt+Tab menüsünü 6 sn göster (sınama; kısayolsuz)
         if (args.Length == 1 && args[0] == "--switcher-demo") { Switcher.Demo(); return; }
         // lunge.exe --log <metin>: widget'ların hata ayıklama günlüğü (%LOCALAPPDATA%\LogicalLunge\logs\core.log)
@@ -10093,7 +10212,7 @@ static class Program
         roundThread.IsBackground = true;
         roundThread.Start();
 
-        // İlk açılış (yeni kurulum): Super menüsünün uygulama listesi ve terminal renkleri yoksa üret
+        // Super menüsünün uygulama listesini ilk kurulumda ve bayatladığında arkada yenile.
         ThreadPool.QueueUserWorkItem(_ =>
         {
             try
@@ -10101,8 +10220,37 @@ static class Program
                 string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 string apps = Paths.AppsJson;
                 string build = Paths.Script("build-apps.ps1");
-                if (!System.IO.File.Exists(apps) && System.IO.File.Exists(build))
-                    Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + build + "\"") { UseShellExecute = false, CreateNoWindow = true });
+                bool refresh = !System.IO.File.Exists(apps);
+                if (!refresh)
+                {
+                    var info = new System.IO.FileInfo(apps);
+                    refresh = info.Length <= 2 || info.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-1);
+                }
+                if (refresh && System.IO.File.Exists(build))
+                {
+                    var psi = new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + build + "\"")
+                    {
+                        UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
+                        WorkingDirectory = home
+                    };
+                    var scan = Process.Start(psi);
+                    if (scan != null)
+                    {
+                        try { scan.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
+                        ThreadPool.QueueUserWorkItem(__ =>
+                        {
+                            try
+                            {
+                                string error = scan.StandardError.ReadToEnd();
+                                scan.WaitForExit();
+                                if (scan.ExitCode != 0 || !System.IO.File.Exists(apps) || new System.IO.FileInfo(apps).Length <= 2)
+                                    Slider.Log("apps index failed (exit " + scan.ExitCode + "): " + (error.Length > 300 ? error.Substring(0, 300) : error));
+                            }
+                            catch (Exception ex) { Slider.Log("apps index: " + ex.Message); }
+                            finally { scan.Dispose(); }
+                        });
+                    }
+                }
                 string colors = System.IO.Path.Combine(home, @".config\wezterm\ll-colors.lua");
                 string tc = Paths.Tool(@"termcolors\lunge-termcolors.exe");
                 if (!System.IO.File.Exists(colors) && System.IO.File.Exists(tc))

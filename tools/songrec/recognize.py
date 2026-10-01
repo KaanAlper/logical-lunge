@@ -16,8 +16,10 @@ args = ap.parse_args()
 
 
 def out(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    # pythonw/PyInstaller stdout uses the system code page when redirected on
+    # some Windows installations. The core reads UTF-8, so write bytes here.
+    sys.stdout.buffer.write((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def open_stream(pa):

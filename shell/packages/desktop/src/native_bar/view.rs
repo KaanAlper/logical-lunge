@@ -24,9 +24,9 @@ use windows::{
 
 use windows::Foundation::Numerics::Matrix3x2;
 use windows::Win32::Graphics::Direct2D::{
-  ID2D1Bitmap1, ID2D1Image, CLSID_D2D1Saturation, D2D1_BRUSH_PROPERTIES, D2D1_EXTEND_MODE_CLAMP,
+  ID2D1Bitmap1, ID2D1Image, D2D1_BRUSH_PROPERTIES, D2D1_EXTEND_MODE_CLAMP,
   D2D1_IMAGE_BRUSH_PROPERTIES, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
-  D2D1_INTERPOLATION_MODE_LINEAR, D2D1_PROPERTY_TYPE_FLOAT, D2D1_SATURATION_PROP_SATURATION,
+  D2D1_INTERPOLATION_MODE_LINEAR,
 };
 
 use super::{
@@ -367,22 +367,15 @@ impl Painter<'_> {
     Ok(())
   }
 
-  /// A bitmap cut to a circle (`object-fit: cover`), optionally desaturated
-  /// (`filter: saturate(...)`).
-  fn image_circle(&mut self, bmp: &ID2D1Bitmap1, cx: f32, cy: f32, d: f32, saturation: Option<f32>) -> Result<()> {
+  /// A bitmap cut to a circle (`object-fit: cover`). Keep both workspace
+  /// states on the same bitmap coordinate path; effect output has different
+  /// bounds and can shrink an inactive icon into the upper-left corner.
+  fn image_circle(&mut self, bmp: &ID2D1Bitmap1, cx: f32, cy: f32, d: f32, opacity: f32) -> Result<()> {
     unsafe {
       let size = bmp.GetSize();
       let (bw, bh) = (size.width.max(1.0), size.height.max(1.0));
       let k = d / bw.min(bh);
-      let image: ID2D1Image = match saturation {
-        Some(sat) => {
-          let fx = self.dc.CreateEffect(&CLSID_D2D1Saturation)?;
-          fx.SetInput(0, bmp, true);
-          fx.SetValue(D2D1_SATURATION_PROP_SATURATION.0 as u32, D2D1_PROPERTY_TYPE_FLOAT, &sat.to_le_bytes())?;
-          fx.GetOutput()?
-        }
-        None => bmp.cast()?,
-      };
+      let image: ID2D1Image = bmp.cast()?;
       let brush = self.dc.CreateImageBrush(
         &image,
         &D2D1_IMAGE_BRUSH_PROPERTIES {
@@ -392,7 +385,7 @@ impl Painter<'_> {
           interpolationMode: D2D1_INTERPOLATION_MODE_LINEAR,
         },
         Some(&D2D1_BRUSH_PROPERTIES {
-          opacity: 1.0,
+          opacity,
           transform: Matrix3x2 {
             M11: k,
             M12: 0.0,
@@ -783,7 +776,7 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>) 
       }
       if let Some(bmp) = bmp {
         let d = if active(i) { 18.0 * 1.05 } else { 18.0 };
-        p.image_circle(&bmp, cx, cy, d, if active(i) { None } else { Some(0.7) })?;
+        p.image_circle(&bmp, cx, cy, d, if active(i) { 1.0 } else { 0.7 })?;
         drawn = true;
       }
     }

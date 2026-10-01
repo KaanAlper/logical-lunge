@@ -134,6 +134,7 @@
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
+      import BugReportDialog from '../bug-report.jsx';
 
       const win = lunge.currentWidget().tauriWindow;
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
@@ -223,6 +224,7 @@
             <BottomWidgetGroup />
             {page === 'keys' && <ShortcutsPage onClose={() => setPage(null)} />}
             {page === 'walls' && <WallpaperPage onClose={() => setPage(null)} />}
+            {page === 'bug' && <BugReportDialog host={o.host} onClose={() => setPage(null)} />}
           </div>
         );
       }
@@ -521,6 +523,9 @@
                 </span>
               </div>
               <div className="btngroup">
+                <button className="qbtn bug-btn-icon" title="Hata Bildir (Bug Report)" onClick={() => onPage('bug')}>
+                  <Icon name="bug_report" />
+                </button>
                 <button className="qbtn" title="Güncellemeleri denetle" onClick={() => { emit('ll:update-check').catch(() => {}); emit('ll:sidebar-right-toggle').catch(() => {}); }}>
                   <Icon name="system_update_alt" />
                 </button>
@@ -607,11 +612,14 @@
         useEffect(() => { if (!open) setMenu(null); }, [open]);
         useEffect(() => { save('ll.qs.cache', { radios: st.radios, eth: st.eth, bt: st.bt, awake: st.awake, mic: st.mic }); }, [st.radios, st.eth, st.bt, st.awake, st.mic]);
         const panelRef = useRef(null);
+        const refreshBluetooth = useCallback(() => {
+          return psFile('bt.ps1').then(s => { const r = json(s); if (r) setSt(x => ({ ...x, bt: r })); }).catch(() => {});
+        }, []);
 
         const refresh = useCallback(() => {
           psFile('radios.ps1', ['get']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, radios: r })); }).catch(() => {});
           psFile('eth.ps1', ['status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, eth: r })); }).catch(() => {});
-          psFile('bt.ps1').then(s => { const r = json(s); if (r) setSt(x => ({ ...x, bt: r })); }).catch(() => {});
+          refreshBluetooth();
           helper(['--nightlight', 'status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, night: r })); }).catch(() => {});
           psFile('status.ps1').then(s => {
             const r = json(s); if (!r) return;
@@ -624,7 +632,7 @@
             setSt(x => ({ ...x, awake: !!r.awake }));
           }).catch(() => {});
           helper(['--mic', 'status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, mic: !r.muted })); }).catch(() => {});
-        }, []);
+        }, [refreshBluetooth]);
         // Açılışta (panel gizliyken) bir kez ve her açılışta tazele
         useEffect(() => { refresh(); }, []);
         useEffect(() => { if (open) refresh(); }, [open]);
@@ -803,7 +811,7 @@
               <div key={card.type} className={`qcard ${card.closing ? 'closing' : ''}`} style={{ top: card.top }}>
                 {card.type === 'wifi' && <WifiMenu radioOn={wifiOn} />}
                 {card.type === 'ethernet' && <EthernetMenu eth={eth} />}
-                {card.type === 'bluetooth' && <BluetoothMenu bt={st.bt} on={st.radios.bluetooth === 'On'} onScan={refresh} />}
+                {card.type === 'bluetooth' && <BluetoothMenu bt={st.bt} on={st.radios.bluetooth === 'On'} onScan={refreshBluetooth} />}
                 {card.type === 'audio' && <AudioMenu kind="out" audio={o.audio} />}
                 {card.type === 'mic' && <AudioMenu kind="in" audio={o.audio} />}
                 {card.type === 'nightLight' && <NightLightMenu night={st.night || {}} onChange={r => setSt(x => ({ ...x, night: r }))} />}
@@ -815,24 +823,39 @@
 
       // ---- Kayarak açılan bölümler (ii WifiDialog / BluetoothDialog içerikleri) ----
       function MenuFooter({ onScan, settings }) {
+        const [busy, setBusy] = useState(false);
+        const scan = () => {
+          if (busy) return;
+          setBusy(true);
+          Promise.resolve().then(onScan).catch(() => {}).finally(() => setBusy(false));
+        };
         return (
           <div className="qm-foot">
-            {onScan && <button className="chip" onClick={onScan}><Icon name="refresh" />Tara</button>}
+            {onScan && <button className="chip" onClick={scan} disabled={busy}>
+              <Icon name={busy ? 'progress_activity' : 'refresh'} />{busy ? 'Taranıyor…' : 'Tara'}
+            </button>}
             <button className="chip" onClick={() => openSettings(settings)}><Icon name="open_in_new" />Daha fazla</button>
           </div>
         );
       }
 
+      let lastWifiScan = null;
       function WifiMenu({ radioOn }) {
-        const [data, setData] = useState(null);
+        const [data, setData] = useState(() => lastWifiScan);
         const [busy, setBusy] = useState(null);
         const [ask, setAsk] = useState(null);
         const [pw, setPw] = useState('');
         const [err, setErr] = useState('');
         const [scanning, setScanning] = useState(false);
+        const scanPending = useRef(false);
         const scan = useCallback(() => {
+          if (scanPending.current) return Promise.resolve();
+          scanPending.current = true;
           setScanning(true);
-          return psFile('wifi.ps1', ['list']).then(s => { const r = json(s); if (r) setData(r); }).catch(() => {}).finally(() => setScanning(false));
+          return psFile('wifi.ps1', ['list']).then(s => {
+            const r = json(s);
+            if (r?.networks) { lastWifiScan = r; setData(r); }
+          }).catch(() => {}).finally(() => { scanPending.current = false; setScanning(false); });
         }, []);
         useEffect(() => { if (radioOn) { scan(); const t = setInterval(scan, 10000); return () => clearInterval(t); } }, [radioOn]);
 

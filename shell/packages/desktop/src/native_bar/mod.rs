@@ -285,17 +285,23 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
   // core -> shell events (the theme changed in a web widget or the settings)
   core_api::events(|evt| send(Msg::Core(evt)));
 
-  // the app list (icons for the workspace dots); the core may still be starting
+  // The indexer can finish after the shell starts. Ignore its temporary []
+  // response, then notice later app installs without restarting the bar.
   std::thread::spawn(|| {
-    for i in 1..=6u64 {
+    let mut previous: Option<Vec<u8>> = None;
+    loop {
       if let Some((200, body)) = core_api::post("/apps.json") {
-        if let Ok(apps) = serde_json::from_slice::<Vec<icons::App>>(&body) {
-          remember(|l| l.apps = Some(apps.clone()));
-          send(Msg::Apps(apps));
-          return;
+        if body.len() > 2 && previous.as_deref() != Some(body.as_slice()) {
+          if let Ok(apps) = serde_json::from_slice::<Vec<icons::App>>(&body) {
+            if !apps.is_empty() {
+              remember(|l| l.apps = Some(apps.clone()));
+              send(Msg::Apps(apps));
+              previous = Some(body);
+            }
+          }
         }
       }
-      std::thread::sleep(Duration::from_secs(i));
+      std::thread::sleep(if previous.is_some() { Duration::from_secs(1800) } else { Duration::from_secs(2) });
     }
   });
 

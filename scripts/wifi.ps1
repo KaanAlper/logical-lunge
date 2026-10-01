@@ -7,17 +7,16 @@ param([string]$Action = 'list', [string]$Ssid = '', [string]$Password = '')
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 function Out($o) { $o | ConvertTo-Json -Depth 4 -Compress; exit }
 
-$profiles = @(netsh wlan show profiles | ForEach-Object { if ($_ -match '(Profile|Profil)[^:]*:\s*(.+)$') { $Matches[2].Trim() } })
-
 switch ($Action) {
     'list' {
-        # Taze tarama iste (sessizce), sonra listele
-        $null = netsh wlan show networks mode=bssid
+        $profiles = @(netsh wlan show profiles | ForEach-Object { if ($_ -match '(Profile|Profil)[^:]*:\s*(.+)$') { $Matches[2].Trim() } })
         $connected = ''
         netsh wlan show interfaces | ForEach-Object {
             if ($_ -match '^\s*SSID\s*:\s*(.+)$') { $connected = $Matches[1].Trim() }
         }
         $nets = @(); $cur = $null
+        # One network enumeration is enough; the previous duplicate netsh call
+        # doubled the slow radio wait without requesting a new scan.
         netsh wlan show networks mode=bssid | ForEach-Object {
             if ($_ -match '^SSID \d+\s*:\s*(.*)$') {
                 if ($cur -and $cur.ssid) { $nets += $cur }
@@ -37,6 +36,7 @@ switch ($Action) {
         Out @{ ok = $true }
     }
     'connect' {
+        $profiles = @(netsh wlan show profiles | ForEach-Object { if ($_ -match '(Profile|Profil)[^:]*:\s*(.+)$') { $Matches[2].Trim() } })
         if (-not ($profiles -contains $Ssid)) {
             if (-not $Password) { Out @{ ok = $false; needPassword = $true } }
             # WPA2-Personal profili oluştur

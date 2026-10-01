@@ -1,6 +1,7 @@
 ﻿# ii AppSearch karşılığı: Windows'un uygulama listesini (shell:AppsFolder — Başlat menüsünün
 # kullandığı liste) yerelleştirilmiş adları ("Ekran Klavyesi" gibi) ve gerçek ikonlarıyla
 # apps.json'a yazar. Belgeler/yardım/kaldırma kısayolları elenir.
+$ErrorActionPreference = 'Stop'
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 using System;
 using System.Drawing;
@@ -76,7 +77,9 @@ foreach ($root in @("$env:ProgramData\Microsoft\Windows\Start Menu\Programs", "$
 }
 
 $shell = New-Object -ComObject Shell.Application
-$items = $shell.NameSpace('shell:AppsFolder').Items()
+$folder = $shell.NameSpace('shell:AppsFolder')
+if (-not $folder) { throw 'Windows AppsFolder could not be opened.' }
+$items = $folder.Items()
 $apps = New-Object System.Collections.Generic.List[object]
 $seen = @{}
 foreach ($it in $items) {
@@ -106,6 +109,14 @@ foreach ($it in $items) {
     })
 }
 
+if ($apps.Count -eq 0) { throw 'Windows AppsFolder returned no applications; the previous index was kept.' }
 $sorted = $apps | Sort-Object { $_.name }
-[IO.File]::WriteAllText($out, (ConvertTo-Json @($sorted) -Depth 3 -Compress), (New-Object Text.UTF8Encoding $false))
+$temp = "$out.$PID.tmp"
+try {
+    [IO.File]::WriteAllText($temp, (ConvertTo-Json @($sorted) -Depth 3 -Compress), (New-Object Text.UTF8Encoding $false))
+    # Readers see either the old complete index or the new complete index.
+    if ([IO.File]::Exists($out)) { [IO.File]::Replace($temp, $out, $null) }
+    else { [IO.File]::Move($temp, $out) }
+}
+finally { if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) } }
 "$($apps.Count) uygulama -> $out"
