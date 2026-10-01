@@ -8,6 +8,7 @@
 mod anim;
 mod brightness;
 mod core_api;
+mod drag_drop;
 mod fonts;
 mod gfx;
 mod icons;
@@ -44,8 +45,8 @@ use windows::{
       Gdi::{EnumDisplayMonitors, GetMonitorInfoW, ScreenToClient, HDC, HMONITOR, MONITORINFOEXW},
     },
     System::{
-      Com::{CoInitializeEx, COINIT_APARTMENTTHREADED},
       LibraryLoader::GetModuleHandleW,
+      Ole::{OleInitialize, OleUninitialize},
     },
     UI::{
       Controls::WM_MOUSELEAVE,
@@ -79,6 +80,8 @@ const WM_APP_WAKE: u32 = WM_APP + 1;
 const WM_APP_REBUILD: u32 = WM_APP + 2;
 /// the tray panel's click-away hooks: close it
 const WM_APP_TRAY_CLOSE: u32 = WM_APP + 3;
+const WM_APP_DRAG_HOVER: u32 = WM_APP + 4;
+const WM_APP_DRAG_LEAVE: u32 = WM_APP + 5;
 const TIMER_CLOCK: usize = 1;
 const TIMER_REBUILD: usize = 2;
 const TIMER_OSD: usize = 3;
@@ -99,6 +102,7 @@ const TIMER_STABLE: usize = 12;
 const TIMER_TEST_FAIL: usize = 13;
 /// test only: waits for the app list before `LL_NATIVE_OVERVIEW_SHOT`
 const TIMER_SNAPSHOT: usize = 14;
+const TIMER_DRAG_DWELL: usize = 15;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -351,6 +355,7 @@ impl Layer {
 
 struct Bar {
   hwnd: HWND,
+  _drop_target: Option<windows::Win32::System::Ole::IDropTarget>,
   /// `\\.\DISPLAY1`
   device: String,
   monitor: RECT,
@@ -393,6 +398,8 @@ struct Ui {
   icons: Icons,
   model: Model,
   bars: Vec<Bar>,
+  drag_hover: Option<(HWND, u32)>,
+  drag_activated: Option<u32>,
   osd: Option<OsdWin>,
   displays: HashMap<String, Display>,
   msg_hwnd: HWND,
@@ -443,7 +450,7 @@ fn ui_thread(
   ready: Option<std::sync::mpsc::Sender<Result<(), String>>>,
 ) -> anyhow::Result<()> {
   unsafe {
-    CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+    OleInitialize(None)?;
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     let hinst = GetModuleHandleW(None)?;
     let wc = WNDCLASSEXW {
@@ -492,6 +499,8 @@ fn ui_thread(
         icons: Icons::default(),
         model,
         bars: Vec::new(),
+        drag_hover: None,
+        drag_activated: None,
         osd: None,
         displays: HashMap::new(),
         msg_hwnd,
@@ -562,6 +571,7 @@ fn ui_thread(
       let _ = TranslateMessage(&msg);
       DispatchMessageW(&msg);
     }
+    OleUninitialize();
   }
   Ok(())
 }
@@ -671,6 +681,15 @@ impl Ui {
           }
           self.recover();
         }
+        WM_TIMER if wp.0 == TIMER_DRAG_DWELL => {
+          let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_DRAG_DWELL) };
+          if let Some((_, workspace)) = self.drag_hover {
+            if self.drag_activated != Some(workspace) {
+              self.drag_activated = Some(workspace);
+              self.slide(workspace.to_string());
+            }
+          }
+        }
         WM_APP_REBUILD => {
           // monitors / DPI change in bursts: rebuild once they settle
           unsafe { SetTimer(self.msg_hwnd, TIMER_REBUILD, 400, None) };
@@ -729,6 +748,31 @@ impl Ui {
       WM_MOUSEMOVE => {
         let (x, y) = lparam_point(lp);
         self.mouse_move(i, x, y);
+        Some(LRESULT(0))
+      }
+      WM_APP_DRAG_HOVER => {
+        let (x, y) = lparam_point(lp);
+        let (dx, dy) = self.dip(i, x, y);
+        let candidate = match self.bars[i].frame.hit(dx, dy).map(|h| &h.kind) {
+          Some(HitKind::Workspace(n)) => Some((hwnd, *n)),
+          _ => None,
+        };
+        if candidate != self.drag_hover {
+          let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_DRAG_DWELL) };
+          self.drag_hover = candidate;
+          self.drag_activated = None;
+          if candidate.is_some() {
+            unsafe { SetTimer(self.msg_hwnd, TIMER_DRAG_DWELL, 550, None) };
+          }
+        }
+        Some(LRESULT(0))
+      }
+      WM_APP_DRAG_LEAVE => {
+        if self.drag_hover.is_some_and(|(bar, _)| bar == hwnd) {
+          let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_DRAG_DWELL) };
+          self.drag_hover = None;
+          self.drag_activated = None;
+        }
         Some(LRESULT(0))
       }
       WM_MOUSELEAVE => {
@@ -976,8 +1020,12 @@ impl Ui {
 
   fn create_bars(&mut self) {
     self.pops_reset();
+    self.drag_hover = None;
+    self.drag_activated = None;
+    unsafe { let _ = KillTimer(self.msg_hwnd, TIMER_DRAG_DWELL); }
     for b in self.bars.drain(..) {
       unsafe {
+        if b._drop_target.is_some() { let _ = drag_drop::revoke(b.hwnd); }
         let _ = DestroyWindow(b.hwnd);
       }
     }
@@ -1061,12 +1109,17 @@ impl Ui {
       }
       target.SetRoot(&root)?;
       let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+      let drop_target = match drag_drop::register(hwnd) {
+        Ok(target) => Some(target),
+        Err(error) => { tracing::warn!("Native bar: drag target unavailable: {:?}", error); None }
+      };
       let alive_id = uuid::Uuid::new_v4().to_string();
       if !self.demo {
         core_api::post_async(format!("/bar-alive?id={}", alive_id));
       }
       Ok(Bar {
         hwnd,
+        _drop_target: drop_target,
         device: monitor_device(mon),
         monitor: rc,
         scale,
