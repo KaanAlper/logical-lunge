@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+// Logical Lunge dil katmanı: build.mjs inserts the shared translator here.
+    </script>
+    <link rel="stylesheet" href="./fonts.css" />
+    <link rel="stylesheet" href="./dock.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import React, { useEffect, useMemo, useRef, useState } from 'react';
+      import { createRoot } from 'react-dom/client';
+      import * as lunge from 'lunge/shell';
+      import { appIconFor, winIconOf } from 'lunge/apps';
+      import { listen, emit } from '@tauri-apps/api/event';
+      import 'lunge/theme';
+
+      const win = lunge.currentWidget().tauriWindow;
+      document.documentElement.dataset.theme = window.LL_PREFS?.theme === 'light' ? 'light' : 'dark';
+      const helper = '{{INSTALL_ESC}}\\lunge.exe';
+      win.setTitle('Logical Lunge · dock').catch(() => {});
+      const providers = lunge.createProviderGroup({ tiling: { type: 'tiling' } });
+      const pinKey = 'll.dock.pins';
+      const key = s => String(s || '').toLocaleLowerCase('en-US').replace(/\.exe$/, '');
+
+      function readPins() {
+        try {
+          const pins = JSON.parse(localStorage.getItem(pinKey) || '[]');
+          return Array.isArray(pins) ? pins.filter(p => typeof p === 'string').slice(0, 24) : [];
+        } catch { return []; }
+      }
+
+      function windowsByApp(tiling) {
+        const groups = new Map();
+        const walk = (node, workspace) => {
+          for (const child of node.children ?? []) {
+            if (child.type === 'window') {
+              const id = key(child.processName);
+              if (!id) continue;
+              const group = groups.get(id) ?? { id, processName: child.processName, windows: [] };
+              group.windows.push({ ...child, workspace });
+              groups.set(id, group);
+            } else walk(child, workspace);
+          }
+        };
+        for (const monitor of tiling?.allMonitors ?? []) {
+          for (const workspace of monitor.children ?? []) walk(workspace, workspace.name);
+        }
+        return groups;
+      }
+
+      function Dock() {
+        const [open, setOpen] = useState(false);
+        const openRef = useRef(false);
+        const [tiling, setTiling] = useState(providers.outputMap.tiling);
+        const [apps, setApps] = useState([]);
+        const [pins, setPins] = useState(readPins);
+        const [hovered, setHovered] = useState(-1);
+        const [menu, setMenu] = useState(null);
+        const [, iconRefresh] = useState(0);
+        const closeTimer = useRef(null);
+
+        const hide = () => {
+          openRef.current = false;
+          setOpen(false);
+          setMenu(null);
+          clearTimeout(closeTimer.current);
+          closeTimer.current = setTimeout(() => {
+            if (!openRef.current) lunge.hideWindow(win).catch(() => {});
+          }, 220);
+        };
+        const show = async () => {
+          clearTimeout(closeTimer.current);
+          openRef.current = true;
+          setTiling(providers.outputMap.tiling);
+          await lunge.showWindow(win).catch(() => {});
+          if (!openRef.current) return;
+          lunge.shellExec(helper, ['--raise', 'Logical Lunge · dock']).catch(() => {});
+          requestAnimationFrame(() => { if (openRef.current) setOpen(true); });
+          try {
+            const response = await fetch('http://127.0.0.1:6131/apps.json', { method: 'POST', cache: 'no-store' });
+            if (response.ok) {
+              const list = await response.json();
+              if (Array.isArray(list) && list.length) setApps(list);
+            }
+          } catch {}
+        };
+
+        useEffect(() => {
+          lunge.hideWindow(win).catch(() => {});
+          providers.onOutput(() => { if (openRef.current) setTiling(providers.outputMap.tiling); });
+          const toggle = listen('ll:dock-toggle', () => openRef.current ? hide() : show());
+          const overview = listen('ll:overview-toggle', hide);
+          const outside = listen('ll:outside-click', hide);
+          const bar = listen('ll:bar-click', hide);
+          const keydown = e => { if (e.key === 'Escape') hide(); };
+          window.addEventListener('keydown', keydown);
+          return () => {
+            [toggle, overview, outside, bar].forEach(p => p.then(unlisten => unlisten()));
+            window.removeEventListener('keydown', keydown);
+            clearTimeout(closeTimer.current);
+          };
+        }, []);
+
+        const running = useMemo(() => windowsByApp(tiling), [tiling]);
+        const catalog = useMemo(() => new Map(apps.filter(a => a.exe && a.path).map(a => [key(a.exe), a])), [apps]);
+        const items = useMemo(() => {
+          const ids = [...new Set([...pins, ...running.keys()])];
+          return ids.map(id => {
+            const active = running.get(id);
+            const app = catalog.get(id);
+            if (!active && !app) return null;
+            return { id, app, active, name: app?.name ?? active?.processName ?? id };
+          }).filter(Boolean);
+        }, [pins, running, catalog]);
+
+        const focus = async item => {
+          hide();
+          await lunge.hideWindow(win).catch(() => {});
+          if (item.active?.windows?.length) {
+            const target = item.active.windows.find(w => w.hasFocus) ?? item.active.windows[0];
+            try {
+              if (target.workspace !== tiling?.focusedWorkspace?.name) {
+                await tiling.runCommand(`focus --workspace ${target.workspace}`);
+              }
+              await tiling.runCommand(`focus --container-id ${target.id}`);
+              return;
+            } catch (error) { console.error('Dock focus failed', error); }
+          }
+          if (item.app?.path) lunge.shellSpawn('explorer', [item.app.path]).catch(console.error);
+        };
+        const pin = id => {
+          const next = pins.includes(id) ? pins.filter(p => p !== id) : [...pins, id];
+          localStorage.setItem(pinKey, JSON.stringify(next));
+          setPins(next);
+          setMenu(null);
+        };
+
+        return <div className={`dock-screen ${open ? 'visible' : ''}`} onMouseDown={e => { if (e.target === e.currentTarget) hide(); }}>
+          <nav className="dock" aria-label="Uygulama Dock’u" onMouseLeave={() => setHovered(-1)}>
+            <button className="tile launcher" title="Uygulama ara" aria-label="Uygulama ara" onClick={async () => { hide(); await lunge.hideWindow(win).catch(() => {}); emit('ll:overview-toggle').catch(() => {}); }}>
+              <span className="material">apps</span>
+            </button>
+            {!!items.length && <span className="divider" />}
+            <div className="items">
+              {items.map((item, index) => {
+                const first = item.active?.windows[0];
+                const icon = appIconFor(apps, item.active?.processName ?? item.app?.exe) ?? item.app?.icon ?? (first && winIconOf(first.handle, () => iconRefresh(x => x + 1)));
+                const distance = Math.abs(index - hovered);
+                const lift = hovered < 0 ? 0 : distance === 0 ? 14 : distance === 1 ? 7 : 0;
+                const scale = hovered < 0 ? 1 : distance === 0 ? 1.19 : distance === 1 ? 1.08 : 1;
+                return <button key={item.id} className="tile" title={item.name} aria-label={item.name}
+                  style={{ transform: `translateY(${-lift}px) scale(${scale})` }}
+                  onMouseEnter={() => setHovered(index)} onClick={() => focus(item)}
+                  onContextMenu={e => { e.preventDefault(); setMenu({ id: item.id, index }); }}>
+                  {icon ? <img src={icon} alt="" /> : <span className="material">web_asset</span>}
+                  {item.active && <span className="running" />}
+                </button>;
+              })}
+            </div>
+            {menu && <div className="menu" style={{ left: `min(${74 + menu.index * 63}px, calc(100% - 140px))` }}>
+              <button onClick={() => pin(menu.id)} disabled={!pins.includes(menu.id) && !catalog.has(menu.id)}>
+                {pins.includes(menu.id) ? "Dock’tan kaldır" : "Dock’ta tut"}
+              </button>
+            </div>}
+          </nav>
+        </div>;
+      }
+
+      createRoot(document.getElementById('root')).render(<Dock />);
+    </script>
+  </body>
+</html>

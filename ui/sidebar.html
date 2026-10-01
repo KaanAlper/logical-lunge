@@ -325,6 +325,7 @@
 
         const rows = [
           { key: 'super', group: 'sys', label: 'Arama / overview', combo: 'Super', fixed: true },
+          { key: 'dock', group: 'sys', label: 'Uygulama Dock’u', combo: 'Super+Alt', fixed: true },
           ...ll.map(b => ({ key: 'll:' + b.id, group: llGroup(b.id), label: llLabel(b.id), combo: b.combo, def: b.default, src: 'll', id: b.id })),
           ...tiling.map(g => ({ key: 'tiling:' + g.index, group: tilingGroup(g.commands), label: tilingLabel(g.commands), combo: g.bindings[0] || '', extra: g.bindings.slice(1), src: 'tiling', id: g.index })),
         ];

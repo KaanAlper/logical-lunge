@@ -5205,7 +5205,7 @@ class Keys2
     readonly Control ui;
     readonly Slider slider;
     Native.LowLevelKeyboardProc proc;
-    bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected;
+    bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected, dockChord;
     int winVk = VK_LWIN, lastWinEvent;
 
     public static Keys2 Instance;
@@ -5361,10 +5361,13 @@ class Keys2
                 otherKeyWhileWin = false; swallowedWithWin = false;
                 // Win'den önce basılı tutulan Ctrl/Shift/Alt da "kombinasyon" sayılır
                 modifierWhileWin = Down(VK_CONTROL) || Down(VK_SHIFT) || Down(VK_MENU);
+                dockChord = Down(VK_MENU) && !Down(VK_CONTROL) && !Down(VK_SHIFT);
             }
             if (isUp)
             {
+                bool toggleDock = dockChord && !otherKeyWhileWin && !Binds.Capturing;
                 winDown = false;
+                dockChord = false;
                 if (winInjected)
                 {
                     winInjected = false;
@@ -5372,6 +5375,7 @@ class Keys2
                     Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK); // KEYUP | EXTENDEDKEY
                 }
                 // Yalnızca tek başına Super: ll overview
+                else if (toggleDock) ui.BeginInvoke((Action)(() => Toasts.Emit("ll:dock-toggle")));
                 else if (!otherKeyWhileWin && !modifierWhileWin && !Binds.Capturing) ui.BeginInvoke((Action)ToggleOverview);
             }
             return (IntPtr)1; // basış, otomatik tekrar ve bırakma: hepsi yutulur
@@ -5388,8 +5392,13 @@ class Keys2
         if (winDown && isDown)
         {
             bool isModifier = vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || (vk >= 0xA0 && vk <= 0xA5);
-            if (isModifier) modifierWhileWin = true;
-            else otherKeyWhileWin = true;
+            if (isModifier)
+            {
+                modifierWhileWin = true;
+                if ((vk == VK_MENU || vk == 0xA4 || vk == 0xA5) && !otherKeyWhileWin && !Down(VK_CONTROL) && !Down(VK_SHIFT)) dockChord = true;
+                if (vk == VK_CONTROL || vk == VK_SHIFT || vk == 0xA2 || vk == 0xA3 || vk == 0xA0 || vk == 0xA1) dockChord = false;
+            }
+            else { otherKeyWhileWin = true; dockChord = false; }
         }
 
         // Kısayol tablosu (keybinds.json): Super / Ctrl / Shift / Alt + tuş -> eylem
