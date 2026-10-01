@@ -804,17 +804,30 @@ fn battery(p: &mut Painter, t: &Theme, r: Rect, percent: f32, charging: bool) ->
   }
   p.fill_round(r, r.h / 2.0, if low { t.error } else { t.on_sec_container })?;
   unsafe { p.dc.PopAxisAlignedClip() };
-  // A centered bolt while charging; percentage and power details in the hover card.
-    // Stable contrast even when the fill ends underneath the centered label.
-    p.fill_round(Rect::new(r.x + 8.0, r.y + 1.0, r.w - 16.0, r.h - 2.0), 8.0, t.sec_container)?;
-    let color = t.on_sec_container;
-  if charging {
-    p.icon("bolt", r.x + r.w / 2.0, r.y + r.h / 2.0, 14.0, true, color)?;
-  } else {
-    let label = format!("{}", pct as i32);
-    let st = TextStyle { size: 11.0, weight: 600.0 };
-    let lw = p.measure_with(&label, st, true)?;
-    p.text(&label, Rect::new(r.x + (r.w - lw) / 2.0, r.y, lw + 1.0, r.h), st, color, Align::Left, true)?;
+  // Keep the fill boundary visible through the mark. Paint the outline and
+  // symbol in opposite colours on the empty and filled parts of the track.
+  let mark = Rect::new(r.x + 8.0, r.y + 1.0, r.w - 16.0, r.h - 2.0);
+  let label = format!("{}", pct as i32);
+  let st = TextStyle { size: 11.0, weight: 600.0 };
+  let lw = if charging { 0.0 } else { p.measure_with(&label, st, true)? };
+  for (filled, color) in [(false, t.on_sec_container), (true, t.sec_container)] {
+    if filled && pct <= 0.0 { continue; }
+    if filled {
+      unsafe {
+        p.dc.PushAxisAlignedClip(&Rect::new(r.x, r.y, r.w * pct / 100.0, r.h).d2d(), windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+      }
+    }
+    let drawn = (|| -> anyhow::Result<()> {
+      p.stroke_round(mark, 8.0, color, 1.0)?;
+      if charging {
+        p.icon("bolt", r.x + r.w / 2.0, r.y + r.h / 2.0, 14.0, true, color)?;
+      } else {
+        p.text(&label, Rect::new(r.x + (r.w - lw) / 2.0, r.y, lw + 1.0, r.h), st, color, Align::Left, true)?;
+      }
+      Ok(())
+    })();
+    if filled { unsafe { p.dc.PopAxisAlignedClip() } }
+    drawn?;
   }
   Ok(())
 }
