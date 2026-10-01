@@ -1,4 +1,4 @@
-# Logical Lunge - first-install wizard
+ï»¿# Logical Lunge - first-install wizard
 #   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 # Asks for the focus color, the interface language and the clock, downloads the latest release (with a progress bar)
 # and runs installer\setup.ps1 elevated (one UAC prompt) while showing its steps. On an error or Ctrl+C the installer
@@ -23,42 +23,42 @@ $E = [char]27
 $tr = (Get-UICulture).Name -like 'tr*'
 function Get-Texts([bool]$tr) {
 if ($tr) { @{
-        tagline = 'Logical Lunge: akýcý ve kiþiselleþtirilebilir bir Windows masaüstü'
-        qEdition = 'Hangi arayüzü kurmak istersin?'; sEdition = 'Arayüz'
-        native = 'Native: yerel çizilen hafif bar; diðer paneller henüz WebView2 kullanýr'
-        web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle çizilir'
-        noRelease = 'Bu arayüz için doðrulanabilir bir sürüm henüz yayýmlanmamýþ.'
-        preparing = 'Hazýrlanýyor'; release = 'Son sürüm aranýyor'
-        welcome = "Logical Lunge'a hoþ geldin"
-        welcomeBody = "Birkaç kýsa soru soracaðýz, sonra gerisini biz hallederiz. Kurulum sýrasýnda Windows bir kez yönetici izni isteyecek.`nHer deðiþiklik yedeklenir; bir þey ters giderse ya da vazgeçersen her þey eski haline döner."
-        version = 'Sürüm'; size = 'Ýndirme'
-        qLang = 'Arayüz hangi dilde olsun?'; systemLang = 'Sistem dili'
-        qColor = 'Vurgu rengi ne olsun? (kabuk ve etkin pencere kenarlýðý)'; custom = 'Özel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi görünmüyor, örnek: #b69df8'
-        qClock = 'Saat nasýl görünsün?'; h24 = '24 saat'; h12 = '12 saat'
-        qExtras = 'Ek bileþenler (Boþluk ile seç / kaldýr, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sýcaklýðý: PawnIO sürücüsü'
-        summary = 'Özet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bileþenler'; none = 'yok'
-        qGo = 'Kuralým mý?'; go = 'Kur'; cancel = 'Vazgeç'
-        downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket doðrulanýyor'; extracting = 'Paket açýlýyor'; stopping = 'Açýk masaüstü kapatýlýyor'
+        tagline = 'Logical Lunge: akï¿½cï¿½ ve kiï¿½iselleï¿½tirilebilir bir Windows masaï¿½stï¿½'
+        qEdition = 'Hangi arayï¿½zï¿½ kurmak istersin?'; sEdition = 'Arayï¿½z'
+        native = 'Native: yerel ï¿½izilen hafif bar; diï¿½er paneller henï¿½z WebView2 kullanï¿½r'
+        web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle ï¿½izilir'
+        noRelease = 'Bu arayï¿½z iï¿½in doï¿½rulanabilir bir sï¿½rï¿½m henï¿½z yayï¿½mlanmamï¿½ï¿½.'
+        preparing = 'Hazï¿½rlanï¿½yor'; release = 'Son sï¿½rï¿½m aranï¿½yor'
+        welcome = "Logical Lunge'a hoï¿½ geldin"
+        welcomeBody = "Birkaï¿½ kï¿½sa soru soracaï¿½ï¿½z, sonra gerisini biz hallederiz. Kurulum sï¿½rasï¿½nda Windows bir kez yï¿½netici izni isteyecek.`nHer deï¿½iï¿½iklik yedeklenir; bir ï¿½ey ters giderse ya da vazgeï¿½ersen her ï¿½ey eski haline dï¿½ner."
+        version = 'Sï¿½rï¿½m'; size = 'ï¿½ndirme'
+        qLang = 'Arayï¿½z hangi dilde olsun?'; systemLang = 'Sistem dili'
+        qColor = 'Vurgu rengi ne olsun? (kabuk ve etkin pencere kenarlï¿½ï¿½ï¿½)'; custom = 'ï¿½zel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi gï¿½rï¿½nmï¿½yor, ï¿½rnek: #b69df8'
+        qClock = 'Saat nasï¿½l gï¿½rï¿½nsï¿½n?'; h24 = '24 saat'; h12 = '12 saat'
+        qExtras = 'Ek bileï¿½enler (Boï¿½luk ile seï¿½ / kaldï¿½r, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sï¿½caklï¿½ï¿½ï¿½: PawnIO sï¿½rï¿½cï¿½sï¿½'
+        summary = 'ï¿½zet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bileï¿½enler'; none = 'yok'
+        qGo = 'Kuralï¿½m mï¿½?'; go = 'Kur'; cancel = 'Vazgeï¿½'
+        downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket doï¿½rulanï¿½yor'; extracting = 'Paket aï¿½ï¿½lï¿½yor'; stopping = 'Aï¿½ï¿½k masaï¿½stï¿½ kapatï¿½lï¿½yor'
         uac = "Windows'un izin penceresini onayla..."
-        installing = 'Logical Lunge kuruluyor'; ctrlc = 'Ctrl+C: vazgeç'; rollingBack = 'Deðiþiklikler geri alýnýyor...'
-        qStop = 'Kurulumu durdurup her þeyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
-        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bileþenler'; stop = 'Masaüstü durduruluyor'; files = 'Dosyalar kopyalanýyor'; config = 'Ayarlarýn yazýlýyor'; migrate = 'Önceki sürümden taþýnýyor'; tools = 'Parlaklýk ve sýcaklýk araçlarý'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarlarý'; tasks = 'Baþlangýç görevleri'; owner = 'Ýlk açýlýþa hazýrlanýyor'; finish = 'Son dokunuþlar' }
-        doneTitle = 'Hazýr! Logical Lunge kuruldu'
-        doneBody = "Masaüstün birkaç saniye içinde açýlýyor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ‹/› workspace deðiþtir`n  Sað üst köþe       hýzlý ayarlar ve bildirimler`n`nKaldýrmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
-        errTitle = 'Olmadý, ama merak etme'
-        errBody = "Kurulum '{0}' adýmýnda takýldý. Bilgisayarýnda hiçbir þey yarým kalmadý: yapýlan deðiþiklikler geri alýndý ve önceki masaüstün yeniden açýldý."
-        errDetail = 'Ayrýntý'; errLog = 'Günlük'
-        errRetry = "Ayný komutu yeniden çalýþtýrarak tekrar deneyebilirsin. Sorun sürerse günlüðü bizimle paylaþ:`nhttps://github.com/$repo/issues"
-        netTitle = 'Ýnternete ulaþamadýk'; netBody = 'Baðlantýný kontrol edip ayný komutu yeniden çalýþtýr. Bilgisayarýnda hiçbir þey deðiþmedi.'
-        cancelTitle = 'Kurulumdan vazgeçildi'; cancelBody = 'Her þey eski haline döndü, bilgisayarýnda hiçbir þey deðiþmedi.'
-        uacTitle = 'Ýzin verilmedi'; uacBody = "Windows'un yönetici izni olmadan kurulum yapýlamýyor. Hiçbir þey deðiþmedi; hazýr olduðunda ayný komutu yeniden çalýþtýr."
+        installing = 'Logical Lunge kuruluyor'; ctrlc = 'Ctrl+C: vazgeï¿½'; rollingBack = 'Deï¿½iï¿½iklikler geri alï¿½nï¿½yor...'
+        qStop = 'Kurulumu durdurup her ï¿½eyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
+        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bileï¿½enler'; stop = 'Masaï¿½stï¿½ durduruluyor'; files = 'Dosyalar kopyalanï¿½yor'; config = 'Ayarlarï¿½n yazï¿½lï¿½yor'; migrate = 'ï¿½nceki sï¿½rï¿½mden taï¿½ï¿½nï¿½yor'; tools = 'Parlaklï¿½k ve sï¿½caklï¿½k araï¿½larï¿½'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarlarï¿½'; tasks = 'Baï¿½langï¿½ï¿½ gï¿½revleri'; owner = 'ï¿½lk aï¿½ï¿½lï¿½ï¿½a hazï¿½rlanï¿½yor'; finish = 'Son dokunuï¿½lar' }
+        doneTitle = 'Hazï¿½r! Logical Lunge kuruldu'
+        doneBody = "Masaï¿½stï¿½n birkaï¿½ saniye iï¿½inde aï¿½ï¿½lï¿½yor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ï¿½/ï¿½ workspace deï¿½iï¿½tir`n  Saï¿½ ï¿½st kï¿½ï¿½e       hï¿½zlï¿½ ayarlar ve bildirimler`n`nKaldï¿½rmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
+        errTitle = 'Olmadï¿½, ama merak etme'
+        errBody = "Kurulum '{0}' adï¿½mï¿½nda takï¿½ldï¿½. Bilgisayarï¿½nda hiï¿½bir ï¿½ey yarï¿½m kalmadï¿½: yapï¿½lan deï¿½iï¿½iklikler geri alï¿½ndï¿½ ve ï¿½nceki masaï¿½stï¿½n yeniden aï¿½ï¿½ldï¿½."
+        errDetail = 'Ayrï¿½ntï¿½'; errLog = 'Gï¿½nlï¿½k'
+        errRetry = "Aynï¿½ komutu yeniden ï¿½alï¿½ï¿½tï¿½rarak tekrar deneyebilirsin. Sorun sï¿½rerse gï¿½nlï¿½ï¿½ï¿½ bizimle paylaï¿½:`nhttps://github.com/$repo/issues"
+        netTitle = 'ï¿½nternete ulaï¿½amadï¿½k'; netBody = 'Baï¿½lantï¿½nï¿½ kontrol edip aynï¿½ komutu yeniden ï¿½alï¿½ï¿½tï¿½r. Bilgisayarï¿½nda hiï¿½bir ï¿½ey deï¿½iï¿½medi.'
+        cancelTitle = 'Kurulumdan vazgeï¿½ildi'; cancelBody = 'Her ï¿½ey eski haline dï¿½ndï¿½, bilgisayarï¿½nda hiï¿½bir ï¿½ey deï¿½iï¿½medi.'
+        uacTitle = 'ï¿½zin verilmedi'; uacBody = "Windows'un yï¿½netici izni olmadan kurulum yapï¿½lamï¿½yor. Hiï¿½bir ï¿½ey deï¿½iï¿½medi; hazï¿½r olduï¿½unda aynï¿½ komutu yeniden ï¿½alï¿½ï¿½tï¿½r."
         oldWin = "Logical Lunge Windows 10 2004 (19041) ya da daha yenisini istiyor; bu bilgisayar {0}."
-        badPkg = 'Ýndirilen paket bozuk görünüyor (doðrulama tutmadý).'
+        badPkg = 'ï¿½ndirilen paket bozuk gï¿½rï¿½nï¿½yor (doï¿½rulama tutmadï¿½).'
         plainPick = 'Numara yaz ve Enter''a bas'; yes = 'e'
-        retrying = 'baðlantý koptu, {0} sn sonra kaldýðý yerden devam ({1}/5)'
-        warnTitle = 'Birkaç ek parça kurulamadý'
-        warnBody = 'Masaüstün tam çalýþýyor, yalnýzca bunlar eksik. Ayný komutu sonra yeniden çalýþtýrýnca eksikler tamamlanýr.'
-        xBright = 'Harici monitör parlaklýðý: ControlMyMonitor'
+        retrying = 'baï¿½lantï¿½ koptu, {0} sn sonra kaldï¿½ï¿½ï¿½ yerden devam ({1}/5)'
+        warnTitle = 'Birkaï¿½ ek parï¿½a kurulamadï¿½'
+        warnBody = 'Masaï¿½stï¿½n tam ï¿½alï¿½ï¿½ï¿½yor, yalnï¿½zca bunlar eksik. Aynï¿½ komutu sonra yeniden ï¿½alï¿½ï¿½tï¿½rï¿½nca eksikler tamamlanï¿½r.'
+        xBright = 'Harici monitï¿½r parlaklï¿½ï¿½ï¿½: ControlMyMonitor'
     } } else { @{
         tagline = 'Logical Lunge: a fluid, personal Windows desktop'
         qEdition = 'Which interface would you like to install?'; sEdition = 'Interface'
@@ -81,7 +81,7 @@ if ($tr) { @{
         qStop = 'Stop the install and put everything back?'; stopYes = 'Yes, stop'; stopNo = 'Keep going'
         steps = @{ check = 'Checking Windows'; runtimes = 'Required components'; stop = 'Stopping the desktop'; files = 'Copying files'; config = 'Writing your settings'; migrate = 'Moving data from the previous version'; tools = 'Brightness and temperature tools'; terminal = 'Installing the terminal'; windows = 'Windows settings'; tasks = 'Startup tasks'; owner = 'Preparing the first start'; finish = 'Finishing touches' }
         doneTitle = 'All set! Logical Lunge is installed'
-        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ‹/› switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
+        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ï¿½/ï¿½ switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
         errTitle = "That didn't work, but don't worry"
         errBody = "The install got stuck at '{0}'. Nothing was left half-done: the changes were undone and your previous desktop was started again."
         errDetail = 'Details'; errLog = 'Log'
@@ -129,22 +129,22 @@ function Box([string]$color, [string]$title, [string]$body) {
     $w = Width; $in = $w - 4
     $b = Fg $color
     Write-Host ''
-    Write-Host ("  $b?" + ('¦' * ($w - 2)) + "?$R")
+    Write-Host ("  $b?" + ('ï¿½' * ($w - 2)) + "?$R")
     if ($title) {
         Write-Host ("  $b-$R " + "$E[1m" + (Fg $color) + $title.PadRight($in) + "$R $b-$R")
         Write-Host ("  $b-$R " + (' ' * $in) + " $b-$R")
     }
     foreach ($l in (Wrap $body $in)) { Write-Host ("  $b-$R " + (Fg $C.text) + $l.PadRight($in) + "$R $b-$R") }
-    Write-Host ("  $b?" + ('¦' * ($w - 2)) + "?$R")
+    Write-Host ("  $b?" + ('ï¿½' * ($w - 2)) + "?$R")
 }
 function Banner {
     if (-not $env:LL_PLAIN -and -not [Console]::IsOutputRedirected) { Clear-Host }
     # figlet "Calvin S"; each line a shade of the accent
     $g = '#d0bcff', '#b69df8', '#977be6'
     $art = @(
-        'T  -¦¬-¦¬T-¦¬-¦¬T    T  T T-¬--¦¬-¦¬',
-        '¦  - -- T--  +¦+-    ¦  - ----- T++ ',
-        '¦=-L¦-L¦-+L¦-+ ++¦-  ¦=-L¦--L-L¦-L¦-')
+        'T  -ï¿½ï¿½-ï¿½ï¿½T-ï¿½ï¿½-ï¿½ï¿½T    T  T T-ï¿½--ï¿½ï¿½-ï¿½ï¿½',
+        'ï¿½  - -- T--  +ï¿½+-    ï¿½  - ----- T++ ',
+        'ï¿½=-Lï¿½-Lï¿½-+Lï¿½-+ ++ï¿½-  ï¿½=-Lï¿½--L-Lï¿½-Lï¿½-')
     Write-Host ''
     for ($i = 0; $i -lt $art.Count; $i++) { Write-Host ('  ' + (Paint $g[$i] $art[$i])) }
     Write-Host ('  ' + (Paint $C.dim $T.tagline))
@@ -162,7 +162,7 @@ function Bar([double]$frac, [int]$width, [int]$tick) {
     for ($i = 0; $i -lt $width; $i++) {
         if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + '?' }
         elseif ($i -eq $fill) { $s += (Fg $C.accent) + '?' }
-        else { $s += (Fg '#49454f') + '¦' }
+        else { $s += (Fg '#49454f') + 'ï¿½' }
     }
     return $s + $R
 }
@@ -405,14 +405,14 @@ try {
     if ($env:LL_NO_SENSORS) { $extras = @($extras | Where-Object { $_ -ne 'sensors' }) }
     if ($interactive) {
         $sysName = (Get-UICulture).NativeName
-        $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Français', 'fr'), @('Español', 'es'), @('Italiano', 'it'), @('Português', 'pt'),
+        $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('Tï¿½rkï¿½e', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Franï¿½ais', 'fr'), @('Espaï¿½ol', 'es'), @('Italiano', 'it'), @('Portuguï¿½s', 'pt'),
             @('??????? (Russian)', 'ru'), @('?????????? (Ukrainian)', 'uk'), @('Polski', 'pl'), @('??? (Japanese)', 'ja'), @('?? (Chinese)', 'zh'), @('??? (Korean)', 'ko'), @('??????? (Arabic)', 'ar'))
         $now = Get-Date
         
         $step = 0
         while ($step -lt 6) {
             Banner
-            $colors = if ($tr) { @(@('Mor (varsayýlan)', '#b69df8'), @('Mavi', '#8ab4f8'), @('Camgöbeði', '#7fd4c9'), @('Yeþil', '#a6d189'), @('Pembe', '#f5a3c7'), @('Turuncu', '#ffb77c'), @('Kýrmýzý', '#f28b82')) }
+            $colors = if ($tr) { @(@('Mor (varsayï¿½lan)', '#b69df8'), @('Mavi', '#8ab4f8'), @('Camgï¿½beï¿½i', '#7fd4c9'), @('Yeï¿½il', '#a6d189'), @('Pembe', '#f5a3c7'), @('Turuncu', '#ffb77c'), @('Kï¿½rmï¿½zï¿½', '#f28b82')) }
                       else { @(@('Purple (default)', '#b69df8'), @('Blue', '#8ab4f8'), @('Teal', '#7fd4c9'), @('Green', '#a6d189'), @('Pink', '#f5a3c7'), @('Orange', '#ffb77c'), @('Red', '#f28b82')) }
             $clocks = @(@("$($T.h24)   $($now.ToString('HH:mm'))", '24'), @("$($T.h12)   $($now.ToString('h:mm tt', [Globalization.CultureInfo]::InvariantCulture))", '12'))
             if ($step -eq 0) {
@@ -577,7 +577,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
                 if ($p.file -and $p.size) { $row += '  ' + (Bar ([double]$p.done / [double]$p.size) 18 $tick) + ' ' + (Paint $C.dim ('{0,3:0}%' -f (100 * [double]$p.done / [double]$p.size))) }
             }
             elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '?') + ' ' + (Paint $C.text $label) }
-            else { $row = (Paint '#49454f' '·') + ' ' + (Paint '#6f6a75' $label) }
+            else { $row = (Paint '#49454f' 'ï¿½') + ' ' + (Paint '#6f6a75' $label) }
             $out += "`r  $row$E[K`n"
         }
         $foot = if ($state -eq 'rollback' -or (Test-Path $cancelFile)) { Paint $C.warn $T.rollingBack } else { Paint $C.dim $T.ctrlC }
@@ -596,7 +596,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $warn = @($p.warn | Where-Object { $_ })
         if ($warn.Count) {
             $names = @{ terminal = $T.xTerm; sensors = $T.xSensors; brightness = $T.xBright }
-            $list = @($warn | ForEach-Object { '• ' + $(if ($names.ContainsKey([string]$_)) { $names[[string]$_] } else { [string]$_ }) }) -join "`n"
+            $list = @($warn | ForEach-Object { 'ï¿½ ' + $(if ($names.ContainsKey([string]$_)) { $names[[string]$_] } else { [string]$_ }) }) -join "`n"
             Box $C.warn $T.warnTitle ($list + "`n`n" + $T.warnBody + "`n$($T.errLog): $log")
         }
     }
