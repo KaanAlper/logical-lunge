@@ -143,6 +143,7 @@ Every change is backed up first. If a step fails, or you cancel with Ctrl+C, the
 | `Print` | Screenshot + annotate |
 | `Ctrl + Print` | Whole monitor to clipboard + `Pictures\Screenshots` |
 | `Super + V` | Clipboard history (press again to close) |
+| `Super + S` | File search: the Super menu opens with `#` (press again to close) |
 | `Alt + Tab` | Window switcher (Shift reverses, arrows / Enter / Esc / mouse work) |
 
 All of them can be changed in **sidebar → ⌨ Shortcuts** (read-only until you unlock it; "reset to defaults" included).
