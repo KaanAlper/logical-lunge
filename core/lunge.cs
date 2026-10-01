@@ -5565,6 +5565,19 @@ class Keys2
         string d = Paths.StateDir;
         string flag = System.IO.Path.Combine(d, "overview-mode.txt");
         try { System.IO.Directory.CreateDirectory(d); System.IO.File.WriteAllText(flag, mode); } catch { }
+        var cls = new StringBuilder(64);
+        Native.GetClassName(h, cls, cls.Capacity);
+        // The native window paints synchronously in WM_SHOWWINDOW. The WebView
+        // reveal below is only needed while its page loads; applying it to a
+        // DirectComposition window makes the whole monitor flash dark.
+        if (cls.ToString() == "LungeNativeBar")
+        {
+            Native.ShowWindow(h, 5);
+            OverviewSignal("show");
+            Native.keybd_event(VK_DUMMY, 0, 0, Native.LL_MARK); Native.keybd_event(VK_DUMMY, 0, 2, Native.LL_MARK);
+            Native.SetForegroundWindow(h);
+            return;
+        }
         int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
         Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex | 0x00080000); // WS_EX_LAYERED
         Native.SetLayeredWindowAttributes(h, 0, 0, 0x2);              // tamamen saydam

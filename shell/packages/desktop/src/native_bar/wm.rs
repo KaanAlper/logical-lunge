@@ -17,9 +17,15 @@ const EVENTS: &str = "focus_changed focused_container_moved workspace_activated 
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WmWindow {
+  pub id: String,
   pub process: String,
   pub title: String,
   pub handle: i64,
+  pub x: i32,
+  pub y: i32,
+  pub width: i32,
+  pub height: i32,
+  pub has_focus: bool,
   pub area: f64,
 }
 
@@ -28,6 +34,8 @@ pub struct WmWorkspace {
   pub name: String,
   pub has_focus: bool,
   pub displayed: bool,
+  /// Every non-minimized window, including those inside split containers.
+  pub windows: Vec<WmWindow>,
   /// Biggest non-minimized window (ii: showAppIcons, biggestWindow).
   pub biggest: Option<WmWindow>,
 }
@@ -68,14 +76,44 @@ impl WmState {
   pub fn all_workspaces(&self) -> impl Iterator<Item = &WmWorkspace> {
     self.monitors.iter().flat_map(|m| m.workspaces.iter())
   }
+
+  /// The bar uses one representative window per workspace. Geometry for
+  /// every other window belongs to the overview and must not redraw the bar.
+  pub fn hash_bar_visible(&self, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    self.connected.hash(h);
+    self.focused_window.hash(h);
+    self.paused.hash(h);
+    self.binding_modes.hash(h);
+    self.workspace_order.hash(h);
+    self.monitors.len().hash(h);
+    for m in &self.monitors {
+      m.device_name.hash(h);
+      (m.x, m.y, m.width, m.height, m.has_focus).hash(h);
+      m.workspaces.len().hash(h);
+      for w in &m.workspaces {
+        (&w.name, w.has_focus, w.displayed).hash(h);
+        if let Some(b) = &w.biggest {
+          (&b.process, &b.title, b.handle, b.area.to_bits()).hash(h);
+        }
+      }
+    }
+  }
 }
 
-/// Commands the bar sends (`command focus --workspace 3` ...).
-pub type CommandTx = mpsc::UnboundedSender<String>;
+/// The overview needs both focus commands to complete in order. Sending the
+/// second command before the workspace is displayed exposes only that window.
+pub enum Command {
+  Raw(String),
+  FocusWindow { workspace: String, id: String },
+  MoveWindow { workspace: String, id: String },
+}
+
+pub type CommandTx = mpsc::UnboundedSender<Command>;
 
 /// Runs forever: connects (retrying 0.5 s .. 5 s), reports every new state.
 pub fn spawn(on_state: impl Fn(WmState) + Send + 'static) -> CommandTx {
-  let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<String>();
+  let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
   tokio::spawn(async move {
     let mut retry = Duration::from_millis(500);
     let mut last: Option<WmState> = None;
@@ -120,7 +158,26 @@ pub fn spawn(on_state: impl Fn(WmState) + Send + 'static) -> CommandTx {
                 _ => ok = false,
               },
               cmd = cmd_rx.recv() => match cmd {
-                Some(c) => ok = tx.send(Message::Text(c.into())).await.is_ok(),
+                Some(Command::Raw(c)) => ok = tx.send(Message::Text(c.into())).await.is_ok(),
+                Some(Command::FocusWindow { workspace, id }) => {
+                  let mut again = false;
+                  let switched = request(&mut tx, &mut rx, &format!("command focus --workspace {workspace}"), &mut again).await.is_some();
+                  if switched {
+                    if request(&mut tx, &mut rx, &format!("command focus --container-id {id}"), &mut again).await.is_none() {
+                      tracing::warn!("Native overview: could not focus window {id}");
+                    }
+                  } else {
+                    tracing::warn!("Native overview: could not switch to workspace {workspace}");
+                  }
+                  dirty = true;
+                }
+                Some(Command::MoveWindow { workspace, id }) => {
+                  let mut again = false;
+                  if request(&mut tx, &mut rx, &format!("command --id {id} move --workspace {workspace}"), &mut again).await.is_none() {
+                    tracing::warn!("Native overview: could not move window {id} to workspace {workspace}");
+                  }
+                  dirty = true;
+                }
                 None => return,
               },
             }
@@ -169,11 +226,15 @@ async fn query_all(tx: &mut Tx, rx: &mut Rx, again: &mut bool) -> Option<WmState
         .as_array()
         .into_iter()
         .flatten()
-        .map(|w| WmWorkspace {
-          name: w["name"].as_str().unwrap_or("").to_string(),
-          has_focus: w["hasFocus"].as_bool().unwrap_or(false),
-          displayed: w["isDisplayed"].as_bool().unwrap_or(false),
-          biggest: biggest_window(w),
+        .map(|w| {
+          let windows = workspace_windows(w);
+          WmWorkspace {
+            name: w["name"].as_str().unwrap_or("").to_string(),
+            has_focus: w["hasFocus"].as_bool().unwrap_or(false),
+            displayed: w["isDisplayed"].as_bool().unwrap_or(false),
+            biggest: windows.iter().max_by(|a, b| a.area.total_cmp(&b.area)).cloned(),
+            windows,
+          }
         })
         .collect(),
     });
@@ -194,29 +255,76 @@ async fn query_all(tx: &mut Tx, rx: &mut Rx, again: &mut bool) -> Option<WmState
   Some(state)
 }
 
-fn biggest_window(node: &Value) -> Option<WmWindow> {
-  let mut best: Option<WmWindow> = None;
+fn workspace_windows(node: &Value) -> Vec<WmWindow> {
+  let mut windows = Vec::new();
+  collect_windows(node, &mut windows);
+  windows
+}
+
+fn collect_windows(node: &Value, windows: &mut Vec<WmWindow>) {
   for c in node["children"].as_array().into_iter().flatten() {
-    let cand = if c["type"] == "window" {
+    if c["type"] == "window" {
       if c["state"]["type"] == "minimized" {
         continue;
       }
-      Some(WmWindow {
+      windows.push(WmWindow {
+        id: c["id"].as_str().unwrap_or("").to_string(),
         process: c["processName"].as_str().unwrap_or("").to_string(),
         title: c["title"].as_str().unwrap_or("").to_string(),
         handle: c["handle"].as_i64().unwrap_or(0),
+        x: c["x"].as_i64().unwrap_or(0) as i32,
+        y: c["y"].as_i64().unwrap_or(0) as i32,
+        width: c["width"].as_i64().unwrap_or(0) as i32,
+        height: c["height"].as_i64().unwrap_or(0) as i32,
+        has_focus: c["hasFocus"].as_bool().unwrap_or(false),
         area: c["width"].as_f64().unwrap_or(0.0) * c["height"].as_f64().unwrap_or(0.0),
-      })
+      });
     } else {
-      biggest_window(c)
-    };
-    if let Some(w) = cand {
-      if best.as_ref().map_or(true, |b| w.area > b.area) {
-        best = Some(w);
-      }
+      collect_windows(c, windows);
     }
   }
-  best
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn nested_workspace_windows_skip_minimized_and_keep_geometry() {
+    let tree = serde_json::json!({"children": [
+      {"type":"split", "children": [
+        {"type":"window", "id":"a", "processName":"Explorer", "x":10, "y":20, "width":500, "height":600, "hasFocus":true},
+        {"type":"window", "id":"b", "state":{"type":"minimized"}}
+      ]},
+      {"type":"window", "id":"c", "width":100, "height":200}
+    ]});
+    let found = workspace_windows(&tree);
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].id, "a");
+    assert_eq!((found[0].x, found[0].y, found[0].width, found[0].height), (10, 20, 500, 600));
+    assert!(found[0].has_focus);
+    assert_eq!(found[1].id, "c");
+  }
+
+  #[test]
+  fn bar_hash_ignores_other_window_geometry() {
+    use std::hash::Hasher;
+    let biggest = WmWindow { id: "a".into(), process: "Explorer".into(), title: "Files".into(), area: 200.0, ..Default::default() };
+    let small = WmWindow { id: "b".into(), area: 30.0, ..Default::default() };
+    let mut a = WmState { connected: true, monitors: vec![WmMonitor { workspaces: vec![WmWorkspace {
+      name: "1".into(), biggest: Some(biggest.clone()), windows: vec![biggest, small], ..Default::default()
+    }], ..Default::default() }], ..Default::default() };
+    let hash = |state: &WmState| {
+      let mut h = std::collections::hash_map::DefaultHasher::new();
+      state.hash_bar_visible(&mut h);
+      h.finish()
+    };
+    let before = hash(&a);
+    a.monitors[0].workspaces[0].windows[1].x = 99;
+    assert_eq!(hash(&a), before);
+    a.monitors[0].workspaces[0].biggest.as_mut().unwrap().title = "Changed".into();
+    assert_ne!(hash(&a), before);
+  }
 }
 
 /// Sends `message` and waits for its `client_response` (events arriving in

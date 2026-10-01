@@ -26,7 +26,7 @@ use windows::{
     },
     UI::{
       HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
-      Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL, VK_SHIFT},
+      Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT},
       WindowsAndMessaging::*,
     },
   },
@@ -41,6 +41,7 @@ use super::{
   popup,
   search::{self, Act, Clip, Glyph, Item, Prefix},
   view::{Align, Painter, Theme},
+  wm::{self, WmState},
   Layer, Msg, Ui, CLASS,
 };
 
@@ -62,6 +63,11 @@ const ROW_GAP: f32 = 2.0;
 const LIST_PAD: f32 = 10.0;
 const LIST_MAX: f32 = 600.0;
 const TOOL: f32 = 40.0;
+const GRID_SCALE: f32 = 0.18;
+const GRID_COLS: usize = 5;
+const GRID_ROWS: usize = 2;
+const GRID_GAP: f32 = 5.0;
+const GRID_PAD: f32 = 10.0;
 
 const CF_UNICODETEXT: u32 = 13;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -220,6 +226,10 @@ pub struct Overview {
   _target: IDCompositionTarget,
   root: IDCompositionVisual2,
   panel: Layer,
+  surface_w: f32,
+  surface_h: f32,
+  cell_w: f32,
+  cell_h: f32,
   pub shown: bool,
   /// the Windows context menu of an app is open (its helper has the focus)
   pub menu_open: bool,
@@ -242,6 +252,13 @@ pub struct Overview {
   box_rect: Rect,
   tools: [(Rect, Tool); 2],
   rows: Vec<(Rect, usize)>,
+  workspaces: Vec<(Rect, String)>,
+  windows: Vec<(Rect, String, String)>,
+  hover_workspace: Option<String>,
+  hover_window: Option<String>,
+  pressed_window: Option<(String, String, POINT)>,
+  dragging: bool,
+  drag_workspace: Option<String>,
 }
 
 impl Drop for Overview {
@@ -253,8 +270,16 @@ impl Drop for Overview {
 }
 
 impl Overview {
-  pub fn new(gfx: &Gfx, demo: bool) -> anyhow::Result<Self> {
-    let (monitor, scale) = primary_monitor();
+  pub fn new(gfx: &Gfx, demo: bool, wm: &WmState) -> anyhow::Result<Self> {
+    let (monitor, scale) = overview_monitor(wm);
+    let dip_w = (monitor.right - monitor.left) as f32 / scale;
+    let dip_h = (monitor.bottom - monitor.top) as f32 / scale;
+    let cell_w = (dip_w * GRID_SCALE).round().min((dip_w - 2.0 * GRID_PAD - 4.0 * GRID_GAP - 2.0 * SHADOW) / GRID_COLS as f32);
+    let cell_h = (dip_h * GRID_SCALE).round();
+    let grid_w = 2.0 * GRID_PAD + GRID_COLS as f32 * cell_w + (GRID_COLS - 1) as f32 * GRID_GAP;
+    let grid_h = 2.0 * GRID_PAD + GRID_ROWS as f32 * cell_h + (GRID_ROWS - 1) as f32 * GRID_GAP;
+    let surface_w = SURF_W.max(grid_w + 2.0 * SHADOW);
+    let surface_h = SURF_H.max(BAR + 10.0 + grid_h + 2.0 * SHADOW);
     unsafe {
       let title = if demo { TITLE_DEMO } else { TITLE };
       let hwnd = CreateWindowExW(
@@ -274,7 +299,7 @@ impl Overview {
       let made = (|| -> windows::core::Result<(IDCompositionTarget, IDCompositionVisual2, Layer)> {
         let target = gfx.dcomp.CreateTargetForHwnd(hwnd, true)?;
         let root = gfx.dcomp.CreateVisual()?;
-        let panel = Layer::new(gfx, (SURF_W * scale).ceil() as u32, (SURF_H * scale).ceil() as u32)?;
+        let panel = Layer::new(gfx, (surface_w * scale).ceil() as u32, (surface_h * scale).ceil() as u32)?;
         root.AddVisual(&panel.visual, false, None)?;
         target.SetRoot(&root)?;
         Ok((target, root, panel))
@@ -294,6 +319,10 @@ impl Overview {
         _target: target,
         root,
         panel,
+        surface_w,
+        surface_h,
+        cell_w,
+        cell_h,
         shown: false,
         menu_open: false,
         edit: Edit::default(),
@@ -310,6 +339,13 @@ impl Overview {
         box_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         tools: [(Rect::new(0.0, 0.0, 0.0, 0.0), Tool::Lens), (Rect::new(0.0, 0.0, 0.0, 0.0), Tool::SongRec)],
         rows: Vec::new(),
+        workspaces: Vec::new(),
+        windows: Vec::new(),
+        hover_workspace: None,
+        hover_window: None,
+        pressed_window: None,
+        dragging: false,
+        drag_workspace: None,
       })
     }
   }
@@ -388,17 +424,17 @@ impl Overview {
   // ---- drawing
 
   /// Draws the box (search bar and results) into its surface and places it.
-  pub fn paint(&mut self, gfx: &Gfx, p: &mut Painter, t: &Theme, tr: &dyn Fn(&str) -> String) -> anyhow::Result<()> {
+  pub fn paint(&mut self, gfx: &Gfx, p: &mut Painter, t: &Theme, wm: &WmState, tr: &dyn Fn(&str) -> String) -> anyhow::Result<()> {
     let w = self.box_width();
     let h = BAR + self.list_height();
     // the box is centred on the monitor; the surface is placed around it
-    let left = (self.width_dip() - SURF_W) / 2.0;
+    let left = (self.width_dip() - self.surface_w) / 2.0;
     let top = TOP - SHADOW;
     unsafe {
       self.panel.visual.SetOffsetX2((left * self.scale).round())?;
       self.panel.visual.SetOffsetY2((top * self.scale).round())?;
     }
-    let bx = Rect::new(SHADOW + (W_EXPANDED - w) / 2.0, SHADOW, w, h);
+    let bx = Rect::new((self.surface_w - w) / 2.0, SHADOW, w, h);
     self.box_rect = Rect::new(left + bx.x, top + bx.y, w, h);
 
     popup::frame_shadow(p, bx, RADIUS)?;
@@ -450,6 +486,61 @@ impl Overview {
         let th = (track.h * k).max(24.0);
         let ty = track.y + (track.h - th) * (self.first as f32 / (self.results.len() - n) as f32);
         p.fill_round(Rect::new(track.x, ty, 6.0, th), 3.0, t.outline_variant)?;
+      }
+    }
+    self.paint_grid(gfx, p, t, wm, left, top)?;
+    Ok(())
+  }
+
+  /// The empty-search workspace grid (ui/overview.html WorkspaceOverview).
+  fn paint_grid(&mut self, gfx: &Gfx, p: &mut Painter, t: &Theme, wm: &WmState, left: f32, top: f32) -> anyhow::Result<()> {
+    self.workspaces.clear();
+    self.windows.clear();
+    if !self.edit.chars.is_empty() || !wm.connected {
+      return Ok(());
+    }
+    let grid_w = 2.0 * GRID_PAD + GRID_COLS as f32 * self.cell_w + (GRID_COLS - 1) as f32 * GRID_GAP;
+    let grid_h = 2.0 * GRID_PAD + GRID_ROWS as f32 * self.cell_h + (GRID_ROWS - 1) as f32 * GRID_GAP;
+    let gx = (self.surface_w - grid_w) / 2.0;
+    let gy = SHADOW + BAR + 10.0;
+    p.fill_round(Rect::new(gx, gy, grid_w, grid_h), 23.0, t.layer0)?;
+    let current = wm.focused_workspace().and_then(|w| w.name.parse::<u32>().ok()).unwrap_or(1);
+    let base = (current.saturating_sub(1) / (GRID_COLS * GRID_ROWS) as u32) * (GRID_COLS * GRID_ROWS) as u32;
+    for i in 0..GRID_COLS * GRID_ROWS {
+      let name = (base + i as u32 + 1).to_string();
+      let x = gx + GRID_PAD + (i % GRID_COLS) as f32 * (self.cell_w + GRID_GAP);
+      let y = gy + GRID_PAD + (i / GRID_COLS) as f32 * (self.cell_h + GRID_GAP);
+      let cell = Rect::new(x, y, self.cell_w, self.cell_h);
+      let hot = self.hover_workspace.as_deref() == Some(name.as_str());
+      let drop = self.drag_workspace.as_deref() == Some(name.as_str());
+      p.fill_round(cell, 12.0, if drop { t.sec_container } else if hot { t.layer1_hover } else { t.layer1 })?;
+      if current.to_string() == name {
+        p.stroke_round(cell.inset(1.0, 1.0), 11.0, t.primary, 2.0)?;
+      }
+      p.text(&name, cell, TextStyle { size: 40.0, weight: 600.0 }, t.on_layer1.alpha(0.10), Align::Center, false)?;
+      self.workspaces.push((Rect::new(left + x, top + y, cell.w, cell.h), name.clone()));
+      let Some((monitor, workspace)) = wm.monitors.iter().find_map(|m| m.workspaces.iter().find(|w| w.name == name).map(|w| (m, w))) else { continue };
+      if monitor.width <= 0 || monitor.height <= 0 { continue; }
+      let sx = cell.w / monitor.width as f32;
+      let sy = cell.h / monitor.height as f32;
+      for win in &workspace.windows {
+        let wx = ((win.x - monitor.x) as f32 * sx).clamp(0.0, cell.w - 8.0);
+        let wy = ((win.y - monitor.y) as f32 * sy).clamp(0.0, cell.h - 8.0);
+        let ww = (win.width as f32 * sx).max(8.0).min(cell.w - wx);
+        let wh = (win.height as f32 * sy).max(8.0).min(cell.h - wy);
+        let wr = Rect::new(x + wx, y + wy, ww, wh);
+        let highlighted = self.hover_window.as_deref() == Some(win.id.as_str());
+        p.fill_round(wr, 8.0, t.surface_container_high)?;
+        p.stroke_round(wr.inset(0.5, 0.5), 8.0, if highlighted || win.has_focus { t.primary } else { t.border }, 1.0)?;
+        let icon = Rect::new(wr.x + (wr.w - 28.0) / 2.0, wr.y + (wr.h - 28.0) / 2.0, 28.0, 28.0);
+        let (bmp, request) = p.icons.for_window(gfx, &win.process, win.handle);
+        if let Some(handle) = request { p.requests.push(handle); }
+        if let Some(bmp) = bmp {
+          p.image(&bmp, contain(&bmp, icon));
+        } else {
+          p.icon("web_asset", icon.x + 14.0, icon.y + 14.0, 22.0, false, t.on_surface_variant)?;
+        }
+        self.windows.push((Rect::new(left + wr.x, top + wr.y, wr.w, wr.h), name.clone(), win.id.clone()));
       }
     }
     Ok(())
@@ -577,6 +668,14 @@ impl Overview {
   pub fn in_box(&self, x: f32, y: f32) -> bool {
     self.box_rect.contains(x, y)
   }
+
+  fn hit_workspace(&self, x: f32, y: f32) -> Option<String> {
+    self.workspaces.iter().find(|(r, _)| r.contains(x, y)).map(|(_, name)| name.clone())
+  }
+
+  fn hit_window(&self, x: f32, y: f32) -> Option<(String, String)> {
+    self.windows.iter().rev().find(|(r, _, _)| r.contains(x, y)).map(|(_, ws, id)| (ws.clone(), id.clone()))
+  }
 }
 
 /// What a key, a character or a click asks the owner to do.
@@ -592,6 +691,9 @@ pub enum Do {
   Tool(Tool),
   Copy(String),
   Paste,
+  Workspace(String),
+  FocusWindow { workspace: String, id: String },
+  MoveWindow { workspace: String, id: String },
   /// the Windows context menu of an app (its `shell:AppsFolder\...` path)
   Menu(String),
 }
@@ -731,6 +833,20 @@ impl Overview {
     let tool = self.hit_tool(x, y);
     let mut redraw = tool != self.hover_tool;
     self.hover_tool = tool;
+    let hover_workspace = self.hit_workspace(x, y);
+    let hover_window = self.hit_window(x, y).map(|(_, id)| id);
+    redraw |= hover_workspace != self.hover_workspace || hover_window != self.hover_window;
+    self.hover_workspace = hover_workspace.clone();
+    self.hover_window = hover_window;
+    if let Some((_, _, start)) = &self.pressed_window {
+      if (screen.x - start.x).abs() + (screen.y - start.y).abs() > 6 {
+        self.dragging = true;
+      }
+      if self.dragging {
+        redraw |= self.drag_workspace != hover_workspace;
+        self.drag_workspace = hover_workspace;
+      }
+    }
     if moved {
       if let Some(i) = self.hit_row(x, y) {
         redraw |= self.select(i);
@@ -751,11 +867,39 @@ impl Overview {
       self.sel = i;
       return self.results.get(i).cloned().map(Do::Run).unwrap_or(Do::Nothing);
     }
+    if let Some((workspace, id)) = self.hit_window(x, y) {
+      let mut screen = POINT::default();
+      unsafe {
+        let _ = GetCursorPos(&mut screen);
+        let _ = SetCapture(self.hwnd);
+      }
+      self.pressed_window = Some((workspace, id, screen));
+      self.dragging = false;
+      self.drag_workspace = None;
+      return Do::Nothing;
+    }
+    if let Some(workspace) = self.hit_workspace(x, y) {
+      return Do::Workspace(workspace);
+    }
     // the backdrop closes (.backdrop onMouseDown)
     if !self.in_box(x, y) {
       return Do::Hide;
     }
     Do::Nothing
+  }
+
+  pub fn release(&mut self) -> Do {
+    let Some((workspace, id, _)) = self.pressed_window.take() else { return Do::Nothing };
+    unsafe { let _ = ReleaseCapture(); }
+    let target = self.drag_workspace.take();
+    let dragged = std::mem::take(&mut self.dragging);
+    if dragged {
+      if let Some(to) = target.filter(|to| to != &workspace) {
+        return Do::MoveWindow { workspace: to, id };
+      }
+      return Do::Redraw;
+    }
+    Do::FocusWindow { workspace, id }
   }
 
   /// Right click: selects the row; an app gets its Windows context menu.
@@ -794,6 +938,11 @@ impl Overview {
     self.scroll_x = 0.0;
     self.surrogate = None;
     self.hover_tool = None;
+    self.hover_workspace = None;
+    self.hover_window = None;
+    self.pressed_window = None;
+    self.dragging = false;
+    self.drag_workspace = None;
     let mut p = POINT::default();
     unsafe {
       let _ = GetCursorPos(&mut p);
@@ -886,10 +1035,15 @@ fn shape(p: &mut Painter, prefix: Prefix, cx: f32, cy: f32, c: Rgba) -> anyhow::
 
 // ------------------------------------------------------------ system helpers
 
-/// The primary monitor (the web menu's preset) and its scale.
-fn primary_monitor() -> (RECT, f32) {
+/// Match the web menu's focused monitor, falling back to the primary one
+/// before the window manager sends its first state.
+fn overview_monitor(wm: &WmState) -> (RECT, f32) {
+  let point = wm.monitors.iter().find(|m| m.has_focus).map(|m| POINT {
+    x: m.x + m.width / 2,
+    y: m.y + m.height / 2,
+  }).unwrap_or(POINT { x: 0, y: 0 });
   unsafe {
-    let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
+    let mon = MonitorFromPoint(point, MONITOR_DEFAULTTOPRIMARY);
     let mut mi = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
     let _ = GetMonitorInfoW(mon, &mut mi);
     let (mut dx, mut dy) = (96u32, 96u32);
@@ -965,6 +1119,46 @@ fn core_json(args: &[&str]) -> Option<Value> {
 // ------------------------------------------------------------ the owner (bar UI thread)
 
 impl Ui {
+  /// Create the hidden native menu before startup widgets are selected, so
+  /// the core's Super shortcut can find it by its existing window title.
+  pub(super) fn overview_prepare_window(&mut self) -> bool {
+    if self.overview.is_none() {
+      match Overview::new(&self.gfx, self.demo, &self.model.wm) {
+        Ok(o) => {
+          super::OVERVIEW_HWND.store(o.hwnd.0 as isize, std::sync::atomic::Ordering::Release);
+          self.overview = Some(o);
+        }
+        Err(err) => {
+          tracing::error!("Super menu: {:?}", err);
+          return false;
+        }
+      }
+    }
+    true
+  }
+
+  /// Display geometry and DirectComposition surfaces both belong to the
+  /// window. Recreate them together after a monitor or graphics reset.
+  pub(super) fn overview_recreate_window(&mut self) {
+    if !self.native_overview { return; }
+    self.overview_hide();
+    super::OVERVIEW_HWND.store(0, std::sync::atomic::Ordering::Release);
+    self.overview = None;
+    self.overview_prepare_window();
+  }
+
+  /// Focus can move to another display while the menu is hidden. Its window
+  /// and surface must follow that display's size and DPI before the next Super.
+  pub(super) fn overview_sync_monitor(&mut self) {
+    if !self.native_overview { return; }
+    let Some(o) = self.overview.as_ref() else { return };
+    if o.shown { return; }
+    let (rect, scale) = overview_monitor(&self.model.wm);
+    if o.monitor() != rect || (o.scale - scale).abs() > 0.001 {
+      self.overview_recreate_window();
+    }
+  }
+
   /// Super / the bar's search button: open (or close if open and in front).
   pub(super) fn overview_toggle(&mut self, mode: &str) {
     let open = self.overview.as_ref().is_some_and(|o| o.shown);
@@ -976,20 +1170,18 @@ impl Ui {
   }
 
   pub(super) fn overview_open(&mut self, mode: &str) {
-    if self.overview.is_none() {
-      match Overview::new(&self.gfx, self.demo) {
-        Ok(o) => {
-          super::OVERVIEW_HWND.store(o.hwnd.0 as isize, std::sync::atomic::Ordering::Release);
-          self.overview = Some(o);
-        }
-        Err(err) => {
-          tracing::error!("Super menu: {:?}", err);
-          return;
-        }
-      }
-    }
-    let text = if mode == ";" { ";" } else { "" };
+    if !self.overview_prepare(mode) { return; }
     let Some(o) = self.overview.as_mut() else { return };
+    unsafe {
+      let _ = ShowWindow(o.hwnd, SW_SHOW);
+      let _ = SetForegroundWindow(o.hwnd);
+    }
+  }
+
+  fn overview_prepare(&mut self, mode: &str) -> bool {
+    if !self.overview_prepare_window() { return false; }
+    let text = if mode == ";" { ";" } else { "" };
+    let Some(o) = self.overview.as_mut() else { return false };
     o.reset(text);
     let apps = self.icons.apps().to_vec();
     let clip_mode = o.refresh(&apps, self.model.hour12);
@@ -998,17 +1190,19 @@ impl Ui {
     }
     // drawn before it is shown: no empty frame
     self.overview_render();
-    let Some(o) = self.overview.as_mut() else { return };
+    let Some(o) = self.overview.as_mut() else { return false };
     o.shown = true;
-    unsafe {
-      let _ = ShowWindow(o.hwnd, SW_SHOW);
-      let _ = SetForegroundWindow(o.hwnd);
-    }
+    true
   }
 
   pub(super) fn overview_hide(&mut self) {
     if let Some(o) = self.overview.as_mut() {
       if o.shown {
+        if o.pressed_window.take().is_some() {
+          unsafe { let _ = ReleaseCapture(); }
+        }
+        o.dragging = false;
+        o.drag_workspace = None;
         o.shown = false;
         unsafe {
           let _ = ShowWindow(o.hwnd, SW_HIDE);
@@ -1027,7 +1221,7 @@ impl Ui {
     let scale = o.scale;
     let drawn = gfx::draw_surface(&surface, scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      if let Err(err) = o.paint(gfx, &mut p, &theme, &tr) {
+      if let Err(err) = o.paint(gfx, &mut p, &theme, &model.wm, &tr) {
         tracing::warn!("Super menu: paint: {:?}", err);
       }
       Ok(())
@@ -1038,13 +1232,23 @@ impl Ui {
     unsafe {
       let _ = gfx.dcomp.Commit();
     }
+    for h in requests {
+      std::thread::spawn(move || {
+        let png = match core_api::post(&format!("/winicon?h={h}")) {
+          Some((200, body)) => data_url_bytes(&String::from_utf8_lossy(&body)),
+          _ => None,
+        };
+        if png.is_none() { std::thread::sleep(Duration::from_secs(30)); }
+        super::send(Msg::WinIcon(h, png));
+      });
+    }
   }
 
   /// Test: the menu with `text` drawn offscreen into a PNG (no window shown,
   /// no focus taken). `LL_NATIVE_OVERVIEW_SHOT=<png>` + `LL_NATIVE_OVERVIEW_TEXT`.
   pub(super) fn overview_snapshot(&mut self, text: &str, path: &std::path::Path) -> anyhow::Result<()> {
     if self.overview.is_none() {
-      self.overview = Some(Overview::new(&self.gfx, true)?);
+      self.overview = Some(Overview::new(&self.gfx, true, &self.model.wm)?);
     }
     let apps = self.icons.apps().to_vec();
     let hour12 = self.model.hour12;
@@ -1059,9 +1263,9 @@ impl Ui {
     let tr = |s: &str| model.tr(s);
     let mut requests = Vec::new();
     let scale = o.scale;
-    gfx.snapshot((SURF_W * scale).ceil() as u32, (SURF_H * scale).ceil() as u32, scale, path, |dc| {
+    gfx.snapshot((o.surface_w * scale).ceil() as u32, (o.surface_h * scale).ceil() as u32, scale, path, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      if let Err(err) = o.paint(gfx, &mut p, &theme, &tr) {
+      if let Err(err) = o.paint(gfx, &mut p, &theme, &model.wm, &tr) {
         tracing::warn!("Super menu: paint: {:?}", err);
       }
       Ok(())
@@ -1070,6 +1274,24 @@ impl Ui {
 
   /// Messages of the Super menu's window.
   pub(super) fn overview_msg(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if msg == WM_SHOWWINDOW {
+      if wp.0 != 0 && !self.overview.as_ref().is_some_and(|o| o.shown) {
+        let flag = super::state_dir().join("overview-mode.txt");
+        let mode = std::fs::read_to_string(&flag).unwrap_or_default();
+        let _ = std::fs::remove_file(flag);
+        self.overview_prepare(mode.trim());
+      } else if wp.0 == 0 {
+        if let Some(o) = self.overview.as_mut() {
+          if o.pressed_window.take().is_some() {
+            unsafe { let _ = ReleaseCapture(); }
+          }
+          o.dragging = false;
+          o.drag_workspace = None;
+          o.shown = false;
+        }
+      }
+      return Some(LRESULT(0));
+    }
     let o = self.overview.as_mut()?;
     let dip = |lp: LPARAM, scale: f32| {
       let x = (lp.0 & 0xFFFF) as i16 as f32 / scale;
@@ -1090,6 +1312,13 @@ impl Ui {
       WM_LBUTTONDOWN => {
         let (x, y) = dip(lp, o.scale);
         o.click(x, y)
+      }
+      WM_LBUTTONUP => o.release(),
+      WM_CAPTURECHANGED => {
+        o.pressed_window = None;
+        o.dragging = false;
+        o.drag_workspace = None;
+        Do::Redraw
       }
       WM_RBUTTONUP => {
         let (x, y) = dip(lp, o.scale);
@@ -1131,6 +1360,18 @@ impl Ui {
         self.overview_render();
       }
       Do::Hide => self.overview_hide(),
+      Do::Workspace(workspace) => {
+        self.overview_hide();
+        self.slide(workspace);
+      }
+      Do::FocusWindow { workspace, id } => {
+        self.overview_hide();
+        let _ = self.wm_cmd.send(wm::Command::FocusWindow { workspace, id });
+      }
+      Do::MoveWindow { workspace, id } => {
+        let _ = self.wm_cmd.send(wm::Command::MoveWindow { workspace, id });
+        self.overview_render();
+      }
       Do::Run(item) => self.overview_run(item),
       Do::DeleteClip(id) => {
         std::thread::spawn(move || {

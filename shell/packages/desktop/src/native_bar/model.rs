@@ -150,7 +150,7 @@ impl Model {
   pub fn visible_key(&self) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    format!("{:?}", self.wm).hash(&mut h);
+    self.wm.hash_bar_visible(&mut h);
     self.cpu.as_ref().map(|c| c.usage.round() as i32).hash(&mut h);
     self
       .memory

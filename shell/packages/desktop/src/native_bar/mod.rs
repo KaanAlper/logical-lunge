@@ -227,9 +227,19 @@ pub struct Options {
   pub pack_dir: PathBuf,
   /// Test run next to the running shell's bar: own title, just below it, topmost.
   pub demo: bool,
+  /// Select the native Super menu instead of the startup WebView widget.
+  pub native_overview: bool,
   /// Sends a shell event to the web widgets (`ll:overview-toggle` ..., a
   /// payload for `ll:toast`).
   pub emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
+}
+
+pub fn overview_selected(pack_dir: &std::path::Path) -> bool {
+  model::prefs(pack_dir)["overview"].as_str() == Some("native")
+}
+
+pub fn overview_ready() -> bool {
+  OVERVIEW_HWND.load(Ordering::Acquire) != 0
 }
 
 /// Starts the native bar and waits until its bars are on screen, it failed,
@@ -408,6 +418,7 @@ struct Ui {
   manager: Arc<ProviderManager>,
   rt: tokio::runtime::Handle,
   demo: bool,
+  native_overview: bool,
   pins_file: PathBuf,
   last_wheel: Instant,
   last_ws_wheel: Instant,
@@ -509,6 +520,7 @@ fn ui_thread(
         manager,
         rt,
         demo: opts.demo,
+        native_overview: opts.native_overview,
         pins_file,
         last_wheel: Instant::now(),
         last_ws_wheel: Instant::now(),
@@ -526,14 +538,21 @@ fn ui_thread(
       })
     });
     WAKE.store(msg_hwnd.0 as isize, Ordering::Release);
-    let bars = with_ui(|ui| {
-      ui.create_bars();
-      ui.drain();
-      ui.bars.len()
-    })
-    .unwrap_or(0);
-    if bars == 0 {
-      anyhow::bail!("no bar window could be created");
+    if opts.native_overview && !opts.demo {
+      with_ui(|ui| ui.overview_prepare_window());
+    }
+    // A snapshot run must not put a second bar on the user's desktop.
+    let snapshot_only = opts.demo && std::env::var_os("LL_NATIVE_OVERVIEW_SHOT").is_some();
+    if !snapshot_only {
+      let bars = with_ui(|ui| {
+        ui.create_bars();
+        ui.drain();
+        ui.bars.len()
+      })
+      .unwrap_or(0);
+      if bars == 0 {
+        anyhow::bail!("no bar window could be created");
+      }
     }
     if let Some(ready) = &ready {
       let _ = ready.send(Ok(()));
@@ -645,6 +664,7 @@ impl Ui {
             let _ = KillTimer(self.msg_hwnd, TIMER_REBUILD);
           }
           self.create_bars();
+          self.overview_recreate_window();
         }
         WM_TIMER if wp.0 == TIMER_OSD => {
           unsafe {
@@ -849,7 +869,8 @@ impl Ui {
 
   /// Writes the test picture once the app list is in (or after 5 s).
   fn take_snapshot(&mut self) {
-    let ready = self.snapshot.as_ref().is_some_and(|(_, _, at)| self.icons.has_apps() || at.elapsed() > Duration::from_secs(5));
+    let ready = self.snapshot.as_ref().is_some_and(|(_, _, at)|
+      (self.icons.has_apps() && self.model.wm.connected) || at.elapsed() > Duration::from_secs(5));
     if !ready {
       if self.snapshot.is_some() {
         unsafe { SetTimer(self.msg_hwnd, TIMER_SNAPSHOT, 250, None) };
@@ -861,15 +882,22 @@ impl Ui {
       Ok(()) => tracing::info!("Super menu picture: {}", path.display()),
       Err(err) => tracing::error!("Super menu picture: {:?}", err),
     }
-    std::process::exit(0);
+    // Exit after the UI thread-local borrow is released. Exiting inside
+    // `with_ui` runs TLS destruction while its value is still borrowed.
+    std::thread::spawn(|| {
+      std::thread::sleep(Duration::from_millis(20));
+      std::process::exit(0);
+    });
   }
 
   fn drain(&mut self) {
     // icons arriving must repaint even when the data did not change
     let mut force = false;
+    let mut overview_dirty = false;
     while let Ok(msg) = self.rx.try_recv() {
       if matches!(msg, Msg::Apps(_) | Msg::WinIcon(..)) {
         force = true;
+        overview_dirty = true;
       }
       match msg {
         Msg::Provider(e) => {
@@ -902,7 +930,10 @@ impl Ui {
         Msg::Clips(clips) => self.overview_clips(clips),
         Msg::SongRecDone => self.songrec_done(),
         Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
-        Msg::Wm(state) => self.model.wm = state,
+        Msg::Wm(state) => {
+          self.model.wm = state;
+          overview_dirty = true;
+        }
         Msg::Apps(apps) => self.icons.set_apps(apps),
         Msg::WinIcon(h, png) => self.icons.set_win_icon(h, png),
         Msg::Display(u) => match u {
@@ -928,6 +959,12 @@ impl Ui {
     if force || key != self.last_key {
       self.last_key = key;
       self.redraw_all();
+    }
+    if overview_dirty {
+      self.overview_sync_monitor();
+    }
+    if overview_dirty && self.overview.as_ref().is_some_and(|o| o.shown) {
+      self.overview_render();
     }
   }
 
@@ -1270,7 +1307,8 @@ impl Ui {
         self.res = res;
         self.icons.clear_bitmaps();
         self.pops_reset();
-        // its surfaces belonged to the lost device: made again on next open
+        // Its surfaces belonged to the lost device. The core's Super key
+        // needs a hidden window with this title even before the next open.
         self.overview = None;
         OVERVIEW_HWND.store(0, Ordering::Release);
         if let Some(o) = self.osd.take() {
@@ -1280,6 +1318,9 @@ impl Ui {
         }
         self.recover_tries = 0;
         self.create_bars();
+        if self.native_overview {
+          self.overview_prepare_window();
+        }
       }
       Err(err) => {
         self.recover_tries += 1;
@@ -1459,7 +1500,7 @@ impl Ui {
   }
 
   fn wm_command(&self, command: String) {
-    let _ = self.wm_cmd.send(command);
+    let _ = self.wm_cmd.send(wm::Command::Raw(command));
   }
 
   fn provider(&self, name: &str, function: ProviderFunction) {
@@ -1480,8 +1521,23 @@ impl Ui {
       n => format!("command focus --workspace {}", n),
     };
     core_api::slide(target, move || {
-      let _ = wm.send(fallback);
+      let _ = wm.send(wm::Command::Raw(fallback));
     });
+  }
+
+  fn toggle_overview_from_bar(&mut self) {
+    if self.native_overview {
+      if self.overview.as_ref().is_some_and(|o| o.shown) {
+        self.overview_hide();
+      } else {
+        // The core remembers the previously focused window and restores it
+        // when the menu closes, just as it does for the Super shortcut.
+        std::thread::spawn(|| core_api::run_core(&["--overview-show", "plain"]));
+      }
+    }
+    // Other panels close on this event. The web overview also opens on it
+    // when that edition is selected.
+    (self.emit)("ll:overview-toggle", serde_json::Value::Null);
   }
 
   /// button: 0 left, 1 right, 2 middle, 3 left double
@@ -1498,12 +1554,12 @@ impl Ui {
     let media = |f: fn(MediaControlArgs) -> MediaFunction| ProviderFunction::Media(f(MediaControlArgs { session_id: None }));
     match (kind, button) {
       // the events the web widgets listen to
-      (HitKind::Search, 0) => (self.emit)("ll:overview-toggle", serde_json::Value::Null),
+      (HitKind::Search, 0) => self.toggle_overview_from_bar(),
       (HitKind::ActiveWindow, 0) => (self.emit)("ll:sidebar-left-toggle", serde_json::Value::Null),
       (HitKind::Paused, 0) => self.wm_command("command wm-toggle-pause".into()),
       (HitKind::Mode(name), 0) => self.wm_command(format!("command wm-disable-binding-mode --name {}", name)),
       (HitKind::Workspace(n), 0) => self.slide(n.to_string()),
-      (HitKind::Workspace(_), 1) => (self.emit)("ll:overview-toggle", serde_json::Value::Null),
+      (HitKind::Workspace(_), 1) => self.toggle_overview_from_bar(),
       (HitKind::Media, 0) => self.provider("media", media(MediaFunction::TogglePlayPause)),
       (HitKind::Media, 1) => self.provider("media", media(MediaFunction::Next)),
       (HitKind::Media, 2) => self.provider("media", media(MediaFunction::Previous)),
