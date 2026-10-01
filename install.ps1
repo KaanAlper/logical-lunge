@@ -23,42 +23,42 @@ $E = [char]27
 $tr = (Get-UICulture).Name -like 'tr*'
 function Get-Texts([bool]$tr) {
 if ($tr) { @{
-        tagline = 'Logical Lunge: ak�c� ve ki�iselle�tirilebilir bir Windows masa�st�'
-        qEdition = 'Hangi aray�z� kurmak istersin?'; sEdition = 'Aray�z'
-        native = 'Native: yerel �izilen hafif bar; di�er paneller hen�z WebView2 kullan�r'
-        web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle �izilir'
-        noRelease = 'Bu aray�z i�in do�rulanabilir bir s�r�m hen�z yay�mlanmam��.'
-        preparing = 'Haz�rlan�yor'; release = 'Son s�r�m aran�yor'
-        welcome = "Logical Lunge'a ho� geldin"
-        welcomeBody = "Birka� k�sa soru soraca��z, sonra gerisini biz hallederiz. Kurulum s�ras�nda Windows bir kez y�netici izni isteyecek.`nHer de�i�iklik yedeklenir; bir �ey ters giderse ya da vazge�ersen her �ey eski haline d�ner."
-        version = 'S�r�m'; size = '�ndirme'
-        qLang = 'Aray�z hangi dilde olsun?'; systemLang = 'Sistem dili'
-        qColor = 'Vurgu rengi ne olsun? (kabuk ve etkin pencere kenarl���)'; custom = '�zel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi g�r�nm�yor, �rnek: #b69df8'
-        qClock = 'Saat nas�l g�r�ns�n?'; h24 = '24 saat'; h12 = '12 saat'
-        qExtras = 'Ek bile�enler (Bo�luk ile se� / kald�r, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU s�cakl���: PawnIO s�r�c�s�'
-        summary = '�zet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bile�enler'; none = 'yok'
-        qGo = 'Kural�m m�?'; go = 'Kur'; cancel = 'Vazge�'
-        downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket do�rulan�yor'; extracting = 'Paket a��l�yor'; stopping = 'A��k masa�st� kapat�l�yor'
+        tagline = 'Logical Lunge: akıcı ve kişiselleştirilebilir bir Windows masaüstü'
+        qEdition = 'Hangi arayüzü kurmak istersin?'; sEdition = 'Arayüz'
+        native = 'Native: yerel çizilen hafif bar; diğer paneller henüz WebView2 kullanır'
+        web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle çizilir'
+        noRelease = 'Bu arayüz için doğrulanabilir bir sürüm henüz yayımlanmamış.'
+        preparing = 'Hazırlanıyor'; release = 'Son sürüm aranıyor'
+        welcome = "Logical Lunge'a hoş geldin"
+        welcomeBody = "Birkaç kısa soru soracağız, sonra gerisini biz hallederiz. Kurulum sırasında Windows bir kez yönetici izni isteyecek.`nHer değişiklik yedeklenir; bir şey ters giderse ya da vazgeçersen her şey eski haline döner."
+        version = 'Sürüm'; size = 'İndirme'
+        qLang = 'Arayüz hangi dilde olsun?'; systemLang = 'Sistem dili'
+        qColor = 'Vurgu rengi ne olsun? (kabuk ve etkin pencere kenarlığı)'; custom = 'Özel renk...'; qHex = 'Renk kodu (#rrggbb)'; badHex = 'Bu bir renk kodu gibi görünmüyor, örnek: #b69df8'
+        qClock = 'Saat nasıl görünsün?'; h24 = '24 saat'; h12 = '12 saat'
+        qExtras = 'Ek bileşenler (Boşluk ile seç / kaldır, Enter ile onayla)'; xTerm = 'Terminal: WezTerm + fish + starship'; xSensors = 'CPU sıcaklığı: PawnIO sürücüsü'
+        summary = 'Özet'; sLang = 'Dil'; sColor = 'Odak rengi'; sClock = 'Saat'; sExtras = 'Ek bileşenler'; none = 'yok'
+        qGo = 'Kuralım mı?'; go = 'Kur'; cancel = 'Vazgeç'
+        downloading = 'Logical Lunge indiriliyor'; verifying = 'Paket doğrulanıyor'; extracting = 'Paket açılıyor'; stopping = 'Açık masaüstü kapatılıyor'
         uac = "Windows'un izin penceresini onayla..."
-        installing = 'Logical Lunge kuruluyor'; ctrlc = 'Ctrl+C: vazge�'; rollingBack = 'De�i�iklikler geri al�n�yor...'
-        qStop = 'Kurulumu durdurup her �eyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
-        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bile�enler'; stop = 'Masa�st� durduruluyor'; files = 'Dosyalar kopyalan�yor'; config = 'Ayarlar�n yaz�l�yor'; migrate = '�nceki s�r�mden ta��n�yor'; tools = 'Parlakl�k ve s�cakl�k ara�lar�'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarlar�'; tasks = 'Ba�lang�� g�revleri'; owner = '�lk a��l��a haz�rlan�yor'; finish = 'Son dokunu�lar' }
-        doneTitle = 'Haz�r! Logical Lunge kuruldu'
-        doneBody = "Masa�st�n birka� saniye i�inde a��l�yor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + �/� workspace de�i�tir`n  Sa� �st k��e       h�zl� ayarlar ve bildirimler`n`nKald�rmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
-        errTitle = 'Olmad�, ama merak etme'
-        errBody = "Kurulum '{0}' ad�m�nda tak�ld�. Bilgisayar�nda hi�bir �ey yar�m kalmad�: yap�lan de�i�iklikler geri al�nd� ve �nceki masa�st�n yeniden a��ld�."
-        errDetail = 'Ayr�nt�'; errLog = 'G�nl�k'
-        errRetry = "Ayn� komutu yeniden �al��t�rarak tekrar deneyebilirsin. Sorun s�rerse g�nl��� bizimle payla�:`nhttps://github.com/$repo/issues"
-        netTitle = '�nternete ula�amad�k'; netBody = 'Ba�lant�n� kontrol edip ayn� komutu yeniden �al��t�r. Bilgisayar�nda hi�bir �ey de�i�medi.'
-        cancelTitle = 'Kurulumdan vazge�ildi'; cancelBody = 'Her �ey eski haline d�nd�, bilgisayar�nda hi�bir �ey de�i�medi.'
-        uacTitle = '�zin verilmedi'; uacBody = "Windows'un y�netici izni olmadan kurulum yap�lam�yor. Hi�bir �ey de�i�medi; haz�r oldu�unda ayn� komutu yeniden �al��t�r."
+        installing = 'Logical Lunge kuruluyor'; ctrlc = 'Ctrl+C: vazgeç'; rollingBack = 'Değişiklikler geri alınıyor...'
+        qStop = 'Kurulumu durdurup her şeyi eski haline getirelim mi?'; stopYes = 'Evet, durdur'; stopNo = 'Devam et'
+        steps = @{ check = 'Windows denetleniyor'; runtimes = 'Gerekli bileşenler'; stop = 'Masaüstü durduruluyor'; files = 'Dosyalar kopyalanıyor'; config = 'Ayarların yazılıyor'; migrate = 'Önceki sürümden taşınıyor'; tools = 'Parlaklık ve sıcaklık araçları'; terminal = 'Terminal kuruluyor'; windows = 'Windows ayarları'; tasks = 'Başlangıç görevleri'; owner = 'İlk açılışa hazırlanıyor'; finish = 'Son dokunuşlar' }
+        doneTitle = 'Hazır! Logical Lunge kuruldu'
+        doneBody = "Masaüstün birkaç saniye içinde açılıyor.`n`n  Super              arama ve uygulamalar`n  Super + Enter      terminal`n  Super + Ctrl + ‹/› workspace değiştir`n  Sağ üst köşe       hızlı ayarlar ve bildirimler`n`nKaldırmak istersen: Ayarlar > Uygulamalar > Logical Lunge."
+        errTitle = 'Olmadı, ama merak etme'
+        errBody = "Kurulum '{0}' adımında takıldı. Bilgisayarında hiçbir şey yarım kalmadı: yapılan değişiklikler geri alındı ve önceki masaüstün yeniden açıldı."
+        errDetail = 'Ayrıntı'; errLog = 'Günlük'
+        errRetry = "Aynı komutu yeniden çalıştırarak tekrar deneyebilirsin. Sorun sürerse günlüğü bizimle paylaş:`nhttps://github.com/$repo/issues"
+        netTitle = 'İnternete ulaşamadık'; netBody = 'Bağlantını kontrol edip aynı komutu yeniden çalıştır. Bilgisayarında hiçbir şey değişmedi.'
+        cancelTitle = 'Kurulumdan vazgeçildi'; cancelBody = 'Her şey eski haline döndü, bilgisayarında hiçbir şey değişmedi.'
+        uacTitle = 'İzin verilmedi'; uacBody = "Windows'un yönetici izni olmadan kurulum yapılamıyor. Hiçbir şey değişmedi; hazır olduğunda aynı komutu yeniden çalıştır."
         oldWin = "Logical Lunge Windows 10 2004 (19041) ya da daha yenisini istiyor; bu bilgisayar {0}."
-        badPkg = '�ndirilen paket bozuk g�r�n�yor (do�rulama tutmad�).'
+        badPkg = 'İndirilen paket bozuk görünüyor (doğrulama tutmadı).'
         plainPick = 'Numara yaz ve Enter''a bas'; yes = 'e'
-        retrying = 'ba�lant� koptu, {0} sn sonra kald��� yerden devam ({1}/5)'
-        warnTitle = 'Birka� ek par�a kurulamad�'
-        warnBody = 'Masa�st�n tam �al���yor, yaln�zca bunlar eksik. Ayn� komutu sonra yeniden �al��t�r�nca eksikler tamamlan�r.'
-        xBright = 'Harici monit�r parlakl���: ControlMyMonitor'
+        retrying = 'bağlantı koptu, {0} sn sonra kaldığı yerden devam ({1}/5)'
+        warnTitle = 'Birkaç ek parça kurulamadı'
+        warnBody = 'Masaüstün tam çalışıyor, yalnızca bunlar eksik. Aynı komutu sonra yeniden çalıştırınca eksikler tamamlanır.'
+        xBright = 'Harici monitör parlaklığı: ControlMyMonitor'
     } } else { @{
         tagline = 'Logical Lunge: a fluid, personal Windows desktop'
         qEdition = 'Which interface would you like to install?'; sEdition = 'Interface'
@@ -81,7 +81,7 @@ if ($tr) { @{
         qStop = 'Stop the install and put everything back?'; stopYes = 'Yes, stop'; stopNo = 'Keep going'
         steps = @{ check = 'Checking Windows'; runtimes = 'Required components'; stop = 'Stopping the desktop'; files = 'Copying files'; config = 'Writing your settings'; migrate = 'Moving data from the previous version'; tools = 'Brightness and temperature tools'; terminal = 'Installing the terminal'; windows = 'Windows settings'; tasks = 'Startup tasks'; owner = 'Preparing the first start'; finish = 'Finishing touches' }
         doneTitle = 'All set! Logical Lunge is installed'
-        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + �/� switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
+        doneBody = "Your desktop opens in a few seconds.`n`n  Super              search and apps`n  Super + Enter      terminal`n  Super + Ctrl + ‹/› switch workspace`n  Top right corner   quick settings and notifications`n`nTo remove it: Settings > Apps > Logical Lunge."
         errTitle = "That didn't work, but don't worry"
         errBody = "The install got stuck at '{0}'. Nothing was left half-done: the changes were undone and your previous desktop was started again."
         errDetail = 'Details'; errLog = 'Log'
@@ -129,22 +129,22 @@ function Box([string]$color, [string]$title, [string]$body) {
     $w = Width; $in = $w - 4
     $b = Fg $color
     Write-Host ''
-    Write-Host ("  $b?" + ('�' * ($w - 2)) + "?$R")
+    Write-Host ("  $b?" + ('¦' * ($w - 2)) + "?$R")
     if ($title) {
         Write-Host ("  $b-$R " + "$E[1m" + (Fg $color) + $title.PadRight($in) + "$R $b-$R")
         Write-Host ("  $b-$R " + (' ' * $in) + " $b-$R")
     }
     foreach ($l in (Wrap $body $in)) { Write-Host ("  $b-$R " + (Fg $C.text) + $l.PadRight($in) + "$R $b-$R") }
-    Write-Host ("  $b?" + ('�' * ($w - 2)) + "?$R")
+    Write-Host ("  $b?" + ('¦' * ($w - 2)) + "?$R")
 }
 function Banner {
     if (-not $env:LL_PLAIN -and -not [Console]::IsOutputRedirected) { Clear-Host }
     # figlet "Calvin S"; each line a shade of the accent
     $g = '#d0bcff', '#b69df8', '#977be6'
     $art = @(
-        'T  -��-��T-��-��T    T  T T-�--��-��',
-        '�  - -- T--  +�+-    �  - ----- T++ ',
-        '�=-L�-L�-+L�-+ ++�-  �=-L�--L-L�-L�-')
+        'T  -¦¬-¦¬T-¦¬-¦¬T    T  T T-¬--¦¬-¦¬',
+        '¦  - -- T--  +¦+-    ¦  - ----- T++ ',
+        '¦=-L¦-L¦-+L¦-+ ++¦-  ¦=-L¦--L-L¦-L¦-')
     Write-Host ''
     for ($i = 0; $i -lt $art.Count; $i++) { Write-Host ('  ' + (Paint $g[$i] $art[$i])) }
     Write-Host ('  ' + (Paint $C.dim $T.tagline))
@@ -162,7 +162,7 @@ function Bar([double]$frac, [int]$width, [int]$tick) {
     for ($i = 0; $i -lt $width; $i++) {
         if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + '?' }
         elseif ($i -eq $fill) { $s += (Fg $C.accent) + '?' }
-        else { $s += (Fg '#49454f') + '�' }
+        else { $s += (Fg '#49454f') + '¦' }
     }
     return $s + $R
 }
@@ -405,14 +405,14 @@ try {
     if ($env:LL_NO_SENSORS) { $extras = @($extras | Where-Object { $_ -ne 'sensors' }) }
     if ($interactive) {
         $sysName = (Get-UICulture).NativeName
-        $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('T�rk�e', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Fran�ais', 'fr'), @('Espa�ol', 'es'), @('Italiano', 'it'), @('Portugu�s', 'pt'),
+        $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Français', 'fr'), @('Español', 'es'), @('Italiano', 'it'), @('Português', 'pt'),
             @('??????? (Russian)', 'ru'), @('?????????? (Ukrainian)', 'uk'), @('Polski', 'pl'), @('??? (Japanese)', 'ja'), @('?? (Chinese)', 'zh'), @('??? (Korean)', 'ko'), @('??????? (Arabic)', 'ar'))
         $now = Get-Date
         
         $step = 0
         while ($step -lt 6) {
             Banner
-            $colors = if ($tr) { @(@('Mor (varsay�lan)', '#b69df8'), @('Mavi', '#8ab4f8'), @('Camg�be�i', '#7fd4c9'), @('Ye�il', '#a6d189'), @('Pembe', '#f5a3c7'), @('Turuncu', '#ffb77c'), @('K�rm�z�', '#f28b82')) }
+            $colors = if ($tr) { @(@('Mor (varsayılan)', '#b69df8'), @('Mavi', '#8ab4f8'), @('Camgöbeği', '#7fd4c9'), @('Yeşil', '#a6d189'), @('Pembe', '#f5a3c7'), @('Turuncu', '#ffb77c'), @('Kırmızı', '#f28b82')) }
                       else { @(@('Purple (default)', '#b69df8'), @('Blue', '#8ab4f8'), @('Teal', '#7fd4c9'), @('Green', '#a6d189'), @('Pink', '#f5a3c7'), @('Orange', '#ffb77c'), @('Red', '#f28b82')) }
             $clocks = @(@("$($T.h24)   $($now.ToString('HH:mm'))", '24'), @("$($T.h12)   $($now.ToString('h:mm tt', [Globalization.CultureInfo]::InvariantCulture))", '12'))
             if ($step -eq 0) {
@@ -577,7 +577,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
                 if ($p.file -and $p.size) { $row += '  ' + (Bar ([double]$p.done / [double]$p.size) 18 $tick) + ' ' + (Paint $C.dim ('{0,3:0}%' -f (100 * [double]$p.done / [double]$p.size))) }
             }
             elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '?') + ' ' + (Paint $C.text $label) }
-            else { $row = (Paint '#49454f' '�') + ' ' + (Paint '#6f6a75' $label) }
+            else { $row = (Paint '#49454f' '·') + ' ' + (Paint '#6f6a75' $label) }
             $out += "`r  $row$E[K`n"
         }
         $foot = if ($state -eq 'rollback' -or (Test-Path $cancelFile)) { Paint $C.warn $T.rollingBack } else { Paint $C.dim $T.ctrlC }
@@ -596,7 +596,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $warn = @($p.warn | Where-Object { $_ })
         if ($warn.Count) {
             $names = @{ terminal = $T.xTerm; sensors = $T.xSensors; brightness = $T.xBright }
-            $list = @($warn | ForEach-Object { '� ' + $(if ($names.ContainsKey([string]$_)) { $names[[string]$_] } else { [string]$_ }) }) -join "`n"
+            $list = @($warn | ForEach-Object { '• ' + $(if ($names.ContainsKey([string]$_)) { $names[[string]$_] } else { [string]$_ }) }) -join "`n"
             Box $C.warn $T.warnTitle ($list + "`n`n" + $T.warnBody + "`n$($T.errLog): $log")
         }
     }
