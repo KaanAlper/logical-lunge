@@ -63,29 +63,34 @@ New-Item -ItemType Directory -Force $APP, $STATE, $CONF, $DL | Out-Null
 function Log([string]$m) { $line = (Get-Date -Format 'HH:mm:ss ') + $m; Add-Content -Path $LOG -Value $line -Encoding UTF8; Write-Host $m }
 function Progress([string]$state, [hashtable]$extra) {
     if (-not $ProgressFile) { return }
-    $j = [ordered]@{ state = $state; step = $script:stepId; n = $script:stepNo; total = $TOTAL_STEPS }
+    $j = [ordered]@{ state = $state; step = $script:stepId; n = $script:stepNo; total = $TOTAL_STEPS; percent = $script:stepPercent }
     if ($extra) { foreach ($k in $extra.Keys) { $j[$k] = $extra[$k] } }
     try { [IO.File]::WriteAllText($ProgressFile, ($j | ConvertTo-Json -Compress), $UTF8) } catch {}
 }
 function Assert-NotCancelled { if ($CancelFile -and (Test-Path $CancelFile)) { throw (New-Object OperationCanceledException 'Installation cancelled.') } }
-$script:stepNo = 0; $script:stepId = 'start'
+$script:stepNo = 0; $script:stepId = 'start'; $script:stepPercent = 0
 # id: a stable name the installer UI translates; m: English text for the log
 function Step([string]$id, [string]$m) {
     Assert-NotCancelled
-    $script:stepNo++; $script:stepId = $id
+    $script:stepNo++; $script:stepId = $id; $script:stepPercent = 0
     Log ''; Log "==> $m"
+    Progress 'running' $null
+}
+function Step-Progress([int]$percent) {
+    $script:stepPercent = [Math]::Max($script:stepPercent, [Math]::Min(99, [Math]::Max(0, $percent)))
     Progress 'running' $null
 }
 # Streams the download so the installer UI can draw a progress bar; cached in %TEMP%\ll-downloads.
 # A dropped connection continues where it stopped (HTTP Range), a short or damaged file is fetched again, and only
 # a complete download (the .ok file next to it) is ever reused from the cache.
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-function Get-File([string]$url, [string]$name) {
+function Get-File([string]$url, [string]$name, [int]$target = 0) {
     $dst = Join-Path $DL $name; $part = "$dst.part"; $ok = "$dst.ok"
-    if ((Test-Path $dst) -and (Test-Path $ok)) { return $dst }
+    if ((Test-Path $dst) -and (Test-Path $ok)) { if ($target) { Step-Progress $target }; return $dst }
     Remove-Item $dst, $ok -Force -ErrorAction SilentlyContinue
     Log "    download $url"
     $last = ''
+    $startPercent = $script:stepPercent
     for ($try = 1; $try -le 5; $try++) {
         Assert-NotCancelled
         try {
@@ -104,7 +109,15 @@ function Get-File([string]$url, [string]$name) {
                     $buf = New-Object byte[] 262144; $done = $have; $sw = [Diagnostics.Stopwatch]::StartNew()
                     while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
                         $out.Write($buf, 0, $n); $done += $n
-                        if ($sw.ElapsedMilliseconds -ge 150) { $sw.Restart(); Progress 'running' @{ file = $name; done = $done; size = $total }; Assert-NotCancelled }
+                        if ($sw.ElapsedMilliseconds -ge 150) {
+                            $sw.Restart()
+                            if ($target -gt $startPercent -and $total -gt 0) {
+                                $fraction = [Math]::Min(1.0, [double]$done / $total)
+                                $script:stepPercent = [Math]::Max($script:stepPercent, [int][Math]::Floor($startPercent + ($target - $startPercent) * $fraction))
+                            }
+                            Progress 'running' @{ file = $name; done = $done; size = $total }
+                            Assert-NotCancelled
+                        }
                     }
                 }
                 finally { $out.Dispose(); $in.Dispose() }
@@ -117,7 +130,7 @@ function Get-File([string]$url, [string]$name) {
             }
             Move-Item $part $dst -Force
             [IO.File]::WriteAllText($ok, $url)
-            Progress 'running' $null
+            if ($target) { Step-Progress $target } else { Progress 'running' $null }
             return $dst
         }
         catch [OperationCanceledException] { throw }
@@ -137,8 +150,8 @@ function Get-File([string]$url, [string]$name) {
 }
 # A pinned release asset by its exact name: a plain download link, no GitHub API call (the API allows 60 calls an
 # hour per address; a few retried installs used to run out and fail with "asset not found")
-function Gh-Asset([string]$repo, [string]$tag, [string]$file) {
-    return Get-File "https://github.com/$repo/releases/download/$tag/$file" $file
+function Gh-Asset([string]$repo, [string]$tag, [string]$file, [int]$target = 0) {
+    return Get-File "https://github.com/$repo/releases/download/$tag/$file" $file $target
 }
 # pacman of MSYS2. Its warnings go to stderr, which under ErrorActionPreference Stop used to abort (and roll back)
 # the whole install; a lock left behind by an interrupted run is cleared when no pacman is running; slow mirrors are
@@ -313,35 +326,43 @@ try {
     $build = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
     if ($build -lt 19041) { throw "Windows 10 2004 (build 19041) or newer is required; this is build $build." }
     if (-not [Environment]::Is64BitOperatingSystem) { throw '64-bit Windows is required.' }
+    Step-Progress 50
     $win11 = $build -ge 22000
     Log "    Windows build $build ($(if ($win11) { 'Windows 11' } else { 'Windows 10' }))"
     $choice = $null
     if ($Choices -and (Test-Path $Choices)) { $choice = Get-Content $Choices -Raw | ConvertFrom-Json; Log "    choices: $(Get-Content $Choices -Raw)" }
 
+    Step-Progress 99
     Step 'runtimes' 'Checking the WebView2 and Visual C++ runtimes'
     $wv2 = Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue
     if (-not $wv2 -or -not $wv2.pv -or $wv2.pv -eq '0.0.0.0') {
         Log '    installing Microsoft Edge WebView2 runtime (needed by the shell)'
-        $b = Get-File 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' 'MicrosoftEdgeWebview2Setup.exe'
+        $b = Get-File 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' 'MicrosoftEdgeWebview2Setup.exe' 35
         Start-Process $b -ArgumentList '/silent', '/install' -Wait
+        Step-Progress 50
     }
+    Step-Progress 50
     # The window manager and the shell (Rust, MSVC) need the Visual C++ 2015-2022 runtime
     if (-not (Test-Path "$env:WINDIR\System32\vcruntime140_1.dll")) {
         Log '    installing Microsoft Visual C++ runtime'
-        $vc = Get-File 'https://aka.ms/vs/17/release/vc_redist.x64.exe' 'vc_redist.x64.exe'
+        $vc = Get-File 'https://aka.ms/vs/17/release/vc_redist.x64.exe' 'vc_redist.x64.exe' 80
         Start-Process $vc -ArgumentList '/install', '/quiet', '/norestart' -Wait
+        Step-Progress 99
     }
 
     # ------------------------------------------------------------ stop running parts
+    Step-Progress 99
     Step 'stop' 'Stopping the desktop'
     # Normally already stopped gracefully as the user (lunge.exe --stop-desktop); this catches anything left
     Set-Content (Join-Path $STATE 'maintenance') (Get-Date -Format o)
     Stop-Parts
+    Step-Progress 65
     # Older versions hid the taskbar with a PowerShell loop
     Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*hide-taskbar.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 800
 
     # ------------------------------------------------------------ app files
+    Step-Progress 99
     Step 'files' 'Copying Logical Lunge'
     if (Test-Path $RB) { Remove-Item $RB -Recurse -Force }
     foreach ($rel in $OWNED) {
@@ -349,7 +370,9 @@ try {
         if (Test-Path $src) { $dst = Join-Path "$RB\app" $rel; New-Item -ItemType Directory -Force (Split-Path $dst) | Out-Null; Move-Item $src $dst }
     }
     $script:ownedSaved = $true
+    Step-Progress 20
     Copy-Item (Join-Path $Source 'app\*') $APP -Recurse -Force
+    Step-Progress 75
     # Super menu app list (generated on first run, kept across updates): it lives in the user's data folder now; older
     # versions kept it next to the widgets
     $appsList = Join-Path $STATE 'apps.json'
@@ -372,6 +395,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $APP 'ui\settings.json'), ($zsettings | ConvertTo-Json -Depth 5), $UTF8)
 
     # ------------------------------------------------------------ settings (config, keybinds, prefs)
+    Step-Progress 99
     Step 'config' 'Writing the settings'
     $cfg = Join-Path $CONF 'config.yaml'
     if (Test-Path (Join-Path $STATE 'config.sha256')) { Copy-Item (Join-Path $STATE 'config.sha256') "$RB\config.sha256"; $script:hashSaved = $true }
@@ -407,6 +431,7 @@ try {
         [IO.File]::WriteAllText($cfg, $new, $UTF8); Set-Content $hashFile (Hash $new)
         Log "    config.yaml written$(if ($focus) { " (focus color $focus)" })"
     }
+    Step-Progress 60
     # keyboard shortcuts of the core (0.1.x kept them in %LOCALAPPDATA%\logical-lunge)
     $kb = Join-Path $CONF 'keybinds.json'
     if (-not (Test-Path $kb) -and (Test-Path (Join-Path $OLD_STATE 'keybinds.json'))) { Remember-Created $kb; Copy-Item (Join-Path $OLD_STATE 'keybinds.json') $kb }
@@ -428,6 +453,8 @@ try {
     }
     if (Test-Path $prefs) { Copy-Item $prefs (Join-Path $PACK 'prefs.json') -Force }
 
+    Step-Progress 99
+
     # ------------------------------------------------------------ data of 0.1.x
     if ($legacy -or $perUser -or (Test-Path $OLD_STATE)) {
         Step 'migrate' 'Moving data from the previous version'
@@ -435,8 +462,10 @@ try {
             $from = Join-Path $OLD_STATE $pair[0]; $to = Join-Path $STATE $pair[1]
             if ((Test-Path $from) -and -not (Test-Path $to)) { Remember-Created $to; Copy-Item $from $to }
         }
+        Step-Progress 20
         $clip = Join-Path $DATA 'clipboard'
         if ((Test-Path (Join-Path $OLD_STATE 'clipboard')) -and -not (Test-Path $clip)) { Remember-Created $clip; Copy-Item (Join-Path $OLD_STATE 'clipboard') $clip -Recurse }
+        Step-Progress 40
         # widget storage (to-dos, pinned apps, theme...): only what the widgets saved, not the browser caches
         $webDst = Join-Path $DATA 'webview\logical-lunge\EBWebView\Default'
         $webSrc = Join-Path $OLD_WEB 'EBWebView\Default'
@@ -447,6 +476,7 @@ try {
             }
             Log '    widget storage moved'
         }
+        Step-Progress 65
         # big downloaded tools: moved instead of downloaded again
         foreach ($old in $OLD_APP, $OLD_LL) {
             foreach ($d in 'tools\wezterm', 'tools\bin') {
@@ -464,44 +494,48 @@ try {
     }
     else { $script:stepNo++ }
 
+    if ($script:stepId -eq 'migrate') { Step-Progress 99 }
     # ------------------------------------------------------------ tools
     Step 'tools' 'Installing the brightness and sensor tools'
     $temps = Join-Path $APP 'tools\temps'
     Optional 'brightness' {
         $cmm = Join-Path $APP 'tools\ControlMyMonitor.exe'
         if (-not (Test-Path $cmm)) {
-            $cz = Get-File 'https://www.nirsoft.net/utils/controlmymonitor.zip' 'controlmymonitor.zip'
+            $cz = Get-File 'https://www.nirsoft.net/utils/controlmymonitor.zip' 'controlmymonitor.zip' 25
             Expand-Archive $cz (Join-Path $DL 'cmm') -Force
             Remember-Created $cmm
             Copy-Item (Join-Path $DL 'cmm\ControlMyMonitor.exe') $cmm -Force
         }
     }
+    Step-Progress 40
     Optional 'sensors' {
         if (-not (Test-Path (Join-Path $temps 'LibreHardwareMonitorLib.dll'))) {
-            $lz = Gh-Asset 'LibreHardwareMonitor/LibreHardwareMonitor' $LHM_VER 'LibreHardwareMonitor.zip'
+            $lz = Gh-Asset 'LibreHardwareMonitor/LibreHardwareMonitor' $LHM_VER 'LibreHardwareMonitor.zip' 60
             $tmp = Join-Path $DL 'lhm'; Expand-Archive $lz $tmp -Force
             Get-ChildItem $tmp -Filter *.dll | ForEach-Object { Remember-Created (Join-Path $temps $_.Name); Copy-Item $_.FullName $temps -Force }
         }
         if (-not $NoSensors -and -not (Get-Service PawnIO -ErrorAction SilentlyContinue)) {
-            $pw = Gh-Asset 'namazso/PawnIO.Setup' $PAWNIO_VER 'PawnIO_setup.exe'
+            $pw = Gh-Asset 'namazso/PawnIO.Setup' $PAWNIO_VER 'PawnIO_setup.exe' 85
             Copy-Item $pw (Join-Path $temps 'PawnIO_setup.exe') -Force
             Start-Process $pw -ArgumentList '-install', '-silent' -Wait
             Mark-Installed 'pawnio'
         }
     }
 
+    Step-Progress 99
     # ------------------------------------------------------------ terminal
     if (-not $NoTerminal) {
         Step 'terminal' 'Installing the terminal (WezTerm, fish, starship)'
         Optional 'terminal' {
             $wdst = Join-Path $APP 'tools\wezterm'
             if (-not (Test-Path (Join-Path $wdst 'wezterm-gui.exe'))) {
-                $wz = Get-File 'https://github.com/wezterm/wezterm/releases/download/nightly/WezTerm-windows-nightly.zip' 'wezterm-nightly.zip'
+                $wz = Get-File 'https://github.com/wezterm/wezterm/releases/download/nightly/WezTerm-windows-nightly.zip' 'wezterm-nightly.zip' 18
                 $tmp = Join-Path $DL 'wez'; Expand-Archive $wz $tmp -Force
                 $inner = Get-ChildItem $tmp -Directory | Select-Object -First 1
                 Remember-Created $wdst; New-Item -ItemType Directory -Force $wdst | Out-Null
                 Copy-Item (Join-Path $inner.FullName '*') $wdst -Recurse -Force
             }
+            Step-Progress 25
             $wl = Join-Path $UserProfile '.wezterm.lua'
             if ((Test-Path $wl) -and -not (Test-Path "$wl.before-ll")) { Copy-Item $wl "$wl.before-ll" }
             Copy-Item (Join-Path $Source 'config\wezterm\wezterm.lua') $wl -Force
@@ -510,7 +544,7 @@ try {
             $fontsKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts'
             $wfonts = Join-Path $UserProfile '.config\wezterm\fonts'
             if (-not (Get-ChildItem $wfonts -Filter 'JetBrainsMonoNerdFont-*.ttf' -ErrorAction SilentlyContinue)) {
-                $fz = Gh-Asset 'ryanoasis/nerd-fonts' $NERDFONT_VER 'JetBrainsMono.zip'
+                $fz = Gh-Asset 'ryanoasis/nerd-fonts' $NERDFONT_VER 'JetBrainsMono.zip' 38
                 $tmp = Join-Path $DL 'font'; Expand-Archive $fz $tmp -Force
                 # WezTerm yalnýz kendi font klasörüne bakar (sistemdeki yüzlerce fontu taramak açýlýþý 1.6 s yavaþlatýyordu)
                 New-Item -ItemType Directory -Force $wfonts | Out-Null
@@ -522,11 +556,13 @@ try {
                 Mark-Installed 'fonts'
             }
 
+            Step-Progress 45
             $bin = Join-Path $APP 'tools\bin'
             if (-not (Test-Path $bin)) { Remember-Created $bin; New-Item -ItemType Directory -Force $bin | Out-Null }
-            if (-not (Test-Path (Join-Path $bin 'starship.exe'))) { Expand-Archive (Gh-Asset 'starship/starship' $STARSHIP_VER 'starship-x86_64-pc-windows-msvc.zip') $bin -Force }
-            if (-not (Test-Path (Join-Path $bin 'eza.exe'))) { Expand-Archive (Gh-Asset 'eza-community/eza' $EZA_VER 'eza.exe_x86_64-pc-windows-gnu.zip') $bin -Force }
-            if (-not (Test-Path (Join-Path $bin 'fzf.exe'))) { Expand-Archive (Gh-Asset 'junegunn/fzf' $FZF_VER "fzf-$($FZF_VER.TrimStart('v'))-windows_amd64.zip") $bin -Force }   # themecolor seçicisi
+            if (-not (Test-Path (Join-Path $bin 'starship.exe'))) { Expand-Archive (Gh-Asset 'starship/starship' $STARSHIP_VER 'starship-x86_64-pc-windows-msvc.zip' 52) $bin -Force }
+            if (-not (Test-Path (Join-Path $bin 'eza.exe'))) { Expand-Archive (Gh-Asset 'eza-community/eza' $EZA_VER 'eza.exe_x86_64-pc-windows-gnu.zip' 58) $bin -Force }
+            if (-not (Test-Path (Join-Path $bin 'fzf.exe'))) { Expand-Archive (Gh-Asset 'junegunn/fzf' $FZF_VER "fzf-$($FZF_VER.TrimStart('v'))-windows_amd64.zip" 64) $bin -Force }   # themecolor seçicisi
+            Step-Progress 65
             Add-UserPath $bin
             New-Item -ItemType Directory -Force (Join-Path $UserProfile '.config\fish\functions') | Out-Null
             Copy-Item (Join-Path $Source 'config\fish\functions\*.fish') (Join-Path $UserProfile '.config\fish\functions') -Force
@@ -538,10 +574,11 @@ try {
             }
             Mark-Installed 'terminal'
             # fish last: if its package mirrors fail, WezTerm opens PowerShell and everything above still works
+            Step-Progress 72
             $msys = 'C:\msys64'
             $ownMsys = $false
             if (-not (Test-Path "$msys\usr\bin\bash.exe")) {
-                $sfx = Get-File 'https://github.com/msys2/msys2-installer/releases/latest/download/msys2-base-x86_64-latest.sfx.exe' 'msys2-base.sfx.exe'
+                $sfx = Get-File 'https://github.com/msys2/msys2-installer/releases/latest/download/msys2-base-x86_64-latest.sfx.exe' 'msys2-base.sfx.exe' 82
                 Start-Process $sfx -ArgumentList '-y', '-oC:\' -Wait
                 & "$msys\usr\bin\bash.exe" -lc 'true' | Out-Null   # first run initialises keys
                 Mark-Installed 'msys2'
@@ -549,6 +586,7 @@ try {
             }
             # An MSYS2 we just unpacked is brought up to date first. One the user already had only gets its package list
             # refreshed: a full upgrade that includes the MSYS2 core closes every MSYS2 program, the user's open terminals too.
+            Step-Progress 86
             for ($try = 1; $try -le 3 -and -not (Test-Path "$msys\usr\bin\fish.exe"); $try++) {
                 Assert-NotCancelled
                 if ($ownMsys) { [void](Invoke-Pacman $msys '-Syuu'); [void](Invoke-Pacman $msys '-Syuu') }
@@ -559,6 +597,7 @@ try {
             $ns = "$msys\etc\nsswitch.conf"
             if (Test-Path $ns) { (Get-Content $ns) -replace '^db_home:.*$', 'db_home: windows' | Set-Content -Encoding ASCII $ns }
         }
+        Step-Progress 99
     }
     else { $script:stepNo++ }
 
@@ -585,6 +624,7 @@ try {
         $s = (Get-ItemProperty $sr).Settings
         if ($s -and $s.Length -gt 8 -and $s[8] -ne 3) { $n = [byte[]]$s.Clone(); $n[8] = 3; Set-Reg $sr 'Settings' $n 'Binary' }
     }
+    Step-Progress 60
     # No taskbar at all on the other monitors ("Show taskbar on all displays" off)
     Set-Reg "$cu\Explorer\Advanced" 'MMTaskbarEnabled' 0
     # Touchpad: Windows' own three- and four-finger swipes (switch apps / desktops) would run together with the
@@ -594,6 +634,7 @@ try {
     Set-Reg "$cu\PrecisionTouchPad" 'FourFingerSlideEnabled' 0
 
     # ------------------------------------------------------------ scheduled tasks
+    Step-Progress 99
     Step 'tasks' 'Creating the startup tasks'
     $principalUser = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Limited
     $principalHigh = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Highest
@@ -603,6 +644,7 @@ try {
     # privileges, no prompt at sign-in): hotkeys and window management also work while an administrator window such as
     # Task Manager or an installer is focused. The shell and every program the user opens run as the normal user.
     Register-LLTask 'Start' (New-ScheduledTaskAction -Execute (Join-Path $APP 'lunge.exe') -WorkingDirectory $UserProfile) $trigger $principalHigh $forever
+    Step-Progress 35
     if (-not $NoSensors) {
         $te = Join-Path $APP 'tools\temps\lunge-temps.exe'
         Register-LLTask 'Temps' (New-ScheduledTaskAction -Execute $te -WorkingDirectory (Split-Path $te)) $trigger $principalHigh (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 7)
@@ -612,13 +654,16 @@ try {
         $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$eth`" $($pair[1])"
         Register-LLTask $pair[0] $a $null $principalHigh (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1))
     }
+    Step-Progress 85
     # GlazeWM must not also start from an older Run entry (backed up: the uninstaller puts it back)
     $runOld = (Get-ItemProperty "$cu\Run" -Name 'GlazeWM' -ErrorAction SilentlyContinue).GlazeWM
     if ($null -ne $runOld) { Set-Reg "$cu\Run" 'GlazeWM' ([string]$runOld) 'String'; Remove-ItemProperty "$cu\Run" -Name 'GlazeWM' -ErrorAction SilentlyContinue }
 
+    Step-Progress 99
     Step 'owner' 'Preparing the first start'
     # the user's settings and data belong to the user, not to the elevated installer (the app folder stays protected)
     foreach ($p in $DATA, $CONF) { & icacls $p /setowner $UserName /T /C /Q | Out-Null }
+    Step-Progress 99
     Assert-NotCancelled
     $ok = $true
 }
@@ -640,6 +685,7 @@ if (-not $ok) {
 # Nothing below can undo the install; failures are only logged.
 Step 'finish' 'Registering and cleaning up'
 try { Stop-Leftovers } catch { Log "    leftover processes: $($_.Exception.Message)" }
+Step-Progress 10
 try {
     $un = "$HKU\Software\Microsoft\Windows\CurrentVersion\Uninstall\LogicalLunge"
     New-Item -Path $un -Force | Out-Null
@@ -670,6 +716,7 @@ try {
 }
 catch { Log "    could not create the Start menu shortcut: $($_.Exception.Message)" }
 Save-Backup
+Step-Progress 35
 
 # (also retried on later updates if a folder was in use, e.g. a terminal running from the old location)
 if ($legacy -or (Test-Path $OLD_STATE) -or (Test-Path $OLD_LL)) {
@@ -711,6 +758,7 @@ if ($perUser -or (Test-Path $OLD_APP)) {
     try { Remove-Item $OLD_APP -Recurse -Force } catch { Log "    could not remove $OLD_APP (in use?): $($_.Exception.Message)" }
 }
 if (Test-Path $RB) { Remove-Item $RB -Recurse -Force -ErrorAction SilentlyContinue }
+Step-Progress 75
 
 Log 'Done. Starting the desktop...'
 # taskbar auto-hide / DisabledHotkeys take effect after Explorer restarts (Windows restarts it by itself)
@@ -718,9 +766,11 @@ Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
 Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start'
+Step-Progress 95
 if (-not $NoSensors) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Temps' -ErrorAction SilentlyContinue }
 # a 0.1.x updater covered the screen with its own splash that waits for the old bar: the new desktop has its own
 Start-Sleep -Milliseconds 1500
 Get-Process ll-update-splash, ll-restart-splash -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Step-Progress 99
 if ($script:warnings.Count) { Progress 'done' @{ warn = @($script:warnings) } } else { Progress 'done' $null }
 exit 0

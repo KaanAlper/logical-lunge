@@ -526,7 +526,7 @@ foreach ($id in 'check', 'runtimes', 'stop', 'files', 'config', 'migrate', 'tool
     for ($t = 0; $t -le 100; $t += 5) {
         if (Test-Path $CancelFile) { P @{ state = 'rollback'; step = $id; n = $n }; Start-Sleep 2; exit 2 }
         if ($id -eq $FailAt -and $t -ge 50 -and $FailAt -ne 'terminal') { P @{ state = 'error'; step = $id; n = $n; error = 'Preview: simulated failure' }; exit 1 }
-        $p = @{ state = 'running'; step = $id; n = $n }
+        $p = @{ state = 'running'; step = $id; n = $n; percent = $t }
         if ($id -eq 'files') { $p.file = 'app\lunge-shell.exe'; $p.done = $t; $p.size = 100 }
         P $p; Start-Sleep -Milliseconds $(if ($id -eq 'files') { 120 } else { 35 })
     }
@@ -549,7 +549,7 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
 
     Write-Host ''
     Write-Host ('  ' + "$E[1m" + (Paint $C.accent $T.installing))
-    $lines = $STEP_IDS.Count + 2
+    $lines = $STEP_IDS.Count + 3
     for ($i = 0; $i -lt $lines; $i++) { Write-Host '' }
     Write-Host -NoNewline "$E[?25l"
     $tick = 0; $clock = [Diagnostics.Stopwatch]::StartNew(); $p = $null; $asked = $false
@@ -569,17 +569,29 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $n = if ($p) { [int]$p.n } else { 0 }
         $state = if ($p) { [string]$p.state } else { 'running' }
         $out = "$E[$($lines)A"
+        $progressRow = $false
         for ($i = 0; $i -lt $STEP_IDS.Count; $i++) {
             $label = $T.steps[$STEP_IDS[$i]]
             if ($i + 1 -lt $n -or ($state -eq 'done')) { $row = (Paint $C.ok '✓') + ' ' + (Paint $C.dim $label) }
             elseif ($i + 1 -eq $n -and $state -eq 'running') {
                 $row = (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + (Paint $C.text $label)
-                if ($p.file -and $p.size) { $row += '  ' + (Bar ([double]$p.done / [double]$p.size) 18 $tick) + ' ' + (Paint $C.dim ('{0,3:0}%' -f (100 * [double]$p.done / [double]$p.size))) }
             }
             elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '✗') + ' ' + (Paint $C.text $label) }
             else { $row = (Paint '#49454f' '·') + ' ' + (Paint '#6f6a75' $label) }
             $out += "`r  $row$E[K`n"
+            if ($i + 1 -eq $n -and $state -eq 'running') {
+                $percent = [Math]::Max(0, [Math]::Min(99, [int]$p.percent))
+                $detail = ''
+                if ($p.file) {
+                    $name = [string]$p.file
+                    if ($name.Length -gt 22) { $name = $name.Substring(0, 19) + '...' }
+                    $detail = '  ' + $name
+                }
+                $out += "`r    " + (Bar ([double]$percent / 100.0) 24 $tick) + ' ' + (Paint $C.text ('{0,3}%' -f $percent)) + (Paint $C.dim $detail) + "$E[K`n"
+                $progressRow = $true
+            }
         }
+        if (-not $progressRow) { $out += "`r$E[K`n" }
         $foot = if ($state -eq 'rollback' -or (Test-Path $cancelFile)) { Paint $C.warn $T.rollingBack } else { Paint $C.dim $T.ctrlC }
         $out += "`r$E[K`n`r  " + (Paint $C.dim ('{0:mm\:ss}' -f $clock.Elapsed)) + '  ' + $foot + "$E[K`n"
         Write-Host -NoNewline $out
