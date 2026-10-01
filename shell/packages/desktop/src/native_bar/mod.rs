@@ -264,7 +264,7 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
     let configs = [
       ("cpu", json!({ "type": "cpu", "refreshInterval": 3000 })),
       ("memory", json!({ "type": "memory", "refreshInterval": 3000 })),
-      ("battery", json!({ "type": "battery", "refreshInterval": 60000 })),
+      ("battery", json!({ "type": "battery", "refreshInterval": 3000 })),
       ("network", json!({ "type": "network", "refreshInterval": 5000 })),
       ("audio", json!({ "type": "audio" })),
       ("media", json!({ "type": "media" })),

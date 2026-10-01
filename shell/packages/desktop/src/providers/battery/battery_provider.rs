@@ -28,6 +28,7 @@ pub struct BatteryOutput {
   pub health_percent: f32,
   pub state: String,
   pub is_charging: bool,
+  pub is_plugged: bool,
   pub time_till_full: Option<f32>,
   pub time_till_empty: Option<f32>,
   pub power_consumption: f32,
@@ -79,12 +80,15 @@ impl BatteryProvider {
     battery: &mut starship_battery::Battery,
   ) -> anyhow::Result<BatteryOutput> {
     manager.refresh(battery)?;
+    let state = battery.state();
+    let is_plugged = ac_connected().unwrap_or(matches!(state, State::Charging | State::Full));
 
     Ok(BatteryOutput {
       charge_percent: battery.state_of_charge().get::<percent>(),
       health_percent: battery.state_of_health().get::<percent>(),
-      state: battery.state().to_string(),
-      is_charging: battery.state() == State::Charging,
+      state: state.to_string(),
+      is_charging: is_plugged && state == State::Charging,
+      is_plugged,
       time_till_full: battery
         .time_to_full()
         .map(|time| time.get::<millisecond>()),
@@ -97,6 +101,21 @@ impl BatteryProvider {
     })
   }
 }
+
+#[cfg(target_os = "windows")]
+fn ac_connected() -> Option<bool> {
+  use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+  let mut status = SYSTEM_POWER_STATUS::default();
+  unsafe { GetSystemPowerStatus(&mut status).ok()? };
+  match status.ACLineStatus {
+    0 => Some(false),
+    1 => Some(true),
+    _ => None,
+  }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ac_connected() -> Option<bool> { None }
 
 impl Provider for BatteryProvider {
   fn runtime_type(&self) -> RuntimeType {

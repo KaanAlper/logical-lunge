@@ -11,6 +11,9 @@ for (const value of [undefined, null, 0, -1, NaN, Infinity]) assert.equal(batter
 const battery = { chargePercent: 48.7, isCharging: true, state: 'charging', powerConsumption: 25.6, timeTillFull: 5400000 };
 assert.deepEqual(batteryDetails(battery), { percent: 49, state: 'Şarj oluyor', timeLabel: 'Dolmasına kalan', time: '1:30', power: '25.6 W' });
 assert.equal(batteryDetails({ ...battery, isCharging: false, timeTillEmpty: 3600000 }).time, '1:00');
+assert.equal(batteryDetails({ ...battery, isPlugged: true, isCharging: false, timeTillEmpty: 3600000 }).state, 'Prize takılı');
+assert.equal(batteryDetails({ ...battery, isPlugged: true, isCharging: false, timeTillEmpty: 3600000 }).time, 'Veri yok');
+assert.equal(batteryDetails({ ...battery, isPlugged: false, isCharging: false, state: 'full' }).state, 'Pil kullanılıyor');
 assert.equal(batteryDetails({ ...battery, powerConsumption: 0 }).power, 'Veri yok');
 const clock = {};
 let s = { sessionId: 'browser', title: 'video', position: 10, positionSeconds: 10.5, timelineUpdatedAt: 100000, isPlaying: true, playbackRate: 2, endTime: 500 };

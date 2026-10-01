@@ -500,12 +500,12 @@ fn paint_cols(p: &mut Painter, t: &Theme, cols: Vec<Col>, size: (f32, f32)) -> a
 // Same surface, padding, type and hover lifecycle as the resource popup.
 fn battery_cols(m: &Model) -> Vec<Col> {
   let Some(b) = &m.battery else { return Vec::new() };
-  let time = if b.is_charging { b.time_till_full } else { b.time_till_empty };
-  let state = if b.is_charging { "Şarj oluyor" } else if b.state.eq_ignore_ascii_case("full") { "Tam dolu" } else if matches!(b.state.to_lowercase().as_str(), "discharging" | "empty") { "Pil kullanılıyor" } else { "Veri yok" };
+  let time = if b.is_charging { b.time_till_full } else if b.is_plugged { None } else { b.time_till_empty };
+  let state = if b.is_plugged && b.state.eq_ignore_ascii_case("full") { "Tam dolu" } else if b.is_charging { "Şarj oluyor" } else if b.is_plugged { "Prize takılı" } else { "Pil kullanılıyor" };
   let values = [
     ("battery_full", "Pil", format!("{}%", b.charge_percent.round().clamp(0.0, 100.0))),
     ("bolt", "Durum", m.tr(state)),
-    ("schedule", if b.is_charging { "Dolmasına kalan" } else { "Bitmesine kalan" }, battery_time(time).unwrap_or_else(|| m.tr("Veri yok"))),
+    ("schedule", if b.is_plugged { "Dolmasına kalan" } else { "Bitmesine kalan" }, battery_time(time).unwrap_or_else(|| m.tr("Veri yok"))),
     ("electric_bolt", "Güç", if b.power_consumption.is_finite() && b.power_consumption.abs() > 0.0 { format!("{:.1} W", b.power_consumption.abs()) } else { m.tr("Veri yok") }),
   ];
   vec![Col { icon: "battery_full", head: m.tr("Pil"), rows: values.into_iter().map(|(icon, label, value)| Row {

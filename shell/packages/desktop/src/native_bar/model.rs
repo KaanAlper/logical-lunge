@@ -160,7 +160,7 @@ impl Model {
         (m.usage.round() as i32, swap)
       })
       .hash(&mut h);
-    self.battery.as_ref().map(|b| (b.charge_percent.round() as i32, b.is_charging)).hash(&mut h);
+    self.battery.as_ref().map(|b| (b.charge_percent.round() as i32, b.is_plugged)).hash(&mut h);
     self.network_icon().hash(&mut h);
     (self.volume_muted(), self.mic_muted()).hash(&mut h);
     // the ring is ~60 px round: finer steps are invisible

@@ -569,7 +569,7 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
     if let Some(bat) = &m.battery {
       right_edge -= 4.0;
       let r = Rect::new(right_edge - 38.0, 11.0, 38.0, 18.0);
-      battery(p, t, r, bat.charge_percent, bat.is_charging)?;
+      battery(p, t, r, bat.charge_percent, bat.is_plugged)?;
       f.hits.push(Hit { rect: r, kind: HitKind::Battery });
       right_edge -= 38.0 + 4.0 + 4.0;
     }
