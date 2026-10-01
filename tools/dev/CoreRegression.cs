@@ -50,6 +50,21 @@ static class CoreRegression
         }
         var rel = Call(typeof(Updater), "SelectRelease", releases, "native-ui");
         Check((string)rel.GetType().GetField("Tag").GetValue(rel) == "v0.2.10-native-ui", "Updater switched editions or compared versions as text");
-        Console.WriteLine("PASS: core routing, origin, method and release selection");
+        string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-core-test-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(dir);
+        try {
+            Func<string, Dictionary<string, object>> parse = t => new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(t);
+            Func<Dictionary<string, object>> empty = () => new Dictionary<string, object>();
+            Dictionary<string, object> d;
+            string path = System.IO.Path.Combine(dir, "keybinds.json");
+            Check(SettingsFile.TryReadForUpdate(path, parse, empty, out d) && d.Count == 0, "Missing settings file must start empty");
+            System.IO.File.WriteAllText(path, "{\"terminal\":\"super+t\"}");
+            Check(SettingsFile.TryReadForUpdate(path, parse, empty, out d) && (string)d["terminal"] == "super+t", "Settings file was not read");
+            using (new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.None))
+                Check(!SettingsFile.TryReadForUpdate(path, parse, empty, out d), "An unreadable settings file must block the write");
+            System.IO.File.WriteAllText(path, "{not json");
+            Check(SettingsFile.TryReadForUpdate(path, parse, empty, out d) && d.Count == 0 && System.IO.File.Exists(path + ".bad"), "A corrupt settings file must be backed up before starting over");
+        } finally { try { System.IO.Directory.Delete(dir, true); } catch { } }
+        Console.WriteLine("PASS: core routing, origin, method, release selection and settings file updates");
     }
 }

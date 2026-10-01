@@ -340,16 +340,22 @@
           if (clash) { setMsg({ kind: 'error', text: `${combo} zaten "${clash.label}" için kullanılıyor` }); return; }
           await apply(row, combo);
         };
+        // Çekirdek ve tiling betiği {"ok":true|false} döndürür; çalışmayan ya da başka bir şey döndüren komut başarısız sayılır
+        const succeeded = run => run.then(out => JSON.parse(out || '{}').ok === true).catch(() => false);
         const apply = async (row, combo) => {
-          if (row.src === 'll') await helper(['--bind', row.id, combo]).catch(() => {});
-          else await psFile('keybinds-tiling.ps1', ['set', String(row.id), combo]).catch(() => {});
-          setMsg({ kind: 'ok', text: `${row.label}: ${combo || 'kapatıldı'}` });
+          const ok = await succeeded(row.src === 'll'
+            ? helper(['--bind', row.id, combo])
+            : psFile('keybinds-tiling.ps1', ['set', String(row.id), combo]));
+          setMsg(ok
+            ? { kind: 'ok', text: `${row.label}: ${combo || 'kapatıldı'}` }
+            : { kind: 'error', text: `${row.label}: kaydedilemedi` });
           load();
         };
         const resetAll = async () => {
-          await helper(['--bind-reset']).catch(() => {});
-          await psFile('keybinds-tiling.ps1', ['reset']).catch(() => {});
-          setMsg({ kind: 'ok', text: 'Tüm kısayollar varsayılana döndü' });
+          const results = await Promise.all([succeeded(helper(['--bind-reset'])), succeeded(psFile('keybinds-tiling.ps1', ['reset']))]);
+          setMsg(results.every(Boolean)
+            ? { kind: 'ok', text: 'Tüm kısayollar varsayılana döndü' }
+            : { kind: 'error', text: 'Kısayollar sıfırlanamadı' });
           load();
         };
 
