@@ -21,6 +21,9 @@ pub struct App {
   /// `shell:AppsFolder\...`, opened with explorer
   #[serde(default)]
   pub(super) path: String,
+  /// the program's file (not for Store apps): "open file location"
+  #[serde(default)]
+  pub(super) file: Option<String>,
   /// the file name when the shown name is localized (searched too)
   #[serde(default)]
   pub(super) also: Option<String>,
@@ -305,6 +308,7 @@ mod tests {
       exe: exe.map(str::to_string),
       icon: Some("data:image/png;base64,AA==".into()),
       path: String::new(),
+      file: None,
       also: None,
       alias: None,
     }

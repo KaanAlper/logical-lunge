@@ -34,6 +34,7 @@ use windows::{
 };
 
 use super::{
+  menu::{Item as MenuItem, MenuFocus},
   anim::{self, POP_IN, SPRING_IN},
   ime,
   core_api,
@@ -1100,8 +1101,9 @@ pub enum Do {
   Workspace(String),
   FocusWindow { workspace: String, id: String },
   MoveWindow { workspace: String, id: String },
-  /// the Windows context menu of an app (its `shell:AppsFolder\...` path)
-  Menu(String),
+  /// our context menu of an app (its `shell:AppsFolder\...` path), at a
+  /// screen point (None: the pointer)
+  Menu(String, Option<POINT>),
 }
 
 /// The Windows context menu belongs to app results only.
@@ -1212,8 +1214,8 @@ impl Overview {
         if self.edit.redo() { Do::Search } else { Do::Nothing }
       }
       // the menu key, Shift+F10: the selected app's context menu
-      0x5D => self.selected().and_then(menu_path).map(Do::Menu).unwrap_or(Do::Nothing),
-      0x79 if shift => self.selected().and_then(menu_path).map(Do::Menu).unwrap_or(Do::Nothing),
+      0x5D => self.key_menu(),
+      0x79 if shift => self.key_menu(),
       _ => Do::Nothing,
     }
   }
@@ -1406,9 +1408,19 @@ impl Overview {
     let Some(i) = self.hit_row(x, y) else { return Do::Nothing };
     self.sel = i;
     match self.results.get(i).and_then(menu_path) {
-      Some(path) => Do::Menu(path),
+      Some(path) => Do::Menu(path, None),
       None => Do::Redraw,
     }
+  }
+
+  /// The menu key, Shift+F10: the selected app's menu under its row.
+  fn key_menu(&self) -> Do {
+    let Some(path) = self.selected().and_then(menu_path) else { return Do::Nothing };
+    let at = self.rows.iter().find(|(_, i)| *i == self.sel).map(|(r, _)| POINT {
+      x: self.monitor.left + ((r.x + 24.0) * self.scale).round() as i32,
+      y: self.monitor.top + (r.bottom() * self.scale).round() as i32,
+    });
+    Do::Menu(path, at)
   }
 
   pub fn wheel(&mut self, delta: i32) -> Do {
@@ -1578,6 +1590,76 @@ fn shape(p: &mut Painter, from: Prefix, to: Prefix, k: f32, turn: f32, cx: f32, 
 }
 
 // ------------------------------------------------------------ system helpers
+
+/// The Dock keeps this program (`exe`: its file name, lower case).
+fn dock_pinned(exe: &str) -> bool {
+  let Some((200, body)) = core_api::post("/dock-pins") else { return false };
+  let Ok(Value::Array(pins)) = serde_json::from_slice::<Value>(&body) else { return false };
+  pins.iter().any(|p| {
+    let id = p.as_str().or_else(|| p.get("id").and_then(Value::as_str)).unwrap_or("");
+    id.eq_ignore_ascii_case(exe) || id.trim_end_matches(".exe").eq_ignore_ascii_case(exe)
+  })
+}
+
+fn url_encode(s: &str) -> String {
+  s.bytes()
+    .map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+    .collect()
+}
+
+#[repr(C)]
+struct ShellExecuteInfo {
+  size: u32,
+  mask: u32,
+  hwnd: isize,
+  verb: *const u16,
+  file: *const u16,
+  params: *const u16,
+  dir: *const u16,
+  show: i32,
+  instance: isize,
+  id_list: *mut std::ffi::c_void,
+  class: *const u16,
+  class_key: isize,
+  hot_key: u32,
+  icon: isize,
+  process: isize,
+}
+
+#[link(name = "shell32")]
+extern "system" {
+  fn ShellExecuteExW(info: *mut ShellExecuteInfo) -> i32;
+}
+
+/// Starts an app (its `shell:AppsFolder\...` path) as administrator: UAC
+/// asks, as with Windows' own "Run as administrator".
+fn run_as_admin(path: String) {
+  std::thread::spawn(move || unsafe {
+    let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
+    let file: Vec<u16> = format!("{path}\0").encode_utf16().collect();
+    let mut info = ShellExecuteInfo {
+      size: std::mem::size_of::<ShellExecuteInfo>() as u32,
+      mask: 0x100, // SEE_MASK_NOASYNC
+      hwnd: 0,
+      verb: verb.as_ptr(),
+      file: file.as_ptr(),
+      params: std::ptr::null(),
+      dir: std::ptr::null(),
+      show: 1,
+      instance: 0,
+      id_list: std::ptr::null_mut(),
+      class: std::ptr::null(),
+      class_key: 0,
+      hot_key: 0,
+      icon: 0,
+      process: 0,
+    };
+    if ShellExecuteExW(&mut info) == 0 {
+      tracing::info!("Super menu: run as administrator: not started ({})", path);
+    }
+  });
+}
 
 /// Match the web menu's focused monitor, falling back to the primary one
 /// before the window manager sends its first state.
@@ -1794,6 +1876,7 @@ impl Ui {
   }
 
   pub(super) fn overview_hide(&mut self) {
+    self.menu_close();
     FILE_SEARCH_GENERATION.fetch_add(1, Ordering::AcqRel);
     if let Some(o) = self.overview.as_mut() {
       if o.shown {
@@ -1881,6 +1964,8 @@ impl Ui {
         let _ = std::fs::remove_file(flag);
         self.overview_prepare(mode.trim());
       } else if wp.0 == 0 {
+        // hidden by the core (Super again): our menu goes with it
+        self.menu_close();
         if let Some(o) = self.overview.as_mut() {
           if o.pressed_window.take().is_some() || std::mem::take(&mut o.selecting) {
             unsafe { let _ = ReleaseCapture(); }
@@ -1895,6 +1980,23 @@ impl Ui {
         }
       }
       return Some(LRESULT(0));
+    }
+    // our context menu is open over the Super menu: it gets the keys, a
+    // click elsewhere in the Super menu only closes it
+    if self.menu_is_open() {
+      match msg {
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
+          self.menu_key(wp.0 as u16);
+          return Some(LRESULT(0));
+        }
+        WM_CHAR => return Some(LRESULT(0)),
+        WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_LBUTTONDBLCLK => {
+          self.menu_close();
+          return Some(LRESULT(0));
+        }
+        WM_LBUTTONUP | WM_RBUTTONUP => return Some(LRESULT(0)),
+        _ => {}
+      }
     }
     let o = self.overview.as_mut()?;
     let dip = |lp: LPARAM, scale: f32| {
@@ -2098,7 +2200,7 @@ impl Ui {
           self.overview_do(Do::Search);
         }
       }
-      Do::Menu(path) => self.overview_menu(path),
+      Do::Menu(path, at) => self.overview_app_menu(path, at),
     }
   }
 
@@ -2129,13 +2231,64 @@ impl Ui {
   /// a cancel leaves it open (the helper gives the focus back). An app with
   /// an exe name gets "Keep in Dock" on top (the Dock matches its running
   /// windows by that name).
-  fn overview_menu(&mut self, path: String) {
-    let dock = self
-      .icons
-      .apps()
-      .iter()
-      .find(|a| a.path.eq_ignore_ascii_case(&path))
-      .and_then(|a| a.exe.clone());
+  /// Our menu of an app result: open, as administrator, Dock, file
+  /// location, uninstall, and Windows' own menu under "more options".
+  fn overview_app_menu(&mut self, path: String, at: Option<POINT>) {
+    let app = self.icons.apps().iter().find(|a| a.path.eq_ignore_ascii_case(&path)).cloned();
+    let item = self.overview.as_ref().and_then(|o| o.selected().cloned());
+    let exe = app.as_ref().and_then(|a| a.exe.clone());
+    let file = app.as_ref().and_then(|a| a.file.clone());
+    let pinned = exe.as_deref().is_some_and(dock_pinned);
+    let at = at.unwrap_or_else(|| {
+      let mut p = POINT::default();
+      unsafe {
+        let _ = GetCursorPos(&mut p);
+      }
+      p
+    });
+    let tr = |s: &str| self.model.tr(s);
+    let items = vec![
+      MenuItem::new("open", Some("open_in_new"), tr("Aç")),
+      MenuItem::new("admin", Some("shield_person"), tr("Yönetici olarak çalıştır")).enabled(exe.is_some()),
+      MenuItem::new("dock", Some(if pinned { "keep_off" } else { "keep" }), tr(if pinned { "Dock’tan kaldır" } else { "Dock’ta tut" })).enabled(exe.is_some()),
+      MenuItem::new("folder", Some("folder_open"), tr("Dosya konumunu aç")).enabled(file.is_some()),
+      MenuItem::new("uninstall", Some("delete"), tr("Kaldır")),
+      MenuItem::sep(),
+      MenuItem::new("more", Some("more_horiz"), tr("Diğer seçenekler")),
+    ];
+    self.menu_open(at, MenuFocus::Keep, items, move |ui, id| match id {
+      "open" => {
+        if let Some(item) = item {
+          ui.overview_run(item);
+        }
+      }
+      "admin" => {
+        ui.overview_hide();
+        run_as_admin(path);
+      }
+      "dock" => {
+        if let Some(exe) = exe {
+          core_api::post_async(format!("/dock-pin?id={}&on={}", url_encode(&exe), if pinned { 0 } else { 1 }));
+        }
+      }
+      "folder" => {
+        if let Some(file) = file {
+          ui.overview_hide();
+          let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{file}\"")).spawn();
+        }
+      }
+      "uninstall" => {
+        // Windows' list of installed apps (uninstalls Store and desktop apps)
+        ui.overview_hide();
+        spawn("explorer.exe", &["ms-settings:appsfeatures"]);
+      }
+      "more" => ui.overview_shell_menu(path),
+      _ => {}
+    });
+  }
+
+  /// Windows' own context menu of an app ("more options").
+  fn overview_shell_menu(&mut self, path: String) {
     let Some(o) = self.overview.as_mut() else { return };
     if o.menu_open {
       return;
@@ -2145,10 +2298,7 @@ impl Ui {
       use std::io::BufRead;
       let mut invoked = None;
       if let Some(exe) = core_api::core_exe() {
-        let mut args = vec!["--shell-menu".to_string(), path];
-        if let Some(dock) = dock {
-          args.extend(["--dock".to_string(), dock]);
-        }
+        let args = vec!["--shell-menu".to_string(), path];
         let child = std::process::Command::new(exe)
           .args(&args)
           .stdout(std::process::Stdio::piped())

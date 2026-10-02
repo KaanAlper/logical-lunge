@@ -122,6 +122,34 @@ static class AppIndex
         }
     }
 
+    [DllImport("shell32.dll")] static extern int SHGetKnownFolderPath(ref Guid id, uint flags, IntPtr token, out IntPtr path);
+    static readonly Regex knownFolder = new Regex(@"^\{([0-9A-Fa-f-]{36})\}(\\.*)?$");
+
+    // Uygulamanın dosyası (Super menüsünün "Dosya konumunu aç" maddesi): kısayolun hedefi, ya da kimliğin kendisi bir yol
+    // ("{bilinen klasör}\alt\uygulama.exe" ya da "C:\...\uygulama.exe"). Mağaza uygulamalarında yok.
+    static string FileOf(object it, string id)
+    {
+        try
+        {
+            var target = Convert.ToString(Call(it, "ExtendedProperty", "System.Link.TargetParsingPath"));
+            if (!string.IsNullOrEmpty(target) && System.IO.Path.IsPathRooted(target) && System.IO.File.Exists(target)) return target;
+        }
+        catch (Exception) { }
+        string path = null;
+        var m = knownFolder.Match(id);
+        if (m.Success)
+        {
+            var guid = new Guid(m.Groups[1].Value);
+            IntPtr p;
+            if (SHGetKnownFolderPath(ref guid, 0, IntPtr.Zero, out p) == 0)
+            {
+                try { path = Marshal.PtrToStringUni(p) + m.Groups[2].Value; } finally { Marshal.FreeCoTaskMem(p); }
+            }
+        }
+        else if (id.Length > 3 && id[1] == ':' && id[2] == '\\') path = id;
+        return path != null && System.IO.File.Exists(path) ? path : null;
+    }
+
     static object Call(object o, string name, params object[] args)
     {
         return o.GetType().InvokeMember(name, BindingFlags.InvokeMethod, null, o, args);
@@ -183,6 +211,7 @@ static class AppIndex
                     apps.Add(new Dictionary<string, object>
                     {
                         { "name", name }, { "path", @"shell:AppsFolder\" + id }, { "exe", exe }, { "alias", alias }, { "also", also },
+                        { "file", FileOf(it, id) },
                         { "icon", Png(@"shell:AppsFolder\" + id, ICON_SIZE) }
                     });
                 }
