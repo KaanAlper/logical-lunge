@@ -113,7 +113,6 @@ impl AppSettings {
         "sidebar-right",
         "settings",
         "osk",
-        "session",
         "dock",
       ]
       .into_iter()

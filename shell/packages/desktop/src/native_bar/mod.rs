@@ -19,6 +19,7 @@ mod popup;
 mod overview;
 mod pops;
 mod search;
+mod session;
 mod toast;
 mod update;
 mod view;
@@ -118,6 +119,8 @@ const TIMER_TOASTS: usize = 19;
 const TIMER_UPDATE: usize = 20;
 /// the update card: its own timeouts and animations while it is up
 const TIMER_UPDATE_TICK: usize = 21;
+/// the session screen faded out: its windows go
+const TIMER_SESSION_CLOSE: usize = 22;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -149,6 +152,9 @@ enum Msg {
   Update(update::Event),
   /// a web widget asked for the Super menu (the Dock's search button)
   OverviewToggle,
+  /// the sidebar's session button (`ll:session-toggle`), or a close
+  SessionToggle,
+  SessionHide,
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -156,6 +162,8 @@ static WAKE: AtomicIsize = AtomicIsize::new(0);
 static FAILED: AtomicBool = AtomicBool::new(false);
 /// the Super menu's window: it takes the keyboard (the bars never do)
 static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
+/// the session screen's window on the primary monitor: it takes the keyboard
+static SESSION_PRIMARY: AtomicIsize = AtomicIsize::new(0);
 /// song recognition: the run whose result counts (a stopped or replaced run
 /// stays quiet) and its `lunge.exe --songrec`, which a second press kills
 static SONGREC_RUN: AtomicU64 = AtomicU64::new(0);
@@ -271,6 +279,16 @@ pub fn widget_overview_toggle(payload: &str) {
   if !payload.contains("\"native-bar\"") {
     send(Msg::OverviewToggle);
   }
+}
+
+/// `ll:session-toggle` / `ll:session-hide` from the web widgets (the
+/// sidebar's session button): the native session screen.
+pub fn session_toggle() {
+  send(Msg::SessionToggle);
+}
+
+pub fn session_hide() {
+  send(Msg::SessionHide);
 }
 
 /// A widget's notification card (`ll:toast`; the bar's own come back the
@@ -524,6 +542,8 @@ struct Ui {
   emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
   /// the native Super menu (made on first use)
   overview: Option<overview::Overview>,
+  /// the session screen while it is open
+  session: Option<session::Session>,
   /// test run: a menu picture to write once the app list is in (text, PNG, asked at)
   snapshot: Option<(String, PathBuf, Instant)>,
 }
@@ -625,6 +645,7 @@ fn ui_thread(
         custom_theme: None,
         emit: opts.emit,
         overview: None,
+        session: None,
         snapshot: None,
       })
     });
@@ -705,7 +726,8 @@ fn ms_to_next_minute() -> u32 {
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
   if msg == WM_MOUSEACTIVATE {
     // clicking the bar never takes the keyboard from the app; the Super menu does
-    let menu = hwnd.0 as isize == OVERVIEW_HWND.load(Ordering::Acquire);
+    let menu = hwnd.0 as isize == OVERVIEW_HWND.load(Ordering::Acquire)
+      || hwnd.0 as isize == SESSION_PRIMARY.load(Ordering::Acquire);
     return LRESULT(if menu { MA_ACTIVATE } else { MA_NOACTIVATE } as isize);
   }
   if msg == WM_ERASEBKGND {
@@ -739,6 +761,9 @@ fn monitor_device(mon: HMONITOR) -> String {
 
 impl Ui {
   fn handle(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if let Some(r) = self.session_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if self.overview.as_ref().is_some_and(|o| o.hwnd == hwnd) {
       return self.overview_msg(msg, wp, lp);
     }
@@ -760,6 +785,8 @@ impl Ui {
           let forced = REBUILD_FORCED.swap(false, Ordering::AcqRel);
           let same = monitor_layout() == *LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
           if forced || !same {
+            // the session screen is made for the old monitors
+            self.session_destroy();
             self.create_bars();
             self.overview_recreate_window();
           }
@@ -817,6 +844,7 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_TOASTS => self.toasts_tick(),
         WM_TIMER if wp.0 == TIMER_UPDATE => self.update_timer(),
         WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
+        WM_TIMER if wp.0 == TIMER_SESSION_CLOSE => self.session_destroy(),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           // frames while the numbers fade in or out; nothing between
           let now = Instant::now();
@@ -1086,6 +1114,8 @@ impl Ui {
         Msg::SongRecDone => self.songrec_done(),
         Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
         Msg::OverviewToggle => self.toggle_native_overview(),
+        Msg::SessionToggle => self.session_toggle(),
+        Msg::SessionHide => self.session_close(),
         Msg::Toast(card) => self.toast_add(card),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
         Msg::Update(e) => self.update_event(e),

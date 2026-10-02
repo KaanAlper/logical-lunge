@@ -256,6 +256,9 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
         // (and the bar's own) cards and the panel's update button go to the bar
         app.listen_any("ll:toast", |event| native_bar::toast(event.payload()));
         app.listen_any("ll:update-check", |_| native_bar::update_check());
+        // the session screen is native: the sidebar's session button opens it
+        app.listen_any("ll:session-toggle", |_| native_bar::session_toggle());
+        app.listen_any("ll:session-hide", |_| native_bar::session_hide());
       }
     }
   }
