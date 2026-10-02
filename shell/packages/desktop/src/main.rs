@@ -197,16 +197,12 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
   let native_bar = std::env::var("LL_NATIVE_BAR").unwrap_or_default();
   let demo = native_bar == "demo";
   let pack_dir = app_settings.config_dir.join("logical-lunge");
-  #[cfg(windows)]
-  let native_overview_requested = !demo && native_bar::overview_selected(&pack_dir);
-  #[cfg(not(windows))]
-  let native_overview_requested = false;
 
   // If this is not the first instance of the app, this will emit within
   // the original instance and exit immediately. The CLI command is
   // guaranteed to be one of the open commands here.
   if !demo {
-    setup_single_instance(app, widget_factory.clone(), native_overview_requested)?;
+    setup_single_instance(app, widget_factory.clone())?;
 
     // Start the asset server.
     setup_asset_server().await?;
@@ -234,7 +230,6 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
   // failing, or the shell kept dying at its last starts (`crash_loop`), the
   // shell goes on without a bar and the core brings Windows' taskbar and
   // Start menu back. `LL_NATIVE_BAR=off` starts no bar (debugging).
-  let mut native_overview_active = false;
   #[cfg(windows)]
   if native_bar != "off" {
     if !demo && native_bar::crash_loop() {
@@ -248,22 +243,22 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
           }
         })
       };
-      // a failed first start is logged; the bar's guard goes on trying
-      if let Err(err) = native_bar::start(manager.clone(), native_bar::Options { pack_dir: pack_dir.clone(), demo, native_overview: native_overview_requested, emit }) {
+      // The Super menu is native too (none in a demo bar next to the
+      // running one). A failed first start is logged; the bar's guard goes
+      // on trying.
+      if let Err(err) = native_bar::start(manager.clone(), native_bar::Options { pack_dir: pack_dir.clone(), demo, native_overview: !demo, emit }) {
         error!("Native bar: first start failed: {:?}", err);
-      } else {
-        native_overview_active = native_overview_requested && native_bar::overview_ready();
-        if native_overview_active {
-          // the web widgets (the Dock's search button) open the native Super menu
-          app.listen_any("ll:overview-toggle", |event| native_bar::widget_overview_toggle(event.payload()));
-        }
+      }
+      if !demo {
+        // the widgets (the Dock's search button) open the Super menu
+        app.listen_any("ll:overview-toggle", |event| native_bar::widget_overview_toggle(event.payload()));
       }
     }
   }
 
   // Open widgets based on CLI command.
   if !demo {
-    open_widgets_by_cli_command(cli, widget_factory.clone(), native_overview_active).await?;
+    open_widgets_by_cli_command(cli, widget_factory.clone()).await?;
   }
 
   // Logical Lunge: no tray icon, widget manager / settings window or
@@ -342,7 +337,6 @@ fn listen_events(
 fn setup_single_instance(
   app: &tauri::App,
   widget_factory: Arc<WidgetFactory>,
-  native_overview: bool,
 ) -> anyhow::Result<()> {
   app.handle().plugin(tauri_plugin_single_instance::init(
     move |_, args, _| {
@@ -353,7 +347,7 @@ fn setup_single_instance(
           Ok(cli) => {
             // No-op if no subcommand is provided.
             if cli.command() != CliCommand::Empty {
-              open_widgets_by_cli_command(cli, widget_factory, native_overview).await
+              open_widgets_by_cli_command(cli, widget_factory).await
             } else {
               Ok(())
             }
@@ -375,7 +369,6 @@ fn setup_single_instance(
 async fn open_widgets_by_cli_command(
   cli: Cli,
   widget_factory: Arc<WidgetFactory>,
-  native_overview: bool,
 ) -> anyhow::Result<()> {
   let res = match cli.command() {
     CliCommand::StartWidget(args) => {
@@ -411,7 +404,7 @@ async fn open_widgets_by_cli_command(
         .await
     }
     CliCommand::Startup(_) | CliCommand::Empty => {
-      widget_factory.startup(native_overview).await
+      widget_factory.startup().await
     }
     _ => unreachable!(),
   };

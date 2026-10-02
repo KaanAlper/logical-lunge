@@ -1,13 +1,14 @@
 //! The Super menu (ii overview: the search box on top, the workspace grid
-//! below), drawn like the bar on its UI thread. Sizes and colours from
-//! ui/overview.css, results from `search.rs`, the responsibility map in
-//! docs/native-overview.md.
+//! below), drawn like the bar on its UI thread. Sizes and colours from the
+//! web edition's overview.css, results from `search.rs`, the
+//! responsibility map in docs/native-overview.md.
 
 use std::{collections::HashMap, os::windows::process::CommandExt, path::PathBuf, sync::atomic::{AtomicU64, Ordering}, time::Duration};
 
 use serde_json::{json, Value};
 use windows::{
-  core::HSTRING,
+  core::{Interface, HSTRING},
+  Foundation::Numerics::Matrix3x2,
   Win32::{
     Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::{
@@ -15,7 +16,7 @@ use windows::{
         Common::{D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED},
         ID2D1Bitmap1, ID2D1Factory, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
       },
-      DirectComposition::{IDCompositionTarget, IDCompositionVisual2},
+      DirectComposition::{IDCompositionTarget, IDCompositionVisual2, IDCompositionVisual3},
       DirectWrite::{DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE},
       Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY},
     },
@@ -33,6 +34,7 @@ use windows::{
 };
 
 use super::{
+  anim::{self, POP_IN},
   core_api,
   fonts::TextStyle,
   gfx::{self, pt, Gfx, Rect, Rgba},
@@ -221,11 +223,10 @@ pub enum Tool {
 pub struct Overview {
   pub hwnd: HWND,
   pub scale: f32,
-  pub demo: bool,
   /// monitor rectangle (screen pixels); the window covers it
   monitor: RECT,
   _target: IDCompositionTarget,
-  root: IDCompositionVisual2,
+  _root: IDCompositionVisual2,
   panel: Layer,
   surface_w: f32,
   surface_h: f32,
@@ -323,10 +324,9 @@ impl Overview {
       Ok(Self {
         hwnd,
         scale,
-        demo,
         monitor,
         _target: target,
-        root,
+        _root: root,
         panel,
         surface_w,
         surface_h,
@@ -546,7 +546,7 @@ impl Overview {
     Ok(())
   }
 
-  /// The empty-search workspace grid (ui/overview.html WorkspaceOverview).
+  /// The empty-search workspace grid (the web menu's overview.html WorkspaceOverview).
   fn paint_grid(&mut self, gfx: &Gfx, p: &mut Painter, t: &Theme, wm: &WmState, left: f32, top: f32) -> anyhow::Result<()> {
     self.workspaces.clear();
     self.windows.clear();
@@ -1303,22 +1303,47 @@ impl Ui {
     }
   }
 
-  /// Super / the bar's search button: open (or close if open and in front).
-  pub(super) fn overview_toggle(&mut self, mode: &str) {
-    let open = self.overview.as_ref().is_some_and(|o| o.shown);
-    if open {
-      self.overview_hide();
-    } else {
-      self.overview_open(mode);
-    }
-  }
-
   pub(super) fn overview_open(&mut self, mode: &str) {
     if !self.overview_prepare(mode) { return; }
+    // started just before the window shows: its first frame is the
+    // transparent one
+    if let Err(err) = self.overview_enter() {
+      tracing::debug!("Super menu: entrance: {:?}", err);
+    }
     let Some(o) = self.overview.as_mut() else { return };
     unsafe {
       let _ = ShowWindow(o.hwnd, SW_SHOW);
       let _ = SetForegroundWindow(o.hwnd);
+    }
+  }
+
+  /// The web menu's entrance (`ovIn`, 260 ms, --emphDecel): from
+  /// transparent, 14 px higher and 98 % of its size to its place, played by
+  /// the compositor. With animations off it is simply there.
+  fn overview_enter(&self) -> windows::core::Result<()> {
+    let Some(o) = self.overview.as_ref() else { return Ok(()) };
+    let dcomp = &self.gfx.dcomp;
+    let visual: IDCompositionVisual3 = o.panel.visual.cast()?;
+    unsafe {
+      if !self.model.animations {
+        visual.SetOpacity2(1.0)?;
+        o.panel.visual.SetTransform2(&Matrix3x2::identity())?;
+        return dcomp.Commit();
+      }
+      const MS: f32 = 260.0;
+      visual.SetOpacity(&anim::build(dcomp, 0.0, 1.0, MS, POP_IN)?)?;
+      // grows from the top of the box (its shadow margin above)
+      let grow = dcomp.CreateScaleTransform()?;
+      grow.SetCenterX2(o.surface_w * o.scale / 2.0)?;
+      grow.SetCenterY2(SHADOW * o.scale)?;
+      let size = anim::build(dcomp, 0.98, 1.0, MS, POP_IN)?;
+      grow.SetScaleX(&size)?;
+      grow.SetScaleY(&size)?;
+      let lower = dcomp.CreateTranslateTransform()?;
+      lower.SetOffsetY(&anim::build(dcomp, -14.0 * o.scale, 0.0, MS, POP_IN)?)?;
+      let moves = dcomp.CreateTransformGroup(&[Some(grow.cast()?), Some(lower.cast()?)])?;
+      o.panel.visual.SetTransform(&moves)?;
+      dcomp.Commit()
     }
   }
 
@@ -1672,7 +1697,7 @@ impl Ui {
     }
   }
 
-  /// Runs a result (ui/overview.html `exec`): most close the menu first.
+  /// Runs a result (the web menu's overview.html `exec`): most close the menu first.
   fn overview_run(&mut self, item: Item) {
     if !item.stay {
       self.overview_hide();

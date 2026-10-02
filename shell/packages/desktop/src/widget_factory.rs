@@ -584,7 +584,7 @@ impl WidgetFactory {
   /// older settings file does not list; an entry whose widget is no longer in
   /// its pack (a panel that became native, still listed in an older settings
   /// file) is skipped.
-  pub async fn startup(&self, native_overview: bool) -> anyhow::Result<()> {
+  pub async fn startup(&self) -> anyhow::Result<()> {
     let own_widgets = self
       .widget_pack_manager
       .widget_pack_by_id(SHELL_PACK)
@@ -600,10 +600,6 @@ impl WidgetFactory {
     );
 
     for startup_config in startup_configs {
-      if native_overview && startup_config.pack == SHELL_PACK && startup_config.widget == "overview" {
-        tracing::info!("Native overview is ready; skipping its WebView widget.");
-        continue;
-      }
       let in_pack = self
         .widget_pack_manager
         .widget_pack_by_id(&startup_config.pack)

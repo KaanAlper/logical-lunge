@@ -39,6 +39,9 @@ pub struct Model {
   /// the volume mixer is open (its bar button stays pressed)
   pub mixer_open: bool,
   pub hour12: bool,
+  /// prefs.json "animations" (on unless turned off): the panels move as the
+  /// web ones do
+  pub animations: bool,
   /// Language of the date and of `tr()`: prefs.json, else the Windows UI language.
   locale: String,
   /// Turkish source text -> translation (empty for Turkish).
@@ -54,6 +57,7 @@ impl Model {
     };
     let mut m = Model {
       hour12: prefs["clock"].as_str() == Some("12"),
+      animations: prefs["animations"].as_bool() != Some(false),
       light: prefs["theme"].as_str() == Some("light"),
       dict: load_dict(pack_dir, &locale),
       locale,

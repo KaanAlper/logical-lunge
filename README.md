@@ -144,7 +144,7 @@ flowchart TD
   core["lunge.exe (core, C#)<br/>root of the desktop: starts and watches the parts<br/>keys, slides and window animations, focus, rounded corners,<br/>toasts, splash, screenshots, wallpapers, night light, shortcuts"]
   core -- child --> tiling["lunge-tiling.exe (Rust)<br/>tiling (Hyprland dwindle), window borders, IPC"]
   core -- starts --> live["lunge-wallpaper.exe (Rust)<br/>live wallpaper: videos behind the desktop icons (Media Foundation)"]
-  core -- child --> shell["lunge-shell.exe (Rust)<br/>bar (native: Direct2D / DirectComposition)<br/>sidebar, overview, session screen, toasts, keyboard (WebView2, going native)"]
+  core -- child --> shell["lunge-shell.exe (Rust)<br/>bar and Super menu (native: Direct2D / DirectComposition)<br/>sidebar, settings, session screen, toasts, keyboard, Dock (WebView2, going native)"]
   shell <-- IPC --> tiling
   core <-- IPC --> tiling
 ```

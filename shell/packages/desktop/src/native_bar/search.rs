@@ -1,10 +1,8 @@
-//! The Super menu's search, ported from ui/overview.html so both menus give
-//! the same results: prefixes, fuzzy app matching (ii Fuzzy.qml), match
-//! highlighting, the calculator (ii qalc), actions and the result list.
-//! No drawing and no side effects here: an `Act` says what a result does.
-
-// The native Super menu that draws these is being written; until then only the tests use them.
-#![allow(dead_code)]
+//! The Super menu's search, ported from the web edition's menu
+//! (the web menu's overview.html there): prefixes, fuzzy app matching (ii Fuzzy.qml),
+//! match highlighting, the calculator (ii qalc), actions and the result
+//! list. No drawing and no side effects here: an `Act` says what a result
+//! does.
 
 use super::icons::App;
 use crate::everything::FileHit;
@@ -64,7 +62,7 @@ fn invisible(c: char) -> bool {
 
 /// Lowercase for matching. The Turkish dotless and dotted i fold to "i" (in
 /// Turkish "Instagram" lowercases to "ınstagram", so "ins" did not match)
-/// and invisible characters are dropped. Same as `low` in ui/overview.html.
+/// and invisible characters are dropped. Same as `low` in the web menu's overview.html.
 pub fn fold(s: &str) -> String {
   let mut out = String::with_capacity(s.len());
   for c in s.chars() {
@@ -159,7 +157,7 @@ pub fn highlight(content: &str, query: &str) -> Vec<bool> {
 /// ii's qalc on Windows: numbers, + - * / ^ ** % ! ( ), functions and
 /// constants. "9" alone is a result too; a lone "e" is an app search. The
 /// input is rewritten into a small expression language exactly as
-/// ui/overview.html rewrites it into JavaScript, then evaluated with the
+/// the web menu's overview.html rewrites it into JavaScript, then evaluated with the
 /// same rules, so both menus give the same answers.
 pub fn eval_math(expr: &str) -> Option<f64> {
   let src = expr.trim().to_lowercase();
@@ -832,7 +830,7 @@ pub fn file_items(hits: &[FileHit]) -> Vec<Item> {
   }).collect()
 }
 
-/// The result list for `query` (ui/overview.html `results`). `time` formats
+/// The result list for `query` (the web menu's overview.html `results`). `time` formats
 /// a clipboard entry's time (the locale's clock).
 pub fn results(query: &str, apps: &[App], clips: &[Clip], time: &dyn Fn(i64) -> String) -> Vec<Item> {
   let mut out = Vec::new();
@@ -1081,36 +1079,6 @@ mod tests {
     assert_eq!(r[0].act, Act::Query("sqrt(".into()));
     let r = results(">fire", &[app("Firefox")], &[], &t);
     assert_eq!(r.iter().map(|i| i.key.as_str()).collect::<Vec<_>>(), ["appshell:AppsFolder\\Firefox"]);
-  }
-
-  /// Compares with the web menu's own functions on hundreds of expressions
-  /// and the real app list (data from scratchpad parity-gen.mjs, which runs
-  /// ui/overview.html's tryMath / fuzzyScore in node). Runs only when
-  /// LL_PARITY_JSON names that file.
-  #[test]
-  fn web_parity() {
-    let Some(path) = std::env::var_os("LL_PARITY_JSON") else { return };
-    let data: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    let mut bad = Vec::new();
-    for m in data["math"].as_array().unwrap() {
-      let input = m["input"].as_str().unwrap();
-      let want = m["out"].as_str().map(str::to_string);
-      let got = math(input);
-      if got != want {
-        bad.push(format!("hesap {:?}: web {:?}, native {:?}", input, want, got));
-      }
-    }
-    for f in data["fuzzy"].as_array().unwrap() {
-      let (text, query) = (f["text"].as_str().unwrap(), f["query"].as_str().unwrap());
-      let want = f["score"].as_f64().unwrap();
-      let got = fuzzy_score(text, query);
-      if (got - want).abs() > 1e-9 {
-        bad.push(format!("eşleşme {:?} / {:?}: web {}, native {}", text, query, want, got));
-      }
-    }
-    assert!(bad.is_empty(), "{} fark:
-{}", bad.len(), bad.iter().take(40).cloned().collect::<Vec<_>>().join("
-"));
   }
 
   #[test]

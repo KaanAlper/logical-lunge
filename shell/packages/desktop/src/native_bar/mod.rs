@@ -280,13 +280,6 @@ pub struct Options {
   pub emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
 }
 
-pub fn overview_selected(pack_dir: &std::path::Path) -> bool {
-  model::prefs(pack_dir)["overview"].as_str() == Some("native")
-}
-
-pub fn overview_ready() -> bool {
-  OVERVIEW_HWND.load(Ordering::Acquire) != 0
-}
 
 /// Starts the native bar and waits until its bars are on screen, it failed,
 /// or five seconds passed (then it goes on starting on its own thread).

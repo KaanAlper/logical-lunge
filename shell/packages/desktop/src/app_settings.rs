@@ -110,7 +110,6 @@ impl AppSettings {
     AppSettingsValue {
       schema: None,
       startup_configs: [
-        "overview",
         "sidebar-right",
         "settings",
         "toast",

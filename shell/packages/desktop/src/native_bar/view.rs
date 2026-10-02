@@ -76,7 +76,7 @@ pub struct Theme {
   pub tip_fg: Rgba,
   /// popups: `border: 1px solid rgba(73 69 79 / 60%)`
   pub border: Rgba,
-  /// Super menu (overview.css): selected row, search shape
+  /// Super menu (the web edition's overview.css): selected row, search shape
   pub primary_container: Rgba,
   pub on_primary_container: Rgba,
   /// the search box
