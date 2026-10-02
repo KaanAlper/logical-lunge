@@ -1076,14 +1076,15 @@ impl Ui {
     }
     for h in requests {
       // the window's own icon (Git Bash, game clients, installers); asked
-      // again after 30 s when the core has none
+      // again a few times, each later, when the core has none
+      let wait = self.icons.retry_wait(h);
       std::thread::spawn(move || {
         let png = match core_api::post(&format!("/winicon?h={}", h)) {
           Some((200, body)) => icons::data_url_bytes(&String::from_utf8_lossy(&body)),
           _ => None,
         };
         if png.is_none() {
-          std::thread::sleep(Duration::from_secs(30));
+          std::thread::sleep(wait);
         }
         send(Msg::WinIcon(h, png));
       });

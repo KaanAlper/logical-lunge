@@ -38,10 +38,16 @@ pub struct Icons {
   bitmaps: HashMap<String, Option<ID2D1Bitmap1>>,
   /// window icons asked from the core, pending or answered
   asked: HashSet<i64>,
+  /// windows the core had no icon for: (process, answers so far); asked
+  /// again a few times with longer waits, then left alone until the handle
+  /// belongs to another process
+  misses: HashMap<i64, (String, u32)>,
   win_icons: HashMap<i64, Vec<u8>>,
 }
 
 const MIN: usize = 4;
+/// times a window without an icon is asked for one again
+const MISS_TRIES: u32 = 3;
 const GENERIC: &[&str] = &[
   "setup", "install", "installer", "uninstall", "launcher", "client", "helper", "service",
   "update", "updater", "host", "app", "main", "game", "games", "tool", "tools", "server",
@@ -189,14 +195,28 @@ impl Icons {
       }
       return (self.bitmaps.get(&k).cloned().flatten(), None);
     }
+    // a reused handle: a new window, asked from the start
+    if self.misses.get(&handle).is_some_and(|(p, _)| p != proc) {
+      self.misses.remove(&handle);
+      self.asked.remove(&handle);
+    }
     if self.asked.insert(handle) {
       if self.asked.len() > 400 {
         self.asked.clear();
+        self.misses.clear();
         self.asked.insert(handle);
       }
+      self.misses.entry(handle).or_insert_with(|| (proc.to_string(), 0));
       return (None, Some(handle));
     }
     (None, None)
+  }
+
+  /// How long a window's request waits before answering "no icon": 30 s,
+  /// then 1 and 2 minutes (the first answer comes at once).
+  pub fn retry_wait(&self, handle: i64) -> std::time::Duration {
+    let tries = self.misses.get(&handle).map_or(0, |m| m.1);
+    std::time::Duration::from_secs(30u64 << tries.min(2))
   }
 
   /// Device-bound bitmaps die with the graphics device.
@@ -216,7 +236,14 @@ impl Icons {
         self.win_icons.insert(handle, b);
       }
       None => {
-        self.asked.remove(&handle);
+        // asked again (after a longer wait each time) up to 3 times
+        let tries = self.misses.get_mut(&handle).map(|m| {
+          m.1 += 1;
+          m.1
+        });
+        if tries.is_some_and(|t| t <= MISS_TRIES) {
+          self.asked.remove(&handle);
+        }
       }
     }
   }
