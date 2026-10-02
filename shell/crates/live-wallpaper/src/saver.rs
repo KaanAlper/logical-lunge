@@ -352,8 +352,7 @@ fn preview(parent: isize) {
 }
 
 /// Windows' "Settings" for our screen saver: the right panel opens on its
-/// screen saver tab (the core relays it); the message only when no core
-/// runs.
+/// screen saver tab (the core relays it).
 fn configure() {
   let opened = std::env::current_exe()
     .ok()
@@ -364,26 +363,10 @@ fn configure() {
       std::process::Command::new(core).args(["--open-page", "screensaver"]).creation_flags(0x0800_0000).status().ok()
     })
     .is_some_and(|status| status.success());
-  if opened {
-    return;
-  }
-  // GetUserDefaultUILanguage: primary language 0x1F is Turkish
-  let turkish = unsafe {
-    windows::Win32::Globalization::GetUserDefaultUILanguage() & 0x3FF == 0x1F
-  };
-  let (title, text) = if turkish {
-    (
-      w!("Logical Lunge ekran koruyucusu"),
-      w!("Videoyu Logical Lunge'da seçin: sağ panel > Duvar kâğıdı > Ekran koruyucu. Kütüphanenizdeki ya da mağazadaki canlı duvar kâğıtları ekran koruyucu olarak oynatılabilir."),
-    )
-  } else {
-    (
-      w!("Logical Lunge screen saver"),
-      w!("Choose the video in Logical Lunge: right panel > Wallpaper > Screen saver. Any live wallpaper from your library or the store can play as the screen saver."),
-    )
-  };
-  unsafe {
-    MessageBoxW(None, text, title, MB_OK | MB_ICONINFORMATION);
+  if !opened {
+    // Logical Lunge is not running: there is no panel to open, and its
+    // questions never use Windows' message boxes
+    crate::log::line("screen saver settings: Logical Lunge is not running");
   }
 }
 

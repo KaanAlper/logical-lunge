@@ -5,6 +5,17 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 
+// Windows'un kendi hata kutuları: kritik hata ("sürücüde disk yok") ve açılamayan dosya kutuları kapalı. Çökme
+// kutusu bizim exe'lerimiz için Windows Hata Bildirimi'nden çıkarılarak kapanır (kurulum yapar); süreç modu
+// burada değil, çünkü başlattığımız kullanıcı uygulamalarına da geçerdi.
+static class ErrorUi
+{
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern uint SetErrorMode(uint mode);
+    const uint SEM_FAILCRITICALERRORS = 0x0001, SEM_NOOPENFILEERRORBOX = 0x8000;
+
+    public static void Quiet() { SetErrorMode(SetErrorMode(0) | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX); }
+}
+
 // Sorular: çekirdeğin, betiklerin (lunge.exe --ask) ve pencere yöneticisinin her sorusu kabuğun tek diyaloğunda
 // (native_bar/dialog.rs) sorulur; Windows'un ileti kutuları kullanılmaz. POST /dialog soruyu olay akışına koyar
 // ({"dialog": {...}}), kabuk diyaloğu açınca /dialog-shown, cevaplayınca /dialog-answer der. Kabuk birkaç saniyede
@@ -86,6 +97,23 @@ static class Dialogs
             s.Checked = q.TryGetValue("checked", out v) && (v == "1" || v == "true");
         }
         return s;
+    }
+
+    // Uyarı / hata bildirimi (cevap beklemez): /notify?kind=info|warning|error&title=..&body=..
+    public sealed class Notice { public string Kind = "info", Title = "", Body = ""; }
+
+    public static Notice ParseNotice(string query, out string error)
+    {
+        error = null;
+        var q = Query(query);
+        var n = new Notice();
+        string v;
+        if (q.TryGetValue("kind", out v) && v.Length > 0) n.Kind = v;
+        if (n.Kind != "info" && n.Kind != "warning" && n.Kind != "error") { error = "kind"; return null; }
+        if (q.TryGetValue("title", out v)) n.Title = v.Trim();
+        if (q.TryGetValue("body", out v)) n.Body = v.Trim();
+        if (n.Title.Length == 0 || n.Title.Length > 200 || n.Body.Length > 4000) { error = "text"; return null; }
+        return n;
     }
 
     public static string AnswerJson(int button, bool isChecked, string error)

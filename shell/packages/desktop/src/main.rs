@@ -56,6 +56,14 @@ extern crate rocket;
 /// subcommand.
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+  // no "drive not ready" / "cannot open file" boxes of Windows: errors come
+  // back to us and show as our cards (the crash box: Windows Error
+  // Reporting excludes our exes, set by the installer)
+  unsafe {
+    use windows::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX};
+    let mode = SetErrorMode(SEM_FAILCRITICALERRORS);
+    SetErrorMode(mode | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+  }
   // Attach to parent console on Windows in release mode.
   #[cfg(all(windows, not(debug_assertions)))]
   {

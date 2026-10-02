@@ -4955,7 +4955,7 @@ static class Toasts
                 new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
                 return;
             }
-            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -5014,8 +5014,21 @@ static class Toasts
             // native bar ve komut satırı zaten POST gönderir.
             bool writes = target.StartsWith("/cmd?") || target.StartsWith("/pref?") || target.StartsWith("/tray-pins?") || target.StartsWith("/dock-pins?")
                 || target.StartsWith("/widget?") || target.StartsWith("/overview-") || target.StartsWith("/log?") || target.StartsWith("/bar-alive?")
-                || target.StartsWith("/notification-open?") || target.StartsWith("/dialog");
+                || target.StartsWith("/notification-open?") || target.StartsWith("/dialog") || target.StartsWith("/notify?");
             if (writes && !req.StartsWith("POST ")) status = "405 Method Not Allowed";
+            else if (target.StartsWith("/notify?"))
+            {
+                // Bizim parçaların (pencere yöneticisi, betikler) uyarı ve hataları: Windows kutusu yerine bildirim kartı
+                string why;
+                var n = Dialogs.ParseNotice(target.Substring(8), out why);
+                if (n == null) status = "400 Bad Request";
+                else
+                {
+                    Slider.Log("bildirim (" + n.Kind + "): " + n.Title + (n.Body.Length > 0 ? " - " + n.Body : ""));
+                    Toasts.Send(n.Kind == "warning" ? "warn" : n.Kind, n.Title, n.Body, n.Kind);
+                    status = "204 No Content";
+                }
+            }
             else if (target.StartsWith("/dialog?"))
             {
                 string why;
@@ -11284,6 +11297,9 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // Windows'un "sürücü hazır değil / dosya açılamadı" kutuları bu süreçte (ve başlattıklarında, Gezgin'deki gibi)
+        // açılmaz: hatayı çağıran görür ve kendi kartımızla söyler
+        ErrorUi.Quiet();
         // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }

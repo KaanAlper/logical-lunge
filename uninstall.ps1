@@ -13,8 +13,24 @@ $STATE = Join-Path $DATA 'state'
 $CONF = Join-Path $UserProfile '.config\logical-lunge'
 
 if (-not $KeepConfig -and -not $RemoveConfig) {
-    Add-Type -AssemblyName System.Windows.Forms
     $tr = (Get-UICulture).Name -like 'tr*'
+    # Asked in Logical Lunge's own dialog while its desktop is up; Windows' box only when it is not running
+    $askCore = Join-Path $env:ProgramFiles 'LogicalLunge\lunge.exe'
+    $picked = 255
+    if (Test-Path $askCore) {
+        $title = if ($tr) { 'Logical Lunge kaldırılsın mı?' } else { 'Uninstall Logical Lunge?' }
+        $body = if ($tr) { "Logical Lunge kaldırılacak ve Windows ayarları eski haline dönecek. Kendi ayarları ve verileri de silinsin mi? (ayar dosyaları, pano geçmişi, yapılacaklar, kısayol ve gece ışığı ayarları, indirilen duvar kağıtları)" }
+                else { "Logical Lunge will be removed and your Windows settings restored. Also delete its own settings and data? (config files, clipboard history, to-dos, shortcut and night-light settings, downloaded wallpapers)" }
+        $buttons = if ($tr) { 'Hepsini sil|Ayarları sakla|Kaldırma' } else { 'Delete everything|Keep my settings|Don''t uninstall' }
+        & $askCore --ask --kind question --title $title --body $body --buttons $buttons --default 1 --cancel 2 | Out-Null
+        $picked = $LASTEXITCODE
+    }
+    if ($picked -eq 2) { return }
+    if ($picked -eq 0) { $RemoveConfig = $true }
+    elseif ($picked -eq 1) { $KeepConfig = $true }
+}
+if (-not $KeepConfig -and -not $RemoveConfig) {
+    Add-Type -AssemblyName System.Windows.Forms
     $text = if ($tr) { "Logical Lunge kaldırılacak ve Windows ayarları eski haline dönecek.`n`nLogical Lunge'ın kendi ayarları ve verileri de silinsin mi? (ayar dosyaları, pano geçmişi, yapılacaklar, kısayol ve gece ışığı ayarları, indirilen duvar kağıtları)`n`nEvet: hepsini sil`nHayır: ayarları sakla`nİptal: kaldırma" }
             else { "Logical Lunge will be removed and your Windows settings restored.`n`nAlso delete Logical Lunge's own settings and data? (config files, clipboard history, to-dos, shortcut and night-light settings, downloaded wallpapers)`n`nYes: delete everything`nNo: keep my settings`nCancel: don't uninstall" }
     $answer = [System.Windows.Forms.MessageBox]::Show($text, 'Logical Lunge', 'YesNoCancel', 'Question')

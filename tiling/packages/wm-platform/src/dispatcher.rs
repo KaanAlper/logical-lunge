@@ -38,12 +38,12 @@ use windows::{
         GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON,
       },
       Shell::{
-        ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
+        ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
         SHELLEXECUTEINFOW,
       },
       WindowsAndMessaging::{
-        GetCursorPos, MessageBoxW, SetCursorPos, SystemParametersInfoW,
-        ANIMATIONINFO, MB_ICONERROR, MB_OK, MB_SYSTEMMODAL,
+        GetCursorPos, SetCursorPos, SystemParametersInfoW,
+        ANIMATIONINFO,
         SPIF_SENDCHANGE, SPIF_UPDATEINIFILE, SPI_GETANIMATION,
         SPI_SETANIMATION, SW_HIDE, SW_NORMAL,
         SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -301,12 +301,19 @@ impl DispatcherExtWindows for Dispatcher {
       lpParameters: PCWSTR(args_wide.as_ptr()),
       lpDirectory: PCWSTR(directory_wide.as_ptr()),
       nShow: if hide_window { SW_HIDE } else { SW_NORMAL }.0 as _,
-      fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+      // FLAG_NO_UI: a missing file or an unknown type comes back as the
+      // error (reported as our card), never as Windows' message box
+      fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
       ..Default::default()
     };
 
-    unsafe { ShellExecuteExW(&raw mut exec_info) }
-      .map_err(crate::Error::from)
+    let res = unsafe { ShellExecuteExW(&raw mut exec_info) };
+    if !exec_info.hProcess.is_invalid() {
+      unsafe {
+        let _ = CloseHandle(exec_info.hProcess);
+      }
+    }
+    res.map_err(crate::Error::from)
   }
 }
 
@@ -712,29 +719,24 @@ impl Dispatcher {
     Ok(())
   }
 
-  /// Shows a modal error dialog with the given title and message.
-  ///
-  /// Blocks the current thread until the user dismisses the dialog.
-  #[allow(clippy::missing_panics_doc)]
-  pub fn show_error_dialog(&self, title: &str, message: &str) {
+  /// Reports an error of the window manager to the user: logged, and on
+  /// Windows shown as a Logical Lunge notification card through the core
+  /// (`POST /notify`), never as a Windows message box. `fatal`: the WM could
+  /// not start.
+  pub fn report_error(&self, fatal: bool, message: &str) {
+    tracing::error!("{}", message);
     #[cfg(target_os = "windows")]
     {
-      let title_wide =
-        title.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-      let message_wide =
-        message.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-
-      unsafe {
-        MessageBoxW(
-          None,
-          PCWSTR(message_wide.as_ptr()),
-          PCWSTR(title_wide.as_ptr()),
-          MB_ICONERROR | MB_OK | MB_SYSTEMMODAL,
-        );
-      }
+      let title = if fatal {
+        "Pencere yöneticisi başlatılamadı"
+      } else {
+        "Pencere yöneticisi hatası"
+      };
+      notify_core("error", title, message);
     }
     #[cfg(target_os = "macos")]
     {
+      let title = if fatal { "Fatal error" } else { "Non-fatal error" };
       // TODO: This should block indefinitely. Currently, it gets timed out
       // after 5 seconds.
       let _ = self.dispatch_sync(|| {
@@ -750,6 +752,53 @@ impl Dispatcher {
   }
 }
 
+/// Percent-encodes a query value (RFC 3986 unreserved characters stay).
+#[cfg(any(target_os = "windows", test))]
+fn query_value(s: &str) -> String {
+  let mut out = String::with_capacity(s.len());
+  for b in s.bytes() {
+    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+      out.push(b as char);
+    } else {
+      out.push_str(&format!("%{b:02X}"));
+    }
+  }
+  out
+}
+
+/// `POST /notify` to Logical Lunge's core (127.0.0.1:6131); a missing core
+/// only leaves the log line.
+#[cfg(target_os = "windows")]
+fn notify_core(kind: &str, title: &str, body: &str) {
+  use std::io::{Read, Write};
+  let body: String = body.chars().take(3000).collect();
+  let path = format!(
+    "/notify?kind={}&title={}&body={}",
+    query_value(kind),
+    query_value(title),
+    query_value(&body)
+  );
+  let sent = (|| -> std::io::Result<()> {
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 6131));
+    let mut s = std::net::TcpStream::connect_timeout(
+      &addr,
+      std::time::Duration::from_millis(400),
+    )?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+    s.set_write_timeout(Some(std::time::Duration::from_secs(1)))?;
+    write!(
+      s,
+      "POST {path} HTTP/1.1\r\nHost: 127.0.0.1:6131\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut sink = Vec::new();
+    let _ = s.read_to_end(&mut sink);
+    Ok(())
+  })();
+  if let Err(err) = sent {
+    tracing::warn!("Could not show the error through the core: {}", err);
+  }
+}
+
 impl std::fmt::Debug for Dispatcher {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "EventLoopDispatcher")
@@ -761,6 +810,11 @@ mod tests {
   use std::sync::{Arc, Mutex};
 
   use crate::EventLoop;
+
+  #[test]
+  fn notice_text_is_percent_encoded() {
+    assert_eq!(super::query_value("a b&c=ç/~"), "a%20b%26c%3D%C3%A7%2F~");
+  }
 
   #[test]
   fn dispatch_after_stop_fails() {

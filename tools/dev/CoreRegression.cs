@@ -72,6 +72,9 @@ static class CoreRegression
         Check(Dialogs.Parse("title=x&buttons=", out err) == null && Dialogs.Parse("title=x&buttons=a|b|c|d", out err) == null, "Dialogs need one to three buttons");
         Check(Dialogs.Parse("kind=shout&title=x&buttons=a", out err) == null && Dialogs.Parse("buttons=a", out err) == null, "Dialog kind and text must be checked");
         Check(Dialogs.Parse("title=x&buttons=" + new string('a', 41), out err) == null, "Dialog button labels have a length limit");
+        Check(Dialogs.ParseNotice("kind=warning&title=WM&body=x", out err) != null && Dialogs.ParseNotice("kind=shout&title=x", out err) == null && Dialogs.ParseNotice("kind=error&title=", out err) == null, "Notices must be checked");
+        Check(Request("GET", "/notify?kind=error&title=x", "http://127.0.0.1:6124").Contains("405") && Request("POST", "/notify?kind=error&title=x", "https://example.invalid").Contains("403"), "Notices must be local POSTs");
+        Check(Request("POST", "/notify?kind=error&title=x&body=y", "http://127.0.0.1:6124").Contains("204") && Request("POST", "/notify?kind=x&title=x", "http://127.0.0.1:6124").Contains("400"), "A notice must become a card, a bad one refused");
         Check(Request("GET", "/dialog?title=x&buttons=a", "http://127.0.0.1:6124").Contains("405"), "Dialogs must require POST");
         Check(Request("POST", "/dialog?title=x&buttons=a", "https://example.invalid").Contains("403"), "Dialogs accepted a foreign origin");
         Check(Request("POST", "/dialog?title=x&buttons=", "http://127.0.0.1:6124").Contains("400"), "An invalid dialog must be refused");
