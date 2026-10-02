@@ -180,9 +180,9 @@ sealed class SetupForm : Form
         Str(g, title, F(18, true), Fg, x + 24, y + 128, 200, 28);
         if (badge != null)
         {
-            float bw = Measure(g, badge, F(11, true)) + 18;
+            float bw = Measure(g, badge, F(11, true)) + 24;
             FillRound(g, Mix(Surface, Accent, 0.25f), x + r.Width - 24 - bw, y + 131, bw, 22, 11);
-            Str(g, badge, F(11, true), Accent, x + r.Width - 24 - bw + 9, y + 133, bw, 20);
+            StrCenter(g, badge, F(11, true), Accent, new RectangleF(x + r.Width - 24 - bw, y + 131, bw, 22));
         }
         StrWrap(g, body, F(13), Sub, x + 24, y + 162, 280, 70);
         if (sel) { FillCircle(g, Accent, x + r.Width - 30, y + r.Height - 30, 12); Glyph(g, "check", new RectangleF(x + r.Width - 42, y + r.Height - 42, 24, 24), Hex("#1d1b20")); }
@@ -198,8 +198,8 @@ sealed class SetupForm : Form
         foreach (var l in Languages)
         {
             string label = l[0] == "system" ? T("Sistem dili", "System language") : l[1];
-            float w = Measure(g, label, F(12.5f)) + 24;
-            if (cx + w > W - 40) { cx = 40; cy += 36; }
+            float w = Measure(g, label, F(12.5f)) + 28;
+            if (cx + w > W - 40) { cx = 40; cy += 34; }
             Chip(g, "lang:" + l[0], label, cx, cy, w, language == l[0], () =>
             {
                 language = l[0];
@@ -210,7 +210,7 @@ sealed class SetupForm : Form
             cx += w + 8;
         }
 
-        float y = cy + 52;
+        float y = cy + 44;
         Str(g, T("Vurgu rengi", "Accent color"), F(13, true), Sub, 40, y, 200, 20);
         Str(g, T("Saat", "Clock"), F(13, true), Sub, 420, y, 200, 20);
         for (int i = 0; i < Colors.Length; i++)
@@ -224,11 +224,11 @@ sealed class SetupForm : Form
         string now24 = DateTime.Now.ToString("HH:mm"), now12 = DateTime.Now.ToString("h:mm tt", System.Globalization.CultureInfo.InvariantCulture);
         Segment(g, 420, y + 26, new[] { "24", "12" }, new[] { T("24 saat", "24-hour") + "  " + now24, T("12 saat", "12-hour") + "  " + now12 });
 
-        y += 92;
+        y += 84;
         Str(g, T("Ek bileşenler", "Extras"), F(13, true), Sub, 40, y, 300, 20);
-        Toggle(g, "terminal", T("Terminal: WezTerm + fish + starship", "Terminal: WezTerm + fish + starship"), 40, y + 28, terminal, () => { terminal = !terminal; Invalidate(); });
-        Toggle(g, "sensors", T("CPU sıcaklığı: PawnIO sürücüsü", "CPU temperature: PawnIO driver"), 40, y + 64, sensors, () => { sensors = !sensors; Invalidate(); });
-        Toggle(g, "everything", T("Dosya araması: Everything", "File search: Everything"), 40, y + 100, everything, () => { everything = !everything; Invalidate(); });
+        Toggle(g, "terminal", T("Terminal: WezTerm + fish + starship", "Terminal: WezTerm + fish + starship"), 40, y + 26, terminal, () => { terminal = !terminal; Invalidate(); });
+        Toggle(g, "sensors", T("CPU sıcaklığı: PawnIO sürücüsü", "CPU temperature: PawnIO driver"), 40, y + 60, sensors, () => { sensors = !sensors; Invalidate(); });
+        Toggle(g, "everything", T("Dosya araması: Everything", "File search: Everything"), 40, y + 94, everything, () => { everything = !everything; Invalidate(); });
 
         Button(g, "back", T("Geri", "Back"), 40, H - 72, 120, false, () => Go(Page.Interface));
         Button(g, "install", T("Kur", "Install"), W - 40 - 160, H - 72, 160, true, StartInstall);
@@ -238,8 +238,12 @@ sealed class SetupForm : Form
     void PaintProgress(Graphics g)
     {
         Str(g, cancelRequested ? T("Geri alınıyor…", "Rolling back…") : T("Kuruluyor", "Installing"), F(24, true), Fg, 40, 82, 600, 36);
-        if (version.Length > 0) Str(g, version + " · " + edition, F(13), Sub, 40, 120, 600, 22);
-        float y = 160;
+        if (version.Length > 0)
+        {
+            string v = version.Replace("-" + edition, "");
+            Str(g, v + " · " + (edition == "web-ui" ? "Web UI" : "Native"), F(13), Sub, 40, 120, 600, 22);
+        }
+        float y = 156;
         if (steps.Length == 0)
         {
             // before setup.ps1: this exe's own phases
@@ -267,18 +271,18 @@ sealed class SetupForm : Form
         else
         {
             StepRow(g, y, T("Hazırlık", "Preparation"), 2);
-            y += 34;
+            y += 30;
             for (int i = 0; i < steps.Length; i++)
             {
                 int state = i + 1 < stepN || stepState == "done" ? 2 : i + 1 == stepN ? (stepState == "error" ? 3 : 1) : 0;
                 StepRow(g, y, steps[i], state);
                 if (state == 1)
                 {
-                    ProgressBar(g, 76, y + 28, 420, Math.Max(0, Math.Min(99, stepPercent)) / 100f);
-                    if (!string.IsNullOrEmpty(stepFile)) Str(g, stepFile, F(11.5f), Dim, 510, y + 20, 220, 20);
-                    y += 22;
+                    ProgressBar(g, 76, y + 26, 420, Math.Max(0, Math.Min(99, stepPercent)) / 100f);
+                    if (!string.IsNullOrEmpty(stepFile)) Str(g, stepFile, F(11.5f), Dim, 510, y + 18, 220, 20);
+                    y += 18;
                 }
-                y += 26;
+                y += 24;
             }
         }
         if (!cancelRequested) Button(g, "cancel", T("İptal", "Cancel"), W - 40 - 120, H - 72, 120, false, RequestCancel);
@@ -311,9 +315,7 @@ sealed class SetupForm : Form
         bool hot = hover == id;
         var bg = primary ? (hot ? Mix(Accent, Color.White, 0.12f) : Accent) : (hot ? Surface2 : Surface);
         FillRound(g, bg, x, y, w, 44, 22);
-        var f = F(14, true);
-        float tw = Measure(g, label, f);
-        Str(g, label, f, primary ? Hex("#1d1b20") : Fg, x + (w - tw) / 2, y + 11, tw + 4, 24);
+        StrCenter(g, label, F(14, true), primary ? Hex("#1d1b20") : Fg, new RectangleF(x, y, w, 44));
         AddHit(new RectangleF(x, y, w, 44), id, click);
     }
 
@@ -321,13 +323,13 @@ sealed class SetupForm : Form
     {
         FillRound(g, on ? Mix(Surface, Accent, 0.28f) : hover == id ? Surface2 : Surface, x, y, w, 28, 14);
         if (on) DrawRound(g, Accent, 1.2f, x + 0.6f, y + 0.6f, w - 1.2f, 26.8f, 13.4f);
-        Str(g, label, F(12.5f), on ? Fg : Sub, x + 12, y + 5, w, 20);
+        StrCenter(g, label, F(12.5f), on ? Fg : Sub, new RectangleF(x, y, w, 28));
         AddHit(new RectangleF(x, y, w, 28), id, click);
     }
 
     void Segment(Graphics g, float x, float y, string[] values, string[] labels)
     {
-        float w = 150;
+        float w = 146;
         FillRound(g, Surface, x, y, w * values.Length + 8, 40, 20);
         for (int i = 0; i < values.Length; i++)
         {
@@ -335,8 +337,7 @@ sealed class SetupForm : Form
             var r = new RectangleF(x + 4 + i * w, y + 4, w, 32);
             if (clock == v) FillRound(g, Accent, r.X, r.Y, r.Width, r.Height, 16);
             else if (hover == "clock:" + v) FillRound(g, Surface2, r.X, r.Y, r.Width, r.Height, 16);
-            float tw = Measure(g, labels[i], F(12.5f));
-            Str(g, labels[i], F(12.5f), clock == v ? Hex("#1d1b20") : Sub, r.X + (r.Width - tw) / 2, r.Y + 6, tw + 4, 20);
+            StrCenter(g, labels[i], F(12.5f), clock == v ? Hex("#1d1b20") : Sub, r);
             AddHit(r, "clock:" + v, () => { clock = v; Invalidate(); });
         }
     }
@@ -683,6 +684,14 @@ sealed class SetupForm : Form
             g.DrawString(s, f, b, new RectangleF(x, y, w, h), fmt);
     }
 
+    // centred in r (buttons, chips, segments): no measuring, so nothing is cut
+    static void StrCenter(Graphics g, string s, Font f, Color c, RectangleF r)
+    {
+        using (var b = new SolidBrush(c))
+        using (var fmt = new StringFormat(StringFormatFlags.NoWrap) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter })
+            g.DrawString(s, f, b, r, fmt);
+    }
+
     // wrapped text; returns the bottom
     static float StrWrap(Graphics g, string s, Font f, Color c, float x, float y, float w, float maxH)
     {
@@ -699,7 +708,7 @@ sealed class SetupForm : Form
     // Material-like glyphs drawn as lines (no icon font needed)
     static void Glyph(Graphics g, string name, RectangleF r, Color c)
     {
-        using (var p = new Pen(c, Math.Max(1.6f, r.Width / 11f)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+        using (var p = new Pen(c, Math.Max(1.5f, r.Width / 14f)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
         {
             float x = r.X, y = r.Y, w = r.Width, h = r.Height;
             if (name == "check") g.DrawLines(p, new[] { new PointF(x + w * 0.24f, y + h * 0.52f), new PointF(x + w * 0.43f, y + h * 0.70f), new PointF(x + w * 0.78f, y + h * 0.32f) });
