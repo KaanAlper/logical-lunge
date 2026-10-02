@@ -3,11 +3,11 @@
 //! web edition's overview.css, results from `search.rs`, the
 //! responsibility map in docs/native-overview.md.
 
-use std::{collections::HashMap, os::windows::process::CommandExt, sync::atomic::{AtomicU64, Ordering}, time::Duration};
+use std::{collections::HashMap, os::windows::process::CommandExt, sync::atomic::{AtomicU64, Ordering}, time::{Duration, Instant}};
 
 use serde_json::{json, Value};
 use windows::{
-  core::{Interface, HSTRING},
+  core::{Interface, HSTRING, PCWSTR},
   Foundation::Numerics::Matrix3x2,
   Win32::{
     Foundation::{HANDLE, HGLOBAL, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -17,8 +17,8 @@ use windows::{
         ID2D1Bitmap1, ID2D1Factory, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
       },
       DirectComposition::{IDCompositionTarget, IDCompositionVisual2, IDCompositionVisual3},
-      DirectWrite::{DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE},
-      Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTOPRIMARY},
+      DirectWrite::{DWRITE_HIT_TEST_METRICS, DWRITE_READING_DIRECTION_RIGHT_TO_LEFT, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE},
+      Gdi::{GetMonitorInfoW, MonitorFromPoint, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTOPRIMARY},
     },
     System::{
       DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData},
@@ -27,14 +27,15 @@ use windows::{
     },
     UI::{
       HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
-      Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_MENU, VK_SHIFT},
+      Input::KeyboardAndMouse::{GetDoubleClickTime, GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_MENU, VK_SHIFT},
       WindowsAndMessaging::*,
     },
   },
 };
 
 use super::{
-  anim::{self, POP_IN},
+  anim::{self, POP_IN, SPRING_IN},
+  ime,
   core_api,
   fonts::TextStyle,
   gfx::{self, pt, Gfx, Rect, Rgba},
@@ -72,6 +73,14 @@ const GRID_ROWS: usize = 2;
 const GRID_GAP: f32 = 5.0;
 const GRID_PAD: f32 = 10.0;
 
+/// the web menu's width (300 ms) and shape (path 300 ms, turn 400 ms)
+/// transitions, both on the elementMove curve
+const WIDTH_MS: f32 = 300.0;
+const SHAPE_MS: f32 = 300.0;
+const SHAPE_TURN_MS: f32 = 400.0;
+/// repaints while they run (a timer of the menu's own window)
+const TIMER_MORPH: usize = 0x4C4D;
+
 const CF_UNICODETEXT: u32 = 13;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -83,16 +92,59 @@ pub const TITLE_DEMO: &str = "lunge-overview (native demo)";
 // ------------------------------------------------------------ text editing
 
 /// A one-line text field: characters, the caret, and the other end of the
-/// selection (`anchor == caret`: no selection).
+/// selection (`anchor == caret`: no selection), with its undo history.
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct Edit {
   pub chars: Vec<char>,
   pub caret: usize,
   pub anchor: usize,
+  undo: Vec<Snap>,
+  redo: Vec<Snap>,
+  /// the last change, for grouping: typing a word is one undo step
+  last: Option<Change>,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+struct Snap {
+  chars: Vec<char>,
+  caret: usize,
+  anchor: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Change {
+  Type,
+  Space,
+  Back,
+  Delete,
+  Other,
+}
+
+const UNDO_MAX: usize = 100;
 
 fn is_word(c: char) -> bool {
   c.is_alphanumeric() || c == '_'
+}
+
+/// word, space or punctuation: a double click selects a run of one class
+fn class(c: char) -> u8 {
+  if is_word(c) {
+    0
+  } else if c.is_whitespace() {
+    1
+  } else {
+    2
+  }
+}
+
+fn rtl_char(c: char) -> bool {
+  matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF)
+}
+
+/// The paragraph direction a browser's `dir=auto` picks: the first strong
+/// character's (Arabic, Hebrew ... right to left).
+pub fn is_rtl(text: &str) -> bool {
+  text.chars().find(|c| c.is_alphabetic()).is_some_and(rtl_char)
 }
 
 impl Edit {
@@ -100,8 +152,21 @@ impl Edit {
     self.chars.iter().collect()
   }
 
-  pub fn set(&mut self, s: &str) {
+  /// The menu opened with `s`: no history.
+  pub fn start(&mut self, s: &str) {
+    *self = Edit::default();
     self.chars = s.chars().collect();
+    self.caret = self.chars.len();
+    self.anchor = self.caret;
+  }
+
+  /// Replaces the text (Esc, Tab, a prefix chip): one undo step.
+  pub fn set(&mut self, s: &str) {
+    let chars: Vec<char> = s.chars().collect();
+    if chars != self.chars {
+      self.record(Change::Other);
+    }
+    self.chars = chars;
     self.caret = self.chars.len();
     self.anchor = self.caret;
   }
@@ -115,10 +180,61 @@ impl Edit {
     self.chars[a..b].iter().collect()
   }
 
+  fn snap(&self) -> Snap {
+    Snap { chars: self.chars.clone(), caret: self.caret, anchor: self.anchor }
+  }
+
+  fn restore(&mut self, s: Snap) {
+    self.chars = s.chars;
+    self.caret = s.caret;
+    self.anchor = s.anchor;
+  }
+
+  /// Before a change: a new undo step unless it continues the last one
+  /// (letters of a word, a run of spaces, Backspace or Delete held).
+  fn record(&mut self, change: Change) {
+    let continues = change != Change::Other && self.last == Some(change);
+    if !continues {
+      self.undo.push(self.snap());
+      if self.undo.len() > UNDO_MAX {
+        self.undo.remove(0);
+      }
+    }
+    self.redo.clear();
+    self.last = Some(change);
+  }
+
+  /// Ctrl+Z; false when there is nothing to undo.
+  pub fn undo(&mut self) -> bool {
+    let Some(s) = self.undo.pop() else { return false };
+    self.redo.push(self.snap());
+    self.restore(s);
+    self.last = None;
+    true
+  }
+
+  /// Ctrl+Y, Ctrl+Shift+Z
+  pub fn redo(&mut self) -> bool {
+    let Some(s) = self.redo.pop() else { return false };
+    self.undo.push(self.snap());
+    self.restore(s);
+    self.last = None;
+    true
+  }
+
   /// Types or pastes `s` over the selection. Line breaks become spaces.
   pub fn insert(&mut self, s: &str) {
     let (a, b) = self.selection();
     let add: Vec<char> = s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).collect();
+    if add.is_empty() && a == b {
+      return;
+    }
+    let change = match add.as_slice() {
+      [c] if a == b && c.is_whitespace() => Change::Space,
+      [_] if a == b => Change::Type,
+      _ => Change::Other,
+    };
+    self.record(change);
     self.chars.splice(a..b, add.iter().copied());
     self.caret = a + add.len();
     self.anchor = self.caret;
@@ -156,8 +272,10 @@ impl Edit {
   pub fn backspace(&mut self, word: bool) {
     let (a, b) = self.selection();
     if a != b {
+      self.record(Change::Other);
       self.remove(a, b);
     } else if a > 0 {
+      self.record(if word { Change::Other } else { Change::Back });
       let from = if word { self.word_left(a) } else { a - 1 };
       self.remove(from, a);
     }
@@ -166,8 +284,10 @@ impl Edit {
   pub fn delete(&mut self, word: bool) {
     let (a, b) = self.selection();
     if a != b {
+      self.record(Change::Other);
       self.remove(a, b);
     } else if a < self.chars.len() {
+      self.record(if word { Change::Other } else { Change::Delete });
       let to = if word { self.word_right(a) } else { a + 1 };
       self.remove(a, to);
     }
@@ -181,6 +301,7 @@ impl Edit {
     if !extend {
       self.anchor = self.caret;
     }
+    self.last = None;
   }
 
   pub fn right(&mut self, word: bool, extend: bool) {
@@ -190,25 +311,57 @@ impl Edit {
     if !extend {
       self.anchor = self.caret;
     }
+    self.last = None;
   }
 
   pub fn home(&mut self, extend: bool) {
-    self.caret = 0;
-    if !extend {
-      self.anchor = 0;
-    }
+    self.place(0, extend);
   }
 
   pub fn end(&mut self, extend: bool) {
-    self.caret = self.chars.len();
+    self.place(self.chars.len(), extend);
+  }
+
+  /// The caret to `i` (a click; with Shift or a drag the selection grows).
+  pub fn place(&mut self, i: usize, extend: bool) {
+    self.caret = i.min(self.chars.len());
     if !extend {
       self.anchor = self.caret;
     }
+    self.last = None;
+  }
+
+  /// Double click: the run of word characters (or spaces, or punctuation)
+  /// at `i`.
+  pub fn select_word(&mut self, i: usize) {
+    let n = self.chars.len();
+    if n == 0 {
+      return;
+    }
+    let i = i.min(n);
+    // the character the click is on; at the end, the one before
+    let at = if i < n && (i == 0 || class(self.chars[i]) == 0 || class(self.chars[i - 1]) != 0) { i } else { i - 1 };
+    let k = class(self.chars[at]);
+    let (mut a, mut b) = (at, at + 1);
+    while a > 0 && class(self.chars[a - 1]) == k {
+      a -= 1;
+    }
+    while b < n && class(self.chars[b]) == k {
+      b += 1;
+    }
+    self.anchor = a;
+    self.caret = b;
+    self.last = None;
   }
 
   pub fn select_all(&mut self) {
     self.anchor = 0;
     self.caret = self.chars.len();
+    self.last = None;
+  }
+
+  pub fn is_rtl(&self) -> bool {
+    is_rtl(&self.text())
   }
 }
 
@@ -269,6 +422,30 @@ pub struct Overview {
   pressed_window: Option<(String, String, POINT)>,
   dragging: bool,
   drag_workspace: Option<String>,
+  /// the text field (DIPs from the window's top-left) and the x of every
+  /// caret position in its text layout, from the last paint
+  field: Rect,
+  xs: Vec<f32>,
+  /// a drag in the field selects text
+  selecting: bool,
+  /// the last double click in the field: a third click selects everything
+  last_dbl: Option<(Instant, POINT)>,
+  /// the IME's unfinished text, drawn at the caret, and its own caret
+  comp: String,
+  comp_cursor: usize,
+  /// the caret in client pixels (where the IME's candidate list opens)
+  caret_px: POINT,
+  line_px: i32,
+  /// prefs.json "animations"
+  pub animations: bool,
+  /// the box grows when typing starts (the web menu's 300 ms width transition)
+  width_from: f32,
+  width_to: f32,
+  width_start: Option<Instant>,
+  /// the shape left of the field morphs into the next prefix's
+  shape_from: Prefix,
+  shape_to: Prefix,
+  shape_start: Option<Instant>,
 }
 
 impl Drop for Overview {
@@ -360,6 +537,21 @@ impl Overview {
         pressed_window: None,
         dragging: false,
         drag_workspace: None,
+        field: Rect::new(0.0, 0.0, 0.0, 0.0),
+        xs: Vec::new(),
+        selecting: false,
+        last_dbl: None,
+        comp: String::new(),
+        comp_cursor: 0,
+        caret_px: POINT::default(),
+        line_px: 0,
+        animations: true,
+        width_from: W_COLLAPSED,
+        width_to: W_COLLAPSED,
+        width_start: None,
+        shape_from: Prefix::of(""),
+        shape_to: Prefix::of(""),
+        shape_start: None,
       })
     }
   }
@@ -368,12 +560,64 @@ impl Overview {
     (self.monitor.right - self.monitor.left) as f32 / self.scale
   }
 
-  fn box_width(&self) -> f32 {
-    if self.edit.chars.is_empty() {
+  /// The box's width for its text: narrow while empty.
+  fn target_width(&self) -> f32 {
+    if self.edit.chars.is_empty() && self.comp.is_empty() {
       W_COLLAPSED
     } else {
       W_EXPANDED
     }
+  }
+
+  /// The width now, part way through its transition (the elementMove curve
+  /// overshoots a little; the surface's shadow margin has room for it).
+  fn box_width(&self) -> f32 {
+    let Some(start) = self.width_start else { return self.width_to };
+    let t = start.elapsed().as_secs_f32() * 1000.0 / WIDTH_MS;
+    if t >= 1.0 {
+      return self.width_to;
+    }
+    let w = self.width_from + (self.width_to - self.width_from) * SPRING_IN.at(t);
+    w.min(self.surface_w - 8.0)
+  }
+
+  /// Starts the width and shape transitions when the text calls for a new
+  /// width or prefix (repainted on a timer until they end).
+  fn follow_text(&mut self) {
+    let now = Instant::now();
+    let width = self.target_width();
+    if width != self.width_to {
+      self.width_from = self.box_width();
+      self.width_to = width;
+      self.width_start = self.animations.then_some(now);
+    }
+    let prefix = Prefix::of(&self.edit.text());
+    if prefix != self.shape_to {
+      self.shape_from = if self.animations { self.shape_to } else { prefix };
+      self.shape_to = prefix;
+      self.shape_start = self.animations.then_some(now);
+    }
+    if self.animating() {
+      unsafe {
+        let _ = SetTimer(self.hwnd, TIMER_MORPH, 16, None);
+      }
+    }
+  }
+
+  /// A transition is still running.
+  fn animating(&self) -> bool {
+    let running = |s: Option<Instant>, ms: f32| s.is_some_and(|s| s.elapsed().as_secs_f32() * 1000.0 < ms);
+    running(self.width_start, WIDTH_MS) || running(self.shape_start, SHAPE_TURN_MS)
+  }
+
+  /// Snaps the transitions to their end (the menu opens without them).
+  fn settle(&mut self) {
+    self.width_to = self.target_width();
+    self.width_from = self.width_to;
+    self.width_start = None;
+    self.shape_to = Prefix::of(&self.edit.text());
+    self.shape_from = self.shape_to;
+    self.shape_start = None;
   }
 
   /// Rows that fit in the list (max-height 600, padding 10).
@@ -478,6 +722,7 @@ impl Overview {
 
   /// Draws the box (search bar and results) into its surface and places it.
   pub fn paint(&mut self, gfx: &Gfx, p: &mut Painter, t: &Theme, wm: &WmState, tr: &dyn Fn(&str) -> String) -> anyhow::Result<()> {
+    self.follow_text();
     let w = self.box_width();
     let h = BAR + self.list_height();
     // the box is centred on the monitor; the surface is placed around it
@@ -496,7 +741,11 @@ impl Overview {
     // search bar: shape, field, Lens, song recognition
     let prefix = Prefix::of(&self.edit.text());
     let shape_c = (bx.x + 10.0 + 20.0, bx.y + BAR / 2.0);
-    shape(p, prefix, shape_c.0, shape_c.1, t.primary_container)?;
+    let progress = |start: Option<Instant>, ms: f32| {
+      start.map_or(1.0, |s| SPRING_IN.at(s.elapsed().as_secs_f32() * 1000.0 / ms))
+    };
+    let (k, turn) = (progress(self.shape_start, SHAPE_MS), progress(self.shape_start, SHAPE_TURN_MS));
+    shape(p, self.shape_from, self.shape_to, k, turn, shape_c.0, shape_c.1, t.primary_container)?;
     p.icon(prefix.icon(), shape_c.0, shape_c.1, 22.0, false, t.on_primary_container)?;
 
     let songrec = Rect::new(bx.right() - 4.0 - TOOL, bx.y + (BAR - TOOL) / 2.0, TOOL, TOOL);
@@ -516,6 +765,7 @@ impl Overview {
     ];
 
     let field = Rect::new(bx.x + 10.0 + 40.0 + 6.0, bx.y + (BAR - 40.0) / 2.0, lens.x - 6.0 - (bx.x + 56.0), 40.0);
+    self.field = Rect::new(left + field.x, top + field.y, field.w, field.h);
     self.paint_field(p, t, field, tr)?;
     self.paint_chips(p, t, field, left, top, tr)?;
 
@@ -639,16 +889,39 @@ impl Overview {
 
   fn paint_field(&mut self, p: &mut Painter, t: &Theme, r: Rect, tr: &dyn Fn(&str) -> String) -> anyhow::Result<()> {
     let style = TextStyle { size: 15.0, weight: 450.0 };
-    if self.edit.chars.is_empty() {
+    // the IME's unfinished text sits at the caret until it is committed
+    let at = self.edit.caret;
+    let mut shown: Vec<char> = self.edit.chars[..at].to_vec();
+    shown.extend(self.comp.chars());
+    shown.extend(self.edit.chars[at..].iter().copied());
+    let comp_len = self.comp.chars().count();
+    let caret_at = at + self.comp_cursor.min(comp_len);
+    self.set_caret_px(r.x, r);
+    if shown.is_empty() {
       p.text(&tr("Ara, hesapla veya çalıştır"), r, style, t.on_surface_variant, Align::Left, false)?;
       caret(p, r.x, r, t)?;
       self.scroll_x = 0.0;
+      self.xs.clear();
       return Ok(());
     }
-    let text = self.edit.text();
+    let text: String = shown.iter().collect();
+    let rtl = is_rtl(&text);
     let layout = p.layout(&text, style, 100_000.0, r.h, false)?;
-    // caret and selection ends, in UTF-16 positions
-    let utf16_at = |i: usize| self.edit.chars[..i].iter().map(|c| c.len_utf16()).sum::<usize>() as u32;
+    let full_w = Painter::width_of(&layout);
+    // right to left (Arabic, Hebrew): the line ends at the field's right edge
+    // and grows leftwards, as a browser's dir=auto field
+    let layout_w = if rtl { full_w.max(r.w) + 1.0 } else { full_w };
+    let utf16_at = |i: usize| shown[..i].iter().map(|c| c.len_utf16()).sum::<usize>() as u32;
+    unsafe {
+      if rtl {
+        layout.SetMaxWidth(layout_w)?;
+        layout.SetReadingDirection(DWRITE_READING_DIRECTION_RIGHT_TO_LEFT)?;
+      }
+      if comp_len > 0 {
+        let range = DWRITE_TEXT_RANGE { startPosition: utf16_at(at), length: utf16_at(at + comp_len) - utf16_at(at) };
+        layout.SetUnderline(true, range)?;
+      }
+    }
     let x_at = |i: usize| -> f32 {
       let (mut x, mut y) = (0f32, 0f32);
       let mut m = DWRITE_HIT_TEST_METRICS::default();
@@ -657,22 +930,31 @@ impl Overview {
       }
       x
     };
-    let caret_x = x_at(self.edit.caret);
+    let caret_x = x_at(caret_at);
     // keep the caret in view
     if caret_x - self.scroll_x > r.w - 2.0 {
       self.scroll_x = caret_x - r.w + 2.0;
     } else if caret_x < self.scroll_x {
       self.scroll_x = caret_x;
     }
-    let full_w = Painter::width_of(&layout);
-    self.scroll_x = self.scroll_x.clamp(0.0, (full_w - r.w + 2.0).max(0.0));
+    self.scroll_x = self.scroll_x.clamp(0.0, (layout_w - r.w + 2.0).max(0.0));
+    // caret positions for the mouse (the text without a composition)
+    self.xs = if comp_len == 0 { (0..=shown.len()).map(x_at).collect() } else { Vec::new() };
     unsafe {
       p.dc.PushAxisAlignedClip(&r.d2d(), D2D1_ANTIALIAS_MODE_ALIASED);
     }
     let (a, b) = self.edit.selection();
-    if a != b {
-      let (xa, xb) = (x_at(a), x_at(b));
-      p.fill(Rect::new(r.x + xa - self.scroll_x, r.y + 9.0, xb - xa, r.h - 18.0), Rgba(t.primary.0, t.primary.1, t.primary.2, 0.35))?;
+    if a != b && comp_len == 0 {
+      // one rectangle per run: mixed directions split a selection
+      let mut runs = [DWRITE_HIT_TEST_METRICS::default(); 16];
+      let mut count = 0u32;
+      let got = unsafe { layout.HitTestTextRange(utf16_at(a), utf16_at(b) - utf16_at(a), 0.0, 0.0, Some(&mut runs), &mut count) };
+      if got.is_ok() {
+        for m in runs.iter().take(count as usize) {
+          let sel = Rect::new(r.x + m.left - self.scroll_x, r.y + 9.0, m.width, r.h - 18.0);
+          p.fill(sel, Rgba(t.primary.0, t.primary.1, t.primary.2, 0.35))?;
+        }
+      }
     }
     let brush = p.brush(t.on_layer0)?;
     // text layouts put the first line at the top: centre the line in the field
@@ -690,8 +972,33 @@ impl Overview {
       );
       p.dc.PopAxisAlignedClip();
     }
-    caret(p, r.x + caret_x - self.scroll_x, r, t)?;
+    let x = r.x + caret_x - self.scroll_x;
+    caret(p, x, r, t)?;
+    self.set_caret_px(x, r);
     Ok(())
+  }
+
+  /// The caret (`x` in the surface) in client pixels, for the IME.
+  fn set_caret_px(&mut self, x: f32, r: Rect) {
+    let dx = self.field.x - r.x;
+    let dy = self.field.y - r.y;
+    self.caret_px = POINT { x: ((x + dx) * self.scale).round() as i32, y: ((r.y + dy + 8.0) * self.scale).round() as i32 };
+    self.line_px = ((r.h - 16.0) * self.scale).round() as i32;
+  }
+
+  /// The caret position nearest to `x` (DIPs from the window) in the field.
+  fn index_at(&self, x: f32) -> usize {
+    let lx = x - self.field.x + self.scroll_x;
+    self
+      .xs
+      .iter()
+      .enumerate()
+      .min_by(|(_, a), (_, b)| (*a - lx).abs().total_cmp(&(*b - lx).abs()))
+      .map_or(self.edit.chars.len(), |(i, _)| i)
+  }
+
+  fn in_field(&self, x: f32, y: f32) -> bool {
+    self.field.contains(x, y)
   }
 
   fn paint_row(&mut self, gfx: &Gfx, p: &mut Painter, t: &Theme, r: Rect, i: usize, tr: &dyn Fn(&str) -> String) -> anyhow::Result<()> {
@@ -858,12 +1165,13 @@ impl Overview {
         self.edit.backspace(ctrl);
         Do::Search
       }
-      0x25 => {
-        self.edit.left(ctrl, shift);
-        Do::Redraw
-      }
-      0x27 => {
-        self.edit.right(ctrl, shift);
+      // right to left text: the arrows move the way they point
+      0x25 | 0x27 => {
+        if (vk == 0x25) != self.edit.is_rtl() {
+          self.edit.left(ctrl, shift);
+        } else {
+          self.edit.right(ctrl, shift);
+        }
         Do::Redraw
       }
       0x24 => {
@@ -896,6 +1204,13 @@ impl Overview {
         }
       }
       0x56 if ctrl => Do::Paste,
+      0x5A if ctrl => {
+        let changed = if shift { self.edit.redo() } else { self.edit.undo() };
+        if changed { Do::Search } else { Do::Nothing }
+      }
+      0x59 if ctrl => {
+        if self.edit.redo() { Do::Search } else { Do::Nothing }
+      }
       // the menu key, Shift+F10: the selected app's context menu
       0x5D => self.selected().and_then(menu_path).map(Do::Menu).unwrap_or(Do::Nothing),
       0x79 if shift => self.selected().and_then(menu_path).map(Do::Menu).unwrap_or(Do::Nothing),
@@ -931,6 +1246,14 @@ impl Overview {
   pub fn mouse_move(&mut self, screen: POINT, x: f32, y: f32) -> Do {
     let moved = screen.x != self.last_mouse.x || screen.y != self.last_mouse.y;
     self.last_mouse = screen;
+    if self.selecting {
+      let i = self.index_at(x);
+      if i == self.edit.caret {
+        return Do::Nothing;
+      }
+      self.edit.place(i, true);
+      return Do::Redraw;
+    }
     let tool = self.hit_tool(x, y);
     let chip = self.hit_chip(x, y);
     let mut redraw = tool != self.hover_tool || chip != self.hover_chip;
@@ -971,6 +1294,9 @@ impl Overview {
       self.hover_chip = None;
       return Do::Search;
     }
+    if self.in_field(x, y) {
+      return self.field_press(x);
+    }
     if let Some(i) = self.hit_row(x, y) {
       self.sel = i;
       return self.results.get(i).cloned().map(Do::Run).unwrap_or(Do::Nothing);
@@ -996,7 +1322,72 @@ impl Overview {
     Do::Nothing
   }
 
+  /// A press in the text field: places the caret (Shift: extends the
+  /// selection) and starts a drag selection; the third click of a
+  /// double click selects everything.
+  fn field_press(&mut self, x: f32) -> Do {
+    if !self.comp.is_empty() {
+      return Do::Nothing;
+    }
+    let mut screen = POINT::default();
+    unsafe {
+      let _ = GetCursorPos(&mut screen);
+    }
+    let triple = self.last_dbl.take().is_some_and(|(at, p)| {
+      let (tw, th) = unsafe { (GetSystemMetrics(SM_CXDOUBLECLK), GetSystemMetrics(SM_CYDOUBLECLK)) };
+      at.elapsed().as_millis() <= unsafe { GetDoubleClickTime() } as u128 && (screen.x - p.x).abs() <= tw && (screen.y - p.y).abs() <= th
+    });
+    if triple {
+      self.edit.select_all();
+      return Do::Redraw;
+    }
+    let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+    self.edit.place(self.index_at(x), shift);
+    self.selecting = true;
+    unsafe {
+      let _ = SetCapture(self.hwnd);
+    }
+    Do::Redraw
+  }
+
+  /// WM_LBUTTONDBLCLK: a word in the field (elsewhere the first click did
+  /// its work).
+  pub fn double_click(&mut self, x: f32, y: f32) -> Do {
+    if !self.in_field(x, y) || !self.comp.is_empty() || self.hit_chip(x, y).is_some() {
+      return Do::Nothing;
+    }
+    let mut screen = POINT::default();
+    unsafe {
+      let _ = GetCursorPos(&mut screen);
+    }
+    self.last_dbl = Some((Instant::now(), screen));
+    self.edit.select_word(self.index_at(x));
+    Do::Redraw
+  }
+
+  /// The pointer's shape at (x, y): a text cursor over the field, a hand over
+  /// what a click opens.
+  pub fn cursor_at(&self, x: f32, y: f32) -> PCWSTR {
+    if self.selecting {
+      return IDC_IBEAM;
+    }
+    if self.hit_chip(x, y).is_some() || self.hit_tool(x, y).is_some() || self.hit_row(x, y).is_some() {
+      return IDC_HAND;
+    }
+    if self.in_field(x, y) {
+      return IDC_IBEAM;
+    }
+    if self.hit_window(x, y).is_some() || self.hit_workspace(x, y).is_some() {
+      return IDC_HAND;
+    }
+    IDC_ARROW
+  }
+
   pub fn release(&mut self) -> Do {
+    if std::mem::take(&mut self.selecting) {
+      unsafe { let _ = ReleaseCapture(); }
+      return Do::Nothing;
+    }
     let Some((workspace, id, _)) = self.pressed_window.take() else { return Do::Nothing };
     unsafe { let _ = ReleaseCapture(); }
     let target = self.drag_workspace.take();
@@ -1039,7 +1430,12 @@ impl Overview {
 
   /// Opened again: an empty field (or the clipboard prefix for Super+V).
   pub fn reset(&mut self, text: &str) {
-    self.edit.set(text);
+    self.edit.start(text);
+    self.comp.clear();
+    self.comp_cursor = 0;
+    self.selecting = false;
+    self.last_dbl = None;
+    self.settle();
     self.clips_asked = false;
     self.results.clear();
     self.sel = 0;
@@ -1106,12 +1502,12 @@ fn highlighted(p: &mut Painter, name: &str, query: &str, r: Rect, fg: Rgba, mark
   Ok(())
 }
 
-/// ii MaterialShape by prefix (Cookie7Sided, Clover4Leaf, PixelCircle ...),
-/// 40 x 40 around (cx, cy); the action prefix is a pill.
-fn shape(p: &mut Painter, prefix: Prefix, cx: f32, cy: f32, c: Rgba) -> anyhow::Result<()> {
-  if prefix == Prefix::Action {
-    return Ok(p.fill_round(Rect::new(cx - 20.0, cy - 10.0, 40.0, 20.0), 10.0, c)?);
-  }
+/// ii MaterialShape by prefix (Cookie7Sided, Clover4Leaf, PixelCircle ...):
+/// its outline as points around the centre (a 40 x 40 box), unturned, and
+/// its turn. The action prefix is a pill.
+fn outline(prefix: Prefix) -> ([(f32, f32); OUTLINE], f32) {
+  let mut pts = [(0.0, 0.0); OUTLINE];
+  let pill = prefix == Prefix::Action;
   let (n, depth) = match prefix {
     Prefix::App => (4.0, 0.22),
     Prefix::Math => (4.0, 0.2),
@@ -1120,20 +1516,58 @@ fn shape(p: &mut Painter, prefix: Prefix, cx: f32, cy: f32, c: Rgba) -> anyhow::
     Prefix::Clip => (6.0, 0.16),
     _ => (7.0, 0.12),
   };
-  let rot: f32 = if prefix == Prefix::Math { std::f32::consts::FRAC_PI_4 } else { 0.0 };
+  for (i, pt) in pts.iter_mut().enumerate() {
+    let a = i as f32 * std::f32::consts::TAU / OUTLINE as f32;
+    let r = if pill { pill_radius(a) } else { 20.0 * (1.0 - depth + depth * (n * a).cos()) };
+    *pt = (r * a.cos(), r * a.sin());
+  }
+  let turn = if prefix == Prefix::Math { std::f32::consts::FRAC_PI_4 } else { 0.0 };
+  (pts, turn)
+}
+
+const OUTLINE: usize = 120;
+
+/// Distance from the centre to a 40 x 20 pill's edge at angle `a`.
+fn pill_radius(a: f32) -> f32 {
+  let inside = |r: f32| {
+    let (x, y) = (r * a.cos(), r * a.sin());
+    let dx = (x.abs() - 10.0).max(0.0);
+    dx * dx + y * y <= 100.0
+  };
+  let (mut lo, mut hi) = (0.0f32, 20.0f32);
+  for _ in 0..20 {
+    let mid = (lo + hi) / 2.0;
+    if inside(mid) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  lo
+}
+
+/// The shape around (cx, cy), `k` of the way from `from`'s outline to
+/// `to`'s and `turn` of the way between their turns (the web menu's
+/// path and transform transitions).
+#[allow(clippy::too_many_arguments)]
+fn shape(p: &mut Painter, from: Prefix, to: Prefix, k: f32, turn: f32, cx: f32, cy: f32, c: Rgba) -> anyhow::Result<()> {
+  let (a, ta) = outline(from);
+  let (b, tb) = outline(to);
+  let rot = ta + (tb - ta) * turn;
+  let (sin, cos) = rot.sin_cos();
   let brush = p.brush(c)?;
   unsafe {
     let factory: ID2D1Factory = p.dc.GetFactory()?;
     let geo = factory.CreatePathGeometry()?;
     let sink = geo.Open()?;
-    for step in 0..=120 {
-      let a = step as f32 * 3.0 * std::f32::consts::PI / 180.0;
-      let r = 20.0 * (1.0 - depth + depth * (n * a).cos());
-      let (x, y) = (cx + r * (a + rot).cos(), cy + r * (a + rot).sin());
-      if step == 0 {
-        sink.BeginFigure(pt(x, y), D2D1_FIGURE_BEGIN_FILLED);
+    for i in 0..OUTLINE {
+      let x = a[i].0 + (b[i].0 - a[i].0) * k;
+      let y = a[i].1 + (b[i].1 - a[i].1) * k;
+      let at = pt(cx + x * cos - y * sin, cy + x * sin + y * cos);
+      if i == 0 {
+        sink.BeginFigure(at, D2D1_FIGURE_BEGIN_FILLED);
       } else {
-        sink.AddLine(pt(x, y));
+        sink.AddLine(at);
       }
     }
     sink.EndFigure(D2D1_FIGURE_END_CLOSED);
@@ -1380,6 +1814,7 @@ impl Ui {
     let theme = self.theme();
     let Ui { gfx, fonts, res, icons, overview, model, .. } = self;
     let Some(o) = overview.as_mut() else { return };
+    o.animations = model.animations;
     let tr = |s: &str| model.tr(s);
     let mut requests = Vec::new();
     let surface = o.panel.surface.clone();
@@ -1447,8 +1882,12 @@ impl Ui {
         self.overview_prepare(mode.trim());
       } else if wp.0 == 0 {
         if let Some(o) = self.overview.as_mut() {
-          if o.pressed_window.take().is_some() {
+          if o.pressed_window.take().is_some() || std::mem::take(&mut o.selecting) {
             unsafe { let _ = ReleaseCapture(); }
+          }
+          if !o.comp.is_empty() {
+            ime::cancel(o.hwnd);
+            o.comp.clear();
           }
           o.dragging = false;
           o.drag_workspace = None;
@@ -1479,7 +1918,77 @@ impl Ui {
         o.click(x, y)
       }
       WM_LBUTTONUP => o.release(),
+      WM_LBUTTONDBLCLK => {
+        let (x, y) = dip(lp, o.scale);
+        o.double_click(x, y)
+      }
+      WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
+        let mut p = POINT::default();
+        unsafe {
+          let _ = GetCursorPos(&mut p);
+          let _ = ScreenToClient(o.hwnd, &mut p);
+          if let Ok(cursor) = LoadCursorW(None, o.cursor_at(p.x as f32 / o.scale, p.y as f32 / o.scale)) {
+            SetCursor(cursor);
+          }
+        }
+        return Some(LRESULT(1));
+      }
+      WM_TIMER if wp.0 == TIMER_MORPH => {
+        // the frame after the last one draws the end values
+        if !o.animating() {
+          unsafe {
+            let _ = KillTimer(o.hwnd, TIMER_MORPH);
+          }
+        }
+        Do::Redraw
+      }
+      // The IME: its composition is drawn in the field (not in the IME's
+      // own window), the candidate list opens at the caret.
+      ime::WM_IME_SETCONTEXT => {
+        let lp = if wp.0 != 0 { LPARAM(lp.0 & !ime::ISC_SHOWUICOMPOSITIONWINDOW) } else { lp };
+        return Some(unsafe { DefWindowProcW(o.hwnd, msg, wp, lp) });
+      }
+      ime::WM_IME_STARTCOMPOSITION => {
+        // the composition replaces the selection, as typing does
+        if o.edit.selection().0 != o.edit.selection().1 {
+          o.edit.backspace(false);
+        }
+        o.comp.clear();
+        o.comp_cursor = 0;
+        self.overview_ime_render();
+        return Some(LRESULT(0));
+      }
+      ime::WM_IME_COMPOSITION => {
+        let flags = lp.0 as u32;
+        let hwnd = o.hwnd;
+        let mut d = Do::Nothing;
+        if flags & ime::GCS_RESULTSTR != 0 {
+          let text = ime::string(hwnd, ime::GCS_RESULTSTR);
+          o.comp.clear();
+          o.comp_cursor = 0;
+          o.edit.insert(&text);
+          d = Do::Search;
+        }
+        if flags & ime::GCS_COMPSTR != 0 {
+          o.comp = ime::string(hwnd, ime::GCS_COMPSTR);
+          o.comp_cursor = ime::char_index(&o.comp, ime::cursor(hwnd));
+        }
+        // handled here: DefWindowProc would type the result again as WM_CHAR
+        if matches!(d, Do::Search) {
+          self.overview_do(d);
+          self.overview_place_ime();
+        } else {
+          self.overview_ime_render();
+        }
+        return Some(LRESULT(0));
+      }
+      ime::WM_IME_ENDCOMPOSITION => {
+        o.comp.clear();
+        o.comp_cursor = 0;
+        Do::Redraw
+      }
       WM_CAPTURECHANGED => {
+        o.selecting = false;
         o.pressed_window = None;
         o.dragging = false;
         o.drag_workspace = None;
@@ -1519,6 +2028,18 @@ impl Ui {
     };
     self.overview_do(d);
     Some(LRESULT(0))
+  }
+
+  /// Repaints for the IME and moves its candidate list to the caret.
+  fn overview_ime_render(&mut self) {
+    self.overview_render();
+    self.overview_place_ime();
+  }
+
+  fn overview_place_ime(&self) {
+    if let Some(o) = self.overview.as_ref() {
+      ime::place(o.hwnd, o.caret_px, o.line_px);
+    }
   }
 
   fn overview_do(&mut self, d: Do) {
@@ -1897,6 +2418,105 @@ mod tests {
     e.select_all();
     e.right(false, false);
     assert_eq!((e.caret, e.anchor), (6, 6));
+  }
+
+  fn typed(s: &str) -> Edit {
+    let mut e = Edit::default();
+    for c in s.chars() {
+      e.insert(&c.to_string());
+    }
+    e
+  }
+
+  #[test]
+  fn undo_takes_back_a_word_at_a_time() {
+    let mut e = typed("open visual");
+    assert!(e.undo());
+    assert_eq!(e.text(), "open ");
+    assert!(e.undo());
+    assert_eq!(e.text(), "open");
+    assert!(e.undo());
+    assert_eq!(e.text(), "");
+    assert!(!e.undo());
+    assert!(e.redo());
+    assert!(e.redo());
+    assert_eq!(e.text(), "open ");
+  }
+
+  #[test]
+  fn a_new_change_drops_the_redo_steps() {
+    let mut e = typed("abc");
+    e.backspace(false);
+    e.backspace(false);
+    assert_eq!(e.text(), "a");
+    assert!(e.undo());
+    assert_eq!(e.text(), "abc");
+    e.insert("d");
+    assert!(!e.redo());
+    assert_eq!(e.text(), "abcd");
+  }
+
+  #[test]
+  fn moving_the_caret_starts_a_new_step() {
+    let mut e = typed("ab");
+    e.left(false, false);
+    e.insert("x");
+    assert_eq!(e.text(), "axb");
+    assert!(e.undo());
+    assert_eq!(e.text(), "ab");
+    assert_eq!(e.caret, 1);
+  }
+
+  #[test]
+  fn opening_the_menu_forgets_the_history() {
+    let mut e = typed("abc");
+    e.start(";");
+    assert!(!e.undo());
+    assert_eq!((e.text(), e.caret), (";".to_string(), 1));
+  }
+
+  #[test]
+  fn double_click_selects_the_run_under_it() {
+    let mut e = edit("open visual  studio");
+    e.select_word(7);
+    assert_eq!(e.selected(), "visual");
+    e.select_word(11);
+    assert_eq!(e.selected(), "visual");
+    e.select_word(12);
+    assert_eq!(e.selected(), "  ");
+    e.select_word(19);
+    assert_eq!(e.selected(), "studio");
+    let mut empty = Edit::default();
+    empty.select_word(0);
+    assert_eq!(empty.selection(), (0, 0));
+  }
+
+  #[test]
+  fn shift_click_extends_the_selection() {
+    let mut e = edit("hello world");
+    e.place(2, false);
+    e.place(8, true);
+    assert_eq!(e.selected(), "llo wo");
+    e.place(20, false);
+    assert_eq!((e.caret, e.anchor), (11, 11));
+  }
+
+  #[test]
+  fn paragraph_direction_follows_the_first_letter() {
+    assert!(is_rtl("مرحبا world"));
+    assert!(is_rtl("123 שלום"));
+    assert!(!is_rtl("hello مرحبا"));
+    assert!(!is_rtl("42"));
+  }
+
+  #[test]
+  fn shapes_have_full_outlines() {
+    let (pill, _) = outline(Prefix::Action);
+    assert!((pill[0].0 - 20.0).abs() < 0.01);
+    assert!((pill[OUTLINE / 4].1 - 10.0).abs() < 0.01);
+    let (cookie, turn) = outline(Prefix::Math);
+    assert!(cookie.iter().all(|(x, y)| (x * x + y * y).sqrt() <= 20.01));
+    assert!(turn > 0.0);
   }
 
   #[test]

@@ -12,6 +12,7 @@ mod drag_drop;
 mod fonts;
 mod gfx;
 mod icons;
+mod ime;
 mod mixer;
 mod model;
 mod palette;
