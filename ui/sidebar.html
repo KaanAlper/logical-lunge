@@ -268,11 +268,13 @@
         'ws-move-prev': "Pencereyi önceki workspace'e taşı", 'ws-move-next': "Pencereyi sonraki workspace'e taşı",
         terminal: 'Terminal', 'terminal-alt': 'Terminal (ikinci kısayol)', browser: 'Tarayıcı', files: 'Dosya yöneticisi',
         code: 'Kod editörü', editor: 'Metin editörü', close: 'Pencereyi kapat', screenshot: 'Ekran alıntısı', 'screenshot-screen': 'Monitörün tamamı (panoya)', clipboard: 'Pano geçmişi',
-        'file-search': 'Dosya araması',
+        'file-search': 'Dosya araması', 'screenshot-alt': 'Ekran alıntısı (ikinci kısayol)', 'overview-alt': 'Super menüsü',
+        run: 'Çalıştır (Super menüsü)', search: 'Ara (Super menüsü)', workspaces: "Workspace'ler (Super menüsü)", settings: 'Ayarlar',
+        sidebar: 'Sağ panel', notifications: 'Bildirimler', 'task-manager': 'Görev Yöneticisi',
       };
       const llLabel = id => LL_LABELS[id] || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
       const llGroup = id => id.startsWith('focus-') || id.startsWith('move-') || id === 'close' ? 'win'
-        : id.startsWith('ws-') ? 'ws' : (id.startsWith('screenshot') || id === 'clipboard' || id === 'file-search') ? 'sys' : 'app';
+        : (id.startsWith('ws-') || id === 'workspaces') ? 'ws' : 'sys';
       function tilingLabel(cmds) {
         const c = cmds.join(' ; ');
         let m;
@@ -300,7 +302,7 @@
         return 'win';
       };
       const GROUPS = [['win', 'Pencereler', 'select_window'], ['ws', 'Workspace', 'view_carousel'], ['app', 'Uygulamalar', 'apps'], ['sys', 'Sistem', 'settings']];
-      const KEY_GLYPH = { Left: '←', Right: '→', Up: '↑', Down: '↓', Enter: '↵', PageUp: 'PgUp', PageDown: 'PgDn' };
+      const KEY_GLYPH = { Left: '←', Right: '→', Up: '↑', Down: '↓', Enter: '↵', PageUp: 'PgUp', PageDown: 'PgDn', Escape: 'Esc' };
 
       function Keycaps({ combo }) {
         if (!combo) return <span className="kc-none">—</span>;
@@ -316,56 +318,157 @@
       }
 
       function ShortcutsPage({ onClose }) {
-        const [ll, setLl] = useState([]);
-        const [tiling, setTiling] = useState([]);
+        // Çekirdeğin kısayol modeli (--keybinds-model): kendi kısayolları, eklenen uygulamalar, pencere yöneticisininkiler
+        // ve Windows'un bırakmadıkları. Değişiklikler bekletilir; her değişiklikte bütün durumun çakışmaları çekirdeğe
+        // sorulur (--keybinds-check), çakışan satırlar kırmızı yanar. "Kaydet" hepsini yazar (--keybinds-save).
+        const [model, setModel] = useState(null);
+        const [staged, setStaged] = useState({ core: {}, apps: [], removed: [], tiling: {} });
+        const [conflicts, setConflicts] = useState([]);
         const [locked, setLocked] = useState(true);
         const [capturing, setCapturing] = useState(null); // satır anahtarı
         const [msg, setMsg] = useState(null);
         const [q, setQ] = useState('');
+        const [picker, setPicker] = useState(false);
+        const [pickQ, setPickQ] = useState('');
+        const [apps, setApps] = useState([]);
+        const [reset, setReset] = useState(null); // null | { apps: bool }
+        const [shake, setShake] = useState(0);
+        const [busy, setBusy] = useState(false);
+        const checkSeq = useRef(0);
+
+        const fresh = m => ({
+          core: {},
+          apps: (m.core || []).filter(b => b.custom).map(b => ({ id: b.id, name: b.name, path: b.path, combo: b.combo })),
+          removed: (m.core || []).filter(b => b.removed).map(b => b.id),
+          tiling: {},
+        });
         const load = useCallback(() => {
-          helper(['--keybinds']).then(s => { const r = json(s); if (Array.isArray(r)) setLl(r); }).catch(() => {});
-          psFile('keybinds-tiling.ps1', ['list']).then(s => { const r = json(s); if (Array.isArray(r)) setTiling(r); }).catch(() => {});
+          helper(['--keybinds-model']).then(s => {
+            const m = json(s);
+            if (!m || !Array.isArray(m.core)) return;
+            setModel(m); setStaged(fresh(m)); setConflicts(m.conflicts || []);
+          }).catch(() => {});
         }, []);
         useEffect(load, []);
         useEffect(() => { window.__llCapturing = !!capturing; }, [capturing]);
+        useEffect(() => {
+          fetch('http://127.0.0.1:6131/apps.json', { method: 'POST', cache: 'no-store' })
+            .then(r => r.json()).then(list => { if (Array.isArray(list)) setApps(list.filter(a => a && a.name && a.path)); }).catch(() => {});
+        }, []);
+
+        const saved = model ? fresh(model) : { core: {}, apps: [], removed: [], tiling: {} };
+        const dirty = model && JSON.stringify(staged) !== JSON.stringify(saved);
+        const check = next => {
+          const seq = ++checkSeq.current;
+          helper(['--keybinds-check', JSON.stringify(next)]).then(s => {
+            const r = json(s);
+            if (r && r.ok && seq === checkSeq.current) setConflicts(r.conflicts || []);
+          }).catch(() => {});
+        };
+        const stage = next => { setStaged(next); check(next); };
 
         const rows = [
           { key: 'super', group: 'sys', label: 'Arama / overview', combo: 'Super', fixed: true },
           { key: 'dock', group: 'sys', label: 'Uygulama Dock’u', combo: 'Super+Alt', fixed: true },
-          ...ll.map(b => ({ key: 'll:' + b.id, group: llGroup(b.id), label: llLabel(b.id), combo: b.combo, def: b.default, src: 'll', id: b.id })),
-          ...tiling.map(g => ({ key: 'tiling:' + g.index, group: tilingGroup(g.commands), label: tilingLabel(g.commands), combo: g.bindings[0] || '', extra: g.bindings.slice(1), src: 'tiling', id: g.index })),
         ];
+        if (model) {
+          for (const b of model.core) {
+            if (b.custom || staged.removed.includes(b.id)) continue;
+            rows.push({ key: 'll:' + b.id, group: b.app ? 'app' : llGroup(b.id), label: llLabel(b.id), combo: b.id in staged.core ? staged.core[b.id] : b.combo, def: b.default, src: 'll', id: b.id, app: b.app });
+          }
+          for (const a of staged.apps) rows.push({ key: 'll:' + a.id, group: 'app', label: a.name, combo: a.combo, src: 'll', id: a.id, app: true, custom: true });
+          for (const g of model.tiling) {
+            const b = staged.tiling[g.index] || g.bindings;
+            rows.push({ key: 'tiling:' + g.index, group: tilingGroup(g.commands), label: tilingLabel(g.commands), combo: b[0] || '', extra: b.slice(1), src: 'tiling', id: g.index });
+          }
+        }
+        const conflictOf = key => conflicts.find(c => (c.keys || []).includes(key));
+        const conflictText = (row, c) => c.reserved ? `Windows'a ayrılmış: ${c.reserved}`
+          : 'Çakışıyor: ' + c.keys.filter(k => k !== row.key).map(k => (rows.find(r => r.key === k) || {}).label || k).join(', ');
         const shown = q ? rows.filter(r => low(r.label).includes(low(q)) || low(r.combo).includes(low(q))) : rows;
 
+        // Satırın yeni tuşları bekleyen duruma girer
+        const put = (row, combo) => {
+          const next = { ...staged, core: { ...staged.core }, apps: staged.apps.map(a => ({ ...a })), tiling: { ...staged.tiling } };
+          if (row.src === 'll') {
+            const app = next.apps.find(a => a.id === row.id);
+            if (app) app.combo = combo;
+            else {
+              const savedCombo = (model.core.find(b => b.id === row.id) || {}).combo || '';
+              if (combo === savedCombo) delete next.core[row.id]; else next.core[row.id] = combo;
+            }
+          } else {
+            const savedB = (model.tiling.find(g => g.index === row.id) || {}).bindings || [];
+            const b = [...(next.tiling[row.id] || savedB)];
+            if (!combo) b.shift(); else if (b.length) b[0] = combo; else b.push(combo);
+            if (JSON.stringify(b) === JSON.stringify(savedB)) delete next.tiling[row.id]; else next.tiling[row.id] = b;
+          }
+          setMsg(null);
+          stage(next);
+        };
         const capture = async row => {
           if (locked || row.fixed || capturing) return;
           setMsg(null); setCapturing(row.key);
           let combo = '';
           try { combo = (await helper(['--capture'])).trim(); } catch {}
           setCapturing(null);
+          if (combo) put(row, combo);
+        };
+        const captureNew = async (next, id) => {
+          setCapturing('ll:' + id);
+          let combo = '';
+          try { combo = (await helper(['--capture'])).trim(); } catch {}
+          setCapturing(null);
           if (!combo) return;
-          const clash = rows.find(r => r.key !== row.key && (r.combo === combo || (r.extra || []).includes(combo)));
-          if (clash) { setMsg({ kind: 'error', text: `${combo} zaten "${clash.label}" için kullanılıyor` }); return; }
-          await apply(row, combo);
+          const after = { ...next, apps: next.apps.map(a => (a.id === id ? { ...a, combo } : a)) };
+          stage(after);
         };
-        // Çekirdek ve tiling betiği {"ok":true|false} döndürür; çalışmayan ya da başka bir şey döndüren komut başarısız sayılır
-        const succeeded = run => run.then(out => JSON.parse(out || '{}').ok === true).catch(() => false);
-        const apply = async (row, combo) => {
-          const ok = await succeeded(row.src === 'll'
-            ? helper(['--bind', row.id, combo])
-            : psFile('keybinds-tiling.ps1', ['set', String(row.id), combo]));
-          setMsg(ok
-            ? { kind: 'ok', text: `${row.label}: ${combo || 'kapatıldı'}` }
-            : { kind: 'error', text: `${row.label}: kaydedilemedi` });
+        const addApp = (name, path) => {
+          setPicker(false);
+          const id = 'app:' + Date.now().toString(36);
+          const next = { ...staged, apps: [...staged.apps, { id, name, path, combo: '' }] };
+          stage(next);
+          captureNew(next, id);
+        };
+        const browse = async () => {
+          let r = null;
+          try { r = json(await helper(['--keybinds-pick-app'])); } catch {}
+          if (r && r.path) addApp(r.name || r.path, r.path);
+        };
+        const remove = row => {
+          const next = row.custom
+            ? { ...staged, apps: staged.apps.filter(a => a.id !== row.id) }
+            : { ...staged, removed: [...staged.removed, row.id], core: Object.fromEntries(Object.entries(staged.core).filter(([k]) => k !== row.id)) };
+          stage(next);
+        };
+        const refuse = () => {
+          setShake(n => n + 1);
+          const lines = conflicts.slice(0, 3).map(c => `${c.combo}: ${c.keys.map(k => (rows.find(r => r.key === k) || {}).label || k).join(', ')}${c.reserved ? ` (${c.reserved})` : ''}`);
+          emit('ll:toast', { kind: 'error', icon: 'keyboard', title: 'Kısayollar kaydedilmedi: çakışma var', body: lines.join('\n'), timeout: 6000 }).catch(() => {});
+        };
+        const save = async () => {
+          if (!dirty || busy) return;
+          if (conflicts.length) return refuse();
+          setBusy(true);
+          let r = null;
+          try { r = json(await helper(['--keybinds-save', JSON.stringify(staged)])); } catch {}
+          setBusy(false);
+          if (r && r.ok) {
+            emit('ll:toast', { kind: 'ok', icon: 'keyboard', title: 'Kısayollar kaydedildi', timeout: 2500 }).catch(() => {});
+            setMsg(null); load();
+          } else if (r && r.conflicts && r.conflicts.length) { setConflicts(r.conflicts); refuse(); }
+          else setMsg({ kind: 'error', text: 'Kısayollar kaydedilemedi' });
+        };
+        const doReset = async removeApps => {
+          setReset(null); setBusy(true);
+          let ok = false;
+          try { ok = (json(await helper(removeApps ? ['--keybinds-reset', '--apps'] : ['--keybinds-reset'])) || {}).ok === true; } catch {}
+          setBusy(false);
+          setMsg(ok ? { kind: 'ok', text: 'Tüm kısayollar varsayılana döndü' } : { kind: 'error', text: 'Kısayollar sıfırlanamadı' });
           load();
         };
-        const resetAll = async () => {
-          const results = await Promise.all([succeeded(helper(['--bind-reset'])), succeeded(psFile('keybinds-tiling.ps1', ['reset']))]);
-          setMsg(results.every(Boolean)
-            ? { kind: 'ok', text: 'Tüm kısayollar varsayılana döndü' }
-            : { kind: 'error', text: 'Kısayollar sıfırlanamadı' });
-          load();
-        };
+        const askReset = () => { if (saved.apps.length) setReset({ apps: false }); else doReset(false); };
+        const pickList = pickQ ? apps.filter(a => low(a.name).includes(low(pickQ))) : apps;
 
         return (
           <Page title="Kısayollar" icon="keyboard" onClose={onClose} actions={<>
@@ -376,33 +479,82 @@
           </>}>
             <div className="kb-tools">
               <div className="kb-search"><Icon name="search" /><input value={q} onChange={e => setQ(e.target.value)} placeholder="Kısayol ara" spellCheck={false} /></div>
-              <button className="chip" disabled={locked} onClick={resetAll} title="Varsayılanlara sıfırla"><Icon name="restart_alt" />Sıfırla</button>
+              <button className="chip" disabled={locked} onClick={askReset} title="Varsayılanlara sıfırla"><Icon name="restart_alt" />Sıfırla</button>
             </div>
             {!locked && <div className="kb-hint"><Icon name="info" />Değiştirmek için bir satıra tıkla ve yeni tuşlara bas. Esc: iptal.</div>}
             {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
             {GROUPS.map(([g, title, icon]) => {
               const list = shown.filter(r => r.group === g);
-              if (!list.length) return null;
+              const add = g === 'app' && !locked;
+              if (!list.length && !add) return null;
               return (
                 <div key={g} className="kb-group">
                   <div className="kb-gtitle"><Icon name={icon} />{title}</div>
-                  {list.map(r => (
-                    <div key={r.key} className={`kb-row ${locked || r.fixed ? '' : 'editable'} ${capturing === r.key ? 'capturing' : ''}`} onClick={() => capture(r)}>
-                      <span className="kb-label">{r.label}</span>
-                      {capturing === r.key
-                        ? <span className="kb-wait"><Icon name="keyboard" />Tuşlara bas…</span>
-                        : <Keycaps combo={r.combo} />}
-                      {!locked && r.src === 'll' && r.def && r.combo !== r.def && capturing !== r.key && (
-                        <button className="kb-mini" title={`Varsayılan: ${r.def}`} onClick={e => { e.stopPropagation(); apply(r, r.def); }}><Icon name="undo" /></button>
-                      )}
-                      {!locked && !r.fixed && r.combo && capturing !== r.key && (
-                        <button className="kb-mini" title="Kısayolu kaldır" onClick={e => { e.stopPropagation(); apply(r, ''); }}><Icon name="close" /></button>
-                      )}
-                    </div>
-                  ))}
+                  {list.map(r => {
+                    const c = capturing === r.key ? null : conflictOf(r.key);
+                    return (
+                      <div key={r.key} className={`kb-row ${locked || r.fixed ? '' : 'editable'} ${capturing === r.key ? 'capturing' : ''} ${c ? 'clash' : ''}`} onClick={() => capture(r)}>
+                        <div className="kb-main">
+                          <span className="kb-label">{r.label}</span>
+                          {capturing === r.key
+                            ? <span className="kb-wait"><Icon name="keyboard" />Tuşlara bas…</span>
+                            : <Keycaps combo={r.combo} />}
+                          {!locked && r.src === 'll' && r.def && r.combo !== r.def && capturing !== r.key && (
+                            <button className="kb-mini" title={`Varsayılan: ${r.def}`} onClick={e => { e.stopPropagation(); put(r, r.def); }}><Icon name="undo" /></button>
+                          )}
+                          {!locked && !r.fixed && r.combo && capturing !== r.key && (
+                            <button className="kb-mini" title="Kısayolu kaldır" onClick={e => { e.stopPropagation(); put(r, ''); }}><Icon name="close" /></button>
+                          )}
+                          {!locked && r.app && capturing !== r.key && (
+                            <button className="kb-mini" title="Uygulamayı listeden kaldır" onClick={e => { e.stopPropagation(); remove(r); }}><Icon name="delete" /></button>
+                          )}
+                        </div>
+                        {c && <div className="kb-clash"><Icon name="error" />{conflictText(r, c)}</div>}
+                      </div>
+                    );
+                  })}
+                  {add && <button className="kb-add" onClick={() => { setPickQ(''); setPicker(true); }}><Icon name="add" />Uygulama ekle</button>}
                 </div>
               );
             })}
+            {!locked && (
+              <div className="kb-foot">
+                {dirty && <span className={`kb-note ${conflicts.length ? 'err' : ''}`}>{conflicts.length ? 'Çakışan kısayollar var' : 'Kaydedilmemiş değişiklikler'}</span>}
+                {dirty && <button className="chip" onClick={() => { setStaged(saved); check(saved); setMsg(null); }}>Vazgeç</button>}
+                <button key={shake} className={`kb-save ${dirty ? 'on' : ''} ${dirty && conflicts.length ? 'err' : ''} ${shake && window.LL_PREFS?.animations !== false ? 'shake' : ''}`} onClick={save} disabled={!dirty || busy}>
+                  <Icon name={dirty && conflicts.length ? 'error' : 'save'} />Kaydet
+                </button>
+              </div>
+            )}
+            {picker && (
+              <div className="dlg-scrim" onClick={() => setPicker(false)}>
+                <div className="dlg" onClick={e => e.stopPropagation()}>
+                  <div className="dlg-head"><span className="dlg-title">Uygulama ekle</span></div>
+                  <div className="kb-search"><Icon name="search" /><input autoFocus value={pickQ} onChange={e => setPickQ(e.target.value)} placeholder="Uygulama ara" spellCheck={false}
+                    onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setPicker(false); } }} /></div>
+                  <div className="dlg-list">
+                    {pickList.map(a => (
+                      <button key={a.path} className="net-row" onClick={() => addApp(a.name, a.path)}><Icon name="apps" /><span className="net-name">{a.name}</span></button>
+                    ))}
+                    {!pickList.length && <div className="dlg-empty"><Icon name="info" />Uygulama bulunamadı</div>}
+                  </div>
+                  <div className="dlg-foot"><button className="chip" onClick={browse}><Icon name="folder_open" />Gözat…</button></div>
+                </div>
+              </div>
+            )}
+            {reset && (
+              <div className="dlg-scrim" onClick={() => setReset(null)}>
+                <div className="dlg kb-confirm" onClick={e => e.stopPropagation()}>
+                  <div className="dlg-head"><span className="dlg-title">Kısayollar sıfırlansın mı?</span></div>
+                  <p className="kb-confirm-text">Bütün kısayollar varsayılanlarına döner.</p>
+                  <label className="kb-check"><input type="checkbox" checked={reset.apps} onChange={e => setReset({ apps: e.target.checked })} />Kendi eklediğin uygulamalar da kaldırılsın</label>
+                  <div className="dlg-foot">
+                    <button className="chip" onClick={() => setReset(null)}>Vazgeç</button>
+                    <button className="chip on" onClick={() => doReset(reset.apps)}>Sıfırla</button>
+                  </div>
+                </div>
+              </div>
+            )}
           </Page>
         );
       }
