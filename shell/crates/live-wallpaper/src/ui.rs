@@ -25,7 +25,7 @@ use windows::{
   core::{w, HSTRING, PCWSTR},
   Win32::{
     Foundation::{
-      BOOL, COLORREF, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+      BOOL, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM,
     },
     Graphics::Gdi::{
       EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW,
@@ -75,7 +75,6 @@ const TIMER_CHECK: usize = 1;
 const TIMER_RELAYER: usize = 2;
 /// settings unreadable for a moment, Explorer restarted, a window lost
 const TIMER_REBUILD: usize = 3;
-const TIMER_FADE: usize = 4;
 /// the video thread ended without being asked: a new one
 const TIMER_RENDER: usize = 5;
 /// monitors changed (they change in bursts)
@@ -337,6 +336,7 @@ impl App {
       return;
     }
     self.missing = false;
+    log::line(&format!("desktop layout: {:?}", self.layer));
     for (device, id, rect) in self.monitors.clone() {
       let Some(file) = self.config.file_for(&[&device, &id]).cloned()
       else {
@@ -821,7 +821,10 @@ unsafe extern "system" fn msg_proc(
       });
       LRESULT(0)
     }
-    WM_APP_FIRST_FRAME => LRESULT(0),
+    WM_APP_FIRST_FRAME => {
+      log::line(&format!("first frame on screen {}", lp.0));
+      LRESULT(0)
+    }
     WM_APP_RENDER_DIED => {
       SetTimer(hwnd, TIMER_RENDER, 3000, None);
       LRESULT(0)
