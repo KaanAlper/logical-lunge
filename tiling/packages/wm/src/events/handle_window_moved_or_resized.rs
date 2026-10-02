@@ -673,7 +673,8 @@ mod tests {
     let frame_in_right_corner = Rect::from_xy(1919, 1050, 600, 600);
     assert!(is_in_corner(&frame_in_right_corner, &monitor));
 
-    let frame_in_left_corner = Rect::from_xy(1, 1050, 600, 600);
+    // platform_sync hides it at `left + 1 - width`: one pixel stays on screen
+    let frame_in_left_corner = Rect::from_xy(1 - 600, 1050, 600, 600);
     assert!(is_in_corner(&frame_in_left_corner, &monitor));
   }
 
