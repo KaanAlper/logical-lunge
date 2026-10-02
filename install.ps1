@@ -29,8 +29,8 @@ function Get-Texts([bool]$tr) {
 if ($tr) { @{
         tagline = 'Logical Lunge: akıcı ve kişiselleştirilebilir bir Windows masaüstü'
         qEdition = 'Hangi arayüzü kurmak istersin?'; sEdition = 'Arayüz'
-        native = 'Native: yerel çizilen hafif bar; diğer paneller henüz WebView2 kullanır'
-        web = 'Web UI: bar ve paneller React / WebView2 pencereleriyle çizilir'
+        native = 'Native: bar, Super menüsü, sağ panel, ayarlar, Dock ve bildirimler tamamen yerel çizilir (en hızlısı)'
+        web = 'Web UI: aynı masaüstü; bar ve paneller React / WebView2 pencereleriyle çizilir'
         noRelease = 'Bu arayüz için doğrulanabilir bir sürüm henüz yayımlanmamış.'
         preparing = 'Hazırlanıyor'; release = 'Son sürüm aranıyor'
         welcome = "Logical Lunge'a hoş geldin"
@@ -66,8 +66,8 @@ if ($tr) { @{
     } } else { @{
         tagline = 'Logical Lunge: a fluid, personal Windows desktop'
         qEdition = 'Which interface would you like to install?'; sEdition = 'Interface'
-        native = 'Native: a lightweight native bar; other panels still use WebView2'
-        web = 'Web UI: the bar and panels are rendered in React / WebView2 windows'
+        native = 'Native: the bar, Super menu, right panel, settings, Dock and notifications are all drawn natively (fastest)'
+        web = 'Web UI: the same desktop; the bar and panels are rendered in React / WebView2 windows'
         noRelease = 'No verifiable release has been published for this interface yet.'
         preparing = 'Getting ready'; release = 'Looking for the latest release'
         welcome = 'Welcome to Logical Lunge'
@@ -439,9 +439,17 @@ try {
     if ($env:LL_NO_SENSORS) { $extras = @($extras | Where-Object { $_ -ne 'sensors' }) }
     if ($env:LL_NO_EVERYTHING) { $extras = @($extras | Where-Object { $_ -ne 'everything' }) }
     if ($interactive) {
-        $sysName = (Get-UICulture).NativeName
-        $langs = @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe', 'tr'), @('English', 'en'), @('Deutsch', 'de'), @('Français', 'fr'), @('Español', 'es'), @('Italiano', 'it'), @('Português', 'pt'),
-            @('Русский (Russian)', 'ru'), @('Українська (Ukrainian)', 'uk'), @('Polski', 'pl'), @('日本語 (Japanese)', 'ja'), @('中文 (Chinese)', 'zh'), @('한국어 (Korean)', 'ko'), @('العربية (Arabic)', 'ar'))
+        # Console fonts (Consolas, Lucida Console) have no Japanese, Chinese, Korean or Arabic letters and print them as
+        # boxes: the console names every language in Latin letters, in the wizard's language. The setup app, which
+        # draws with a full font, keeps the native names.
+        $sysName = (Get-UICulture).EnglishName
+        $langs = if ($tr) {
+            @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe', 'tr'), @('İngilizce (English)', 'en'), @('Almanca (Deutsch)', 'de'), @('Fransızca (Français)', 'fr'), @('İspanyolca (Español)', 'es'),
+                @('İtalyanca (Italiano)', 'it'), @('Portekizce (Português)', 'pt'), @('Rusça', 'ru'), @('Ukraynaca', 'uk'), @('Lehçe (Polski)', 'pl'), @('Japonca', 'ja'), @('Çince', 'zh'), @('Korece', 'ko'), @('Arapça', 'ar'))
+        } else {
+            @(@("$($T.systemLang) ($sysName)", 'system'), @('Türkçe (Turkish)', 'tr'), @('English', 'en'), @('Deutsch (German)', 'de'), @('Français (French)', 'fr'), @('Español (Spanish)', 'es'),
+                @('Italiano (Italian)', 'it'), @('Português (Portuguese)', 'pt'), @('Russian', 'ru'), @('Ukrainian', 'uk'), @('Polski (Polish)', 'pl'), @('Japanese', 'ja'), @('Chinese', 'zh'), @('Korean', 'ko'), @('Arabic', 'ar'))
+        }
         $now = Get-Date
         
         $step = 0
