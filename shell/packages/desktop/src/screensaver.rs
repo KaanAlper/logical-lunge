@@ -79,6 +79,40 @@ mod win {
     found
   }
 
+  /// Logical Lunge's own video screen saver, next to this program (the
+  /// package's app folder).
+  fn ours() -> Option<PathBuf> {
+    let scr = std::env::current_exe().ok()?.parent()?.join("LogicalLunge.scr");
+    scr.is_file().then_some(scr)
+  }
+
+  /// The long form of a path Windows may keep short (`PROGRA~1`), so the
+  /// selected saver matches its entry.
+  fn long_path(path: &str) -> String {
+    if path.is_empty() { return String::new(); }
+    match std::fs::canonicalize(path) {
+      Ok(p) => {
+        let s = p.to_string_lossy().into_owned();
+        s.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(s)
+      }
+      Err(_) => path.to_string(),
+    }
+  }
+
+  /// Windows starts the saver from SCRNSAVE.EXE without quotes: a path with
+  /// spaces (Program Files) is stored in its short form.
+  fn short_path(path: &str) -> String {
+    #[link(name = "kernel32")]
+    extern "system" {
+      fn GetShortPathNameW(long: *const u16, short: *mut u16, len: u32) -> u32;
+    }
+    if !path.contains(' ') { return path.to_string(); }
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buf = [0u16; 520];
+    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n > 0 && n < buf.len() { String::from_utf16_lossy(&buf[..n]) } else { path.to_string() }
+  }
+
   fn system_choices(current: &str) -> Vec<Choice> {
     let root = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
     let file_of = |path: &Path| path.file_name().map(|f| f.to_string_lossy().to_lowercase());
@@ -94,6 +128,9 @@ mod win {
           }
         }
       }
+    }
+    if let Some(scr) = ours() {
+      choices.push(Choice { name: "Logical Lunge".into(), path: scr.to_string_lossy().into_owned() });
     }
     // imported ones (the core's --saver-pick), a zip's in their own folder
     for path in library() {
@@ -111,7 +148,7 @@ mod win {
   /// Runs a listed screen saver: full screen (`/s`) or its own settings
   /// (`/c`). Only the savers the page lists can be started from here.
   pub fn run(path: &str, configure: bool) -> Result<(), String> {
-    if !system_choices(&selected()?).iter().any(|c| c.path.eq_ignore_ascii_case(path)) {
+    if !system_choices(&long_path(&selected()?)).iter().any(|c| c.path.eq_ignore_ascii_case(path)) {
       return Err("Bilinmeyen ekran koruyucu".into());
     }
     std::process::Command::new(path)
@@ -130,7 +167,7 @@ mod win {
   pub fn state() -> Result<State, String> {
     let mut seconds = 0u32;
     unsafe { SystemParametersInfoW(SPI_GETSCREENSAVETIMEOUT, 0, Some((&mut seconds as *mut u32).cast::<c_void>()), Default::default()) }.map_err(|e| e.to_string())?;
-    let selected = selected()?;
+    let selected = long_path(&selected()?);
     Ok(State {
       enabled: get_bool(SPI_GETSCREENSAVEACTIVE)? && !selected.is_empty(),
       minutes: (seconds / 60).max(1),
@@ -149,6 +186,7 @@ mod win {
       }
     }
     if !selected.is_empty() {
+      let selected = short_path(selected);
       let wide: Vec<u16> = selected.encode_utf16().chain(std::iter::once(0)).collect();
       let status = unsafe { RegSetKeyValueW(HKEY_CURRENT_USER, w!("Control Panel\\Desktop"), w!("SCRNSAVE.EXE"), REG_SZ.0,
         Some(wide.as_ptr().cast::<c_void>()), (wide.len() * 2) as u32) };
