@@ -9,6 +9,9 @@
 #                                 $env:LL_SOURCE = <folder> install from a local build (dist\LogicalLunge-x.y.z)
 #                                 $env:LL_DEFAULTS = 1      no questions (default choices)
 #                                 $env:LL_EDITION = 'native-ui' or 'web-ui' (defaults to the installed edition, else native-ui)
+#                                 $env:LL_LANGUAGE = 'system' or tr, en, de...   $env:LL_FOCUS_COLOR = '#rrggbb'   $env:LL_CLOCK = 24 or 12
+#                                 $env:LL_DRIVER = <folder> driven by the setup app (LogicalLunge-Setup.exe): no
+#                                                           questions, phases in <folder>\status.json, <folder>\cancel stops
 #                                 $env:LL_PLAIN = 1         numbered prompts (0 = no extras, < = back)
 #                                 $env:LL_PREVIEW = 1       walk through the wizard, the download and a simulated install;
 #                                                           nothing is stopped or changed, no UAC
@@ -314,6 +317,7 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
                             Poll-CtrlC
                             # 1.0, not 1: [Math]::Min(1, 0.74) picks the integer overload and gives 1 (the bar sat at 0 %, then jumped to 100 %)
                             $frac = if ($total -gt 0) { [Math]::Min(1.0, [double]$done / $total) } else { 0 }
+                            Report @{ phase = 'download'; version = [string]$ver; percent = [int]($frac * 100); done = $done; total = $total }
                             $speed = if ($sw.Elapsed.TotalSeconds -gt 0.3) { (Human (($done - $have) / $sw.Elapsed.TotalSeconds)) + '/s' } else { '' }
                             $pct = if ($total -gt 0) { '{0,3:0}%' -f ($frac * 100) } else { '' }
                             $info = ((Human $done) + $(if ($total -gt 0) { ' / ' + (Human $total) }) + '  ' + $speed)
@@ -358,6 +362,7 @@ function With-Spinner([string]$label, [scriptblock]$sb) {
 }
 # Ctrl+C while we draw: treated as input so that it can be confirmed instead of killing the install half-way
 function Poll-CtrlC {
+    if ($driver -and (Test-Path -LiteralPath (Join-Path $driver 'cancel'))) { $script:ctrlC = $true }
     try {
         while ([Console]::KeyAvailable) {
             $k = [Console]::ReadKey($true)
@@ -366,6 +371,17 @@ function Poll-CtrlC {
     }
     catch {}
     if ($script:ctrlC -and -not $script:setupStarted) { $script:cancelled = $true; throw (New-Object OperationCanceledException) }
+}
+
+# The setup app (LL_DRIVER) follows the phases from this file; written whole, so it never reads half of it
+function Report([hashtable]$status) {
+    if (-not $driver) { return }
+    if ($status.phase -in 'done', 'error', 'cancelled') { $script:reported = $true }
+    try {
+        $tmp = Join-Path $driver 'status.tmp'
+        [IO.File]::WriteAllText($tmp, ($status | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding $false))
+        Move-Item -LiteralPath $tmp -Destination (Join-Path $driver 'status.json') -Force
+    } catch {}
 }
 
 # The desktop we stopped comes back when nothing was installed (cancel before setup, UAC declined)
@@ -379,8 +395,11 @@ function Start-Desktop-Again {
 # ---------------------------------------------------------------- main
 $work =Join-Path $env:TEMP ('lunge-install-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 $oldOut = [Console]::OutputEncoding
-$script:setup = $null; $script:setupStarted = $false; $script:ctrlC = $false; $stopped = $false
-$interactive = (-not $env:LL_DEFAULTS) -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+$script:setup = $null; $script:setupStarted = $false; $script:ctrlC = $false; $stopped = $false; $script:reported = $false
+$driver = if ($env:LL_DRIVER -and (Test-Path -LiteralPath $env:LL_DRIVER -PathType Container)) { $env:LL_DRIVER } else { $null }
+$interactive = (-not $env:LL_DEFAULTS) -and (-not $driver) -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+# a language given beforehand speaks this wizard's texts from the start (the setup app shows them)
+if ($env:LL_LANGUAGE -match '^[a-z]{2}$') { $tr = $env:LL_LANGUAGE -eq 'tr'; $T = Get-Texts $tr }
 $preview = [bool]$env:LL_PREVIEW
 try {
     [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
@@ -388,7 +407,7 @@ try {
     Banner
 
     $build = [int](Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuildNumber
-    if ($build -lt 19041) { Box $C.err $T.errTitle ($T.oldWin -f $build); return }
+    if ($build -lt 19041) { Report @{ phase = 'error'; message = ($T.oldWin -f $build) }; Box $C.err $T.errTitle ($T.oldWin -f $build); return }
 
 
     # Identify the edition before looking for its release.
@@ -412,6 +431,9 @@ try {
 
     # ------------------------------------------------------------ choices
     $choice = [ordered]@{ language = 'system'; clock = '24'; focusColor = '#b69df8'; edition = $edition }
+    if ($env:LL_LANGUAGE -match '^(system|[a-z]{2})$') { $choice.language = $env:LL_LANGUAGE }
+    if ($env:LL_FOCUS_COLOR -match '^#[0-9a-fA-F]{6}$') { $choice.focusColor = $env:LL_FOCUS_COLOR.ToLower(); $C.accent = $choice.focusColor }
+    if ($env:LL_CLOCK -in '24', '12') { $choice.clock = $env:LL_CLOCK }
     $extras = @('terminal', 'sensors', 'everything')
     if ($env:LL_NO_TERMINAL) { $extras = @($extras | Where-Object { $_ -ne 'terminal' }) }
     if ($env:LL_NO_SENSORS) { $extras = @($extras | Where-Object { $_ -ne 'sensors' }) }
@@ -468,9 +490,10 @@ try {
     }
 
     if (-not $src) {
+        Report @{ phase = 'release' }
         try { $rel = With-Spinner $T.release { Get-EditionRelease $choice.edition } }
-        catch { Box $C.err $T.netTitle $T.netBody; return }
-        if (-not $rel) { Box $C.warn $T.release $T.noRelease; return }
+        catch { Report @{ phase = 'error'; message = $T.netBody }; Box $C.err $T.netTitle $T.netBody; return }
+        if (-not $rel) { Report @{ phase = 'error'; message = $T.noRelease }; Box $C.warn $T.release $T.noRelease; return }
         $ver = $rel.tag_name
         $releaseVersion = ([string]$rel.tag_name) -replace ('-' + [regex]::Escape($choice.edition) + '$'), '' -replace '^v', ''
         $asset = $rel.assets | Where-Object { $_.name -eq "LogicalLunge-$($choice.edition)-$releaseVersion.zip" } | Select-Object -First 1
@@ -478,6 +501,7 @@ try {
         $zipUrl = $asset.browser_download_url; $zipSize = [long]$asset.size; $shaUrl = $sha.browser_download_url
     }
     Say $GL.ok $C.accent "$($T.version): $ver ($($choice.edition))"
+    Report @{ phase = 'download'; version = [string]$ver; percent = 0 }
 
     # ------------------------------------------------------------ package
     # no console input (redirected, LL_DEFAULTS in a pipeline): Ctrl+C then simply ends the script
@@ -486,22 +510,24 @@ try {
         $zip = Join-Path $work 'LogicalLunge.zip'
         try { Get-WithBar $zipUrl $zip $T.downloading $zipSize }
         catch [OperationCanceledException] { throw }
-        catch { Box $C.err $T.netTitle ($T.netBody + "`n`n$($T.errDetail): $($_.Exception.Message)"); return }
+        catch { Report @{ phase = 'error'; message = ($T.netBody + "`n`n$($T.errDetail): $($_.Exception.Message)") }; Box $C.err $T.netTitle ($T.netBody + "`n`n$($T.errDetail): $($_.Exception.Message)"); return }
         if ($shaUrl) {
+            Report @{ phase = 'verify'; version = [string]$ver }
             $ok = With-Spinner $T.verifying {
                 $raw = (New-Object Net.WebClient).DownloadString($shaUrl)
                 $expected = ($raw -split '\s+')[0].Trim().ToUpper()
                 ($expected -match '^[0-9A-F]{64}$') -and ($expected -eq (Get-FileHash $zip -Algorithm SHA256).Hash)
             }
-            if (-not $ok) { Box $C.err $T.errTitle $T.badPkg; return }
+            if (-not $ok) { Report @{ phase = 'error'; message = $T.badPkg }; Box $C.err $T.errTitle $T.badPkg; return }
         }
+        Report @{ phase = 'extract'; version = [string]$ver }
         With-Spinner $T.extracting { Expand-Archive $zip (Join-Path $work 'pkg') -Force } | Out-Null
         $src = (Get-ChildItem (Join-Path $work 'pkg') -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'installer\setup.ps1') } | Select-Object -First 1).FullName
-        if (-not $src) { Box $C.err $T.errTitle $T.badPkg; return }
+        if (-not $src) { Report @{ phase = 'error'; message = $T.badPkg }; Box $C.err $T.errTitle $T.badPkg; return }
     }
-    if (-not (Test-Path (Join-Path $src 'installer\setup.ps1'))) { Box $C.err $T.errTitle $T.badPkg; return }
+    if (-not (Test-Path (Join-Path $src 'installer\setup.ps1'))) { Report @{ phase = 'error'; message = $T.badPkg }; Box $C.err $T.errTitle $T.badPkg; return }
     if ([IO.File]::ReadAllText((Join-Path $src 'EDITION')).Trim() -ne $choice.edition -or
-        -not (Test-Path (Join-Path $src 'app\lunge.exe'))) { Box $C.err $T.errTitle $T.badPkg; return }
+        -not (Test-Path (Join-Path $src 'app\lunge.exe'))) { Report @{ phase = 'error'; message = $T.badPkg }; Box $C.err $T.errTitle $T.badPkg; return }
     Poll-CtrlC
 
     # ------------------------------------------------------------ stop the running desktop (as the user)
@@ -509,6 +535,7 @@ try {
     $running = (Get-Process lunge, lunge-tiling, lunge-shell, ll-helper -ErrorAction SilentlyContinue) -or
         ((Get-Process glazewm -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $env:USERPROFILE '.glzr\logical-lunge')))
     if ($running -and -not $preview) {
+        Report @{ phase = 'stop'; version = [string]$ver }
         With-Spinner $T.stopping {
             $lungeExe = Join-Path $src 'app\lunge.exe'
             $stop = Start-Process $lungeExe -ArgumentList '--stop-desktop' -WindowStyle Hidden -Wait -PassThru
@@ -554,13 +581,16 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
     }
     else {
         Say '●' $C.accent $T.uac
+        Report @{ phase = 'uac'; version = [string]$ver }
         try { $script:setup = Start-Process powershell.exe -Verb RunAs -WindowStyle Hidden -PassThru -ArgumentList $args2 }
         catch {
             if ($stopped) { Start-Desktop-Again }
+            Report @{ phase = 'cancelled'; message = $T.uacBody }
             Box $C.warn $T.uacTitle $T.uacBody; return
         }
     }
     $script:setupStarted = $true
+    Report @{ phase = 'setup'; version = [string]$ver; progress = $progressFile; steps = @($STEP_IDS | ForEach-Object { $T.steps[$_] }) }
 
     Write-Host ''
     Write-Host ('  ' + "$E[1m" + (Paint $C.accent $T.installing))
@@ -572,6 +602,10 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $done = $script:setup.HasExited
         try { if (Test-Path $progressFile) { $p = [IO.File]::ReadAllText($progressFile) | ConvertFrom-Json } } catch {}
         Poll-CtrlC
+        if ($script:ctrlC -and -not $asked -and -not $done -and $driver) {
+            $asked = $true
+            New-Item -ItemType File -Force $cancelFile | Out-Null
+        }
         if ($script:ctrlC -and -not $asked -and -not $done) {
             $asked = $true
             Write-Host -NoNewline "$E[?25h"; Write-Host ''
@@ -618,6 +652,9 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
     $script:setupStarted = $false
     $log = Join-Path $env:TEMP 'logical-lunge-install.log'
     if ($code -eq 0) {
+        $warnNames = @{ terminal = $T.xTerm; sensors = $T.xSensors; brightness = $T.xBright; everything = $T.xEverything }
+        Report @{ phase = 'done'; version = [string]$ver; title = $T.doneTitle; body = $T.doneBody; warnTitle = $T.warnTitle; warnBody = $T.warnBody
+            warn = @(@($p.warn | Where-Object { $_ }) | ForEach-Object { if ($warnNames.ContainsKey([string]$_)) { $warnNames[[string]$_] } else { [string]$_ } }) }
         Box $C.ok $T.doneTitle $T.doneBody
         # optional parts that failed (terminal, sensors, brightness): the desktop is installed, these are reported
         $warn = @($p.warn | Where-Object { $_ })
@@ -627,23 +664,27 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
             Box $C.warn $T.warnTitle ($list + "`n`n" + $T.warnBody + "`n$($T.errLog): $log")
         }
     }
-    elseif ($code -eq 2 -or (Test-Path $cancelFile)) { Box $C.warn $T.cancelTitle $T.cancelBody }
+    elseif ($code -eq 2 -or (Test-Path $cancelFile)) { Report @{ phase = 'cancelled'; title = $T.cancelTitle; message = $T.cancelBody }; Box $C.warn $T.cancelTitle $T.cancelBody }
     else {
         $stepName = if ($p -and $T.steps.ContainsKey([string]$p.step)) { $T.steps[[string]$p.step] } else { '?' }
         $detail = if ($p -and $p.error) { [string]$p.error } else { "exit $code" }
+        Report @{ phase = 'error'; title = $T.errTitle; message = ($T.errBody -f $stepName); detail = $detail; log = $log }
         Box $C.err $T.errTitle (($T.errBody -f $stepName) + "`n`n$($T.errDetail): $detail`n$($T.errLog): $log`n`n" + $T.errRetry)
     }
 }
 catch [OperationCanceledException] {
     if ($stopped -and -not $script:setupStarted) { Start-Desktop-Again }
+    Report @{ phase = 'cancelled'; title = $T.cancelTitle; message = $T.cancelBody }
     Write-Host ''
     Box $C.warn $T.cancelTitle $T.cancelBody
 }
 catch {
     if ($stopped -and -not $script:setupStarted) { Start-Desktop-Again }
+    Report @{ phase = 'error'; title = $T.errTitle; message = ($T.errBody -f $T.preparing); detail = $_.Exception.Message }
     Box $C.err $T.errTitle (($T.errBody -f $T.preparing) + "`n`n$($T.errDetail): $($_.Exception.Message)`n`n" + $T.errRetry)
 }
 finally {
+    if ($driver -and -not $script:reported) { Report @{ phase = 'error'; message = $T.errRetry } }
     # Ctrl+C that got through (e.g. while Windows asked for permission): the elevated setup rolls back by itself
     if ($script:setupStarted -and $script:setup -and -not $script:setup.HasExited) {
         New-Item -ItemType File -Force (Join-Path $work 'cancel') -ErrorAction SilentlyContinue | Out-Null
