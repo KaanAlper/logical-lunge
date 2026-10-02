@@ -4948,7 +4948,14 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
+            // Soru (Dialogs): cevap dakikalarca bekleyebilir, havuz thread'ini tutmasın
+            if (verbless.StartsWith("/dialog?"))
+            {
+                var cc = c;
+                new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
+                return;
+            }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -5007,8 +5014,28 @@ static class Toasts
             // native bar ve komut satırı zaten POST gönderir.
             bool writes = target.StartsWith("/cmd?") || target.StartsWith("/pref?") || target.StartsWith("/tray-pins?") || target.StartsWith("/dock-pins?")
                 || target.StartsWith("/widget?") || target.StartsWith("/overview-") || target.StartsWith("/log?") || target.StartsWith("/bar-alive?")
-                || target.StartsWith("/notification-open?");
+                || target.StartsWith("/notification-open?") || target.StartsWith("/dialog");
             if (writes && !req.StartsWith("POST ")) status = "405 Method Not Allowed";
+            else if (target.StartsWith("/dialog?"))
+            {
+                string why;
+                var spec = Dialogs.Parse(target.Substring(8), out why);
+                if (spec == null) { status = "400 Bad Request"; body = Dialogs.AnswerJson(-1, false, "invalid: " + why); }
+                else { body = Dialogs.Ask(spec); status = "200 OK"; }
+            }
+            else if (target.StartsWith("/dialog-shown?") || target.StartsWith("/dialog-answer?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/dialog-(shown|answer)\?id=(\d{1,18})(?:&b=(-?\d{1,2})&c=([01]))?$");
+                if (!m.Success || (m.Groups[1].Value == "answer") != m.Groups[3].Success) status = "400 Bad Request";
+                else
+                {
+                    long id = long.Parse(m.Groups[2].Value);
+                    bool known = m.Groups[1].Value == "shown"
+                        ? Dialogs.MarkShown(id)
+                        : Dialogs.Answer(id, int.Parse(m.Groups[3].Value), m.Groups[4].Value == "1");
+                    status = known ? "204 No Content" : "404 Not Found";
+                }
+            }
             else if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; Slider.Log("overview modu okundu: '" + body + "'"); }
             else if (target.StartsWith("/overview-wait"))
             {
@@ -11520,6 +11547,8 @@ static class Program
         // lunge.exe --toast-stream: çalışan helper'ın bildirim kanalına bağlanıp her bildirimi
         // stdout'a tek satır JSON yazar. shell toast widget'ı bunu shellSpawn ile okur (widget'ların
         // yerel adreslere doğrudan bağlanmasına shell izin vermiyor).
+        // lunge.exe --ask ...: soruyu kabuğun diyaloğunda sorar (Dialogs.AskCli)
+        if (args.Length >= 1 && args[0] == "--ask") Environment.Exit(Dialogs.AskCli(args));
         if (args.Length == 1 && args[0] == "--toast-stream")
         {
             // shell (ebeveyn) kapanınca bu kopya da kapansın: yoksa shell'den miras aldığı sunucu
