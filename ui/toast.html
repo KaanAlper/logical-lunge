@@ -352,9 +352,17 @@
       emit('ll:update-card-query').catch(() => {});
 
       // Çekirdekten gelen bildirimler (yakalanan Windows hata pencereleri, açılamayan uygulamalar).
-      // Helper'ın akış modu stdout'a satır satır JSON yazar; süreç biterse 3 sn sonra yeniden başlat.
+      // Helper'ın akış modu stdout'a satır satır JSON yazar; süreç biterse yeniden başlar: 3 sn sonra, hemen bitiyorsa
+      // (çekirdek kapalı) her seferinde iki katı, en çok dakikada bir.
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
+      let retry = 3000;
       async function stream() {
+        const started = Date.now();
+        const again = () => {
+          const wait = Date.now() - started > 60000 ? 3000 : retry;
+          retry = Math.min(wait * 2, 60000);
+          setTimeout(stream, wait);
+        };
         try {
           const p = await lunge.shellSpawn(HELPER, ['--toast-stream']);
           let buf = '';
@@ -378,10 +386,10 @@
               } catch {}
             }
           });
-          p.onExit(() => setTimeout(stream, 3000));
+          p.onExit(again);
         } catch (e) {
           console.error('toast stream', e);
-          setTimeout(stream, 3000);
+          again();
         }
       }
       stream();

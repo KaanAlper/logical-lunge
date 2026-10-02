@@ -1,6 +1,9 @@
 use std::{
   collections::HashMap,
-  sync::{Arc, Mutex},
+  sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+  },
 };
 
 use anyhow::{bail, Context};
@@ -17,10 +20,16 @@ use crate::widget_factory::WidgetFactory;
 /// Handle for managing a spawned child process.
 #[derive(Debug)]
 pub struct ProcessHandle {
+  /// the widget that spawned it: its processes end with it
+  widget_id: String,
+  /// tells this process from a later one that got the same pid
+  serial: u64,
   write_tx: mpsc::UnboundedSender<Buffer>,
   kill_tx: oneshot::Sender<()>,
   _event_task: tokio::task::JoinHandle<()>,
 }
+
+static SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// Payload for events emitted by spawned child processes.
 ///
@@ -121,21 +130,32 @@ impl ShellState {
     let app_handle = self.app_handle.clone();
     let widget_id = widget_id.to_string();
     let pid = child.pid();
+    let serial = SERIAL.fetch_add(1, Ordering::Relaxed);
+    let children = self.children.clone();
+    let owner = widget_id.clone();
+    // the handle is in the map before the task can end and take it out
+    let mut children_guard = self.children.lock().unwrap();
 
     // Create channels for write and kill signals.
     let (write_tx, mut write_rx) = mpsc::unbounded_channel::<Buffer>();
     let (kill_tx, mut kill_rx) = oneshot::channel();
 
-    // Set up event handling.
+    // Set up event handling. It ends when the process does (or is killed):
+    // the process leaves the map then, its handles and this task with it.
     let event_task = tokio::spawn(async move {
       loop {
         tokio::select! {
           // Process events from the child.
-          Some(event) = child.events().recv() => {
+          event = child.events().recv() => {
+            let Some(event) = event else { break };
+            let ended = matches!(event, ChildProcessEvent::Terminated(_));
             let _ = app_handle.emit_to(widget_id.clone(), "shell-emit", ShellEmission {
               pid,
               event,
             });
+            if ended {
+              break;
+            }
           }
 
           // Process write requests.
@@ -155,11 +175,17 @@ impl ShellState {
           }
         }
       }
+      let mut children = children.lock().unwrap();
+      if children.get(&pid).is_some_and(|h| h.serial == serial) {
+        children.remove(&pid);
+      }
     });
 
-    self.children.lock().unwrap().insert(
+    children_guard.insert(
       pid,
       ProcessHandle {
+        widget_id: owner,
+        serial,
         write_tx,
         kill_tx,
         _event_task: event_task,
@@ -167,6 +193,24 @@ impl ShellState {
     );
 
     Ok(pid)
+  }
+
+  /// Ends the processes a widget spawned (it closed, or is being opened
+  /// again on a monitor change): a long-running helper must not outlive
+  /// it, one more on every relaunch.
+  pub fn kill_widget(&self, widget_id: &str) {
+    let handles: Vec<ProcessHandle> = {
+      let mut children = self.children.lock().unwrap();
+      let pids: Vec<ProcessId> = children
+        .iter()
+        .filter(|(_, h)| h.widget_id == widget_id)
+        .map(|(pid, _)| *pid)
+        .collect();
+      pids.iter().filter_map(|pid| children.remove(pid)).collect()
+    };
+    for handle in handles {
+      let _ = handle.kill_tx.send(());
+    }
   }
 
   /// Writes data to the standard input of a running process.

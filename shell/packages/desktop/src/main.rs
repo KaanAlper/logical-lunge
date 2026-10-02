@@ -272,6 +272,9 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
 }
 
 /// Listens for events and updates state accordingly.
+/// Widgets opened again on a monitor change, one change at a time.
+static RELAUNCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn listen_events(
   app_handle: &AppHandle,
   monitor_state: Arc<MonitorState>,
@@ -286,7 +289,7 @@ fn listen_events(
 
   task::spawn(async move {
     loop {
-      let res = tokio::select! {
+      let res: anyhow::Result<()> = tokio::select! {
         Ok(widget_state) = widget_open_rx.recv() => {
           info!("Widget opened.");
           let _ = app_handle.emit("widget-opened", widget_state);
@@ -294,12 +297,25 @@ fn listen_events(
         },
         Ok(widget_id) = widget_close_rx.recv() => {
           info!("Widget closed.");
+          // its helpers (an event stream, the keyboard's input) end with it
+          if let Some(shell) = app_handle.try_state::<ShellState>() {
+            shell.kill_widget(&widget_id);
+          }
           let _ = app_handle.emit("widget-closed", widget_id);
           Ok(())
         },
         Ok(_) = monitors_change_rx.recv() => {
           info!("Monitors changed.");
-          widget_factory.relaunch_all().await
+          // in its own task, one at a time: building the widgets again takes
+          // seconds, and this loop also forwards the bar's provider updates
+          let widget_factory = widget_factory.clone();
+          task::spawn(async move {
+            let _one = RELAUNCH.lock().await;
+            if let Err(err) = widget_factory.relaunch_all().await {
+              error!("{:?}", err);
+            }
+          });
+          Ok(())
         },
         Some(provider_emission) = emit_rx.recv() => {
           info!("Provider emission: {:?}", provider_emission);

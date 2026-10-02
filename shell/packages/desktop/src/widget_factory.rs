@@ -853,14 +853,21 @@ impl WidgetFactory {
 
       let _ = self.stop_by_id(&widget_state.id);
 
-      self
+      // one widget that cannot start must not leave the others closed
+      if let Err(err) = self
         .start_widget_by_id(
           &widget_state.pack_id,
           &widget_state.name,
           &widget_state.open_options,
           false,
         )
-        .await?;
+        .await
+      {
+        error!(
+          "Relaunching widget {} from {} failed: {:?}",
+          widget_state.name, widget_state.pack_id, err
+        );
+      }
     }
 
     Ok(())
