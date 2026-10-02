@@ -120,13 +120,19 @@ pub fn handle_window_moved_or_resized(
     // its last session) stays tiled instead of becoming an on-top
     // fullscreen window. Fullscreen remains available through the
     // `toggle-fullscreen` command.
+    // Every event of a still maximized tiling window counts, not only the
+    // one that saw the change: when the restore had not landed yet, a later
+    // move of the same maximized window used to turn it into a fullscreen
+    // window covering the monitor.
     #[cfg(target_os = "windows")]
-    if is_maximized
-      && !old_is_maximized
-      && matches!(window.state(), WindowState::Tiling)
-    {
+    if keeps_tile_on_self_maximize(&window.state(), is_maximized) {
       tracing::info!("Suppressing maximize of tiling window: {window}");
-      try_warn!(window.native().restore(None));
+      // restored straight into its tile (not to the app's last normal
+      // position, which then had to be corrected again)
+      let tile = window
+        .to_rect()?
+        .apply_delta(&window.total_border_delta()?, None);
+      try_warn!(window.native().restore(Some(&tile)));
       state.pending_sync.queue_container_to_redraw(window.clone());
       return Ok(());
     }
@@ -425,6 +431,15 @@ pub fn handle_window_moved_or_resized(
   Ok(())
 }
 
+/// A tiling window that maximizes itself stays in its tile (fullscreen is
+/// the WM's `toggle-fullscreen`, which changes the state first).
+fn keeps_tile_on_self_maximize(
+  window_state: &WindowState,
+  is_maximized: bool,
+) -> bool {
+  is_maximized && matches!(window_state, WindowState::Tiling)
+}
+
 /// Whether a tiled window that moved or resized itself may be corrected
 /// again. A burst allows a few corrections: an app that insists on its own
 /// size (a minimum size bigger than its tile, a terminal snapping to its
@@ -630,9 +645,26 @@ fn is_in_corner(window_frame: &Rect, monitor_rect: &Rect) -> bool {
 
 #[cfg(test)]
 mod tests {
+  use wm_common::{FloatingStateConfig, FullscreenStateConfig, WindowState};
   use wm_platform::Rect;
 
-  use super::is_in_corner;
+  use super::{is_in_corner, keeps_tile_on_self_maximize};
+
+  #[test]
+  fn tiling_window_keeps_its_tile_while_maximized() {
+    assert!(keeps_tile_on_self_maximize(&WindowState::Tiling, true));
+    assert!(!keeps_tile_on_self_maximize(&WindowState::Tiling, false));
+  }
+
+  #[test]
+  fn other_states_may_maximize() {
+    let floating = WindowState::Floating(FloatingStateConfig::default());
+    let fullscreen =
+      WindowState::Fullscreen(FullscreenStateConfig::default());
+    assert!(!keeps_tile_on_self_maximize(&floating, true));
+    assert!(!keeps_tile_on_self_maximize(&fullscreen, true));
+    assert!(!keeps_tile_on_self_maximize(&WindowState::Minimized, true));
+  }
 
   #[test]
   fn matches_corner_positions() {

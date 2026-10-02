@@ -660,12 +660,19 @@ impl NativeWindow {
       WindowZOrder::AfterWindow(window_id) => HWND(window_id.0),
     };
 
+    // Logical Lunge: SWP_NOSENDCHANGING, as for every other move the WM
+    // makes. A z-order change is no reason for the app to pick a new size,
+    // but WM_WINDOWPOSCHANGING let it: a self-fullscreen app spread back
+    // over the monitor and a terminal snapped to its character grid each
+    // time focus moved, and the WM pushed them back into their tiles
+    // (flicker while the mouse crossed between windows).
     let flags = SWP_NOACTIVATE
       | SWP_NOCOPYBITS
       | SWP_ASYNCWINDOWPOS
       | SWP_SHOWWINDOW
       | SWP_NOMOVE
-      | SWP_NOSIZE;
+      | SWP_NOSIZE
+      | SWP_NOSENDCHANGING;
 
     unsafe { SetWindowPos(self.hwnd(), z_order_hwnd, 0, 0, 0, 0, flags) }?;
 
