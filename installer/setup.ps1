@@ -185,6 +185,7 @@ $script:runReg = New-Object Collections.ArrayList    # registry values changed b
 $script:created = New-Object Collections.ArrayList   # files / folders this run created
 $script:moves = New-Object Collections.ArrayList     # (from, to) folders moved from the old layout
 $script:newTasks = New-Object Collections.ArrayList  # tasks this run registered that did not exist before
+$script:oldTasks = @{}                               # tasks this run replaced: name -> their previous definition (XML)
 $script:ownedSaved = $false
 $script:configSaved = $false
 $script:prefsSaved = $false
@@ -237,6 +238,9 @@ function Remove-UserPath([string]$dir) {
 }
 function Register-LLTask([string]$name, $action, $trigger, $principal, $settings) {
     if (-not (Get-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName $name -ErrorAction SilentlyContinue)) { [void]$script:newTasks.Add($name) }
+    elseif (-not $script:oldTasks.ContainsKey($name)) {
+        try { $script:oldTasks[$name] = Export-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName $name } catch { Log "    could not save task $name : $($_.Exception.Message)" }
+    }
     $p = @{ TaskPath = '\LogicalLunge\'; TaskName = $name; Action = $action; Principal = $principal; Settings = $settings; Force = $true }
     if ($trigger) { $p.Trigger = $trigger }
     Register-ScheduledTask @p | Out-Null
@@ -278,6 +282,14 @@ function Stop-Leftovers {
 function Undo-Install {
     Log ''; Log '==> Rolling back'
     Progress 'rollback' $null
+    try { Undo-Changes }
+    catch { Log "    rollback step failed: $($_.Exception.Message)" }
+    finally { Start-PreviousDesktop }
+    Log '    rollback finished'
+}
+
+# Puts back the files, settings and tasks this run changed
+function Undo-Changes {
     Stop-Parts
     # the file search service this run installed (its folder goes with the created paths below)
     if ($script:everythingService) {
@@ -298,9 +310,10 @@ function Undo-Install {
     }
     # a first install leaves nothing behind (the folders moved from 0.1.x went back above)
     if (-not $appExisted) { Remove-Item $APP -Recurse -Force -ErrorAction SilentlyContinue }
-    if ($script:configSaved -and (Test-Path "$RB\config.yaml")) { Copy-Item "$RB\config.yaml" (Join-Path $CONF 'config.yaml') -Force; Log '    previous config restored' }
-    if ($script:prefsSaved) { Copy-Item "$RB\prefs.json" (Join-Path $CONF 'prefs.json') -Force }
-    if ($script:hashSaved) { Copy-Item "$RB\config.sha256" (Join-Path $STATE 'config.sha256') -Force }
+    # each restore on its own: a locked file must not stop the rest (registry, tasks, the previous desktop)
+    try { if ($script:configSaved -and (Test-Path "$RB\config.yaml")) { Copy-Item "$RB\config.yaml" (Join-Path $CONF 'config.yaml') -Force; Log '    previous config restored' } } catch { Log "    config: $($_.Exception.Message)" }
+    try { if ($script:prefsSaved) { Copy-Item "$RB\prefs.json" (Join-Path $CONF 'prefs.json') -Force } } catch { Log "    prefs: $($_.Exception.Message)" }
+    try { if ($script:hashSaved) { Copy-Item "$RB\config.sha256" (Join-Path $STATE 'config.sha256') -Force } } catch { Log "    config hash: $($_.Exception.Message)" }
     for ($i = $script:created.Count - 1; $i -ge 0; $i--) { Remove-Item $script:created[$i] -Recurse -Force -ErrorAction SilentlyContinue }
     for ($i = $script:runReg.Count - 1; $i -ge 0; $i--) {
         $r = $script:runReg[$i]
@@ -312,14 +325,21 @@ function Undo-Install {
     }
     if ($script:runReg.Count) { Log "    $($script:runReg.Count) Windows settings restored" }
     foreach ($t in $script:newTasks) { Unregister-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue }
+    # tasks this run replaced get their previous definition back (the previous desktop starts from "Start")
+    foreach ($t in @($script:oldTasks.Keys)) {
+        try { Register-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName $t -Xml $script:oldTasks[$t] -Force | Out-Null }
+        catch { Log "    task $t : $($_.Exception.Message)" }
+    }
     if ($script:runReg.Count -or $script:explorerRestarted) { Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Sleep 2 }
+}
+
+# Starts the desktop that was there before this run (whatever the rollback could restore)
+function Start-PreviousDesktop {
     foreach ($m in (Join-Path $STATE 'maintenance'), (Join-Path $OLD_STATE 'maintenance')) { Remove-Item $m -Force -ErrorAction SilentlyContinue }
-    # the previous desktop
     if ($appExisted) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue }
     elseif ($legacy) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue }
     # Explorer starts it as the user (this installer is elevated)
     elseif ($perUser) { Start-Process explorer.exe "`"$(Join-Path $OLD_APP 'lunge.exe')`"" -ErrorAction SilentlyContinue }
-    Log '    rollback finished'
 }
 
 Log "Logical Lunge installer - $(Get-Date)"
@@ -818,7 +838,12 @@ Log 'Done. Starting the desktop...'
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
-Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start'
+try { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' }
+catch {
+    # never end an install on an empty screen: started as the user (not elevated) until the next sign-in
+    Log "    sign-in task did not start ($($_.Exception.Message)); starting the desktop directly"
+    Start-Process explorer.exe "`"$(Join-Path $APP 'lunge.exe')`"" -ErrorAction SilentlyContinue
+}
 Step-Progress 95
 if (-not $NoSensors) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Temps' -ErrorAction SilentlyContinue }
 # a 0.1.x updater covered the screen with its own splash that waits for the old bar: the new desktop has its own
