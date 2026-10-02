@@ -112,7 +112,6 @@ impl AppSettings {
       startup_configs: [
         "sidebar-right",
         "settings",
-        "osk",
         "dock",
       ]
       .into_iter()

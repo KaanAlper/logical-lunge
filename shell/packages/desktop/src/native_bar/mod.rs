@@ -19,6 +19,7 @@ mod popup;
 mod overview;
 mod pops;
 mod search;
+mod osk;
 mod session;
 mod toast;
 mod update;
@@ -121,6 +122,9 @@ const TIMER_UPDATE: usize = 20;
 const TIMER_UPDATE_TICK: usize = 21;
 /// the session screen faded out: its windows go
 const TIMER_SESSION_CLOSE: usize = 22;
+/// the on-screen keyboard slid out: its window goes (an id of its own:
+/// other panels add timers next to the session's)
+const TIMER_OSK_CLOSE: usize = 40;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -155,6 +159,8 @@ enum Msg {
   /// the sidebar's session button (`ll:session-toggle`), or a close
   SessionToggle,
   SessionHide,
+  /// `ll:osk-toggle` (the sidebar's keyboard tile)
+  OskToggle,
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -289,6 +295,12 @@ pub fn session_toggle() {
 
 pub fn session_hide() {
   send(Msg::SessionHide);
+}
+
+/// `ll:osk-toggle` from the web widgets (the sidebar's keyboard tile): the
+/// native on-screen keyboard.
+pub fn osk_toggle() {
+  send(Msg::OskToggle);
 }
 
 /// A widget's notification card (`ll:toast`; the bar's own come back the
@@ -544,6 +556,8 @@ struct Ui {
   overview: Option<overview::Overview>,
   /// the session screen while it is open
   session: Option<session::Session>,
+  /// the on-screen keyboard while it is open
+  osk: Option<osk::Osk>,
   /// test run: a menu picture to write once the app list is in (text, PNG, asked at)
   snapshot: Option<(String, PathBuf, Instant)>,
 }
@@ -646,6 +660,7 @@ fn ui_thread(
         emit: opts.emit,
         overview: None,
         session: None,
+        osk: None,
         snapshot: None,
       })
     });
@@ -764,6 +779,9 @@ impl Ui {
     if let Some(r) = self.session_msg(hwnd, msg, wp, lp) {
       return r;
     }
+    if let Some(r) = self.osk_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if self.overview.as_ref().is_some_and(|o| o.hwnd == hwnd) {
       return self.overview_msg(msg, wp, lp);
     }
@@ -787,6 +805,7 @@ impl Ui {
           if forced || !same {
             // the session screen is made for the old monitors
             self.session_destroy();
+            self.osk_destroy();
             self.create_bars();
             self.overview_recreate_window();
           }
@@ -845,6 +864,7 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_UPDATE => self.update_timer(),
         WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
         WM_TIMER if wp.0 == TIMER_SESSION_CLOSE => self.session_destroy(),
+        WM_TIMER if wp.0 == TIMER_OSK_CLOSE => self.osk_destroy(),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           // frames while the numbers fade in or out; nothing between
           let now = Instant::now();
@@ -1116,6 +1136,7 @@ impl Ui {
         Msg::OverviewToggle => self.toggle_native_overview(),
         Msg::SessionToggle => self.session_toggle(),
         Msg::SessionHide => self.session_close(),
+        Msg::OskToggle => self.osk_toggle(),
         Msg::Toast(card) => self.toast_add(card),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
         Msg::Update(e) => self.update_event(e),
@@ -1607,6 +1628,12 @@ impl Ui {
     for i in 0..self.bars.len() {
       self.redraw(i);
     }
+    // a theme change reaches the keyboard too
+    if self.osk.is_some() {
+      if let Err(err) = self.osk_paint() {
+        tracing::warn!("Keyboard: paint: {:?}", err);
+      }
+    }
   }
 
   fn show_osd(&mut self, device: Option<String>, kind: OsdKind, value: i32) {
@@ -1807,7 +1834,7 @@ impl Ui {
       (HitKind::Media, 1) => self.provider("media", media(MediaFunction::Next)),
       (HitKind::Media, 2) => self.provider("media", media(MediaFunction::Previous)),
       (HitKind::Snip, 0) => core_api::run_core(&["--snip"]),
-      (HitKind::Osk, 0) => (self.emit)("ll:osk-toggle", serde_json::Value::Null),
+      (HitKind::Osk, 0) => self.osk_toggle(),
       (HitKind::Theme, 0) => {
         // the one shell theme (prefs.json): the web widgets follow through the core's event
         let light = !self.model.light;

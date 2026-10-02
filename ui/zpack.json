@@ -139,54 +139,6 @@
             ]
         },
         {
-            "name": "osk",
-            "htmlPath": "./osk.html",
-            "zOrder": "top_most",
-            "shownInTaskbar": false,
-            "focused": false,
-            "resizable": false,
-            "transparent": true,
-            "shownOnStart": false,
-            "includeFiles": [
-                "*.html",
-                "*.css",
-                "*.json",
-                "*.js",
-                "lib/*.js",
-                "fonts/*.woff2"
-            ],
-            "caching": {
-                "rules": [],
-                "defaultDuration": 604800
-            },
-            "privileges": {
-                "shellCommands": [
-                    {
-                        "program": "{{INSTALL_ESC}}\\lunge.exe",
-                        "argsRegex": ".*"
-                    }
-                ]
-            },
-            "presets": [
-                {
-                    "name": "default",
-                    "anchor": "bottom_center",
-                    "offsetX": "0px",
-                    "offsetY": "0px",
-                    "width": "940px",
-                    "height": "380px",
-                    "monitorSelection": {
-                        "type": "primary"
-                    },
-                    "dockToEdge": {
-                        "edge": null,
-                        "windowMargin": "0px",
-                        "enabled": false
-                    }
-                }
-            ]
-        },
-        {
             "name": "dock",
             "htmlPath": "./dock.html",
             "zOrder": "top_most",
