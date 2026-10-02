@@ -1080,6 +1080,9 @@
         const [drag, setDrag] = useState(null); // { item, x, y, dx, dy, w, h, toUsed, index }
         const dragNow = useRef(null);
         const dragged = useRef(false); // sürüklemenin ardından gelen click ekle / kaldır yapmasın
+        const ghostRef = useRef(null), placeGhost = useRef(null);
+        // kopya çizildiği anda yerinde olsun (stili React'ta değil: yeniden çizim onu eski konuma geri atmasın)
+        useLayoutEffect(() => { if (drag) placeGhost.current?.(); }, [drag]);
         const latest = useRef(null); // pencere dinleyicileri her harekette yeniden kurulmasın: son değerler burada
         latest.current = { toggles, visible };
         const startPress = (e, item) => {
@@ -1096,6 +1099,17 @@
             if (!used) return { toUsed: true, index: 0 };
             return { toUsed: true, index: dropIndex(latest.current.visible, item, x - used.left, y - used.top, used.width) };
           };
+          // İmleci izleyen kopya React'a uğramadan, kare başına bir kez taşınır; panel yalnızca bırakılacak yer
+          // değişince yeniden çizilir (her harekette çizilince kayma animasyonları baştan başlayıp titriyordu)
+          let frame = 0, last = null;
+          const place = () => {
+            frame = 0;
+            const d = dragNow.current, g = ghostRef.current, panel = panelRef.current;
+            if (!d || !g || !panel) return;
+            const pr = panel.getBoundingClientRect();
+            g.style.transform = `translate3d(${d.x - d.dx - pr.left}px, ${d.y - d.dy - pr.top}px, 0) scale(1.04)`;
+          };
+          placeGhost.current = place;
           const move = e => {
             const p = press.current;
             if (!p) return;
@@ -1103,12 +1117,17 @@
               if (Math.hypot(e.clientX - p.x0, e.clientY - p.y0) < 5) return;
               dragged.current = true;
             }
-            dragNow.current = { ...p, x: e.clientX, y: e.clientY, ...target(p.item, e.clientX, e.clientY) };
-            setDrag(dragNow.current);
+            const t = target(p.item, e.clientX, e.clientY);
+            dragNow.current = { ...p, x: e.clientX, y: e.clientY, ...t };
+            if (!last || last.toUsed !== t.toUsed || last.index !== t.index) {
+              last = t;
+              setDrag(dragNow.current);
+            }
+            if (!frame) frame = requestAnimationFrame(place);
           };
           const end = drop => {
             const d = dragNow.current, pressed = press.current;
-            press.current = null; dragNow.current = null;
+            press.current = null; dragNow.current = null; last = null;
             setDrag(null);
             if (d && drop) {
               const { toggles, visible } = latest.current;
@@ -1132,6 +1151,8 @@
             window.removeEventListener('pointermove', move);
             window.removeEventListener('pointerup', up);
             window.removeEventListener('keydown', key);
+            if (frame) cancelAnimationFrame(frame);
+            placeGhost.current = null;
             press.current = null; dragNow.current = null;
             setDrag(null);
           };
@@ -1149,25 +1170,29 @@
 
         // Yer / boyut değişen kutucuk eski yerinden yenisine kayar (FLIP); animasyonlar kapalıysa atlanır
         const lastRects = useRef(new Map());
+        const layoutKey = (edit ? 'e' : '') + [shownUsed, shownUnused].map(l => l.map(t => t.type + (t.placeholder ? '*' : '') + t.size).join(',')).join('|');
         useLayoutEffect(() => {
           const panel = panelRef.current;
           if (!edit || !panel) { lastRects.current = new Map(); return; }
           const animate = window.LL_PREFS?.animations !== false && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
           const next = new Map();
           panel.querySelectorAll('.qrows .qt[data-qt]').forEach(el => {
+            // ekrandaki yer (süren kaymayla birlikte) -> kaymayı bırak -> yeni yer: kayma bulunduğu yerden sürer
+            const seen = el.getBoundingClientRect();
+            el.getAnimations().forEach(a => a.cancel());
             const r = el.getBoundingClientRect();
             next.set(el.dataset.qt, r);
-            const p = lastRects.current.get(el.dataset.qt);
-            if (!p || !animate) return;
-            const dx = p.left - r.left, dy = p.top - r.top, sx = p.width / r.width, sy = p.height / r.height;
+            const had = lastRects.current.has(el.dataset.qt);
+            if (!had || !animate) return;
+            const dx = seen.left - r.left, dy = seen.top - r.top, sx = seen.width / r.width, sy = seen.height / r.height;
             if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) return;
             el.animate([
               { transformOrigin: 'top left', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
               { transformOrigin: 'top left', transform: 'none' },
-            ], { duration: 200, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+            ], { duration: 180, easing: 'cubic-bezier(.2, .8, .2, 1)' });
           });
           lastRects.current = next;
-        });
+        }, [layoutKey]);
 
         const renderRows = list => rowsFor(list).map((row, ri) => (
           <div className="qrow" key={ri}>
@@ -1208,7 +1233,7 @@
             {edit && <div className="qsep" />}
             {edit && <div className="qrows unused" ref={unusedRef}>{renderRows(shownUnused)}</div>}
             {drag && (
-              <div className="qt-ghost" style={{ left: drag.x - drag.dx, top: drag.y - drag.dy, width: drag.w, height: drag.h }}>
+              <div className="qt-ghost" ref={ghostRef} style={{ width: drag.w, height: drag.h }}>
                 <QuickToggle type={drag.item.type} def={defs[drag.item.type]} size={drag.item.size} edit={false} />
               </div>
             )}
