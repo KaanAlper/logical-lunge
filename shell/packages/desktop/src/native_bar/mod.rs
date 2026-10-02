@@ -54,7 +54,7 @@ use windows::{
         GetDpiForMonitor, SetThreadDpiAwarenessContext,
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, MDT_EFFECTIVE_DPI,
       },
-      Input::KeyboardAndMouse::{GetAsyncKeyState, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT, VK_CONTROL, VK_LWIN, VK_RWIN},
+      Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT},
       WindowsAndMessaging::*,
     },
   },
@@ -948,13 +948,6 @@ impl Ui {
         Msg::SongRecDone => self.songrec_done(),
         Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
         Msg::Wm(state) => {
-          let changed = self.model.wm.focused_workspace().map(|w| w.name.as_str())
-            != state.focused_workspace().map(|w| w.name.as_str());
-          if changed && unsafe { GetAsyncKeyState(VK_CONTROL.0 as i32) < 0
-            && (GetAsyncKeyState(VK_LWIN.0 as i32) < 0 || GetAsyncKeyState(VK_RWIN.0 as i32) < 0) } {
-            self.numbers_until = Some(Instant::now() + Duration::from_millis(700));
-            unsafe { SetTimer(self.msg_hwnd, TIMER_WS_NUMBERS, 700, None) };
-          }
           self.model.wm = state;
           overview_dirty = true;
         }
@@ -1361,6 +1354,14 @@ impl Ui {
     }
   }
 
+  /// Ctrl+Super (+Shift) moved between workspaces: the core announces the
+  /// shortcut itself, so the numbers show however quickly the keys go up.
+  fn flash_numbers(&mut self) {
+    self.numbers_until = Some(Instant::now() + Duration::from_millis(700));
+    unsafe { SetTimer(self.msg_hwnd, TIMER_WS_NUMBERS, 700, None) };
+    self.redraw_all();
+  }
+
   /// An event from the core. On (re)connect the theme is read again: it may
   /// have changed while the stream was down.
   fn core_event(&mut self, evt: Option<String>) {
@@ -1369,6 +1370,7 @@ impl Ui {
       Some("ll:theme-dark") => false,
       Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
       Some("ll:tray-pins") => return self.reload_pins(),
+      Some("ll:ws-numbers") => return self.flash_numbers(),
       None => {
         self.reload_pins();
         self.reload_custom_theme();

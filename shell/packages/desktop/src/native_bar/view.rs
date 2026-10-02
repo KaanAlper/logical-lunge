@@ -773,23 +773,32 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, 
     } else {
       t.inactive
     };
-    if show_numbers {
-      p.text(&n.to_string(), cell, TextStyle { size: 11.0, weight: 600.0 }, c, Align::Center, true)?;
-      continue;
-    }
-    // The workspace dot remains visible; the app icon is a small badge at
-    // its lower right, still within this 26-DIP cell.
-    p.fill_circle(cx, cy, 4.7 / 2.0, c)?;
     // ii showAppIcons: the biggest window's icon (workspaceIconSize 26 * 0.69)
     let big = m.wm.all_workspaces().find(|w| w.name == n.to_string()).and_then(|w| w.biggest.as_ref());
+    let mut icon = None;
     if let Some(win) = big {
       let (bmp, ask) = p.icons.for_window(p.gfx, &win.process, win.handle);
       if let Some(h) = ask {
         p.requests.push(h);
       }
-      if let Some(bmp) = bmp {
-        p.image_circle(&bmp, cx + 6.0, cy + 6.0, 8.5, if active(i) { 1.0 } else { 0.8 })?;
+      icon = bmp;
+    }
+    if show_numbers {
+      // Shortcut navigation: the number takes the cell and the app icon steps
+      // aside to a small badge at its lower right, still inside this 26-DIP
+      // cell so it never touches the next one.
+      p.text(&n.to_string(), cell, TextStyle { size: 11.0, weight: 600.0 }, c, Align::Center, true)?;
+      if let Some(bmp) = &icon {
+        p.image_circle(bmp, cx + 6.0, cy + 6.0, 8.5, if active(i) { 1.0 } else { 0.8 })?;
       }
+      continue;
+    }
+    match &icon {
+      Some(bmp) => {
+        let d = if active(i) { 18.0 * 1.05 } else { 18.0 };
+        p.image_circle(bmp, cx, cy, d, if active(i) { 1.0 } else { 0.7 })?;
+      }
+      None => p.fill_circle(cx, cy, 4.7 / 2.0, c)?,
     }
   }
   Ok(())
