@@ -174,9 +174,18 @@ impl Provider for SystrayProvider {
     let mut last_sig: Option<Vec<(String, String, String)>> = None;
     let mut png_cache: std::collections::HashMap<String, Vec<u8>> =
       std::collections::HashMap::new();
+    // icons of programs that crashed (their window is gone): looked for
+    // every 10 s, a handful of IsWindow calls
+    let mut prune = tokio::time::interval(std::time::Duration::from_secs(10));
+    prune.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
       tokio::select! {
+        _ = prune.tick() => {
+          if systray.prune_dead() {
+            dirty = true;
+          }
+        }
         event = systray.events(), if listening => {
           // The tray listener ended: stop polling (it'd return at once).
           if event.is_none() {
