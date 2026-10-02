@@ -15,7 +15,8 @@ use windows::{
   core::{Interface, HSTRING, PCWSTR},
   Win32::Graphics::DirectWrite::{
     IDWriteFactory, IDWriteFactory6, IDWriteFontCollection, IDWriteFontCollection2,
-    IDWriteFontFallback, IDWriteFontSetBuilder1, IDWriteTextFormat, IDWriteTextFormat1,
+    IDWriteFontFallback, IDWriteFontSetBuilder1, IDWriteInMemoryFontFileLoader, IDWriteTextFormat,
+    IDWriteTextFormat1,
     DWRITE_CONTAINER_TYPE_WOFF2, DWRITE_FONT_AXIS_TAG, DWRITE_FONT_AXIS_VALUE,
     DWRITE_FONT_FAMILY_MODEL_TYPOGRAPHIC, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TRIMMING, DWRITE_TRIMMING_GRANULARITY_CHARACTER,
@@ -34,6 +35,8 @@ struct Face {
 
 pub struct Fonts {
   dwrite: IDWriteFactory6,
+  /// registered with the process-wide factory: unregistered on drop
+  loader: IDWriteInMemoryFontFileLoader,
   text: IDWriteFontCollection2,
   icons: IDWriteFontCollection2,
   fallback: IDWriteFontFallback,
@@ -45,6 +48,17 @@ pub struct Fonts {
 pub struct TextStyle {
   pub size: f32,
   pub weight: f32,
+}
+
+impl Drop for Fonts {
+  /// The DirectWrite factory is shared by the process: a bar built again
+  /// after a failure registered its fonts (megabytes) once more each time.
+  fn drop(&mut self) {
+    self.formats.clear();
+    unsafe {
+      let _ = self.dwrite.UnregisterFontFileLoader(&self.loader);
+    }
+  }
 }
 
 impl Fonts {
@@ -138,7 +152,7 @@ impl Fonts {
       builder.AddMappings(&dwrite.GetSystemFontFallback()?)?;
       let fallback = builder.CreateFontFallback()?;
 
-      Ok(Self { dwrite: dwrite.clone(), text, icons, fallback, formats: HashMap::new() })
+      Ok(Self { dwrite: dwrite.clone(), loader, text, icons, fallback, formats: HashMap::new() })
     }
   }
 
