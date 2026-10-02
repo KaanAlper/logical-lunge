@@ -82,8 +82,9 @@ static class CoreRegression
         Check(Request("POST", "/dialog-shown?id=x", "http://127.0.0.1:6124").Contains("400") && Request("POST", "/dialog-answer?id=1", "http://127.0.0.1:6124").Contains("400"), "Malformed dialog answers must be refused");
         // no shell in the test: the question comes back unanswered instead of waiting
         Dialogs.ShowWaitMs = 300;
-        string r = Request("POST", "/dialog?kind=info&title=x&buttons=Tamam", "http://127.0.0.1:6124");
+        string r = Dialogs.Ask(Dialogs.Parse("kind=info&title=x&buttons=Tamam", out err));
         Check(r.Contains("\"button\":-1") && r.Contains("no-ui"), "A dialog without a shell must answer no-ui: " + r);
+        Check(Request("POST", "/dialog?kind=info&title=x&buttons=Tamam", "http://127.0.0.1:6124").StartsWith("HTTP/1.1 200"), "A valid dialog must be asked");
     }
 
     static void LauncherTests() {
