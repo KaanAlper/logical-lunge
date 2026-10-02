@@ -13,6 +13,7 @@ mod fonts;
 mod gfx;
 mod icons;
 mod ime;
+mod menu;
 mod mixer;
 mod model;
 mod palette;
@@ -564,6 +565,9 @@ struct Ui {
   overview: Option<overview::Overview>,
   /// the session screen while it is open
   session: Option<session::Session>,
+  /// the open context menu (menu.rs) and closed ones still fading out
+  menu: Option<menu::MenuState>,
+  menu_gone: menu::MenuGone,
   /// the on-screen keyboard while it is open
   osk: Option<osk::Osk>,
   /// the Dock's pins, and its window while it is open
@@ -670,6 +674,8 @@ fn ui_thread(
         emit: opts.emit,
         overview: None,
         session: None,
+        menu: None,
+        menu_gone: Default::default(),
         osk: None,
         dock: Default::default(),
         snapshot: None,
@@ -787,6 +793,9 @@ fn monitor_device(mon: HMONITOR) -> String {
 
 impl Ui {
   fn handle(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if let Some(r) = self.menu_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if let Some(r) = self.session_msg(hwnd, msg, wp, lp) {
       return r;
     }
