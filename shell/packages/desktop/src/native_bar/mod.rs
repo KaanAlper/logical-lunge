@@ -106,6 +106,8 @@ const TIMER_TEST_FAIL: usize = 13;
 const TIMER_SNAPSHOT: usize = 14;
 const TIMER_DRAG_DWELL: usize = 15;
 const TIMER_WS_NUMBERS: usize = 16;
+/// how long the workspace dots and numbers take to swap
+const NUMBERS_FADE: Duration = Duration::from_millis(140);
 /// the volume mixer's levels while it is open
 const TIMER_MIXER_TICK: usize = 17;
 const TIMER_MIXER_HIDE: usize = 18;
@@ -500,6 +502,8 @@ struct Ui {
   last_wheel: Instant,
   last_ws_wheel: Instant,
   /// Brief numeric workspace overlay after Ctrl+Super navigation.
+  /// Ctrl+Super navigation: when the numbers came in, when they go
+  numbers_from: Option<Instant>,
   numbers_until: Option<Instant>,
   /// device of the bar last scrolled for volume, and when
   volume_wheel: Option<(String, Instant)>,
@@ -604,6 +608,7 @@ fn ui_thread(
         pins_file,
         last_wheel: Instant::now(),
         last_ws_wheel: Instant::now(),
+        numbers_from: None,
         numbers_until: None,
         volume_wheel: None,
         last_volume: None,
@@ -806,9 +811,19 @@ impl Ui {
         }
         WM_TIMER if wp.0 == TIMER_TOASTS => self.toasts_tick(),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
-          let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_WS_NUMBERS) };
-          self.numbers_until = None;
-          self.redraw_all();
+          // frames while the numbers fade in or out; nothing between
+          let now = Instant::now();
+          let done = self.numbers_until.map_or(true, |u| now >= u + NUMBERS_FADE);
+          let steady = self.numbers_from.is_some_and(|f| now >= f + NUMBERS_FADE)
+            && self.numbers_until.is_some_and(|u| now < u);
+          if done {
+            let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_WS_NUMBERS) };
+            self.numbers_from = None;
+            self.numbers_until = None;
+          }
+          if !steady {
+            self.redraw_all();
+          }
         }
         WM_APP_REBUILD => {
           // monitors / DPI change in bursts: rebuild once they settle
@@ -1341,7 +1356,7 @@ impl Ui {
 
   fn redraw_inner(&mut self, i: usize) -> windows::core::Result<()> {
     let theme = self.theme();
-    let show_numbers = self.numbers_until.is_some_and(|until| Instant::now() < until);
+    let show_numbers = self.numbers_k();
     let mut requests = Vec::new();
     {
       let Ui { gfx, fonts, res, icons, model, bars, .. } = self;
@@ -1477,9 +1492,31 @@ impl Ui {
   /// Ctrl+Super (+Shift) moved between workspaces: the core announces the
   /// shortcut itself, so the numbers show however quickly the keys go up.
   fn flash_numbers(&mut self) {
-    self.numbers_until = Some(Instant::now() + Duration::from_millis(700));
-    unsafe { SetTimer(self.msg_hwnd, TIMER_WS_NUMBERS, 700, None) };
+    let now = Instant::now();
+    // already showing (or fading out): carry on from where it is
+    let k = self.numbers_k();
+    self.numbers_from = Some(now - NUMBERS_FADE.mul_f32(k));
+    self.numbers_until = Some(now + Duration::from_millis(700));
+    unsafe { SetTimer(self.msg_hwnd, TIMER_WS_NUMBERS, 16, None) };
     self.redraw_all();
+  }
+
+  /// 0: dots and icons, 1: numbers; eased in between (a short cross-fade,
+  /// or a cut with animations off).
+  fn numbers_k(&self) -> f32 {
+    let (Some(from), Some(until)) = (self.numbers_from, self.numbers_until) else { return 0.0 };
+    let now = Instant::now();
+    if !self.model.animations {
+      return if now < until { 1.0 } else { 0.0 };
+    }
+    let fade = NUMBERS_FADE.as_secs_f32();
+    let k = if now < until {
+      (now.saturating_duration_since(from).as_secs_f32() / fade).min(1.0)
+    } else {
+      1.0 - (now.saturating_duration_since(until).as_secs_f32() / fade).min(1.0)
+    };
+    // ease out cubic
+    1.0 - (1.0 - k).powi(3)
   }
 
   /// An event from the core. On (re)connect the theme is read again: it may

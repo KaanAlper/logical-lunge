@@ -838,7 +838,7 @@ pub const PILL_MARGIN: f32 = MARGIN;
 pub const CELL: f32 = WS;
 
 /// Top layer of the workspaces, in track coordinates: hover, app icons / dots.
-pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, show_numbers: bool) -> anyhow::Result<()> {
+pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, numbers: f32) -> anyhow::Result<()> {
   let (base, idx) = ws_page(m);
   let occ = occupied(m, base);
   let active = |i: usize| m.wm.connected && i == idx;
@@ -866,22 +866,24 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, 
       }
       icon = bmp;
     }
-    if show_numbers {
-      // Shortcut navigation: the number takes the cell and the app icon steps
-      // aside to a small badge at its lower right, still inside this 26-DIP
-      // cell so it never touches the next one.
-      p.text(&n.to_string(), cell, TextStyle { size: 11.0, weight: 600.0 }, c, Align::Center, true)?;
-      if let Some(bmp) = &icon {
-        p.image_circle(bmp, cx + 6.0, cy + 6.0, 8.5, if active(i) { 1.0 } else { 0.8 })?;
-      }
-      continue;
+    // Shortcut navigation (numbers 0..1, cross-faded): the number takes the
+    // cell and the app icon slides aside to a badge at its lower right,
+    // still inside this 26-DIP cell so it never touches the next one.
+    let k = numbers.clamp(0.0, 1.0);
+    let lerp = |a: f32, b: f32| a + (b - a) * k;
+    if k > 0.0 {
+      let shift = if icon.is_some() { -2.5 * k } else { 0.0 };
+      let text = Rect::new(cell.x + shift, cell.y + shift, cell.w, cell.h);
+      p.text(&n.to_string(), text, TextStyle { size: 11.0, weight: 600.0 }, c.alpha(c.3 * k), Align::Center, true)?;
     }
     match &icon {
       Some(bmp) => {
-        let d = if active(i) { 18.0 * 1.05 } else { 18.0 };
-        p.image_circle(bmp, cx, cy, d, if active(i) { 1.0 } else { 0.7 })?;
+        let full = if active(i) { 18.0 * 1.05 } else { 18.0 };
+        let shown = if active(i) { 1.0 } else { 0.7 };
+        p.image_circle(bmp, lerp(cx, cx + 5.5), lerp(cy, cy + 5.5), lerp(full, 12.0), lerp(shown, if active(i) { 1.0 } else { 0.85 }))?;
       }
-      None => p.fill_circle(cx, cy, 4.7 / 2.0, c)?,
+      None if k < 1.0 => p.fill_circle(cx, cy, 4.7 / 2.0, c.alpha(c.3 * (1.0 - k)))?,
+      None => {}
     }
   }
   Ok(())
