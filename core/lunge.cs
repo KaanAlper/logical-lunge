@@ -3281,6 +3281,8 @@ static class Prefs
             case "animations":
             case "gestures":
             case "winToasts":
+            // rahatsız etme: native bildirim kartları gösterilmez
+            case "dnd":
                 if (value != "true" && value != "false") return false;
                 val = value == "true"; break;
             case "focusColor":
