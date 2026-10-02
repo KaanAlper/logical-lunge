@@ -68,6 +68,11 @@ impl MonitorState {
       interval
         .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+      // A display waking, a game switching modes or a dock settling shows
+      // a passing list (none, no primary): only a list seen on two
+      // polls in a row is a change (every widget is opened again on
+      // it).
+      let mut seen: Option<Vec<Monitor>> = None;
       loop {
         interval.tick().await;
         let new_monitors = Self::available_monitors(&app_handle);
@@ -76,12 +81,21 @@ impl MonitorState {
           let current_monitors = monitors.read().await;
           *current_monitors != new_monitors
         };
-
-        if should_update {
-          info!("Detected change in monitors.");
-          *monitors.write().await = new_monitors.clone();
-          let _ = change_tx.send(new_monitors);
+        if !should_update
+          || !new_monitors.iter().any(|monitor| monitor.is_primary)
+        {
+          seen = None;
+          continue;
         }
+        if seen.as_ref() != Some(&new_monitors) {
+          seen = Some(new_monitors);
+          continue;
+        }
+        seen = None;
+
+        info!("Detected change in monitors.");
+        *monitors.write().await = new_monitors.clone();
+        let _ = change_tx.send(new_monitors);
       }
     });
   }

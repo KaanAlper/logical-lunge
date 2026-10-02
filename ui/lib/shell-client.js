@@ -28,8 +28,10 @@ const desktopCommands = {
   setAlwaysOnTop: () => invoke('set_always_on_top'),
   shellExec: (program, args = [], options = {}) => invoke('shell_exec', { program, args, options }),
   shellSpawn: (program, args = [], options = {}) => invoke('shell_spawn', { program, args, options }),
-  shellWrite: (processId, buffer) => invoke('shell_write', { processId, buffer }),
-  shellKill: processId => invoke('shell_kill', { processId }),
+  // Kabuğun komutları bu değere `pid` der (Tauri argümanları adla eşler): `processId` ile her yazma ve sonlandırma
+  // reddediliyordu; ekran klavyesi yazamıyor, çalışan bir yardımcı durdurulamıyordu
+  shellWrite: (processId, buffer) => invoke('shell_write', { pid: processId, buffer }),
+  shellKill: processId => invoke('shell_kill', { pid: processId }),
   setWebviewVisible: visible => invoke('set_webview_visible', { visible }),
 };
 
@@ -157,23 +159,40 @@ export async function shellExec(program, args, options) {
   return desktopCommands.shellExec(program, args, options);
 }
 
+// Dinleyici süreçten önce kurulur ve olaylar, çağıran geri çağırmasını ekleyene kadar saklanır: hemen yazan ya da hemen
+// biten bir sürecin olayları kayboluyordu (bitişi kaçan bildirim akışı bir daha hiç başlamıyordu).
 export async function shellSpawn(program, args, options) {
-  const processId = await desktopCommands.shellSpawn(program, args, options);
-  const stdout = [], stderr = [], exit = [];
+  let processId = null;
+  const before = [];
+  const handlers = { stdout: [], stderr: [], terminated: [] };
+  const backlog = { stdout: [], stderr: [], terminated: [] };
+  const deliver = e => {
+    const list = handlers[e.type];
+    if (!list) return;
+    if (list.length) list.forEach(cb => cb(e.data));
+    else backlog[e.type].push(e.data);
+    if (e.type === 'terminated') unlisten();
+  };
   const unlisten = await listen('shell-emit', event => {
-    if (event.payload.pid !== processId) return;
-    const e = event.payload.event;
-    switch (e.type) {
-      case 'stdout': stdout.forEach(cb => cb(e.data)); break;
-      case 'stderr': stderr.forEach(cb => cb(e.data)); break;
-      case 'terminated': exit.forEach(cb => cb(e.data)); unlisten(); break;
-    }
+    if (processId === null) before.push(event.payload);
+    else if (event.payload.pid === processId) deliver(event.payload.event);
   });
+  try {
+    processId = await desktopCommands.shellSpawn(program, args, options);
+  } catch (err) {
+    unlisten();
+    throw err;
+  }
+  for (const p of before.splice(0)) if (p.pid === processId) deliver(p.event);
+  const on = type => cb => {
+    handlers[type].push(cb);
+    for (const data of backlog[type].splice(0)) cb(data);
+  };
   return {
     processId,
-    onStdout: cb => stdout.push(cb),
-    onStderr: cb => stderr.push(cb),
-    onExit: cb => exit.push(cb),
+    onStdout: on('stdout'),
+    onStderr: on('stderr'),
+    onExit: on('terminated'),
     kill: () => desktopCommands.shellKill(processId),
     write: data => desktopCommands.shellWrite(processId, data),
   };
