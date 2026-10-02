@@ -261,6 +261,19 @@ impl Systray {
     self.icons.get(&id)
   }
 
+  /// Logical Lunge: drops icons whose window is gone. A program that
+  /// crashes never removes its icon, which then stays in the tray for the
+  /// whole session. Returns whether any was dropped.
+  pub fn prune_dead(&mut self) -> bool {
+    let before = self.icons.len();
+    self.icons.retain(|_, icon| {
+      icon.window_handle.map_or(true, |handle| {
+        unsafe { IsWindow(HWND(handle as _)) }.as_bool()
+      })
+    });
+    self.icons.len() != before
+  }
+
   /// Returns the next event from the `Systray`.
   pub async fn events(&mut self) -> Option<SystrayEvent> {
     while let Some(event) = self.event_rx.recv().await {
