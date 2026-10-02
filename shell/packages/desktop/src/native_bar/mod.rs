@@ -8,6 +8,7 @@
 mod anim;
 mod brightness;
 mod core_api;
+mod dialog;
 mod fonts;
 mod gfx;
 mod icons;
@@ -93,6 +94,8 @@ const TIMER_TRAY_HIDE: usize = 10;
 const TIMER_TIP: usize = 11;
 /// running for a minute: the start is not part of a crash loop
 const TIMER_STABLE: usize = 12;
+/// an answered dialog faded out: its window goes, the next one opens
+const TIMER_DIALOG_CLOSE: usize = 70;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -109,10 +112,14 @@ enum Msg {
   Art(String, Option<Vec<u8>>),
   /// the core's event stream: an `ll:*` event, or None on (re)connect
   Core(Option<String>),
+  /// the core asks a question (`POST /dialog`, `lunge.exe --ask`)
+  Dialog(serde_json::Value),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
 static WAKE: AtomicIsize = AtomicIsize::new(0);
+/// the open dialog (dialog.rs): it takes the keyboard
+static DIALOG_HWND: AtomicIsize = AtomicIsize::new(0);
 /// Opens the web bar (main.rs): the native bar could not go on.
 static FALLBACK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 static FAILED: AtomicBool = AtomicBool::new(false);
@@ -228,7 +235,7 @@ pub fn start(
   });
 
   // core -> shell events (the theme changed in a web widget or the settings)
-  core_api::events(|evt| send(Msg::Core(evt)));
+  core_api::events(|evt| send(Msg::Core(evt)), |d| send(Msg::Dialog(d)));
 
   // the app list (icons for the workspace dots); the core may still be starting
   std::thread::spawn(|| {
@@ -329,6 +336,8 @@ struct Ui {
   custom_theme: Option<view::Theme>,
   bars: Vec<Bar>,
   osd: Option<OsdWin>,
+  /// the open dialog and the ones waiting their turn
+  dialogs: dialog::Dialogs,
   displays: HashMap<String, Display>,
   msg_hwnd: HWND,
   rx: Receiver<Msg>,
@@ -424,6 +433,7 @@ fn ui_thread(
         custom_theme: None,
         bars: Vec::new(),
         osd: None,
+        dialogs: Default::default(),
         displays: HashMap::new(),
         msg_hwnd,
         rx,
@@ -498,8 +508,9 @@ fn ms_to_next_minute() -> u32 {
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
   if msg == WM_MOUSEACTIVATE {
-    // clicking the bar never takes the keyboard from the app
-    return LRESULT(MA_NOACTIVATE as isize);
+    // clicking the bar never takes the keyboard from the app; a dialog does
+    let dialog = hwnd.0 as isize == DIALOG_HWND.load(Ordering::Acquire);
+    return LRESULT(if dialog { MA_ACTIVATE } else { MA_NOACTIVATE } as isize);
   }
   if msg == WM_ERASEBKGND {
     return LRESULT(1);
@@ -532,6 +543,9 @@ fn monitor_device(mon: HMONITOR) -> String {
 
 impl Ui {
   fn handle(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
+    if let Some(r) = self.dialog_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if hwnd == self.msg_hwnd {
       match msg {
         WM_APP_WAKE => self.drain(),
@@ -545,8 +559,11 @@ impl Ui {
           unsafe {
             let _ = KillTimer(self.msg_hwnd, TIMER_REBUILD);
           }
+          // dialogs are made for the old monitors
+          self.dialog_destroy_all();
           self.create_bars();
         }
+        WM_TIMER if wp.0 == TIMER_DIALOG_CLOSE => self.dialog_closed(),
         WM_TIMER if wp.0 == TIMER_OSD => {
           unsafe {
             let _ = KillTimer(self.msg_hwnd, TIMER_OSD);
@@ -745,6 +762,7 @@ impl Ui {
         Msg::Temps(t) => self.got_temps(t),
         Msg::Art(title, bytes) => self.got_art(title, bytes),
         Msg::Core(evt) => self.core_event(evt),
+        Msg::Dialog(d) => self.core_dialog(d),
         Msg::Wm(state) => self.model.wm = state,
         Msg::Apps(apps) => self.icons.set_apps(apps),
         Msg::WinIcon(h, png) => self.icons.set_win_icon(h, png),

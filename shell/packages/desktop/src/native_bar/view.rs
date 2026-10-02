@@ -306,6 +306,50 @@ impl Painter<'_> {
     Ok(Self::width_of(&l))
   }
 
+  /// Wrapped text from the top of `r`, at most `r.h` tall, lines 1.35
+  /// apart as on the web. Returns the height it takes.
+  pub(super) fn text_wrapped(&mut self, s: &str, r: Rect, style: TextStyle, c: Rgba, _mono: bool) -> anyhow::Result<f32> {
+    use windows::Win32::Graphics::Direct2D::{D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT};
+    let layout = self.wrapped_layout(s, style, r.w, r.h)?;
+    let h = Self::height_of(&layout).min(r.h);
+    let b = self.brush(c)?;
+    unsafe {
+      self.dc.DrawTextLayout(
+        pt(r.x, r.y),
+        &layout,
+        &b,
+        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_CLIP,
+      )
+    };
+    Ok(h)
+  }
+
+  /// The height `text_wrapped` would take.
+  pub(super) fn measure_wrapped(&mut self, s: &str, style: TextStyle, w: f32, max_h: f32, _mono: bool) -> anyhow::Result<f32> {
+    let layout = self.wrapped_layout(s, style, w, max_h)?;
+    Ok(Self::height_of(&layout).min(max_h))
+  }
+
+  fn wrapped_layout(&mut self, s: &str, style: TextStyle, w: f32, max_h: f32) -> anyhow::Result<IDWriteTextLayout> {
+    use windows::Win32::Graphics::DirectWrite::{DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_WORD_WRAPPING_WRAP};
+    let layout = self.layout(s, style, w, max_h, false)?;
+    unsafe {
+      layout.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+      layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+      let line = style.size * 1.35;
+      layout.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, line, line * 0.8)?;
+    }
+    Ok(layout)
+  }
+
+  fn height_of(layout: &IDWriteTextLayout) -> f32 {
+    let mut m = DWRITE_TEXT_METRICS::default();
+    unsafe {
+      let _ = layout.GetMetrics(&mut m);
+    }
+    m.height
+  }
+
   /// Draws text vertically centred in `r` (ellipsis when it does not fit).
   pub(super) fn text(&mut self, s: &str, r: Rect, style: TextStyle, c: Rgba, align: Align, tabular: bool) -> anyhow::Result<f32> {
     let layout = self.layout(s, style, r.w, r.h, tabular)?;

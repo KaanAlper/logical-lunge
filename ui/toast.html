@@ -382,7 +382,8 @@
                   if (m.emit === 'll:theme-light' || m.emit === 'll:theme-dark') window.llTheme?.set(m.emit.slice(9));
                   if (m.emit === 'll:prefs') reloadPrefs();
                 }
-                else show(m);
+                // soru: native bar'ın diyaloğu sorar (dialog.rs), kart değil
+                else if (!m.dialog) show(m);
               } catch {}
             }
           });

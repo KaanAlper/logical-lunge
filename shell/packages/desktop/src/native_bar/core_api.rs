@@ -51,14 +51,14 @@ pub fn set_pref(key: &'static str, value: &'static str) {
 /// time the stream (re)connects -- state may have changed while it was down.
 /// Reconnects for as long as the shell runs (the core restarts, or starts
 /// after the shell). Blocks on the socket: no polling.
-pub fn events(on: impl Fn(Option<String>) + Send + 'static) {
+pub fn events(on: impl Fn(Option<String>) + Send + 'static, on_dialog: impl Fn(serde_json::Value) + Send + 'static) {
   let _ = std::thread::Builder::new().name("core-events".into()).spawn(move || {
     let mut wait = 1;
     loop {
       if let Some(stream) = open_events() {
         wait = 1;
         on(None);
-        read_events(stream, &on);
+        read_events(stream, &on, &on_dialog);
       }
       std::thread::sleep(Duration::from_secs(wait));
       wait = (wait * 2).min(10);
@@ -76,7 +76,7 @@ fn open_events() -> Option<TcpStream> {
   Some(s)
 }
 
-fn read_events(stream: TcpStream, on: &impl Fn(Option<String>)) {
+fn read_events(stream: TcpStream, on: &impl Fn(Option<String>), on_dialog: &impl Fn(serde_json::Value)) {
   let mut reader = BufReader::new(stream);
   let mut line = String::new();
   loop {
@@ -85,11 +85,14 @@ fn read_events(stream: TcpStream, on: &impl Fn(Option<String>)) {
       Ok(0) | Err(_) => return,
       Ok(_) => {}
     }
-    // `data: {"emit":"ll:theme-dark"}`; toasts and pings are not ours
+    // `data: {"emit":"ll:theme-dark"}` or a question `data: {"dialog":{...}}`;
+    // toasts (the web widget's) and pings are not ours
     let Some(json) = line.trim_end().strip_prefix("data: ") else { continue };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { continue };
     if let Some(evt) = v["emit"].as_str().filter(|e| e.starts_with("ll:")) {
       on(Some(evt.to_string()));
+    } else if v["dialog"].is_object() {
+      on_dialog(v["dialog"].clone());
     }
   }
 }
