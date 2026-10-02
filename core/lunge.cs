@@ -4295,9 +4295,6 @@ static class Supervisor
         return null;
     }
 
-    // Eski kurulumun (0.1.x) parça adları: güncellemede / taşımada onlar da temiz kapatılır
-    static readonly string[] LegacyCore = { "ll-helper" }, LegacyParts = { "glazewm", "zebar", "tacky-borders" };
-
     // Masaüstünü kapatır (kurulum, güncelleme, "masaüstünü yenile"): bakım işareti, önce çekirdek (kapanan parçaları
     // yeniden başlatmasın), pencere yöneticisine nazik çıkış (gizli workspace'lerin pencerelerini geri getirir), kalanlar,
     // sonra görünmez kalmış pencereler. Bakım işareti kalır; kaldırmak çağıranın işi (en geç 10 dakikada geçersizleşir).
@@ -4305,20 +4302,17 @@ static class Supervisor
     {
         Maint.Mark();
         LiveWallpaper.Stop();
-        try { System.IO.File.WriteAllText(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\maintenance"), DateTime.UtcNow.ToString("o")); } catch { }
         var core = MainCore();
         if (core != null) { try { core.Kill(); core.WaitForExit(3000); } catch { } finally { core.Dispose(); } }
-        foreach (var n in LegacyCore) Kill(n);
-        if (Maint.Running(Names.Tiling) || Maint.Running("glazewm"))
+        if (Maint.Running(Names.Tiling))
         {
             try { new TilingClient().Command("wm-exit"); } catch { }
             var sw = Stopwatch.StartNew();
-            while ((Maint.Running(Names.Tiling) || Maint.Running("glazewm")) && sw.ElapsedMilliseconds < 6000) Thread.Sleep(100);
+            while (Maint.Running(Names.Tiling) && sw.ElapsedMilliseconds < 6000) Thread.Sleep(100);
         }
         Kill(Names.Tiling);
         Kill(Names.Shell);
         Kill(LiveWallpaper.Name);
-        foreach (var n in LegacyParts) Kill(n);
         Thread.Sleep(300);
         // Windows'un devredilen parçaları (görev çubuğu, ayarlar, bildirim balonları) geri gelir; yeni çekirdek yeniden alır
         ShellTakeover.ReleaseAll();

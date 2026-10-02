@@ -11,9 +11,10 @@ __pycache__/
 *.bak-*
 *.old
 *.old*.exe
-ll-helper*.exe
 *.pyc
 *.pyo
+# installer\setup.ps1 comes from the main branch (CI copies it in before building)
+/installer/
 .vs/
 .vscode/
 .idea/
