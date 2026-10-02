@@ -110,8 +110,6 @@ struct Screen {
   hwnd: HWND,
   file: PathBuf,
   covered: bool,
-  alpha: u8,
-  fading: bool,
 }
 
 struct Render {
@@ -363,8 +361,6 @@ impl App {
         hwnd,
         file,
         covered: false,
-        alpha: 0,
-        fading: false,
       });
     }
     // no monitor of the settings is there (undocked): the player waits for
@@ -604,42 +600,13 @@ impl App {
       self.send(Cmd::Paused(paused));
     }
   }
-
-  fn start_fade(&mut self, id: u64) {
-    if let Some(s) = self.screens.iter_mut().find(|s| s.id == id) {
-      s.fading = true;
-      unsafe { SetTimer(self.msg, TIMER_FADE, 16, None) };
-    }
-  }
-
-  fn fade(&mut self) {
-    let mut busy = false;
-    for s in self.screens.iter_mut().filter(|s| s.fading) {
-      s.alpha = s.alpha.saturating_add(24);
-      unsafe {
-        let _ = SetLayeredWindowAttributes(
-          s.hwnd,
-          COLORREF(0),
-          s.alpha,
-          LWA_ALPHA,
-        );
-      }
-      s.fading = s.alpha < 255;
-      busy |= s.fading;
-    }
-    if !busy {
-      unsafe {
-        let _ = KillTimer(self.msg, TIMER_FADE);
-      }
-    }
-  }
 }
 
 fn create_screen(rect: RECT) -> Option<HWND> {
   unsafe {
     let instance = GetModuleHandleW(None).unwrap_or_default();
     let hwnd = CreateWindowExW(
-      WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+      WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
       SCREEN_CLASS,
       w!(""),
       WS_POPUP,
@@ -653,8 +620,6 @@ fn create_screen(rect: RECT) -> Option<HWND> {
       None,
     )
     .ok()?;
-    // invisible until its first frame, then faded in
-    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), 0, LWA_ALPHA);
     Some(hwnd)
   }
 }
@@ -829,7 +794,6 @@ unsafe extern "system" fn msg_proc(
           let _ = KillTimer(hwnd, TIMER_REBUILD);
           with_app(|a| a.rebuild());
         }
-        TIMER_FADE => with_app(|a| a.fade()),
         TIMER_RENDER => {
           let _ = KillTimer(hwnd, TIMER_RENDER);
           with_app(|a| a.restart_render());
@@ -857,10 +821,7 @@ unsafe extern "system" fn msg_proc(
       });
       LRESULT(0)
     }
-    WM_APP_FIRST_FRAME => {
-      with_app(|a| a.start_fade(lp.0 as u64));
-      LRESULT(0)
-    }
+    WM_APP_FIRST_FRAME => LRESULT(0),
     WM_APP_RENDER_DIED => {
       SetTimer(hwnd, TIMER_RENDER, 3000, None);
       LRESULT(0)
