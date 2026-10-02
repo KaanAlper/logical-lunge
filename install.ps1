@@ -386,10 +386,9 @@ function Report([hashtable]$status) {
 
 # The desktop we stopped comes back when nothing was installed (cancel before setup, UAC declined)
 function Start-Desktop-Again {
-    foreach ($m in 'LogicalLunge\state\maintenance', 'logical-lunge\maintenance') { Remove-Item (Join-Path $env:LOCALAPPDATA $m) -Force -ErrorAction SilentlyContinue }
-    # from its sign-in task: the core starts with its rights (elevated); 0.1.x had its own task
-    if (Get-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' }
-    else { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue }
+    Remove-Item (Join-Path $env:LOCALAPPDATA 'LogicalLunge\state\maintenance') -Force -ErrorAction SilentlyContinue
+    # from its sign-in task: the core starts with its rights (elevated)
+    Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue
 }
 
 # ---------------------------------------------------------------- main
@@ -539,9 +538,8 @@ try {
     Poll-CtrlC
 
     # ------------------------------------------------------------ stop the running desktop (as the user)
-    # A graceful exit brings back the windows of hidden workspaces; the package's core also knows the 0.1.x parts
-    $running = (Get-Process lunge, lunge-tiling, lunge-shell, ll-helper -ErrorAction SilentlyContinue) -or
-        ((Get-Process glazewm -ErrorAction SilentlyContinue) -and (Test-Path (Join-Path $env:USERPROFILE '.glzr\logical-lunge')))
+    # A graceful exit brings back the windows of hidden workspaces
+    $running = [bool](Get-Process lunge, lunge-tiling, lunge-shell -ErrorAction SilentlyContinue)
     if ($running -and -not $preview) {
         Report @{ phase = 'stop'; version = [string]$ver }
         With-Spinner $T.stopping {

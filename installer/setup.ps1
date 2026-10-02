@@ -7,8 +7,8 @@
 #                                                core and the window manager run elevated (task "Start", highest privileges)
 #          ~\.config\logical-lunge                user settings (config.yaml, keybinds.json, prefs.json)
 #          %LOCALAPPDATA%\LogicalLunge            data (state, logs, webview, clipboard, update)
-# Installs of 0.1.x (~\.glzr\logical-lunge, ~\.glzr\zebar, ~\.glzr\glazewm, %LOCALAPPDATA%\logical-lunge) are
-# migrated and removed once the new install has succeeded.
+# Early 0.2 per-user installs (%LOCALAPPDATA%\Programs\LogicalLunge) are moved and removed once the new install has
+# succeeded.
 param(
     [Parameter(Mandatory = $true)][string]$Source,      # extracted release folder
     [Parameter(Mandatory = $true)][string]$UserProfile, # profile of the user who ran install.ps1
@@ -45,11 +45,6 @@ $STATE = Join-Path $DATA 'state'
 $CONF = Join-Path $UserProfile '.config\logical-lunge'
 $PACK = Join-Path $APP 'ui\logical-lunge'
 $RB = Join-Path $DATA 'rollback'
-$OLD_LL = Join-Path $UserProfile '.glzr\logical-lunge'
-$OLD_ZB = Join-Path $UserProfile '.glzr\zebar'
-$OLD_GW = Join-Path $UserProfile '.glzr\glazewm'
-$OLD_STATE = Join-Path $LOCAL 'logical-lunge'
-$OLD_WEB = Join-Path $UserProfile 'AppData\Roaming\zebar\webview-cache\logical-lunge'
 $HKU = "Registry::HKEY_USERS\$UserSid"
 $LOG = Join-Path $env:TEMP 'logical-lunge-install.log'
 $DL = Join-Path $env:TEMP 'll-downloads'
@@ -60,7 +55,6 @@ $OWNED = 'lunge.exe', 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-
 $TOTAL_STEPS = 12
 
 $appExisted = Test-Path (Join-Path $APP 'lunge.exe')
-$legacy = Test-Path (Join-Path $OLD_LL 'helper\ll-helper.exe')
 $perUser = Test-Path (Join-Path $OLD_APP 'lunge.exe')
 New-Item -ItemType Directory -Force $APP, $STATE, $CONF, $DL | Out-Null
 
@@ -201,8 +195,6 @@ function Move-Tracked([string]$from, [string]$to) {
 
 # ---- backup of every setting we touch (restored by uninstall.ps1) ----
 $backupFile = Join-Path $STATE 'install-backup.json'
-$oldBackup = Join-Path $OLD_STATE 'install-backup.json'
-if (-not (Test-Path $backupFile) -and (Test-Path $oldBackup)) { Copy-Item $oldBackup $backupFile }
 $backup = @{ registry = @(); installed = @(); version = $null }
 if (Test-Path $backupFile) { $backup = Get-Content $backupFile -Raw | ConvertFrom-Json | ForEach-Object { @{ registry = @($_.registry); installed = @($_.installed); version = $_.version } } }
 # an update must not keep the old version number. Plain text: a string from Get-Content carries PowerShell's
@@ -258,18 +250,13 @@ function Repair-LegacyWindowRules([string]$text) {
     # Managed tiled windows keep their outline when browser fullscreen drops its caption.
     return [regex]::Replace($text, '(?m)^([ \t]*follow_native_border:)[ \t]*true([ \t]*(?:#[^\r\n]*)?)(?=\r?$)', '$1 false$2')
 }
-# Every process running from the files this installer owns ($OWNED in this install, and the whole 0.1.x layout and the
-# stack it replaced): which programs are ours is decided by where they run from, never by their names, so another program
-# with the same name (a GlazeWM of the user's own, say) is left alone, and so is the terminal the user opened from our
-# tools folder. Covers the video screen saver (LogicalLunge.scr) while it is on screen.
+# Every process running from the files this installer owns ($OWNED in this install, and the whole early 0.2 per-user
+# folder): which programs are ours is decided by where they run from, never by their names, so another program with
+# the same name is left alone, and so is the terminal the user opened from our tools folder. Covers the video screen
+# saver (LogicalLunge.scr) while it is on screen.
 function Stop-Parts {
-    $dirs = @($OLD_APP, $OLD_LL, $OLD_ZB, $OLD_GW)
     $files = @($OWNED | ForEach-Object { Join-Path $APP $_ })
-    # the upstream GlazeWM / Zebar an older version installed (recorded in its backup), not ones the user installed
-    $mine = if (Get-Variable backup -Scope Script -ErrorAction SilentlyContinue) { @($script:backup.installed) } else { @() }
-    if ($mine -contains 'glazewm') { $dirs += Join-Path $env:ProgramFiles 'glzr.io\GlazeWM' }
-    if ($mine -contains 'zebar') { $dirs += Join-Path $env:ProgramFiles 'glzr.io\Zebar' }
-    $roots = $dirs | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') + '\' }
+    $roots = @($OLD_APP.TrimEnd('\') + '\')
     foreach ($p in Get-CimInstance Win32_Process) {
         $exe = $p.ExecutablePath
         if (-not $exe -or $p.ProcessId -eq $PID) { continue }
@@ -281,10 +268,10 @@ function Stop-Parts {
 }
 
 # A process still running from a Logical Lunge folder whose program file is gone (moved or removed by this or an earlier
-# update) keeps working on stale files: a WezTerm left from the 0.1.x folder took Super+Enter requests it could not serve.
+# update) keeps working on stale files: a terminal left in an old folder took Super+Enter requests it could not serve.
 # Those are stopped. Processes whose files still exist are never touched (other programs may use our old tools).
 function Stop-Leftovers {
-    $roots = @($APP, $OLD_APP, $OLD_LL, $OLD_ZB, $OLD_GW) | ForEach-Object { $_.TrimEnd('\') + '\' }
+    $roots = @($APP, $OLD_APP) | ForEach-Object { $_.TrimEnd('\') + '\' }
     foreach ($p in Get-CimInstance Win32_Process) {
         $exe = $p.ExecutablePath
         if (-not $exe -or (Test-Path -LiteralPath $exe)) { continue }
@@ -354,16 +341,15 @@ function Undo-Changes {
 
 # Starts the desktop that was there before this run (whatever the rollback could restore)
 function Start-PreviousDesktop {
-    foreach ($m in (Join-Path $STATE 'maintenance'), (Join-Path $OLD_STATE 'maintenance')) { Remove-Item $m -Force -ErrorAction SilentlyContinue }
+    Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
     if ($appExisted) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue }
-    elseif ($legacy) { Start-ScheduledTask -TaskPath '\LL\' -TaskName 'GlazeWM' -ErrorAction SilentlyContinue }
     # Explorer starts it as the user (this installer is elevated)
     elseif ($perUser) { Start-Process explorer.exe "`"$(Join-Path $OLD_APP 'lunge.exe')`"" -ErrorAction SilentlyContinue }
 }
 
 Log "Logical Lunge installer - $(Get-Date)"
 Log "user: $UserName ($UserSid)  profile: $UserProfile"
-Log "source: $Source  existing install: $appExisted  0.1.x install: $legacy"
+Log "source: $Source  existing install: $appExisted  per-user 0.2 install: $perUser"
 $ok = $false; $cancelled = $false; $failure = $null
 try {
     # ------------------------------------------------------------ checks
@@ -425,7 +411,7 @@ try {
     # versions kept it next to the widgets
     $appsList = Join-Path $STATE 'apps.json'
     if (-not (Test-Path $appsList)) {
-        foreach ($old in (Join-Path "$RB\app" 'ui\logical-lunge\apps.json'), (Join-Path $OLD_APP 'ui\logical-lunge\apps.json'), (Join-Path $OLD_ZB 'logical-lunge\apps.json')) {
+        foreach ($old in (Join-Path "$RB\app" 'ui\logical-lunge\apps.json'), (Join-Path $OLD_APP 'ui\logical-lunge\apps.json')) {
             if (Test-Path $old) { Remember-Created $appsList; Copy-Item $old $appsList; break }
         }
     }
@@ -477,16 +463,11 @@ try {
     }
     else {
         Remember-Created $cfg
-        $oldCfg = Join-Path $OLD_GW 'config.yaml'
-        if (-not $focus -and (Test-Path $oldCfg)) { $focus = Get-FocusColor ([IO.File]::ReadAllText($oldCfg)) }
         $new = Set-FocusColor $tpl $focus
         [IO.File]::WriteAllText($cfg, $new, $UTF8); Set-Content $hashFile (Hash $new)
         Log "    config.yaml written$(if ($focus) { " (focus color $focus)" })"
     }
     Step-Progress 60
-    # keyboard shortcuts of the core (0.1.x kept them in %LOCALAPPDATA%\logical-lunge)
-    $kb = Join-Path $CONF 'keybinds.json'
-    if (-not (Test-Path $kb) -and (Test-Path (Join-Path $OLD_STATE 'keybinds.json'))) { Remember-Created $kb; Copy-Item (Join-Path $OLD_STATE 'keybinds.json') $kb }
     # interface preferences chosen in the installer (language, clock); the UI reads a copy next to the widgets
     $prefs = Join-Path $CONF 'prefs.json'
     & { # Always record the selected edition, including direct setup.ps1 installs.
@@ -507,40 +488,16 @@ try {
 
     Step-Progress 99
 
-    # ------------------------------------------------------------ data of 0.1.x
-    if ($legacy -or $perUser -or (Test-Path $OLD_STATE)) {
+    # ------------------------------------------------------------ early 0.2 per-user install
+    if ($perUser) {
         Step 'migrate' 'Moving data from the previous version'
-        foreach ($pair in @(@('nightlight', 'nightlight'), @('gamma', 'gamma'), @('wallpaper.txt', 'wallpaper.txt'), @('splash-wall.jpg', 'splash-wall.jpg'), @('glazewm-keybindings.default.json', 'tiling-keybindings.default.json'))) {
-            $from = Join-Path $OLD_STATE $pair[0]; $to = Join-Path $STATE $pair[1]
-            if ((Test-Path $from) -and -not (Test-Path $to)) { Remember-Created $to; Copy-Item $from $to }
-        }
-        Step-Progress 20
-        $clip = Join-Path $DATA 'clipboard'
-        if ((Test-Path (Join-Path $OLD_STATE 'clipboard')) -and -not (Test-Path $clip)) { Remember-Created $clip; Copy-Item (Join-Path $OLD_STATE 'clipboard') $clip -Recurse }
         Step-Progress 40
-        # widget storage (to-dos, pinned apps, theme...): only what the widgets saved, not the browser caches
-        $webDst = Join-Path $DATA 'webview\logical-lunge\EBWebView\Default'
-        $webSrc = Join-Path $OLD_WEB 'EBWebView\Default'
-        if ((Test-Path $webSrc) -and -not (Test-Path (Join-Path $webDst 'Local Storage'))) {
-            New-Item -ItemType Directory -Force $webDst | Out-Null
-            foreach ($d in 'Local Storage', 'IndexedDB', 'WebStorage') {
-                if (Test-Path (Join-Path $webSrc $d)) { Remember-Created (Join-Path $webDst $d); Copy-Item (Join-Path $webSrc $d) (Join-Path $webDst $d) -Recurse }
-            }
-            Log '    widget storage moved'
-        }
-        Step-Progress 65
         # big downloaded tools: moved instead of downloaded again
-        foreach ($old in $OLD_APP, $OLD_LL) {
-            foreach ($d in 'tools\wezterm', 'tools\bin') {
-                $from = Join-Path $old $d; $to = Join-Path $APP $d
-                if ((Test-Path $from) -and -not (Test-Path $to)) {
-                    try {
-                        # Other programs (e.g. AsenaScale) use the legacy OpenConsole/tool paths.
-                        if ($old -eq $OLD_LL) { Remember-Created $to; Copy-Item $from $to -Recurse; Log "    $d copied (legacy path preserved)" }
-                        else { Move-Tracked $from $to; Log "    $d moved" }
-                    }
-                    catch { Remember-Created $to; Copy-Item $from $to -Recurse -Force; Log "    $d copied (in use: $($_.Exception.Message))" }
-                }
+        foreach ($d in 'tools\wezterm', 'tools\bin') {
+            $from = Join-Path $OLD_APP $d; $to = Join-Path $APP $d
+            if ((Test-Path $from) -and -not (Test-Path $to)) {
+                try { Move-Tracked $from $to; Log "    $d moved" }
+                catch { Remember-Created $to; Copy-Item $from $to -Recurse -Force; Log "    $d copied (in use: $($_.Exception.Message))" }
             }
         }
     }
@@ -758,9 +715,6 @@ try {
         Register-LLTask $pair[0] $a $null $principalHigh (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1))
     }
     Step-Progress 85
-    # GlazeWM must not also start from an older Run entry (backed up: the uninstaller puts it back)
-    $runOld = (Get-ItemProperty "$cu\Run" -Name 'GlazeWM' -ErrorAction SilentlyContinue).GlazeWM
-    if ($null -ne $runOld) { Set-Reg "$cu\Run" 'GlazeWM' ([string]$runOld) 'String'; Remove-ItemProperty "$cu\Run" -Name 'GlazeWM' -ErrorAction SilentlyContinue }
 
     Step-Progress 99
     Step 'owner' 'Preparing the first start'
@@ -822,39 +776,6 @@ Save-Backup
 Step-Progress 35
 
 # (also retried on later updates if a folder was in use, e.g. a terminal running from the old location)
-if ($legacy -or (Test-Path $OLD_STATE) -or (Test-Path $OLD_LL)) {
-    Log '    removing the 0.1.x install'
-    foreach ($t in 'GlazeWM', 'Splash', 'Temps', 'Ethernet-On', 'Ethernet-Off') { Unregister-ScheduledTask -TaskPath '\LL\' -TaskName $t -Confirm:$false -ErrorAction SilentlyContinue }
-    try { $svc = New-Object -ComObject Schedule.Service; $svc.Connect(); $svc.GetFolder('\').DeleteFolder('LL', 0) } catch {}
-    # Keep legacy tool paths: other user applications can still depend on them.
-    # Older versions installed the upstream GlazeWM / Zebar MSIs; only copies Logical Lunge installed are removed
-    foreach ($app in @(@('glazewm', 'GlazeWM'), @('zebar', 'Zebar'))) {
-        if (@($backup.installed) -notcontains $app[0]) { continue }
-        foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
-            Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-                $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
-                if ($p.DisplayName -like "$($app[1])*" -and $_.PSChildName -match '^\{') {
-                    Log "    removing the upstream $($app[1]) an older version installed"
-                    Start-Process msiexec.exe -ArgumentList '/x', $_.PSChildName, '/qn', '/norestart' -Wait
-                }
-            }
-        }
-        $backup.installed = @($backup.installed | Where-Object { $_ -ne $app[0] })
-    }
-    Remove-UserPath (Join-Path $env:ProgramFiles 'glzr.io\Zebar')
-    # the user's own configs from before Logical Lunge come back, ours go
-    foreach ($f in (Join-Path $OLD_GW 'config.yaml'), (Join-Path $OLD_ZB 'settings.json')) {
-        if (Test-Path "$f.before-ll") { Move-Item "$f.before-ll" $f -Force } else { Remove-Item $f -Force -ErrorAction SilentlyContinue }
-    }
-    foreach ($d in (Join-Path $OLD_ZB 'logical-lunge'), $OLD_STATE, $OLD_WEB) {
-        if (Test-Path $d) { try { Remove-Item $d -Recurse -Force } catch { Log "    could not remove $d (in use?): $($_.Exception.Message)" } }
-    }
-    foreach ($d in $OLD_GW, $OLD_ZB, (Split-Path $OLD_LL)) {
-        if ((Test-Path $d) -and -not (Get-ChildItem $d -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '\.(log|bak.*)$' })) { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
-    }
-    Remove-Item (Join-Path $LOCAL 'Temp\ll-helper.log') -Force -ErrorAction SilentlyContinue
-    Save-Backup
-}
 if ($perUser -or (Test-Path $OLD_APP)) {
     Log '    removing the per-user 0.2 install'
     Remove-UserPath (Join-Path $OLD_APP 'tools\bin')
