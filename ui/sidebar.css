@@ -558,6 +558,13 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .wall-tile.busy { box-shadow: 0 0 0 2px var(--m3primary); }
 .wall-empty { font-size: 13px; color: var(--m3onSurfaceVariant); align-self: center; padding: 0 8px; }
 .wall-credit { font-size: 11px; color: var(--m3outline); text-align: center; }
+.wall-spin b { font-size: 12px; font-weight: 600; margin-left: 4px; }
+.wall-tile > .icon { font-size: 28px; color: var(--m3onSurfaceVariant); }
+/* Canlı duvar kağıdı: kategoriler tek satırda kayar (mağazada 40'tan fazla) */
+.live-cats { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
+.live-cats .chip { flex: none; }
+.live-foot { display: flex; flex-direction: column; gap: 10px; padding: 2px 6px 4px; }
+.live-foot > .chip { align-self: flex-start; height: 32px; font-size: 13px; }
 .saver-sec { padding: 14px; gap: 12px; }
 .saver-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .saver-switch input { width: 18px; height: 18px; accent-color: var(--m3primary); cursor: pointer; }

@@ -3959,6 +3959,7 @@ static class Supervisor
         var sw = Stopwatch.StartNew();
         while (!TilingIpcUp() && sw.ElapsedMilliseconds < 20000) Thread.Sleep(150);
         if (!Maint.Running(Names.Shell)) ShellWatchdog.StartShell("açılış");
+        try { LiveWallpaper.EnsureRunning(); } catch (Exception ex) { Slider.Log("canlı duvar kağıdı başlatılamadı: " + ex.Message); }
         // Masaüstü yeniden ayakta: bakım bitti. --stop-desktop'ın bıraktığı işaret kalınca odak bekçisi, parça nöbetçileri
         // ve kendini toparlama 10 dakika susuyordu (her "masaüstünü yenile" / durdur-başlat sonrasında; gizlenen overview
         // önde kalıyor, boş workspace'te tuşlar görünmeyen pencereye gidiyordu).
@@ -3993,6 +3994,7 @@ static class Supervisor
     {
         Slider.Log("kapanış: " + why);
         Kill(Names.Shell);
+        LiveWallpaper.Stop();
         TaskbarGuard.Release();
         if (exitSelf) Environment.Exit(0);
     }
@@ -4020,6 +4022,7 @@ static class Supervisor
     public static void StopDesktop()
     {
         Maint.Mark();
+        LiveWallpaper.Stop();
         try { System.IO.File.WriteAllText(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"logical-lunge\maintenance"), DateTime.UtcNow.ToString("o")); } catch { }
         var core = MainCore();
         if (core != null) { try { core.Kill(); core.WaitForExit(3000); } catch { } finally { core.Dispose(); } }
@@ -4032,6 +4035,7 @@ static class Supervisor
         }
         Kill(Names.Tiling);
         Kill(Names.Shell);
+        Kill(LiveWallpaper.Name);
         foreach (var n in LegacyParts) Kill(n);
         Thread.Sleep(300);
         Slider.Log("masaüstü kapatıldı; geri getirilen pencere: " + Orphans.Uncloak());
@@ -4695,6 +4699,15 @@ static class Toasts
                 else if (act == "restart-shell" && SelfHeal.IsMain)
                 {
                     ThreadPool.QueueUserWorkItem(_ => ShellWatchdog.Restart("tercihler değişti"));
+                    status = "202 Accepted";
+                }
+                // Canlı duvar kağıdı ayarı değişti (lunge.exe --live-*): oynatıcı başlar, ayarı yeniden okur ya da kapanır
+                else if (act == "live-wallpaper" && SelfHeal.IsMain)
+                {
+                    ThreadPool.QueueUserWorkItem(_ =>
+                    {
+                        try { LiveWallpaper.Sync(); } catch (Exception ex) { Slider.Log("canlı duvar kağıdı: " + ex.Message); }
+                    });
                     status = "202 Accepted";
                 }
                 else if (act == "stop-desktop" && SelfHeal.IsMain)
@@ -8641,9 +8654,9 @@ static class Wallpaper
             try { r = w.GetMonitorRECT(id); } catch { continue; } // bağlı olmayan monitör
             string path = "";
             try { path = w.GetWallpaper(id) ?? ""; } catch { }
-            mons.Add(new Dictionary<string, object> { { "id", id }, { "x", r.Left }, { "y", r.Top }, { "w", r.Right - r.Left }, { "h", r.Bottom - r.Top }, { "path", path } });
+            mons.Add(new Dictionary<string, object> { { "id", id }, { "x", r.Left }, { "y", r.Top }, { "w", r.Right - r.Left }, { "h", r.Bottom - r.Top }, { "path", path }, { "live", LiveWallpaper.For(id) } });
         }
-        return json.Serialize(new Dictionary<string, object> { { "span", w.GetPosition() == SPAN }, { "monitors", mons }, { "dir", Dir } });
+        return json.Serialize(new Dictionary<string, object> { { "span", w.GetPosition() == SPAN }, { "monitors", mons }, { "dir", Dir }, { "liveOptions", LiveWallpaper.Options() } });
     }
 
     static void SetRaw(string path, string mode)
@@ -8726,11 +8739,19 @@ static class Wallpaper
     }
 
     // mode: "all" | "span" | monitör kimliği
-    public static void Apply(string path, string mode)
+    // keepLive: canlı duvar kağıdının altındaki kare; değilse seçilen resim o monitörlerin canlı duvar kağıdını kapatır
+    // (önce resim konur: kapanan videonun yerinde eski resim bir an görünmesin)
+    public static void Apply(string path, string mode, bool keepLive = false)
     {
         path = System.IO.Path.GetFullPath(path);
         SetRaw(path, mode);
         SaveState(path, mode);
+        // resim yerinde: canlı duvar kağıdı kapanamazsa (ayar dosyası o an kilitli) komut yine başarılı sayılır
+        if (!keepLive)
+        {
+            try { LiveWallpaper.Clear(mode); }
+            catch (Exception ex) { Slider.Log("canlı duvar kağıdı kapatılamadı: " + ex.Message); }
+        }
         // ii switchwall.sh gibi terminal renklerini yeni duvar kağıdından üret (varsa)
         try
         {
@@ -8855,6 +8876,534 @@ static class Wallpaper
             Apply(dst, mode);
             return dst;
         }
+    }
+}
+
+// ---------------- Canlı duvar kağıdı (lunge-wallpaper.exe) ----------------
+// Videolar masaüstü simgelerinin arkasında oynar: her monitöre bir pencere, çözme ekran kartında (Media Foundation).
+// Ayar: state\live-wallpaper.json {"wallpapers":[{"monitor":"*" | monitör kimliği,"file":video}],"pauseFullscreen","pauseOnBattery"}
+// (boş "file": herkese bir video varken o monitör kapalı). Videonun bir karesi statik duvar kağıdı olur: tema renkleri
+// ona uyar, video başlamadan ya da durunca masaüstünde aynı resim görünür.
+// Mağaza: Sucrose Store (github.com/Taiizor/Store, MIT); yalnızca video türü ve yetişkin olmayan içerik.
+static class LiveWallpaper
+{
+    public const string Name = "lunge-wallpaper";
+    const string WINDOW_CLASS = "LogicalLunge.LiveWallpaper";
+    const uint WM_CLOSE = 0x0010, WM_APP_RELOAD = 0x8001;
+    const string STORE = "https://raw.githubusercontent.com/Taiizor/Store/develop/";
+    const long MAX_VIDEO = 500L << 20;
+    // bir indirmenin toplam süresi (yavaş damlatan bir sunucu komut satırını saatlerce tutmasın)
+    static readonly TimeSpan FETCH_DEADLINE = TimeSpan.FromMinutes(20);
+    static readonly string[] VIDEO = { ".mp4", ".m4v", ".mov", ".wmv", ".webm", ".mkv" };
+    static readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr w, IntPtr l);
+
+    static string Exe { get { return Paths.In("lunge-wallpaper.exe"); } }
+    static string StatePath { get { return Paths.State("live-wallpaper.json"); } }
+    static string StoreCache { get { return System.IO.Path.Combine(Paths.DataDir("cache"), "live-store.json"); } }
+    static string ProgressFile { get { return System.IO.Path.Combine(Dir, ".progress"); } }
+
+    public static string Dir
+    {
+        get
+        {
+            string d = System.IO.Path.Combine(Wallpaper.Dir, "Live");
+            System.IO.Directory.CreateDirectory(d);
+            return d;
+        }
+    }
+
+    sealed class Settings
+    {
+        public List<KeyValuePair<string, string>> Entries = new List<KeyValuePair<string, string>>();
+        public bool PauseFullscreen = true, PauseOnBattery = true;
+        public bool Active { get { return Entries.Exists(e => e.Value.Length > 0); } }
+    }
+
+    // Kayıtlar (monitör -> video) üzerinde saf işlemler; her biri yeni bir liste döndürür
+    // Monitöre video ver ("all"/"span": herkese tek video, eski kayıtların yerine)
+    static List<KeyValuePair<string, string>> WithVideo(List<KeyValuePair<string, string>> entries, string mode, string video)
+    {
+        bool all = mode == "all" || mode == "span";
+        var list = entries.FindAll(e => !all && !string.Equals(e.Key, mode, StringComparison.OrdinalIgnoreCase));
+        list.Add(new KeyValuePair<string, string>(all ? "*" : mode, video));
+        return list;
+    }
+
+    // Monitörün videosunu kapat; herkese bir video varken yalnız o monitör kapanır. Video kalmazsa liste boşalır.
+    static List<KeyValuePair<string, string>> WithoutVideo(List<KeyValuePair<string, string>> entries, string mode)
+    {
+        if (mode == "all" || mode == "span") return new List<KeyValuePair<string, string>>();
+        var list = entries.FindAll(e => !string.Equals(e.Key, mode, StringComparison.OrdinalIgnoreCase));
+        if (list.Exists(e => e.Key == "*")) list.Add(new KeyValuePair<string, string>(mode, ""));
+        return list.Exists(e => e.Value.Length > 0) ? list : new List<KeyValuePair<string, string>>();
+    }
+
+    static bool Same(List<KeyValuePair<string, string>> a, List<KeyValuePair<string, string>> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++) if (a[i].Key != b[i].Key || a[i].Value != b[i].Value) return false;
+        return true;
+    }
+
+    // Bir monitörün videosu: kendi kaydı (boşsa kapalı), yoksa herkese olan
+    static string FileFor(List<KeyValuePair<string, string>> entries, string monitor)
+    {
+        foreach (var e in entries) if (string.Equals(e.Key, monitor, StringComparison.OrdinalIgnoreCase)) return e.Value;
+        foreach (var e in entries) if (e.Key == "*") return e.Value;
+        return "";
+    }
+
+    // strict: dosya var ama okunamıyor / bozuk ise hata (Set/Clear boş bir ayarı onun yerine yazmasın); okumak için
+    // (--wall-info) varsayılanlar yeter
+    static Settings Load(bool strict = false)
+    {
+        var s = new Settings();
+        try
+        {
+            if (!System.IO.File.Exists(StatePath)) return s;
+            var d = json.Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(StatePath));
+            object v;
+            if (d.TryGetValue("wallpapers", out v) && v is System.Collections.ArrayList)
+                foreach (var o in (System.Collections.ArrayList)v)
+                {
+                    var e = o as Dictionary<string, object>;
+                    object m, f;
+                    if (e != null && e.TryGetValue("monitor", out m) && e.TryGetValue("file", out f) && m is string && f is string && ((string)m).Length > 0)
+                        s.Entries.Add(new KeyValuePair<string, string>((string)m, (string)f));
+                }
+            if (d.TryGetValue("pauseFullscreen", out v) && v is bool) s.PauseFullscreen = (bool)v;
+            if (d.TryGetValue("pauseOnBattery", out v) && v is bool) s.PauseOnBattery = (bool)v;
+        }
+        catch (Exception ex)
+        {
+            Slider.Log("canlı duvar kağıdı ayarı okunamadı: " + ex.Message);
+            if (strict) throw new InvalidOperationException("state");
+        }
+        return s;
+    }
+
+    // Ayarı okuyup değiştiren komutlar (iki monitör, iki anahtar aynı anda) birbirinin yazdığını silmesin
+    static T Locked<T>(Func<T> f)
+    {
+        using (var m = new Mutex(false, @"Local\LogicalLunge.LiveWallpaper.State"))
+        {
+            bool owned = false;
+            try
+            {
+                try { owned = m.WaitOne(10000); } catch (AbandonedMutexException) { owned = true; }
+                if (!owned) throw new TimeoutException("state");
+                return f();
+            }
+            finally { if (owned) m.ReleaseMutex(); }
+        }
+    }
+
+    static void Save(Settings s)
+    {
+        var list = new List<Dictionary<string, object>>();
+        foreach (var e in s.Entries) list.Add(new Dictionary<string, object> { { "monitor", e.Key }, { "file", e.Value } });
+        string text = json.Serialize(new Dictionary<string, object> { { "wallpapers", list }, { "pauseFullscreen", s.PauseFullscreen }, { "pauseOnBattery", s.PauseOnBattery } });
+        // oynatıcı yarım yazılmış bir dosya okumasın
+        string tmp = StatePath + "." + Process.GetCurrentProcess().Id + ".tmp";
+        System.IO.File.WriteAllText(tmp, text, new UTF8Encoding(false));
+        if (System.IO.File.Exists(StatePath)) System.IO.File.Replace(tmp, StatePath, null);
+        else System.IO.File.Move(tmp, StatePath);
+    }
+
+    // --wall-info'nun canlı alanları: monitörün videosu ("" yok) ve duraklatma kuralları
+    public static string For(string monitor) { return FileFor(Load().Entries, monitor); }
+    public static Dictionary<string, object> Options()
+    {
+        var s = Load();
+        return new Dictionary<string, object> { { "pauseFullscreen", s.PauseFullscreen }, { "pauseOnBattery", s.PauseOnBattery } };
+    }
+
+    // Açılışta / masaüstü yeniden kurulurken: ayar varsa ve oynatıcı çalışmıyorsa başlat. Normal kullanıcı haklarıyla
+    // (UserLaunch): Explorer'ın masaüstü pencerelerine bağlanır, kabuğun istekleri ona ulaşır.
+    public static void EnsureRunning()
+    {
+        if (FindWindow(WINDOW_CLASS, null) == IntPtr.Zero && Load().Active && System.IO.File.Exists(Exe)) UserLaunch.Start(Exe, "", Paths.Home);
+    }
+
+    // Asıl çekirdekte (/cmd?a=live-wallpaper): çalışan oynatıcı ayarı yeniden okur (ayar boşsa kendisi kapanır; kapanırken
+    // yeni bir ayar gelirse yerine yenisini bırakır), çalışmıyorsa başlar
+    public static void Sync()
+    {
+        IntPtr w = FindWindow(WINDOW_CLASS, null);
+        if (w == IntPtr.Zero) EnsureRunning();
+        else PostMessage(w, WM_APP_RELOAD, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    // Komut satırından (--live-*): ayar yazıldı, gerisini çekirdek yapar; çekirdek cevap vermezse bu süreç
+    static void Notify()
+    {
+        if (Supervisor.PostToCore("/cmd?a=live-wallpaper", 2000) != 202) Sync();
+    }
+
+    // Masaüstü kapanırken; çekirdek açılışta yeniden başlatır
+    public static void Stop()
+    {
+        IntPtr w = FindWindow(WINDOW_CLASS, null);
+        if (w != IntPtr.Zero) PostMessage(w, WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+    }
+
+    static bool IsVideo(string path) { return Array.IndexOf(VIDEO, System.IO.Path.GetExtension(path).ToLowerInvariant()) >= 0; }
+
+    // --live-set <video> <mod>: videoyu duvar kağıdı yap (mod: all | monitör kimliği; span da "all" sayılır: her monitör
+    // videoyu kendi oranında doldurur)
+    public static void Set(string video, string mode)
+    {
+        video = System.IO.Path.GetFullPath(video);
+        if (!System.IO.File.Exists(video) || !IsVideo(video)) throw new ArgumentException("video");
+        if (!System.IO.File.Exists(Exe)) throw new InvalidOperationException("player");
+        bool all = mode == "all" || mode == "span";
+        // altta duran resim: videonun bir karesi (bir kez çıkarılır). Kare alınamıyorsa oynatıcı da açamaz (aynı çözücü):
+        // "ayarlandı" deyip boş masaüstü bırakmak yerine söylenir
+        string frame = System.IO.Path.ChangeExtension(video, ".frame.png");
+        if (!System.IO.File.Exists(frame)) SaveFrame(video, frame);
+        if (!System.IO.File.Exists(frame)) throw new NotSupportedException("decode");
+        Wallpaper.Apply(frame, all ? "all" : mode, true);
+        Locked(() =>
+        {
+            var s = Load(true);
+            s.Entries = WithVideo(s.Entries, mode, video);
+            Save(s);
+            return true;
+        });
+        Notify();
+    }
+
+    static void SaveFrame(string video, string png)
+    {
+        try
+        {
+            using (var p = Process.Start(new ProcessStartInfo(Exe, "--frame " + Program.QuoteArg(video) + " " + Program.QuoteArg(png)) { UseShellExecute = false, CreateNoWindow = true }))
+                if (!p.WaitForExit(30000)) { try { p.Kill(); } catch { } }
+        }
+        catch (Exception ex) { Slider.Log("canlı duvar kağıdı karesi alınamadı: " + ex.Message); }
+    }
+
+    // --live-clear <mod>: canlı duvar kağıdını kapat; altta kalan resim (videonun karesi) durur. Statik bir duvar kağıdı
+    // seçilince de çağrılır.
+    public static void Clear(string mode)
+    {
+        bool changed = Locked(() =>
+        {
+            var s = Load(true);
+            if (!s.Active) return false;
+            var next = WithoutVideo(s.Entries, mode);
+            if (Same(next, s.Entries)) return false;
+            s.Entries = next;
+            Save(s);
+            return true;
+        });
+        if (changed) Notify();
+    }
+
+    // --live-options <tam ekranda duraklat 0|1> <pille çalışırken duraklat 0|1>
+    public static void SetOptions(bool fullscreen, bool battery)
+    {
+        bool notify = Locked(() =>
+        {
+            var s = Load(true);
+            if (s.PauseFullscreen == fullscreen && s.PauseOnBattery == battery) return false;
+            s.PauseFullscreen = fullscreen;
+            s.PauseOnBattery = battery;
+            Save(s);
+            return s.Active;
+        });
+        if (notify) Notify();
+    }
+
+    // Klasör adı: harf, rakam, boşluk, tire (mağaza adları ve dosya adları güvenle klasör olur)
+    static string Slug(string name)
+    {
+        string s = System.Text.RegularExpressions.Regex.Replace(name ?? "", @"[^\w\- ]", "_");
+        if (s.Length > 60) s = s.Substring(0, 60);
+        s = s.Trim();
+        if (System.Text.RegularExpressions.Regex.IsMatch(s, @"^(con|prn|aux|nul|com\d|lpt\d)$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) s = "_" + s;
+        return s.Length == 0 ? "video" : s;
+    }
+
+    // --live-pick <mod>: video seçtir, kütüphaneye kopyala, uygula -> kopyanın yolu ("" vazgeçildi)
+    public static string Pick(string mode)
+    {
+        using (var d = new OpenFileDialog
+        {
+            Title = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr" ? "Video seç" : "Choose video",
+            Filter = "Video|*.mp4;*.m4v;*.mov;*.wmv;*.webm;*.mkv",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+        })
+        {
+            if (d.ShowDialog() != DialogResult.OK) return "";
+            if (!IsVideo(d.FileName)) throw new ArgumentException("video");
+            string name = Slug(System.IO.Path.GetFileNameWithoutExtension(d.FileName));
+            string dir = System.IO.Path.Combine(Dir, name);
+            System.IO.Directory.CreateDirectory(dir);
+            // oynatıcı yolu adres gibi okur: # ve % gibi işaretler dosya adına girmesin
+            string dst = System.IO.Path.Combine(dir, name + System.IO.Path.GetExtension(d.FileName).ToLowerInvariant());
+            if (!string.Equals(System.IO.Path.GetFullPath(d.FileName), dst, StringComparison.OrdinalIgnoreCase))
+            {
+                System.IO.File.Copy(d.FileName, dst, true);
+                // aynı adlı başka bir videonun karesi kalmasın
+                try { System.IO.File.Delete(System.IO.Path.ChangeExtension(dst, ".frame.png")); } catch { }
+            }
+            System.IO.File.SetLastWriteTimeUtc(dst, DateTime.UtcNow);
+            Set(dst, mode);
+            return dst;
+        }
+    }
+
+    // --live-local -> kütüphanedeki videolar, en yeni önce: [{"path","name","author","thumb"}] (thumb: kapak ya da kare)
+    public static string Local()
+    {
+        var list = new List<Dictionary<string, object>>();
+        foreach (var dir in new System.IO.DirectoryInfo(Dir).GetDirectories())
+        {
+            System.IO.FileInfo video = null;
+            foreach (var f in dir.GetFiles()) if (IsVideo(f.Name) && (video == null || f.LastWriteTimeUtc > video.LastWriteTimeUtc)) video = f;
+            if (video == null) continue;
+            string frame = System.IO.Path.ChangeExtension(video.FullName, ".frame.png"), cover = System.IO.Path.Combine(dir.FullName, "cover.jpg");
+            var item = new Dictionary<string, object>
+            {
+                { "path", video.FullName }, { "name", dir.Name }, { "author", "" },
+                { "thumb", System.IO.File.Exists(cover) ? cover : System.IO.File.Exists(frame) ? frame : "" },
+                { "time", (long)(video.LastWriteTimeUtc - new DateTime(1970, 1, 1)).TotalMilliseconds },
+            };
+            // mağazadan gelenler: başlık ve yapan
+            string infoPath = System.IO.Path.Combine(dir.FullName, "info.json");
+            if (System.IO.File.Exists(infoPath))
+            {
+                try
+                {
+                    var info = json.Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(infoPath));
+                    item["name"] = Str(info, "Title", dir.Name);
+                    item["author"] = Str(info, "Author", "");
+                }
+                catch (Exception ex) { Slider.Log("canlı duvar kağıdı bilgisi okunamadı: " + infoPath + ": " + ex.Message); }
+            }
+            list.Add(item);
+        }
+        list.Sort((a, b) => ((long)b["time"]).CompareTo((long)a["time"]));
+        return json.Serialize(list);
+    }
+
+    static string Str(Dictionary<string, object> d, string key, string fallback)
+    {
+        object v;
+        return d != null && d.TryGetValue(key, out v) && v is string && ((string)v).Length > 0 ? (string)v : fallback;
+    }
+
+    // Mağaza adresi: kategori klasörü ("src/Anime"), duvar kağıdının klasörü, dosya
+    static string Url(string source, string id, string file)
+    {
+        var sb = new StringBuilder(STORE);
+        foreach (var part in source.Split('/')) sb.Append(Uri.EscapeDataString(part)).Append('/');
+        return sb.Append(Uri.EscapeDataString(id)).Append('/').Append(Uri.EscapeDataString(file)).ToString();
+    }
+
+    // Ağdan sınırlı okuma: en çok max bayt, toplamda FETCH_DEADLINE; progress: (alınan, toplam ya da -1) her ~256 KB'de
+    static void Download(string url, System.IO.Stream dst, long max, Action<long, long> progress)
+    {
+        System.Net.ServicePointManager.SecurityProtocol = (System.Net.SecurityProtocolType)3072; // TLS 1.2
+        var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
+        rq.UserAgent = "LogicalLunge/1.0 (live wallpaper)";
+        rq.Proxy = null;
+        rq.Timeout = 30000;
+        rq.ReadWriteTimeout = 30000;
+        var started = Stopwatch.StartNew();
+        using (var rs = rq.GetResponse())
+        using (var src = rs.GetResponseStream())
+        {
+            long total = rs.ContentLength, got = 0, shown = 0;
+            if (total > max) throw new NotSupportedException("size");
+            var buf = new byte[1 << 16];
+            int n;
+            while ((n = src.Read(buf, 0, buf.Length)) > 0)
+            {
+                got += n;
+                if (got > max) throw new NotSupportedException("size");
+                if (started.Elapsed > FETCH_DEADLINE) throw new TimeoutException("slow");
+                dst.Write(buf, 0, n);
+                if (progress != null && got - shown >= 256 * 1024) { shown = got; progress(got, total); }
+            }
+            // bağlantı yarıda kesildiyse eksik dosya "indirildi" sayılmasın
+            if (total >= 0 && got != total) throw new System.IO.IOException("truncated");
+        }
+    }
+
+    static string DownloadText(string url, long max)
+    {
+        using (var ms = new System.IO.MemoryStream())
+        {
+            Download(url, ms, max, null);
+            return new UTF8Encoding(false).GetString(ms.ToArray()).TrimStart('\uFEFF');
+        }
+    }
+
+    // Dosyaya: önce .part, tamamlanınca yerine (yarım dosya hiç görünmez)
+    static void DownloadFile(string url, string file, long max, bool report)
+    {
+        string tmp = file + "." + Process.GetCurrentProcess().Id + ".part";
+        try
+        {
+            using (var dst = System.IO.File.Create(tmp))
+                Download(url, dst, max, report ? (Action<long, long>)((got, total) =>
+                {
+                    var inv = System.Globalization.CultureInfo.InvariantCulture;
+                    try { System.IO.File.WriteAllText(ProgressFile, got.ToString(inv) + " " + total.ToString(inv)); } catch { }
+                }) : null);
+            if (System.IO.File.Exists(file)) System.IO.File.Delete(file);
+            System.IO.File.Move(tmp, file);
+        }
+        finally
+        {
+            try { System.IO.File.Delete(tmp); } catch { }
+            if (report) try { System.IO.File.Delete(ProgressFile); } catch { }
+        }
+    }
+
+    // Mağaza dizini (günde bir kez tazelenir; ağ yoksa eldeki kullanılır). Arayüz açılışta iki komut birden çalıştırır:
+    // dosya bir kopyada yazılıp yerine konur, okuyan hep tam bir dosya görür
+    static Dictionary<string, object> Categories()
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var f = new System.IO.FileInfo(StoreCache);
+            if (!f.Exists || DateTime.UtcNow - f.LastWriteTimeUtc > TimeSpan.FromDays(1))
+            {
+                try
+                {
+                    string text = DownloadText(STORE + "src/Store.json", 32L << 20);
+                    if (json.Deserialize<Dictionary<string, object>>(text).ContainsKey("Categories"))
+                    {
+                        string tmp = StoreCache + "." + Process.GetCurrentProcess().Id + ".tmp";
+                        System.IO.File.WriteAllText(tmp, text, new UTF8Encoding(false));
+                        if (System.IO.File.Exists(StoreCache)) System.IO.File.Replace(tmp, StoreCache, null);
+                        else System.IO.File.Move(tmp, StoreCache);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // ağ yok: eldeki dizin (yoksa hata); başka bir kopya o an yazdıysa onunki
+                    if (!System.IO.File.Exists(StoreCache)) throw new System.Net.WebException("store", ex);
+                    Slider.Log("canlı duvar kağıdı mağazası tazelenemedi: " + ex.Message);
+                }
+            }
+            try
+            {
+                object cats;
+                var index = json.Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(StoreCache));
+                return index != null && index.TryGetValue("Categories", out cats) && cats is Dictionary<string, object> ? (Dictionary<string, object>)cats : new Dictionary<string, object>();
+            }
+            catch (Exception ex)
+            {
+                // bozuk önbellek kendiliğinden düzelsin: silinir, bir kez yeniden indirilir
+                Slider.Log("canlı duvar kağıdı mağaza önbelleği bozuk: " + ex.Message);
+                try { System.IO.File.Delete(StoreCache); } catch { }
+                if (attempt > 0) throw;
+            }
+        }
+    }
+
+    // Bir kategorinin duvar kağıtları; yetişkin içerik (ya da işaretsiz olan) hiç listelenmez
+    static List<KeyValuePair<string, Dictionary<string, object>>> Items(object category)
+    {
+        var list = new List<KeyValuePair<string, Dictionary<string, object>>>();
+        var c = category as Dictionary<string, object>;
+        object all;
+        if (c == null || !c.TryGetValue("Wallpapers", out all) || !(all is Dictionary<string, object>)) return list;
+        foreach (var kv in (Dictionary<string, object>)all)
+        {
+            var it = kv.Value as Dictionary<string, object>;
+            object adult;
+            if (it == null || !it.TryGetValue("Adult", out adult) || !(adult is bool) || (bool)adult) continue;
+            // klasör ve adres parçası olacak: düz bir ad
+            if (kv.Key.Trim('.').Length == 0 || kv.Key.IndexOfAny(new[] { '/', '\\' }) >= 0) continue;
+            if (!System.Text.RegularExpressions.Regex.IsMatch(Str(it, "Source", ""), @"^src/[^/\\.][^/\\]*$")) continue;
+            list.Add(new KeyValuePair<string, Dictionary<string, object>>(kv.Key, it));
+        }
+        return list;
+    }
+
+    // --live-store -> [{"id","count"}] (kalabalık olan önce) | --live-store <kategori> -> [{"id","title","cover","preview"}]
+    public static string Store(string category)
+    {
+        var cats = Categories();
+        var list = new List<Dictionary<string, object>>();
+        if (string.IsNullOrEmpty(category))
+        {
+            foreach (var kv in cats)
+            {
+                int n = Items(kv.Value).Count;
+                if (n > 0) list.Add(new Dictionary<string, object> { { "id", kv.Key }, { "count", n } });
+            }
+            list.Sort((a, b) => ((int)b["count"]).CompareTo((int)a["count"]));
+            return json.Serialize(list);
+        }
+        object c;
+        if (cats.TryGetValue(category, out c))
+            foreach (var kv in Items(c))
+            {
+                string source = Str(kv.Value, "Source", "");
+                list.Add(new Dictionary<string, object>
+                {
+                    { "id", kv.Key },
+                    { "title", System.Text.RegularExpressions.Regex.Replace(kv.Key, @"-\d+$", "") },
+                    { "cover", Url(source, kv.Key, Str(kv.Value, "Cover", "thumbnail.jpg")) },
+                    { "preview", Url(source, kv.Key, Str(kv.Value, "Live", "preview.gif")) },
+                });
+            }
+        return json.Serialize(list);
+    }
+
+    // --live-get <kategori> <ad> <mod>: mağazadan indir (bir kez), uygula -> {"ok":true,"path"}
+    // Klasör: kategori + ad (aynı ad birden çok kategoride başka videolarla geçiyor)
+    public static string Get(string category, string id, string mode)
+    {
+        object c;
+        Dictionary<string, object> item = null;
+        if (Categories().TryGetValue(category, out c))
+            foreach (var kv in Items(c)) if (kv.Key == id) { item = kv.Value; break; }
+        if (item == null) throw new ArgumentException("store item");
+        string source = Str(item, "Source", "");
+        string dir = System.IO.Path.Combine(Dir, Slug(category) + " - " + Slug(id));
+        System.IO.Directory.CreateDirectory(dir);
+        var info = json.Deserialize<Dictionary<string, object>>(DownloadText(Url(source, id, "SucroseInfo.json"), 256 * 1024));
+        object type;
+        string file = Str(info, "Source", "");
+        // yalnızca video türü (3); web sayfası, uygulama ve YouTube duvar kağıtları oynatılmaz
+        if (info == null || !info.TryGetValue("Type", out type) || !(type is int) || (int)type != 3 || !IsVideo(file) || file.IndexOfAny(new[] { '/', '\\', ':' }) >= 0)
+            throw new NotSupportedException("type");
+        // yerel ad güvenli: oynatıcı yolu adres gibi okur (# ve % işaret olur)
+        string video = System.IO.Path.Combine(dir, Slug(System.IO.Path.GetFileNameWithoutExtension(file)) + System.IO.Path.GetExtension(file).ToLowerInvariant());
+        if (!System.IO.File.Exists(video)) DownloadFile(Url(source, id, file), video, MAX_VIDEO, true);
+        string cover = System.IO.Path.Combine(dir, "cover.jpg");
+        if (!System.IO.File.Exists(cover))
+        {
+            try { DownloadFile(Url(source, id, Str(item, "Cover", "thumbnail.jpg")), cover, 8L << 20, false); }
+            catch (Exception ex) { Slider.Log("canlı duvar kağıdı kapağı indirilemedi: " + ex.Message); }
+        }
+        // atıf: yapan, lisans, kaynak (kütüphane gösterir)
+        info["Store"] = "https://github.com/Taiizor/Store/tree/develop/" + source + "/" + Uri.EscapeDataString(id);
+        System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "info.json"), json.Serialize(info), new UTF8Encoding(false));
+        Set(video, mode);
+        return json.Serialize(new Dictionary<string, object> { { "ok", true }, { "path", video } });
+    }
+
+    // --live-progress -> {"got","total"} (total -1: bilinmiyor); indirme yoksa {}
+    public static string Progress()
+    {
+        try
+        {
+            var p = System.IO.File.ReadAllText(ProgressFile).Split(' ');
+            long got = long.Parse(p[0], System.Globalization.CultureInfo.InvariantCulture), total = long.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture);
+            return "{\"got\":" + got.ToString(System.Globalization.CultureInfo.InvariantCulture) + ",\"total\":" + total.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
+        }
+        catch { return "{}"; }
     }
 }
 
@@ -9792,7 +10341,7 @@ static class Keep
 static class Program
 {
     // Windows komut satırı kurallarına göre tek argümanı tırnakla
-    static string QuoteArg(string a)
+    internal static string QuoteArg(string a)
     {
         if (a.Length > 0 && a.IndexOfAny(new[] { ' ', '\t', '"' }) < 0) return a;
         var sb = new StringBuilder("\"");
@@ -9893,7 +10442,33 @@ static class Program
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write(outText); so.Flush();
             return;
-        }        // lunge.exe --capture: ana helper'dan bir kısayol yakalamasını iste, sonucu yaz ("" = iptal)
+        }
+        // Canlı duvar kağıdı: --live-store [kategori] | --live-get <kategori> <ad> <mod> | --live-progress | --live-local
+        //                     --live-set <video> <mod> | --live-pick <mod> | --live-clear <mod> | --live-options <0|1> <0|1>
+        if (args.Length >= 1 && args[0].StartsWith("--live-"))
+        {
+            string outText, ok = "{\"ok\":true}";
+            try
+            {
+                switch (args[0])
+                {
+                    case "--live-store": outText = LiveWallpaper.Store(args.Length > 1 ? args[1] : null); break;
+                    case "--live-get": outText = LiveWallpaper.Get(args[1], args[2], args.Length > 3 ? args[3] : "all"); break;
+                    case "--live-progress": outText = LiveWallpaper.Progress(); break;
+                    case "--live-local": outText = LiveWallpaper.Local(); break;
+                    case "--live-set": LiveWallpaper.Set(args[1], args.Length > 2 ? args[2] : "all"); outText = ok; break;
+                    case "--live-pick": outText = new JavaScriptSerializer().Serialize(LiveWallpaper.Pick(args.Length > 1 ? args[1] : "all")); break;
+                    case "--live-clear": LiveWallpaper.Clear(args.Length > 1 ? args[1] : "all"); outText = ok; break;
+                    case "--live-options": LiveWallpaper.SetOptions(args[1] == "1", args[2] == "1"); outText = ok; break;
+                    default: outText = "{\"error\":\"unknown\"}"; break;
+                }
+            }
+            catch (Exception ex) { outText = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "error", ex.GetBaseException().Message } }); }
+            var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            so.Write(outText); so.Flush();
+            return;
+        }
+        // lunge.exe --capture: ana helper'dan bir kısayol yakalamasını iste, sonucu yaz ("" = iptal)
         if (args.Length == 1 && args[0] == "--capture")
         {
             string res = System.IO.Path.Combine(Binds.CaptureDir, "capture.res");

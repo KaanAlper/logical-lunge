@@ -404,23 +404,143 @@
       // ---- Duvar kağıtları ----
       const WALL_CATS = [['anime', 'Anime', 'animation'], ['nature', 'Doğa', 'forest'], ['space', 'Uzay', 'rocket'], ['city', 'Şehir', 'location_city'], ['minimal', 'Minimal', 'crop_square'], ['local', 'Kütüphanem', 'photo_library']];
       const wallCache = {};
-      function WallRow({ items, busy, onPick, onCustom, customLabel, wide }) {
+      // preview: üzerine gelince oynayan önizleme (canlı duvar kağıtları); busyText: indirme ilerlemesi
+      function WallRow({ items, busy, busyText, onPick, onCustom, customLabel, customIcon, wide }) {
         const ref = useRef(null);
+        const [hover, setHover] = useState(null);
         return (
           <div className={`wall-row ${wide ? 'wide' : ''}`} ref={ref}
                onWheel={e => { if (ref.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { ref.current.scrollLeft += e.deltaY; } }}>
             <button className="wall-tile custom" onClick={onCustom}>
-              <Icon name="add_photo_alternate" /><span>{customLabel}</span>
+              <Icon name={customIcon || 'add_photo_alternate'} /><span>{customLabel}</span>
             </button>
             {items === null && <div className="wall-tile ghost"><Icon name="progress_activity" /></div>}
             {items && items.length === 0 && <div className="wall-empty">Bir şey bulunamadı</div>}
             {items && items.map(it => (
-              <button key={it.key} className={`wall-tile ${busy === it.key ? 'busy' : ''}`} onClick={() => onPick(it)} title={it.res || it.name || ''}>
-                <img src={it.thumb} alt="" loading="lazy" />
+              <button key={it.key} className={`wall-tile ${busy === it.key ? 'busy' : ''}`} onClick={() => onPick(it)} title={it.res || it.name || ''}
+                      onMouseEnter={it.preview ? () => setHover(it.key) : undefined} onMouseLeave={it.preview ? () => setHover(null) : undefined}>
+                {it.thumb ? <img src={hover === it.key ? it.preview : it.thumb} alt="" loading="lazy" /> : <Icon name="movie" />}
                 {it.res && <span className="wall-res">{it.res}</span>}
-                {busy === it.key && <span className="wall-spin"><Icon name="progress_activity" /></span>}
+                {busy === it.key && <span className="wall-spin"><Icon name="progress_activity" />{busyText && <b>{busyText}</b>}</span>}
               </button>
             ))}
+          </div>
+        );
+      }
+
+      // ---- Canlı duvar kağıdı: video, masaüstü simgelerinin arkasında (lunge-wallpaper.exe) ----
+      // Mağaza: Sucrose Store; çekirdek yalnızca güvenli içeriği listeler, yalnızca video türünü indirir
+      const LIVE_CATS = {
+        Anime: 'Anime', Game: 'Oyun', Vehicles: 'Taşıtlar', Landscape: 'Manzara', Lifestyle: 'Yaşam tarzı', Fantasy: 'Fantastik',
+        'Film and TV': 'Film ve dizi', Abstract: 'Soyut', Animals: 'Hayvanlar', Nature: 'Doğa', 'Science Fiction': 'Bilim kurgu',
+        Retro: 'Retro', Ambience: 'Atmosfer', Galaxy: 'Galaksi', Space: 'Uzay', Technology: 'Teknoloji',
+      };
+      const liveCache = new Map();
+      // Çekirdeğin hata kodları; ağ hataları Windows'un kendi metniyle gelir
+      const LIVE_ERRORS = { type: 'Bu duvar kağıdı video değil', size: 'Video çok büyük', decode: 'Bu video oynatılamıyor' };
+      const liveError = (e, download) => (Object.hasOwn(LIVE_ERRORS, e || '') ? LIVE_ERRORS[e] : download ? 'İndirilemedi' : 'Canlı duvar kağıdı ayarlanamadı');
+      const liveCatName = id => (Object.hasOwn(LIVE_CATS, id) ? LIVE_CATS[id] : id);
+      function LiveSection({ target, mons, options, onChanged }) {
+        const [msg, setMsg] = useState(null);
+        const [cats, setCats] = useState([]);
+        const [cat, setCat] = useState(load('ll.live.cat', 'Anime'));
+        const [items, setItems] = useState(null);
+        const [busy, setBusy] = useState(null);
+        const [progress, setProgress] = useState('');
+        const [opts, setOpts] = useState({ pauseFullscreen: true, pauseOnBattery: true });
+        const catsRef = useRef(null);
+        const polling = useRef(false);
+        useEffect(() => { if (options) setOpts(options); }, [options?.pauseFullscreen, options?.pauseOnBattery]);
+        useEffect(() => {
+          helper(['--live-store']).then(s => {
+            const r = json(s);
+            if (Array.isArray(r)) setCats(r);
+            else { setCats([]); setMsg({ kind: 'error', text: 'Mağazaya ulaşılamadı' }); }
+          }).catch(() => setCats([]));
+        }, []);
+
+        const fetchItems = async c => {
+          if (c === 'local') {
+            const files = json(await helper(['--live-local']).catch(() => '[]'));
+            const out = [];
+            for (const f of (Array.isArray(files) ? files : []).slice(0, 16)) {
+              const t = f.thumb ? await helper(['--wall-thumb', f.thumb]).catch(() => '') : '';
+              out.push({ key: f.path, path: f.path, name: f.author ? `${f.name} · ${f.author}` : f.name, thumb: t.startsWith('data:') ? t : '' });
+            }
+            return out; // yerel liste önbelleğe alınmaz (yeni eklenenler görünsün)
+          }
+          if (liveCache.has(c)) return liveCache.get(c);
+          const r = json(await helper(['--live-store', c]).catch(() => ''));
+          if (!Array.isArray(r)) return [];
+          const list = r.map(x => ({ key: `${c}/${x.id}`, cat: c, id: x.id, name: x.title, thumb: x.cover, preview: x.preview }));
+          liveCache.set(c, list);
+          return list;
+        };
+        useEffect(() => {
+          let alive = true;
+          setItems(null); save('ll.live.cat', cat);
+          fetchItems(cat).then(r => alive && setItems(r));
+          return () => { alive = false; };
+        }, [cat]);
+
+        const done = text => { setMsg({ kind: 'ok', text }); onChanged(); };
+        // Mağazadan indirirken ilerleme: çekirdek Live\.progress'e yazar
+        // bir seferde bir indirme; ilerleme sorusu bir öncekinin cevabını bekler (her biri bir süreç)
+        const apply = async it => {
+          if (busy) return;
+          setBusy(it.key); setProgress(''); setMsg(null);
+          const timer = it.path ? null : setInterval(() => {
+            if (polling.current) return;
+            polling.current = true;
+            helper(['--live-progress']).then(s => {
+              const p = json(s);
+              if (p && p.total > 0) setProgress(`${Math.round((p.got * 100) / p.total)}%`);
+              else if (p && p.got > 0) setProgress(`${Math.round(p.got / 1048576)} MB`);
+            }).catch(() => {}).finally(() => { polling.current = false; });
+          }, 800);
+          const r = json(it.path ? await helper(['--live-set', it.path, target]).catch(() => '')
+            : await helper(['--live-get', it.cat, it.id, target]).catch(() => '')) || {};
+          clearInterval(timer); setBusy(null); setProgress('');
+          if (r.ok) done('Canlı duvar kağıdı ayarlandı'); else setMsg({ kind: 'error', text: liveError(r.error, !it.path) });
+        };
+        const pick = () => helper(['--live-pick', target]).then(s => {
+          const r = json(s);
+          if (typeof r === 'string' && r) { done('Canlı duvar kağıdı ayarlandı'); if (cat === 'local') fetchItems('local').then(setItems); }
+          else if (r && r.error) setMsg({ kind: 'error', text: liveError(r.error) });
+        }).catch(() => {});
+        const clear = async () => {
+          setMsg(null);
+          const r = json(await helper(['--live-clear', target]).catch(() => '')) || {};
+          if (r.ok) done('Canlı duvar kağıdı kapatıldı'); else setMsg({ kind: 'error', text: liveError(r.error) });
+        };
+        const setOpt = async part => {
+          const prev = opts, next = { ...opts, ...part };
+          setOpts(next);
+          const r = json(await helper(['--live-options', next.pauseFullscreen ? '1' : '0', next.pauseOnBattery ? '1' : '0']).catch(() => '')) || {};
+          if (!r.ok) { setOpts(prev); setMsg({ kind: 'error', text: 'Ayar kaydedilemedi' }); }
+        };
+        const on = mons.some(m => m.live && (target === 'all' || m.id === target));
+
+        return (
+          <div className="wall-sec">
+            <div className="kb-gtitle"><Icon name="motion_photos_on" />Canlı duvar kağıdı</div>
+            <div className="kb-hint"><Icon name="info" />Video, masaüstü simgelerinin arkasında oynar. Ekran kilitliyken ve kapalıyken durur.</div>
+            {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
+            <div className="wall-cats live-cats" ref={catsRef}
+                 onWheel={e => { if (catsRef.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { catsRef.current.scrollLeft += e.deltaY; } }}>
+              <button className={`chip ${cat === 'local' ? 'on' : ''}`} onClick={() => setCat('local')}><Icon name="video_library" />Kütüphanem</button>
+              {cats.map(c => (
+                <button key={c.id} className={`chip ${cat === c.id ? 'on' : ''}`} onClick={() => setCat(c.id)}>{liveCatName(c.id)}</button>
+              ))}
+            </div>
+            <WallRow items={items} busy={busy} busyText={progress} customLabel="Video seç" customIcon="video_file" onCustom={pick} onPick={apply} />
+            <div className="live-foot">
+              {on && <button className="chip" onClick={clear}><Icon name="stop_circle" />Canlı duvar kağıdını kapat</button>}
+              <label className="saver-switch"><span>Tam ekran uygulamada duraklat</span>
+                <input type="checkbox" checked={opts.pauseFullscreen} onChange={e => setOpt({ pauseFullscreen: e.target.checked })} /></label>
+              <label className="saver-switch"><span>Pille çalışırken duraklat</span>
+                <input type="checkbox" checked={opts.pauseOnBattery} onChange={e => setOpt({ pauseOnBattery: e.target.checked })} /></label>
+            </div>
           </div>
         );
       }
@@ -497,6 +617,7 @@
               </div>
               <WallRow items={items} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom(target)} onPick={it => applyItem(it, target)} />
             </div>
+            <LiveSection target={target} mons={mons} options={info?.liveOptions} onChanged={loadInfo} />
             {multi && (
               <div className="wall-sec">
                 <div className="kb-gtitle"><Icon name="panorama_wide_angle" />Superscreen · tüm monitörlere yayılan tek resim</div>
@@ -506,6 +627,7 @@
             )}
             <ScreenSaverSection />
             <div className="wall-credit">Öneriler: wallhaven.cc (yalnızca güvenli içerik)</div>
+            <div className="wall-credit">Canlı duvar kağıtları: Sucrose Store (yalnızca güvenli içerik)</div>
           </Page>
         );
       }

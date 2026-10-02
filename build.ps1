@@ -3,7 +3,8 @@
 # Rust (rustup; tiling and shell), Python 3.12 (packaged tools) and Node.js (translations).
 #
 # Package layout (app\ is copied as is to %ProgramFiles%\LogicalLunge):
-#   app\lunge.exe, lunge-tiling.exe, lunge-tiling-cli.exe, lunge-tiling-watcher.exe, lunge-shell.exe, VERSION,
+#   app\lunge.exe, lunge-tiling.exe, lunge-tiling-cli.exe, lunge-tiling-watcher.exe, lunge-shell.exe,
+#       lunge-wallpaper.exe (live wallpaper), VERSION,
 #       uninstall.ps1, ui\logical-lunge\*, scripts\*.ps1, tools\{lunge-media.exe, temps\, termcolors\, songrec\}
 #   config\   templates for ~\.config\logical-lunge and the terminal
 #   installer\setup.ps1
@@ -100,17 +101,17 @@ if (-not $SkipRust) {
     # tauri-build merges this into tauri.conf.json: the exe carries the release version
     $env:TAURI_CONFIG = '{"version":"' + ($ver -replace '[^0-9.]', '') + '"}'
     Push-Location "$root\shell"
-    try { Native { cargo build --release -p lunge-shell } 'shell' }
+    try { Native { cargo build --release -p lunge-shell -p lunge-wallpaper } 'shell' }
     finally { Pop-Location }
-    Copy-Item "$root\shell\target\release\lunge-shell.exe" $app
+    Copy-Item "$root\shell\target\release\lunge-shell.exe", "$root\shell\target\release\lunge-wallpaper.exe" $app
 }
 else {
     Step 'tiling + shell: reusing the previous builds (-SkipRust)'
-    foreach ($exe in 'tiling\target\release\lunge-tiling.exe', 'tiling\target\release\lunge-tiling-cli.exe', 'tiling\target\release\lunge-tiling-watcher.exe', 'shell\target\release\lunge-shell.exe') {
+    foreach ($exe in 'tiling\target\release\lunge-tiling.exe', 'tiling\target\release\lunge-tiling-cli.exe', 'tiling\target\release\lunge-tiling-watcher.exe', 'shell\target\release\lunge-shell.exe', 'shell\target\release\lunge-wallpaper.exe') {
         if (Test-Path "$root\$exe") { Copy-Item "$root\$exe" $app }
     }
 }
-foreach ($exe in 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe') {
+foreach ($exe in 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'lunge-wallpaper.exe') {
     if (-not (Test-Path (Join-Path $app $exe))) { throw "$exe is missing (build without -SkipRust)" }
 }
 
