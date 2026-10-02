@@ -307,6 +307,9 @@ function Undo-Install {
 # Puts back the files, settings and tasks this run changed
 function Undo-Changes {
     Stop-Parts
+    # the Windows parts this run's desktop took over (taskbar, snap suggestions ...) back to their saved values
+    $takeCore = Join-Path $APP 'lunge.exe'
+    if (Test-Path $takeCore) { try { & $takeCore --takeover-restore | Out-Null } catch { Log "    taken-over Windows settings: $($_.Exception.Message)" } }
     # the file search service this run installed (its folder goes with the created paths below)
     if ($script:everythingService) {
         try { & $script:everythingService -uninstall-service | Out-Null } catch { Log "    Everything service: $($_.Exception.Message)" }
@@ -694,29 +697,39 @@ try {
     # ------------------------------------------------------------ Windows settings (all backed up)
     Step 'windows' 'Applying Windows settings'
     $cu = "$HKU\Software\Microsoft\Windows\CurrentVersion"
-    Set-Reg "$HKU\Control Panel\Desktop" 'WindowArrangementActive' '0' 'String'          # Aero Snap off (the WM tiles)
+    # Aero Snap and snap suggestions, Windows' Win+key hotkeys, the taskbar's auto-hide and the taskbars on other
+    # displays are no longer changed here: the core switches them off only while the desktop runs and puts them back
+    # when it stops, crashes or is removed (ShellTakeover). An older install changed them for good: once, their saved
+    # values go back (the install backup keeps them for the uninstaller; a rollback puts this run's values back).
+    if ($backup.installed -notcontains 'runtime-shell-settings') {
+        $runtimeOwned = @(
+            @("$HKU\Control Panel\Desktop", 'WindowArrangementActive'), @("$cu\Explorer\Advanced", 'SnapAssist'),
+            @("$cu\Explorer\Advanced", 'EnableSnapAssistFlyout'), @("$cu\Explorer\Advanced", 'JointResize'),
+            @("$cu\Explorer\Advanced", 'SnapFill'), @("$cu\Explorer\Advanced", 'EnableSnapBar'),
+            @("$cu\Explorer\Advanced", 'DisabledHotkeys'), @("$cu\Explorer\Advanced", 'MMTaskbarEnabled'),
+            @("$cu\Explorer\StuckRects3", 'Settings'))
+        foreach ($r in @($backup.registry)) {
+            if (-not ($runtimeOwned | Where-Object { $_[0] -eq $r.path -and $_[1] -eq $r.name })) { continue }
+            try {
+                $cur = Get-ItemProperty -Path $r.path -Name $r.name -ErrorAction SilentlyContinue
+                [void]$script:runReg.Add(@{ path = $r.path; name = $r.name; existed = ($null -ne $cur); old = $(if ($cur) { $cur.($r.name) } else { $null }); type = $r.type })
+                if ($r.existed) {
+                    $v = if ($r.binary) { [Convert]::FromBase64String([string]$r.old) } else { $r.old }
+                    Set-ItemProperty -Path $r.path -Name $r.name -Value $v -Type $r.type
+                }
+                else { Remove-ItemProperty -Path $r.path -Name $r.name -ErrorAction SilentlyContinue }
+            }
+            catch { Log "    $($r.name): $($_.Exception.Message)" }
+        }
+        Mark-Installed 'runtime-shell-settings'
+        Log '    Windows settings the desktop now takes over only while it runs: back to the user''s values'
+    }
     Set-Reg "$HKU\Control Panel\Desktop" 'MouseWheelRouting' 2                           # scroll the window under the cursor
     Set-Reg "$HKU\Control Panel\Desktop\WindowMetrics" 'MinAnimate' '0' 'String'         # no minimize animation (we animate)
     Set-Reg "$cu\Explorer\Advanced" 'TaskbarAnimations' 0
     Set-Reg "$cu\Explorer\Advanced" 'HideIcons' 1                                          # clean desktop like Hyprland
-    Set-Reg "$cu\Explorer\Advanced" 'SnapAssist' 0
-    Set-Reg "$cu\Explorer\Advanced" 'EnableSnapAssistFlyout' 0
-    Set-Reg "$cu\Explorer\Advanced" 'JointResize' 0
-    Set-Reg "$cu\Explorer\Advanced" 'SnapFill' 0
-    if ($win11) {
-        Set-Reg "$cu\Explorer\Advanced" 'EnableSnapBar' 0                                   # Windows 11: snap layouts bar when dragging to the top
-    }
-    Set-Reg "$cu\Explorer\Advanced" 'DisabledHotkeys' 'CEFIJMTWX1234567890' 'String'      # Win+key shortcuts the shell owns
     Set-Reg "$cu\Explorer\Serialize" 'StartupDelayInMSec' 0                                # start the shell without the 10 s delay
-    # Taskbar: auto-hide (the bar replaces it)
-    $sr = "$cu\Explorer\StuckRects3"
-    if (Test-Path $sr) {
-        $s = (Get-ItemProperty $sr).Settings
-        if ($s -and $s.Length -gt 8 -and $s[8] -ne 3) { $n = [byte[]]$s.Clone(); $n[8] = 3; Set-Reg $sr 'Settings' $n 'Binary' }
-    }
     Step-Progress 60
-    # No taskbar at all on the other monitors ("Show taskbar on all displays" off)
-    Set-Reg "$cu\Explorer\Advanced" 'MMTaskbarEnabled' 0
     # Touchpad: Windows' own three- and four-finger swipes (switch apps / desktops) would run together with the
     # core's gestures (workspace swipe, overview, moving windows). 0 = nothing; taps stay as they are. Windows reads
     # these at sign-in. Harmless without a touchpad.
@@ -851,7 +864,8 @@ if (Test-Path $RB) { Remove-Item $RB -Recurse -Force -ErrorAction SilentlyContin
 Step-Progress 75
 
 Log 'Done. Starting the desktop...'
-# taskbar auto-hide / DisabledHotkeys take effect after Explorer restarts (Windows restarts it by itself)
+# settings Explorer reads at start (restored hotkeys, the taskbar's saved auto-hide) take effect after it restarts
+# (Windows restarts it by itself)
 Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
