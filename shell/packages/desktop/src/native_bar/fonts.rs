@@ -158,7 +158,10 @@ impl Fonts {
 
   /// Text format for UI text (single line, vertically centred, ellipsis).
   pub fn text(&mut self, style: TextStyle) -> anyhow::Result<IDWriteTextFormat> {
-    let axes = [axis(b"wght", style.weight)];
+    // optical size follows the size, as browsers do (font-optical-sizing:
+    // auto); left out, Google Sans Flex drew every size at its default 18,
+    // narrower and smaller-looking than the web widgets
+    let axes = [axis(b"wght", style.weight), axis(b"opsz", style.size.clamp(6.0, 144.0))];
     self.format(false, style.size, style.weight, false, &axes)
   }
 
