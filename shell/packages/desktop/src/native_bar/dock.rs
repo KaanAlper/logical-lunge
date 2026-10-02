@@ -1,6 +1,7 @@
 //! The app Dock (Super+Alt; the web edition's dock.html): the Super menu's
 //! button, the pinned apps and the running ones, a fisheye magnification
-//! under the pointer, a right-click menu to keep an app in the Dock.
+//! under the pointer, a right-click menu (the shared one) to keep an app
+//! in the Dock.
 //!
 //! One window over the primary monitor, made when the Dock opens and
 //! destroyed when it closes. A press outside the Dock, Esc, the bar or
@@ -16,10 +17,10 @@ use std::{
 use windows::{
   core::{w, Interface},
   Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::{
       DirectComposition::{IDCompositionTarget, IDCompositionVisual2, IDCompositionVisual3},
-      Gdi::ValidateRect,
+      Gdi::{ClientToScreen, ValidateRect},
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
@@ -35,6 +36,7 @@ use super::{
   core_api,
   fonts::TextStyle,
   gfx::{self, Gfx, Rect, Rgba},
+  menu::{Item as MenuItem, MenuFocus},
   view::{Align, Painter, Theme},
   Layer, Msg, Ui, CLASS, TIMER_DOCK_CLOSE, TIMER_DOCK_TICK,
 };
@@ -58,8 +60,6 @@ const BOTTOM: f32 = 18.0;
 /// `.items { padding: 0 2px }`, the divider's `margin: 0 3px`
 const ITEMS_PAD: f32 = 2.0;
 const DIVIDER_M: f32 = 3.0;
-const MENU_MIN_W: f32 = 150.0;
-const MENU_H: f32 = 45.0;
 /// the drawn area: the Dock with room above it (magnified icons, the name,
 /// the menu) and around it (shadow)
 const SURFACE_H: f32 = 260.0;
@@ -186,8 +186,7 @@ fn geo(base: f32, scales: &[f32]) -> Geo {
 enum Spot {
   Launcher,
   Tile(usize),
-  MenuButton,
-  /// the Dock (or its menu) but nothing that acts
+  /// the Dock but nothing that acts
   Dock,
   /// outside the Dock: a press closes it
   Backdrop,
@@ -210,9 +209,9 @@ pub(super) struct Dock {
   scales: Vec<f32>,
   pointer: Option<f32>,
   hot: Option<Spot>,
-  menu: Option<(String, usize)>,
-  /// the menu's width at the last paint (its label decides it)
-  menu_w: f32,
+  /// its right-click menu is open (the shared menu takes the focus: the
+  /// Dock stays open meanwhile)
+  menu: bool,
   last_tick: Instant,
   ticking: bool,
   tracking: bool,
@@ -238,13 +237,6 @@ impl Dock {
     base_size(self.screen_w, self.items.len())
   }
 
-  /// `.menu { bottom: calc(100% + 12px) }`, under its icon's resting place
-  /// and inside the Dock's width
-  fn menu_rect(&self, g: &Geo, dock: Rect) -> Option<Rect> {
-    let (_, index) = self.menu.as_ref()?;
-    Some(menu_rect(g, dock, self.base(), *index, self.menu_w))
-  }
-
   /// A client point (pixels) in surface DIP.
   fn point(&self, lp: LPARAM) -> (f32, f32) {
     let x = (lp.0 & 0xFFFF) as i16 as f32 / self.scale;
@@ -255,11 +247,6 @@ impl Dock {
   fn spot(&self, x: f32, y: f32) -> Spot {
     let g = geo(self.base(), &self.scales);
     let dock = self.rect(&g);
-    if let Some(m) = self.menu_rect(&g, dock) {
-      if m.contains(x, y) {
-        return if m.inset(6.0, 6.0).contains(x, y) { Spot::MenuButton } else { Spot::Dock };
-      }
-    }
     let (dx, dy) = (x - dock.x, y - dock.y);
     if g.launcher.contains(dx, dy) {
       return Spot::Launcher;
@@ -316,11 +303,6 @@ fn make_window(gfx: &Gfx, rect: RECT, dpi: u32) -> anyhow::Result<(HWND, IDCompo
   }
 }
 
-fn menu_rect(g: &Geo, dock: Rect, base: f32, index: usize, menu_w: f32) -> Rect {
-  let left = (g.items_x - BORDER + index as f32 * (base + GAP)).min(g.w - 2.0 * BORDER - menu_w);
-  Rect::new(dock.x + BORDER + left.max(0.0), dock.y - 12.0 - MENU_H, menu_w, MENU_H)
-}
-
 /// The query part of a URL: exe names are letters, digits and a few signs.
 fn encode(s: &str) -> String {
   s.bytes()
@@ -335,8 +317,6 @@ fn mix(a: Rgba, b: Rgba, k: f32) -> Rgba {
   let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * k).round() as u8;
   Rgba(f(a.0, b.0), f(a.1, b.1), f(a.2, b.2), a.3 + (b.3 - a.3) * k)
 }
-
-const MENU_STYLE: TextStyle = TextStyle { size: 14.0, weight: 450.0 };
 
 impl Ui {
   /// `ll:dock-toggle` (Super+Alt)
@@ -375,8 +355,7 @@ impl Ui {
       scales: Vec::new(),
       pointer: None,
       hot: None,
-      menu: None,
-      menu_w: MENU_MIN_W,
+      menu: false,
       last_tick: Instant::now(),
       ticking: false,
       tracking: false,
@@ -467,38 +446,22 @@ impl Ui {
     let Some(d) = self.dock.open.as_mut() else { return };
     if d.items.iter().map(|i| &i.id).ne(list.iter().map(|i| &i.id)) {
       d.scales = vec![1.0; list.len()];
-      if d.menu.as_ref().is_some_and(|(id, _)| !list.iter().any(|i| &i.id == id)) {
-        d.menu = None;
-      }
     }
     d.items = list;
   }
 
-  fn dock_menu_label(&self) -> Option<String> {
-    let d = self.dock.open.as_ref()?;
-    let (id, _) = d.menu.as_ref()?;
-    Some(self.model.tr(if self.dock.pins.contains(id) { "Dock’tan kaldır" } else { "Dock’ta tut" }))
-  }
-
   fn dock_paint(&mut self) -> anyhow::Result<()> {
     let theme = self.theme();
-    let menu_label = self.dock_menu_label();
-    let pinned_or_known = self.dock.open.as_ref().and_then(|d| d.menu.as_ref()).map(|(id, _)| {
-      self.dock.pins.contains(id) || self.dock.open.as_ref().is_some_and(|d| d.items.iter().any(|i| &i.id == id && i.app.is_some()))
-    });
     let Ui { gfx, fonts, res, icons, dock, .. } = self;
-    let Some(d) = dock.open.as_mut() else { return Ok(()) };
+    let Some(d) = dock.open.as_ref() else { return Ok(()) };
     let mut requests = Vec::new();
-    let mut menu_w = d.menu_w;
     gfx::draw_surface(&d.layer.surface, d.scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      match paint(&mut p, &theme, d, menu_label.as_deref(), pinned_or_known.unwrap_or(false)) {
-        Ok(w) => menu_w = w,
-        Err(err) => tracing::warn!("Dock: paint: {:?}", err),
+      if let Err(err) = paint(&mut p, &theme, d) {
+        tracing::warn!("Dock: paint: {:?}", err);
       }
       Ok(())
     })?;
-    d.menu_w = menu_w;
     unsafe { gfx.dcomp.Commit()? };
     self.ask_win_icons(requests);
     Ok(())
@@ -532,9 +495,15 @@ impl Ui {
 
   /// Fades out (or, with animations off, goes at once).
   pub(super) fn dock_close(&mut self) {
-    match self.dock.open.as_mut() {
-      Some(d) if !d.closing => d.closing = true,
+    let menu = match self.dock.open.as_mut() {
+      Some(d) if !d.closing => {
+        d.closing = true;
+        std::mem::take(&mut d.menu)
+      }
       _ => return,
+    };
+    if menu && self.menu_is_open() {
+      self.menu_close();
     }
     if !self.model.animations || self.dock_fade_out().is_err() {
       self.dock_destroy();
@@ -643,9 +612,6 @@ impl Ui {
     } else {
       self.dock.pins.retain(|p| p != &id);
     }
-    if let Some(d) = self.dock.open.as_mut() {
-      d.menu = None;
-    }
     self.dock_refresh();
     std::thread::spawn(move || {
       let path = format!("/dock-pin?id={}&on={}", encode(&id), if on { 1 } else { 0 });
@@ -659,6 +625,7 @@ impl Ui {
 
   /// A message for the Dock's window (None: not it).
   pub(super) fn dock_msg(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<Option<LRESULT>> {
+    let menu_open = self.menu_is_open();
     let d = self.dock.open.as_mut().filter(|d| d.hwnd == hwnd)?;
     if msg == WM_PAINT {
       unsafe {
@@ -700,7 +667,7 @@ impl Ui {
         (Some(LRESULT(0)), then)
       }
       WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
-        let hand = matches!(d.hot, Some(Spot::Launcher | Spot::Tile(_) | Spot::MenuButton));
+        let hand = matches!(d.hot, Some(Spot::Launcher | Spot::Tile(_)));
         unsafe {
           if let Ok(c) = LoadCursorW(None, if hand { IDC_HAND } else { IDC_ARROW }) {
             SetCursor(c);
@@ -715,10 +682,6 @@ impl Ui {
           (Spot::Backdrop, _) => Then::Close,
           (Spot::Launcher, WM_LBUTTONDOWN) => Then::Search,
           (Spot::Tile(i), WM_LBUTTONDOWN) => Then::Open(d.items[i].clone()),
-          (Spot::MenuButton, WM_LBUTTONDOWN) => match d.menu.clone() {
-            Some((id, _)) => Then::Pin(id),
-            None => Then::Nothing,
-          },
           _ => Then::Nothing,
         };
         (Some(LRESULT(0)), then)
@@ -727,8 +690,11 @@ impl Ui {
         let (x, y) = d.point(lp);
         let then = match d.spot(x, y) {
           Spot::Tile(i) => {
-            d.menu = Some((d.items[i].id.clone(), i));
-            Then::Paint
+            let mut at = POINT { x: (lp.0 & 0xFFFF) as i16 as i32, y: ((lp.0 >> 16) & 0xFFFF) as i16 as i32 };
+            unsafe {
+              let _ = ClientToScreen(hwnd, &mut at);
+            }
+            Then::Menu(d.items[i].clone(), at)
           }
           _ => Then::Nothing,
         };
@@ -738,12 +704,17 @@ impl Ui {
       WM_ACTIVATE => {
         let mut then = Then::Nothing;
         if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE {
-          // another window took the focus: close (the bar, Alt+Tab, Super)
-          if d.active_at.is_some_and(|t| t.elapsed().as_millis() > BLUR_GRACE_MS) {
+          // another window took the focus: close (the bar, Alt+Tab, Super);
+          // its own right-click menu takes it too, and gives it back
+          if !(d.menu && menu_open) && d.active_at.is_some_and(|t| t.elapsed().as_millis() > BLUR_GRACE_MS) {
             then = Then::Close;
           }
         } else {
           d.active_at = Some(Instant::now());
+          // back from its menu (it gives the focus back when it closes)
+          if !menu_open {
+            d.menu = false;
+          }
         }
         (None, then)
       }
@@ -763,15 +734,32 @@ impl Ui {
         self.toggle_overview_from_bar();
       }
       Then::Open(item) => self.dock_activate(item),
-      Then::Pin(id) => {
-        // "keep" needs an app to start; a running app without one can only go
-        let known = self.dock.pins.contains(&id) || self.dock.open.as_ref().is_some_and(|d| d.items.iter().any(|i| i.id == id && i.app.is_some()));
-        if known {
-          self.dock_pin(id);
-        }
-      }
+      Then::Menu(item, at) => self.dock_menu(item, at),
     }
     Some(result)
+  }
+
+  /// "Keep in Dock" / "Remove from Dock" for an app; keeping needs an app
+  /// to start, a running app without one can only be removed.
+  fn dock_menu(&mut self, item: Item, at: POINT) {
+    let pinned = self.dock.pins.contains(&item.id);
+    let label = self.model.tr(if pinned { "Dock’tan kaldır" } else { "Dock’ta tut" });
+    let icon = if pinned { "keep_off" } else { "keep" };
+    let entry = MenuItem::new("pin", Some(icon), label).enabled(pinned || item.app.is_some());
+    if let Some(d) = self.dock.open.as_mut() {
+      d.menu = true;
+    }
+    let id = item.id;
+    self.menu_open(at, MenuFocus::Take, vec![entry], move |ui: &mut Ui, choice: &str| {
+      if choice == "pin" {
+        ui.dock_pin(id);
+      }
+    });
+    if !self.menu_is_open() {
+      if let Some(d) = self.dock.open.as_mut() {
+        d.menu = false;
+      }
+    }
   }
 
   /// Repaints after a pointer move unless the magnification timer will.
@@ -786,8 +774,7 @@ impl Ui {
 }
 
 /// The Dock on its surface (DIP; the Dock's bottom 18 above the surface's).
-/// Returns the menu's width (its label decides it).
-fn paint(p: &mut Painter, t: &Theme, d: &Dock, menu_label: Option<&str>, menu_enabled: bool) -> anyhow::Result<f32> {
+fn paint(p: &mut Painter, t: &Theme, d: &Dock) -> anyhow::Result<()> {
   let base = d.base();
   let g = geo(base, &d.scales);
   let dock = d.rect(&g);
@@ -852,25 +839,7 @@ fn paint(p: &mut Painter, t: &Theme, d: &Dock, menu_label: Option<&str>, menu_en
       p.text(&item.name, Rect::new(label.x + 10.0, label.y, tw + 1.0, lh), style, t.on_layer0, Align::Left, false)?;
     }
   }
-  let mut menu_w = MENU_MIN_W;
-  if let (Some(text), Some((_, index))) = (menu_label, d.menu.as_ref()) {
-    let tw = p.measure(text, MENU_STYLE)?;
-    menu_w = menu_w.max(tw + 2.0 * (5.0 + 10.0) + 2.0 * BORDER);
-    let m = menu_rect(&g, dock, base, *index, menu_w);
-    for k in 1..=8 {
-      let s = k as f32 * 4.0;
-      p.fill_round(Rect::new(m.x - s, m.y + 8.0 - s, m.w + 2.0 * s, m.h + 2.0 * s), 14.0 + s, Rgba(0, 0, 0, 0.04))?;
-    }
-    p.fill_round(m, 14.0, t.surface_container_high)?;
-    p.stroke_round(m, 14.0, t.border, 1.0)?;
-    let b = m.inset(6.0, 6.0);
-    if menu_enabled && d.hot == Some(Spot::MenuButton) {
-      p.fill_round(b, 9.0, t.primary.alpha(0.14))?;
-    }
-    let fg = if menu_enabled { t.on_layer0 } else { t.on_layer0.alpha(0.45) };
-    p.text(text, Rect::new(b.x + 10.0, b.y, b.w - 20.0, b.h), MENU_STYLE, fg, Align::Left, false)?;
-  }
-  Ok(menu_w)
+  Ok(())
 }
 
 /// What a Dock message leads to once its state is updated.
@@ -883,7 +852,8 @@ enum Then {
   /// the Super menu's button
   Search,
   Open(Item),
-  Pin(String),
+  /// right click on an app: the shared menu at this screen point
+  Menu(Item, POINT),
 }
 
 #[cfg(test)]
