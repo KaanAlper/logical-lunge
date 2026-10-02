@@ -74,6 +74,8 @@ pub struct PopState {
 
   temps: Option<Temps>,
   temps_busy: bool,
+  /// when the temperature tool was last started to wake its service
+  temps_woken: Option<Instant>,
   art: HashMap<String, Option<ID2D1Bitmap1>>,
   art_asked: HashSet<String>,
   /// (title, scale x 100, blurred background)
@@ -293,7 +295,10 @@ impl Ui {
 
   pub(super) fn pop_tick(&mut self) {
     match self.pops.kind {
-      Some(PopKind::Res) => self.read_temps(),
+      Some(PopKind::Res) => {
+        self.read_temps();
+        self.pop_render();
+      }
       Some(PopKind::Media | PopKind::Battery) => self.pop_render(),
       None => unsafe {
         let _ = KillTimer(self.msg_hwnd, TIMER_POP_TICK);
@@ -433,11 +438,28 @@ impl Ui {
 
   // ------------------------------------------------------------ data
 
+  /// The temperature service writes its file every 2 s: it is read here
+  /// directly (a process per tick cost more than the popup itself). The
+  /// tool runs only when the file is stale, to wake the service, at most
+  /// every 30 s.
   fn read_temps(&mut self) {
-    if self.pops.temps_busy {
+    const FILE: &str = r"C:\Users\Public\lunge-temps.json";
+    let fresh = std::fs::metadata(FILE)
+      .and_then(|m| m.modified())
+      .ok()
+      .and_then(|t| t.elapsed().ok())
+      .is_some_and(|age| age.as_secs() < 15);
+    if fresh {
+      if let Some(t) = std::fs::read_to_string(FILE).ok().and_then(|s| Temps::parse(&s)) {
+        self.pops.temps = Some(t);
+      }
+      return;
+    }
+    if self.pops.temps_busy || self.pops.temps_woken.is_some_and(|t| t.elapsed().as_secs() < 30) {
       return;
     }
     self.pops.temps_busy = true;
+    self.pops.temps_woken = Some(Instant::now());
     let exe = tools_dir().join("temps").join("lunge-temps.exe");
     std::thread::spawn(move || {
       let out = std::process::Command::new(exe).arg("--read").creation_flags(CREATE_NO_WINDOW).output();
