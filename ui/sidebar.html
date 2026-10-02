@@ -160,7 +160,10 @@
       function App() {
         const [open, setOpen] = useState(false);
         const [page, setPage] = useState(null); // 'keys' | 'walls'
-        useEffect(() => { if (!open) setTimeout(() => setPage(null), 280); }, [open]);
+        // Kapanınca açık sayfa bir süre kalır: panel odak gidince kapanır (bir şeye bakmak için başka pencereye
+        // geçmek gibi); birkaç dakika içinde yeniden açılınca bırakıldığı gibi gelir.
+        const closedAt = useRef(0);
+        useEffect(() => { if (!open) closedAt.current = Date.now(); else if (Date.now() - closedAt.current > 180000) setPage(null); }, [open]);
         const [o, setO] = useState(providers.outputMap);
         const openedFocus = useRef(null);
         // Gizliyken sağlayıcı çıktıları paneli yeniden çizdirmez (her pencere olayında bütün panel yeniden
@@ -407,8 +410,62 @@
       // ---- Duvar kağıtları ----
       const WALL_CATS = [['anime', 'Anime', 'animation'], ['nature', 'Doğa', 'forest'], ['space', 'Uzay', 'rocket'], ['city', 'Şehir', 'location_city'], ['minimal', 'Minimal', 'crop_square'], ['local', 'Kütüphanem', 'photo_library']];
       const wallCache = {};
+      // Kategori satırı (bütün galeriler aynısını kullanır): tek satırda yana kayar; tekerlek (iki yönde de) ve
+      // sürükleme kaydırır, gizli kalan taraf solup okla gösterilir, seçilen çip görünür alana getirilir.
+      function CatRow({ children, selectedKey }) {
+        const ref = useRef(null);
+        const [ends, setEnds] = useState({ left: false, right: false });
+        const drag = useRef(null);
+        const measure = useCallback(() => {
+          const el = ref.current;
+          if (!el) return;
+          const left = el.scrollLeft > 1, right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+          setEnds(e => (e.left === left && e.right === right ? e : { left, right }));
+        }, []);
+        useLayoutEffect(() => {
+          const el = ref.current;
+          if (!el) return;
+          const sel = el.querySelector('.chip.on');
+          if (sel) {
+            const pad = 34;
+            if (sel.offsetLeft - pad < el.scrollLeft) el.scrollLeft = Math.max(0, sel.offsetLeft - pad);
+            else if (sel.offsetLeft + sel.offsetWidth + pad > el.scrollLeft + el.clientWidth) el.scrollLeft = sel.offsetLeft + sel.offsetWidth + pad - el.clientWidth;
+          }
+          measure();
+        }, [selectedKey, children?.length]);
+        useEffect(() => {
+          const el = ref.current;
+          if (!el) return;
+          const ro = new ResizeObserver(measure);
+          ro.observe(el);
+          return () => ro.disconnect();
+        }, []);
+        const step = dir => { const el = ref.current; if (el) el.scrollBy({ left: dir * el.clientWidth * 0.7, behavior: 'smooth' }); };
+        const onWheel = e => { const el = ref.current; if (!el) return; el.scrollLeft += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY; };
+        // Sürükleme: birkaç pikselden sonra tıklama yerine kaydırır
+        const onPointerDown = e => { if (e.button === 0) drag.current = { x: e.clientX, left: ref.current.scrollLeft, moved: false, id: e.pointerId }; };
+        const onPointerMove = e => {
+          const d = drag.current;
+          if (!d) return;
+          if (!d.moved && Math.abs(e.clientX - d.x) > 6) { d.moved = true; ref.current.setPointerCapture(d.id); }
+          if (d.moved) ref.current.scrollLeft = d.left - (e.clientX - d.x);
+        };
+        const onPointerUp = () => { const d = drag.current; drag.current = null; if (d?.moved) { const stop = ev => { ev.stopPropagation(); ev.preventDefault(); }; window.addEventListener('click', stop, { capture: true, once: true }); setTimeout(() => window.removeEventListener('click', stop, { capture: true }), 0); } };
+        return (
+          <div className={`cat-row ${ends.left ? 'more-left' : ''} ${ends.right ? 'more-right' : ''}`}>
+            <div className="cat-scroll" ref={ref} onScroll={measure} onWheel={onWheel}
+                 onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+              {children}
+            </div>
+            {ends.left && <button className="cat-arrow left" onClick={() => step(-1)}><Icon name="chevron_left" /></button>}
+            {ends.right && <button className="cat-arrow right" onClick={() => step(1)}><Icon name="chevron_right" /></button>}
+          </div>
+        );
+      }
+
       // preview: üzerine gelince oynayan önizleme (canlı duvar kağıtları); busyText: indirme ilerlemesi
-      function WallRow({ items, busy, busyText, onPick, onCustom, customLabel, customIcon, wide, selected, fallbackIcon, cls }) {
+      // actions: öğenin üzerine gelince görünen düğmeler [{ icon, label, run(it) }]
+      function WallRow({ items, busy, busyText, onPick, onCustom, customLabel, customIcon, wide, selected, fallbackIcon, cls, actions }) {
         const ref = useRef(null);
         const [hover, setHover] = useState(null);
         return (
@@ -426,6 +483,14 @@
                 {it.res && <span className="wall-res">{it.res}</span>}
                 {it.label && <span className="wall-name">{it.label}</span>}
                 {busy === it.key && <span className="wall-spin"><Icon name="progress_activity" />{busyText && <b>{busyText}</b>}</span>}
+                {actions && !busy && (
+                  <span className="wall-acts">
+                    {actions.map(a => (
+                      <span key={a.icon} role="button" className="wall-act" title={a.label}
+                            onClick={e => { e.stopPropagation(); a.run(it); }}><Icon name={a.icon} /></span>
+                    ))}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -470,7 +535,6 @@
         const [busy, setBusy] = useState(null);
         const [progress, setProgress] = useState('');
         const [opts, setOpts] = useState({ pauseFullscreen: true, pauseOnBattery: true });
-        const catsRef = useRef(null);
         const polling = useRef(false);
         useEffect(() => { if (options) setOpts(options); }, [options?.pauseFullscreen, options?.pauseOnBattery]);
         useEffect(() => {
@@ -526,20 +590,38 @@
           if (!r.ok) { setOpts(prev); setMsg({ kind: 'error', text: 'Ayar kaydedilemedi' }); }
         };
         const on = mons.some(m => m.live && (target === 'all' || m.id === target));
+        // Tek mağaza: her video ekran koruyucu da olabilir (mağazadakiler önce kütüphaneye iner)
+        const makeSaver = async it => {
+          if (busy) return;
+          setBusy(it.key); setProgress(''); setMsg(null);
+          const timer = it.path ? null : setInterval(() => {
+            if (polling.current) return;
+            polling.current = true;
+            helper(['--live-progress']).then(s => {
+              const p = json(s);
+              if (p && p.total > 0) setProgress(`${Math.round((p.got * 100) / p.total)}%`);
+            }).catch(() => {}).finally(() => { polling.current = false; });
+          }, 800);
+          const r = json(it.path ? await helper(['--saver-video', 'set', it.path]).catch(() => '')
+            : await helper(['--saver-store-get', it.cat, it.id]).catch(() => '')) || {};
+          clearInterval(timer); setBusy(null); setProgress('');
+          if (Array.isArray(r.videos)) { setMsg({ kind: 'ok', text: 'Ekran koruyucu videosu ayarlandı' }); window.dispatchEvent(new Event('ll-saver-videos')); }
+          else setMsg({ kind: 'error', text: Object.hasOwn(SAVER_ERRORS, r.error || '') ? SAVER_ERRORS[r.error] : it.path ? 'Ekran koruyucu ayarlanamadı' : 'İndirilemedi' });
+        };
+        const actions = [{ icon: 'ambient_screen', label: 'Ekran koruyucu yap', run: makeSaver }];
 
         return (
           <div className="wall-sec">
-            <div className="kb-gtitle"><Icon name="motion_photos_on" />Canlı duvar kağıdı</div>
-            <div className="kb-hint"><Icon name="info" />Video, masaüstü simgelerinin arkasında oynar. Ekran kilitliyken ve kapalıyken durur.</div>
+            <div className="kb-gtitle"><Icon name="motion_photos_on" />Canlı duvar kağıdı ve mağaza</div>
+            <div className="kb-hint"><Icon name="info" />Video, masaüstü simgelerinin arkasında oynar. Mağazadaki her video canlı duvar kâğıdı ya da ekran koruyucu olabilir; indirilen video iki yerde de kütüphanende durur.</div>
             {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
-            <div className="wall-cats live-cats" ref={catsRef}
-                 onWheel={e => { if (catsRef.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { catsRef.current.scrollLeft += e.deltaY; } }}>
+            <CatRow selectedKey={cat}>
               <button className={`chip ${cat === 'local' ? 'on' : ''}`} onClick={() => setCat('local')}><Icon name="video_library" />Kütüphanem</button>
               {cats.map(c => (
                 <button key={c.id} className={`chip ${cat === c.id ? 'on' : ''}`} onClick={() => setCat(c.id)}>{liveCatName(c.id)}</button>
               ))}
-            </div>
-            <WallRow items={items} busy={busy} busyText={progress} customLabel="Video ya da paket içe aktar" customIcon="video_file" onCustom={pick} onPick={apply} />
+            </CatRow>
+            <WallRow items={items} busy={busy} busyText={progress} customLabel="Video ya da paket içe aktar" customIcon="video_file" onCustom={pick} onPick={apply} actions={actions} />
             <div className="kb-hint"><Icon name="info" />İndirdiğin videoyu, Lively (.zip) ya da Wallpaper Engine video paketini (.zip ya da project.json) içe aktarabilirsin.</div>
             <div className="live-foot">
               {on && <button className="chip" onClick={clear}><Icon name="stop_circle" />Canlı duvar kağıdını kapat</button>}
@@ -617,11 +699,11 @@
                   <button key={m.id} className={`chip ${target === m.id ? 'on' : ''}`} onClick={() => setTarget(m.id)}>{`Monitör ${i + 1}`}</button>
                 ))}
               </div>
-              <div className="wall-cats">
+              <CatRow selectedKey={cat}>
                 {WALL_CATS.map(([k, label, icon]) => (
                   <button key={k} className={`chip ${cat === k ? 'on' : ''}`} onClick={() => setCat(k)}><Icon name={icon} />{label}</button>
                 ))}
-              </div>
+              </CatRow>
               <WallRow items={items} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom(target)} onPick={it => applyItem(it, target)} />
             </div>
             <LiveSection target={target} mons={mons} options={info?.liveOptions} onChanged={loadInfo} />
@@ -634,7 +716,7 @@
             )}
             <ScreenSaverSection />
             <div className="wall-credit">Öneriler: wallhaven.cc (yalnızca güvenli içerik)</div>
-            <div className="wall-credit">Canlı duvar kağıtları: Sucrose Store (yalnızca güvenli içerik)</div>
+            <div className="wall-credit">Videolar: Sucrose Store (yalnızca güvenli içerik)</div>
           </Page>
         );
       }
@@ -644,58 +726,37 @@
       // ---- Video ekran koruyucusu: canlı duvar kağıdı kütüphanesinden ya da mağazasından bir video (LogicalLunge.scr) ----
       const SAVER_ERRORS = { library: 'Bu video ekran koruyucu olamaz', video: 'Bu video ekran koruyucu olamaz', scr: 'Video ekran koruyucusu kurulu değil', type: 'Bu duvar kağıdı video değil', size: 'Video çok büyük' };
       function SaverVideos({ onChanged }) {
-        const [cats, setCats] = useState([]);
-        const [cat, setCat] = useState(load('ll.saver.cat', 'local'));
         const [items, setItems] = useState(null);
         const [videos, setVideos] = useState([]);
         const [busy, setBusy] = useState(null);
-        const [progress, setProgress] = useState('');
         const [msg, setMsg] = useState(null);
-        const catsRef = useRef(null);
-        const polling = useRef(false);
-        useEffect(() => {
-          helper(['--live-store']).then(s => { const r = json(s); setCats(Array.isArray(r) ? r : []); }).catch(() => setCats([]));
+        const reload = useCallback(() => {
+          fetchLiveItems('local').then(setItems);
           helper(['--saver-videos']).then(s => { const r = json(s); if (r && Array.isArray(r.videos)) setVideos(r.videos); }).catch(() => {});
         }, []);
         useEffect(() => {
-          let alive = true;
-          setItems(null); save('ll.saver.cat', cat);
-          fetchLiveItems(cat).then(r => alive && setItems(r));
-          return () => { alive = false; };
-        }, [cat]);
+          reload();
+          // mağazadan ya da canlı duvar kâğıtlarından "Ekran koruyucu yap"
+          const on = () => { reload(); onChanged(); };
+          window.addEventListener('ll-saver-videos', on);
+          return () => window.removeEventListener('ll-saver-videos', on);
+        }, []);
         const pick = async it => {
           if (busy) return;
-          setBusy(it.key); setProgress(''); setMsg(null);
-          const timer = it.path ? null : setInterval(() => {
-            if (polling.current) return;
-            polling.current = true;
-            helper(['--live-progress']).then(s => {
-              const p = json(s);
-              if (p && p.total > 0) setProgress(`${Math.round((p.got * 100) / p.total)}%`);
-              else if (p && p.got > 0) setProgress(`${Math.round(p.got / 1048576)} MB`);
-            }).catch(() => {}).finally(() => { polling.current = false; });
-          }, 800);
-          const r = json(it.path ? await helper(['--saver-video', 'set', it.path]).catch(() => '')
-            : await helper(['--saver-store-get', it.cat, it.id]).catch(() => '')) || {};
-          clearInterval(timer); setBusy(null); setProgress('');
+          setBusy(it.key); setMsg(null);
+          const r = json(await helper(['--saver-video', 'set', it.path]).catch(() => '')) || {};
+          setBusy(null);
           if (Array.isArray(r.videos)) { setVideos(r.videos); setMsg({ kind: 'ok', text: 'Ekran koruyucu videosu ayarlandı' }); onChanged(); }
-          else setMsg({ kind: 'error', text: Object.hasOwn(SAVER_ERRORS, r.error || '') ? SAVER_ERRORS[r.error] : it.path ? 'Ekran koruyucu ayarlanamadı' : 'İndirilemedi' });
+          else setMsg({ kind: 'error', text: Object.hasOwn(SAVER_ERRORS, r.error || '') ? SAVER_ERRORS[r.error] : 'Ekran koruyucu ayarlanamadı' });
         };
         const show = () => helper(['--saver-video-run']).then(s => { const r = json(s); if (r && r.error) setMsg({ kind: 'error', text: SAVER_ERRORS[r.error] || 'Ekran koruyucu açılamadı' }); }).catch(() => {});
         const chosen = items && items.find(it => it.path && videos.some(v => v.toLowerCase() === it.path.toLowerCase()));
         return (
           <div className="saver-videos">
             <div className="kb-gtitle"><Icon name="movie" />Video ekran koruyucusu</div>
-            <div className="kb-hint"><Icon name="info" />Kütüphanendeki ya da mağazadaki canlı duvar kağıtları ekran koruyucu olarak oynar.</div>
+            <div className="kb-hint"><Icon name="info" />Canlı duvar kâğıdı kütüphanendeki videolar ekran koruyucu olarak oynar. Yenilerini Mağaza'dan indirebilirsin; birden çoksa karışık oynatılabilir.</div>
             {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
-            <div className="wall-cats live-cats" ref={catsRef}
-                 onWheel={e => { if (catsRef.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { catsRef.current.scrollLeft += e.deltaY; } }}>
-              <button className={`chip ${cat === 'local' ? 'on' : ''}`} onClick={() => setCat('local')}><Icon name="video_library" />Kütüphanem</button>
-              {cats.map(c => (
-                <button key={c.id} className={`chip ${cat === c.id ? 'on' : ''}`} onClick={() => setCat(c.id)}>{liveCatName(c.id)}</button>
-              ))}
-            </div>
-            <WallRow items={items} busy={busy} busyText={progress} selected={chosen ? chosen.key : null}
+            <WallRow items={items} busy={busy} selected={chosen ? chosen.key : null}
                      customLabel="Şimdi göster" customIcon="play_arrow" onCustom={show} onPick={pick} />
           </div>
         );

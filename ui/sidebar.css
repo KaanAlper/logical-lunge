@@ -561,9 +561,25 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .wall-credit { font-size: 11px; color: var(--m3outline); text-align: center; }
 .wall-spin b { font-size: 12px; font-weight: 600; margin-left: 4px; }
 .wall-tile > .icon { font-size: 28px; color: var(--m3onSurfaceVariant); }
-/* Canlı duvar kağıdı: kategoriler tek satırda kayar (mağazada 40'tan fazla) */
-.live-cats { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
-.live-cats .chip { flex: none; }
+/* Kategori satırı (bütün galeriler): tek satırda kayar; gizli taraf solar ve okla gösterilir */
+.cat-row { position: relative; }
+.cat-scroll { display: flex; gap: 6px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; cursor: grab; touch-action: pan-x; }
+.cat-scroll::-webkit-scrollbar { display: none; }
+.cat-scroll .chip { flex: none; height: 32px; font-size: 13px; }
+.cat-row.more-left .cat-scroll { mask-image: linear-gradient(to right, transparent 0, #000 44px); }
+.cat-row.more-right .cat-scroll { mask-image: linear-gradient(to left, transparent 0, #000 44px); }
+.cat-row.more-left.more-right .cat-scroll { mask-image: linear-gradient(to right, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%); }
+.cat-arrow { position: absolute; top: 2px; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  background: var(--colLayer1); color: var(--m3onSurface); box-shadow: 0 1px 4px rgba(0 0 0 / 30%); }
+.cat-arrow.left { left: 0; } .cat-arrow.right { right: 0; }
+.cat-arrow:hover { background: var(--m3secondaryContainer); }
+.cat-arrow .icon { font-size: 20px; }
+/* Öğenin üzerine gelince ana işleri (ör. Ekran koruyucu yap) */
+.wall-acts { position: absolute; top: 6px; right: 6px; display: none; gap: 6px; }
+.wall-tile:hover .wall-acts { display: flex; }
+.wall-act { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(0 0 0 / 60%); color: #fff; }
+.wall-act:hover { background: var(--m3primary); color: var(--m3onPrimary); }
+.wall-act .icon { font-size: 17px; }
 .live-foot { display: flex; flex-direction: column; gap: 10px; padding: 2px 6px 4px; }
 .live-foot > .chip { align-self: flex-start; height: 32px; font-size: 13px; }
 .saver-sec { padding: 14px; gap: 12px; }
