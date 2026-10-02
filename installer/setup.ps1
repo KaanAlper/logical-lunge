@@ -399,9 +399,10 @@ try {
     }
     $unresolved = Get-ChildItem -LiteralPath $PACK -File -Recurse | Where-Object { $_.Extension -in '.html', '.js', '.json', '.css' } | Where-Object { Select-String -LiteralPath $_.FullName -Pattern '\{\{(?:INSTALL(?:_ESC)?|USERPROFILE(?:_ESC)?)\}\}' -Quiet } | Select-Object -First 1
     if ($unresolved) { throw "Unresolved install path marker: $($unresolved.FullName)" }
-    # The shell starts only our widgets (no BOM: serde_json rejects it)
-    $startupWidgets = @('overview', 'sidebar-right', 'settings', 'toast', 'osk', 'update', 'session')
-    if ($edition -eq 'web-ui') { $startupWidgets = @('bar') + $startupWidgets }
+    # The shell starts only our widgets (no BOM: serde_json rejects it). The native edition draws the bar and the Super
+    # menu itself: their web pages are only in the web edition.
+    $startupWidgets = @('sidebar-right', 'settings', 'toast', 'osk', 'update', 'session')
+    if ($edition -eq 'web-ui') { $startupWidgets = @('bar', 'overview') + $startupWidgets }
     $zsettings = [ordered]@{ startupConfigs = @(foreach ($w in $startupWidgets) { [ordered]@{ pack = 'logical-lunge'; widget = $w; preset = 'default' } }) }
     [IO.File]::WriteAllText((Join-Path $APP 'ui\settings.json'), ($zsettings | ConvertTo-Json -Depth 5), $UTF8)
 
