@@ -1,54 +1,56 @@
-# Roadmap: from three programs to one
+# Roadmap
 
-Today Logical Lunge is **one install, one uninstall, one autostart, one entry in Settings → Apps** and no
-foreign tray icons or settings windows, but under the hood it runs three cooperating programs:
+Logical Lunge is one install, one uninstall, one autostart and one entry in Settings → Apps. Under the hood it
+runs a few cooperating processes, so a crash in one part never takes the others down:
 
 | Process | Language | Role |
 |---|---|---|
-| `glazewm.exe` | Rust | Tiling window manager, window borders, IPC server (ws://127.0.0.1:6123) |
-| `zebar.exe` | Rust + Tauri (WebView2) | Hosts the widgets: bar, sidebar, overview, session screen, toast, on-screen keyboard |
-| `ll-helper.exe` | C# (.NET Framework 4.8, built with the in-box `csc`) | Keyboard/mouse hooks, workspace slides and window animations, focus-follows-mouse, rounded corners, toasts, splash, screenshot/Lens tools, wallpapers, gamma / night light, shortcuts, watchdogs |
+| `lunge.exe` | C# (.NET Framework 4.8) | Root of the desktop: starts and watches the parts; keyboard and mouse hooks, workspace slides and window animations, focus, rounded corners, notifications, splash, screenshots, wallpapers, night light, shortcuts, updates |
+| `lunge-tiling.exe` | Rust | Tiling window manager (Hyprland-style dwindle), window borders, IPC |
+| `lunge-shell.exe` | Rust | Bar and panels: native (Direct2D / DirectComposition) in `native-ui`, WebView2 in `web-ui` |
+| `lunge-wallpaper.exe` | Rust | Live wallpaper player (Media Foundation, GPU decoding) |
 
-## Done: one app built from stripped forks
+## Two editions
 
-**GlazeWM** (fork `KaanAlper/glazewm`, branch `logical-lunge`)
-- Tray icon and its tray-only dependencies removed.
-- Hyprland dwindle layout (placement under the mouse, `movewindow`, space goes back to the split partner).
-- tacky-borders' drawing engine (MIT) built in as the `wm-borders` crate: borders only on managed windows, placed
-  in the same step as the window, configured by the `borders:` section of the WM config; a crash in the engine
-  never takes the WM down. The separate tacky-borders program is gone.
-- Starts while the screen is locked, waits for a busy IPC port after a crash, never leaves windows hidden
-  after a failed start, uncloaks every window on exit.
+- **native-ui** — the fastest, most stable line. The bar, the Super menu and the notification cards are native;
+  each remaining web panel is deleted once its native port lands. No web fallbacks.
+- **web-ui** — every panel in WebView2; keeps the web widgets.
 
-**Zebar** (fork `KaanAlper/zebar`, branch `logical-lunge`)
-- Tray icon, widget manager / settings window (`packages/settings-ui`), client package, marketplace, starter pack,
-  `zebar publish`, templates, preview widgets and unused providers (`weather`, `ip`, `keyboard`, `disk`,
-  `komorebi`) removed. Built with `cargo` only.
-- The asset server always comes up; a broken `settings.json` falls back to the shell's widgets.
+Both are built and released from their own branches; `main` holds the shared installer, the setup app and the
+release workflows.
 
-**ll-helper** — watchdogs: restarts GlazeWM (crash or 15 s hang) and Zebar, restarts itself on a crash or a
-frozen UI, and is restarted by Zebar's notification bridge if it dies; falls back to the Windows taskbar and Start
-menu while the bar is missing; *Reload desktop* in the session screen, sidebar and Start menu.
+## Done
 
-## Plan
+- Single installer and setup app: one UAC prompt, every Windows setting backed up, clean uninstaller, in-place
+  updates that ask for permission before the desktop closes.
+- Self-healing desktop: the core restarts a crashed or hung part; the Windows taskbar comes back while the bar is
+  missing.
+- Live wallpapers (store, video files, Lively packages, Wallpaper Engine video projects), screen saver gallery
+  with bulk import, Windows notifications as Logical Lunge cards, do-not-disturb.
+- Native bar, Super menu and notification cards (`native-ui`).
+- 24/7 hardening: bounded caches and logs, stuck-animation recovery, non-blocking event stream, timeouts on
+  window manager calls, temp file sweep.
 
-1. **Done — single installer.** `install.ps1` → one UAC prompt, pinned upstream versions, every Windows
-   setting backed up, clean uninstaller, no Python needed on the target (PyInstaller-packed helpers).
-2. **Done — stripped forks**, built in GitHub Actions with every release (above).
-3. **Next — ll-helper as the root.** It starts and stops GlazeWM and Zebar (instead of GlazeWM's startup
-   commands), so *reload* can restart a single part; the pollers that start a PowerShell per reading
-   (brightness, Bluetooth) move into it; windows keep their workspaces across a WM restart.
-4. **Maybe — one executable.** A Rust host running GlazeWM's WM loop and the Zebar/Tauri runtime in one
-   process, absorbing ll-helper piece by piece. Weighed against crash isolation: today a crash in one part
-   never takes the others down.
-5. **Screenshots + clean-machine tests** on Windows 10 and Windows 11 for every release.
+## Next (native-ui)
+
+1. Native ports, each removing its HTML: session screen, update card, dock, on-screen keyboard, sidebar
+   (quick settings, notification centre, media, wallpaper and live wallpaper pages, shortcut editor), settings.
+   After the last one WebView2 leaves `native-ui` entirely.
+2. Super menu text box: mouse selection and drag, double-click, undo, IME placement, text cursors, right-to-left
+   text, width and shape animations, accessibility (UI Automation).
+3. Readings that still start a PowerShell per call (radios, Ethernet, Bluetooth, status, keep-awake) move into
+   the core.
+
+## Later
+
+- Desktop widgets.
+- UI scale setting.
+- Logical Lunge screen savers and downloadable extras.
+- Screenshots and clean-machine tests on Windows 10 and Windows 11 for every release.
 
 ## Compatibility notes
 
-- **Windows 11**: GlazeWM, Zebar, WebView2, the DWM thumbnail animations, `IDesktopWallpaper` and the
-  low-level hooks all work the same. Windows 11 adds snap layouts (maximize-button flyout, drag-to-top bar)
-  — the installer turns them off. Windows 11 draws its own rounded corners; ours are applied on top and
-  look the same.
-- **Multiple monitors / DPI**: every helper is per-monitor DPI aware (v2).
-- **ARM64**: GlazeWM and Zebar ship ARM64 builds; ll-helper and the packaged tools would need ARM64
-  builds too.
+- **Windows 10 / 11**: both supported. Windows 11 24H2 changed the desktop's window layout; the live wallpaper
+  player handles the old and the new one.
+- **Multiple monitors / DPI**: every part is per-monitor DPI aware (v2).
+- **ARM64**: not built yet; every part would need an ARM64 build.

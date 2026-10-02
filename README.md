@@ -53,8 +53,8 @@ A short wizard asks for the interface edition, accent color, language and clock,
 
 | Edition | Interface | Release tag / Package |
 |---|---|---|
-| `native-ui` | Direct2D native bar; other panels still use WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
-| `web-ui` | React / WebView2 bar and panels. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
+| `native-ui` | Native (Direct2D / DirectComposition) bar, Super menu and notification cards; the sidebar, settings, dock, session screen and on-screen keyboard still use WebView2 while they are ported. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
+| `web-ui` | WebView2 bar, Super menu, panels and dock. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
 
 Both currently run alongside Explorer. Replacing Explorer is a future native milestone.
 
@@ -71,7 +71,9 @@ A Windows desktop environment with tiling window management, a bar, side panels,
 - **Bar**: workspaces with app icons (any window without a known app shows its own icon), resources (RAM / swap / CPU / **CPU & GPU temperature**), media with album art and seeking, tray with drag-to-pin, clock, battery, scroll-to-change brightness (left edge) and volume (right edge) with an OSD.
 - **Right sidebar**: Android-style quick toggles (Wi-Fi, Ethernet, Bluetooth, keep-awake, mic, audio, night light with schedule + intensity, dark mode, screenshot, on-screen keyboard, do-not-disturb) with slide-down cards, notifications, calendar with month/year picker, to-do and pomodoro timer.
 - **Shortcuts editor** and **wallpaper picker** built into the sidebar (per-monitor or one image spanning all monitors — Superpaper-style *superscreen*).
-- **Live wallpapers**: videos play behind the desktop icons, decoded on the GPU — pick one from a store of safe-for-work video wallpapers or use your own file; they pause for fullscreen apps, a locked or dark screen and (optionally) on battery.
+- **Live wallpapers**: videos play behind the desktop icons, decoded on the GPU — pick one from a store of safe-for-work video wallpapers, or import a video file, a Lively package or a Wallpaper Engine video project; they pause for fullscreen apps, a locked or dark screen and (optionally) on battery.
+- **Screen savers**: a scrolling gallery with each saver's icon, preview and options; import any number of `.scr` files or zipped savers at once.
+- **Notifications**: Windows app notifications show as Logical Lunge cards (drawn natively in `native-ui`) and stay in the sidebar; do-not-disturb holds them back.
 - **Super overview**: fuzzy app search (localized names + icons), calculator (`sqrt(9)`, `5!`, `2^10`, `50%`), `/actions`, `$shell`, `?web`, **Google Lens** region search, **music recognition** (Shazam), **file search** (`#`, every indexed drive through Everything), workspace previews.
 - **Screenshot tool** (Print): select a region, then annotate — pen, circle, rectangle, colors — copy or save as.
 - **Ctrl+Print**: the whole monitor under the mouse, copied to the clipboard and saved to `Pictures\Screenshots` without asking.
@@ -79,7 +81,7 @@ A Windows desktop environment with tiling window management, a bar, side panels,
 - **Alt+Tab switcher**: live window previews across all workspaces, most recently used first, drawn natively by the core so it opens instantly under load.
 - **Session screen** (power button in the sidebar): dimmed screen with lock / sleep / **reload desktop** / sign out / restart / **UEFI-BIOS** / shut down.
 - **It heals itself**, like an OS should: if the window manager crashes or hangs, the bar crashes, or the core crashes or freezes, the part is restarted automatically (windows hidden on other workspaces come back first). If the shell's bar is ever missing, the Windows taskbar and the Start menu (Win key) come back until it returns — you are never left without a way to launch things. *Reload desktop* (session screen, sidebar, or *Restart Logical Lunge* in the Start menu) restarts everything cleanly without a command line.
-- **Updates**: the sidebar's update button checks GitHub releases, shows a card with a progress bar, then *Install now* / *Later*. A downloaded update is remembered; installing asks for permission once and restarts the desktop.
+- **Updates**: the sidebar's update button checks GitHub releases, shows a card with a progress bar, then *Install now* / *Later*. A downloaded update is remembered; installing asks for administrator permission first, while the desktop is still on screen, then restarts the desktop.
 - **Animations**: smooth workspace slides, window open / close / move animations (Hyprland `emphasizedDecel` curves), popups that slide in and out. Durations and bezier curves are set like Hyprland's `bezier =` / `animation =` lines in the `animations:` section of the config (applied on save); hidden widgets draw nothing.
 - **Touchpad gestures** (precision touchpads): three fingers sideways move the workspace with your fingers (release past a third or flick to switch), three fingers up open the overview, down the right sidebar, four fingers move the focused window. Windows' own three/four-finger swipes are switched off by the installer (restored on uninstall); a switch in **Settings → Appearance** turns the gestures off.
 - **Terminal**: WezTerm (JetBrains Mono Nerd Font, beam cursor and wallpaper-generated Material You colors) running **fish** with **starship**.
@@ -174,16 +176,16 @@ flowchart TD
   core <-- IPC --> tiling
 ```
 
-`core/` (the root process), `tiling/` (window manager), `shell/` (widget host), `ui/` (the widgets), `scripts/`, `tools/`, `config/` and `installer/`. One install, one uninstall, one autostart, one entry in *Settings → Apps*, one config folder, one log folder, and Task Manager shows a single *lunge* app — but still cooperating processes, so a crash in one part never takes the others down: the core restarts a crashed part, and *Reload desktop* (`lunge.exe --restart-desktop`) restarts all of them cleanly.
+Each edition branch holds `core/` (the root process), `tiling/` (window manager), `shell/` (widget host and live wallpaper player), `ui/` (the widgets), `scripts/`, `tools/` and `config/`; `main` holds the shared installer, the setup app and the release workflows. One install, one uninstall, one autostart, one entry in *Settings → Apps*, one config folder, one log folder, and Task Manager shows a single *lunge* app — but still cooperating processes, so a crash in one part never takes the others down: the core restarts a crashed part, and *Reload desktop* (`lunge.exe --restart-desktop`) restarts all of them cleanly.
 
 **Roadmap:** see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### Build from source
 
 ```powershell
-git clone https://github.com/KaanAlper/logical-lunge; cd logical-lunge
-.\build.ps1                  # -> dist\LogicalLunge-<version>.zip
-$env:LL_SOURCE = "$PWD\dist\LogicalLunge-$(Get-Content VERSION)"; .\install.ps1
+git clone -b native-ui https://github.com/KaanAlper/logical-lunge; cd logical-lunge   # or -b web-ui
+.\build.ps1                  # -> dist\LogicalLunge-<edition>-<version>.zip
+$env:LL_SOURCE = "$PWD\dist\LogicalLunge-$(Get-Content EDITION)-$(Get-Content VERSION)"; .\install.ps1
 ```
 
 Needs Rust (rustup; the toolchain is pinned in `tiling/` and `shell/`), the Windows 10 SDK (for `lunge-media.exe`), Python 3.12 (packaged tools are built with PyInstaller — the target PC needs no Python) and Node.js (translations). `-SkipRust` / `-SkipPython` reuse earlier builds.
@@ -220,8 +222,8 @@ Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat b
 
 | Sürüm | Arayüz | Release tag / Paket |
 |---|---|---|
-| `native-ui` | Direct2D native bar; diğer paneller hâlâ WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
-| `web-ui` | React / WebView2 bar ve paneller. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
+| `native-ui` | Native (Direct2D / DirectComposition) bar, Super menüsü ve bildirim kartları; sağ panel, ayarlar, dock, oturum ekranı ve ekran klavyesi taşınana kadar WebView2. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
+| `web-ui` | WebView2 bar, Super menüsü, paneller ve dock. | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
 
 İkisi de şu anda Explorer ile birlikte çalışır. Explorer'ın yerini almak native hattın sonraki hedefidir.
 
@@ -238,7 +240,9 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 - **Bar**: uygulama simgeli workspace'ler (bilinmeyen pencerede pencerenin kendi simgesi), kaynaklar (RAM / swap / CPU / **CPU & GPU sıcaklığı**), kapaklı ve sarılabilir medya, sürükleyerek sabitlenen tepsi, saat, pil, sol kenarda kaydırınca parlaklık, sağ kenarda ses (OSD'li).
 - **Sağ panel**: Android tarzı hızlı ayarlar (Wi-Fi, Ethernet, Bluetooth, uyanık tut, mikrofon, ses, zamanlamalı ve yoğunluk ayarlı gece ışığı, karanlık mod, ekran alıntısı, ekran klavyesi, sessiz) ve alta kayan kartlar; bildirimler; ay/yıl seçicili takvim; yapılacaklar; zamanlayıcı.
 - Panelde **kısayol düzenleyici** ve **duvar kağıdı seçici** (monitör başına ya da tüm monitörlere yayılan tek resim, Superpaper'daki gibi).
-- **Canlı duvar kağıtları**: videolar masaüstü simgelerinin arkasında, ekran kartında çözülerek oynar — güvenli içerikli bir mağazadan ya da kendi dosyandan; tam ekran uygulamada, ekran kilitliyken ya da kapalıyken ve (isteğe bağlı) pille çalışırken durur.
+- **Canlı duvar kağıtları**: videolar masaüstü simgelerinin arkasında, ekran kartında çözülerek oynar — güvenli içerikli bir mağazadan seç ya da video dosyası, Lively paketi veya Wallpaper Engine video projesi içe aktar; tam ekran uygulamada, ekran kilitliyken ya da kapalıyken ve (isteğe bağlı) pille çalışırken durur.
+- **Ekran koruyucular**: her birinin simgesi, önizlemesi ve seçenekleriyle kaydırmalı galeri; istediğin kadar `.scr` dosyasını ya da zip'li koruyucuyu tek seferde içe aktar.
+- **Bildirimler**: Windows uygulama bildirimleri Logical Lunge kartı olarak gelir (`native-ui`'de native çizilir) ve sağ panelde kalır; sessiz mod onları bekletir.
 - **Super menüsü**: bulanık uygulama arama, hesap makinesi, `/eylemler`, `$komut`, `?web`, **Google Lens**, **müzik tanıma** (Shazam), **dosya araması** (`#`, Everything ile indekslenen bütün diskler), workspace önizlemeleri.
 - **Ekran alıntısı** (Print): alan seç, üzerine kalem / çember / dikdörtgen / renkle çiz, kopyala ya da kaydet.
 - **Animasyonlar**: kaygan workspace geçişleri, pencere açma/kapama/taşıma animasyonları, kayarak açılıp kapanan popup'lar. Süreler ve bezier eğrileri config'teki `animations:` bölümünde Hyprland'in `bezier =` / `animation =` satırları gibi ayarlanır (kaydedince geçerli); gizli widget'lar hiç çizmez.
