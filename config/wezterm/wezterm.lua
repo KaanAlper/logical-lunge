@@ -133,16 +133,23 @@ config.keys = {
 -- yeni süreç başlatmak yerine bu dosyayı yazar ve pencere mevcut süreçte anında açılır (soğuk açılış ~0.6 s yerine).
 -- İstek sürece özel: eski bir kurulumdan kalan WezTerm isteği kapıp açamıyordu. Sonuç .ok / .failed ile bildirilir;
 -- açılamazsa çekirdek normal açılışa düşer.
--- Ayar her yüklendiğinde yeni bir yoklayıcı kurulur; eskiler de yaşadıkça çalışır (penceresiz süreçte yeni yüklemenin
--- zamanlayıcısı hemen başlamayabiliyor). İsteği yalnızca dosyayı yeniden adlandırabilen alır: çift pencere olmaz.
+-- Ayar her yüklendiğinde (renk dosyası her duvar kağıdında yenilenir) yeni bir yoklayıcı kurulur; eskisi, yenisinin
+-- gerçekten çalıştığını gördüğü an durur (penceresiz süreçte yeni yüklemenin zamanlayıcısı hemen başlamayabiliyor,
+-- o zamana kadar eskisi bekler). Böylece gün boyu yoklayıcı birikmez. İsteği yalnızca dosyayı yeniden adlandırabilen
+-- alır: çift pencere olmaz.
 if wezterm.gui then
   local req = wezterm.home_dir .. '/.config/wezterm/ll-spawn.' .. tostring(wezterm.procinfo.pid())
   local claim = req .. '.claimed'
+  local gen = (wezterm.GLOBAL.ll_spawn_gen or 0) + 1
+  wezterm.GLOBAL.ll_spawn_gen = gen
   local function mark(ext)
     local f = io.open(req .. ext, 'w')
     if f then f:close() end
   end
   local function poll()
+    local alive = wezterm.GLOBAL.ll_spawn_alive or 0
+    if alive > gen then return end -- daha yeni bir yükleme yoklamayı devraldı
+    if alive < gen then wezterm.GLOBAL.ll_spawn_alive = gen end
     if os.rename(req, claim) then
       local f = io.open(claim, 'r')
       local cwd = f and f:read('*l') or ''
