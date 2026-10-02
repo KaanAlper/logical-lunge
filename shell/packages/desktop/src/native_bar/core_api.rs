@@ -138,6 +138,14 @@ pub fn slide(target: String, fallback: impl FnOnce() + Send + 'static) {
   });
 }
 
+/// `lunge.exe <args>` without a console window, waiting for what it prints
+/// (None: no core, or it could not start).
+pub fn run_core_output(args: &[&str]) -> Option<String> {
+  use std::os::windows::process::CommandExt;
+  let out = std::process::Command::new(core_exe()?).args(args).creation_flags(0x0800_0000).output().ok()?;
+  Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// `lunge.exe <args>` without a console window.
 pub fn run_core(args: &[&str]) {
   if let Some(exe) = core_exe() {

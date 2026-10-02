@@ -20,6 +20,7 @@ mod overview;
 mod pops;
 mod search;
 mod toast;
+mod update;
 mod view;
 mod wm;
 
@@ -113,6 +114,10 @@ const TIMER_MIXER_TICK: usize = 17;
 const TIMER_MIXER_HIDE: usize = 18;
 /// notification cards: deadlines, slides out, cards waiting for a game
 const TIMER_TOASTS: usize = 19;
+/// the update check: a minute after the start, then every six hours
+const TIMER_UPDATE: usize = 20;
+/// the update card: its own timeouts and animations while it is up
+const TIMER_UPDATE_TICK: usize = 21;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -140,8 +145,8 @@ enum Msg {
   Toast(serde_json::Value),
   /// a card's image, read on another thread
   ToastImage(u64, Option<Vec<u8>>),
-  /// the update card's height: the notifications go under it
-  UpdateCard(f32),
+  /// the update card: checks, progress and results
+  Update(update::Event),
   /// a web widget asked for the Super menu (the Dock's search button)
   OverviewToggle,
 }
@@ -278,13 +283,10 @@ pub fn toast(payload: &str) {
   }
 }
 
-/// The update card announced its height (`ll:update-card`, 0 when closed).
-pub fn update_card(payload: &str) {
-  let height = serde_json::from_str::<serde_json::Value>(payload)
-    .ok()
-    .and_then(|v| v["height"].as_f64())
-    .unwrap_or(0.0);
-  send(Msg::UpdateCard(height as f32));
+/// The right panel or the settings asked for an update check
+/// (`ll:update-check`).
+pub fn update_check() {
+  send(Msg::Update(update::Event::Check(true)));
 }
 
 /// Every provider emission passes through here (main.rs); ours go to the bar.
@@ -514,6 +516,7 @@ struct Ui {
   /// device loss: recovery attempts in a row
   recover_tries: u32,
   toasts: toast::Toasts,
+  update: update::UpdateCard,
   pops: pops::PopState,
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
@@ -617,6 +620,7 @@ fn ui_thread(
         recover_tries: 0,
         pops: Default::default(),
         toasts: Default::default(),
+        update: Default::default(),
         pack_dir: opts.pack_dir.clone(),
         custom_theme: None,
         emit: opts.emit,
@@ -662,6 +666,7 @@ fn ui_thread(
     }
     SetTimer(msg_hwnd, TIMER_CLOCK, ms_to_next_minute(), None);
     if !opts.demo {
+      with_ui(|ui| ui.update_start());
       SetTimer(msg_hwnd, TIMER_ALIVE, 30_000, None);
     } else if std::env::var_os("LL_NATIVE_BAR_CYCLE").is_some() {
       SetTimer(msg_hwnd, TIMER_CYCLE, 1500, None);
@@ -810,6 +815,8 @@ impl Ui {
           }
         }
         WM_TIMER if wp.0 == TIMER_TOASTS => self.toasts_tick(),
+        WM_TIMER if wp.0 == TIMER_UPDATE => self.update_timer(),
+        WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           // frames while the numbers fade in or out; nothing between
           let now = Instant::now();
@@ -834,6 +841,9 @@ impl Ui {
       return Some(LRESULT(0));
     }
     if let Some(r) = self.toast_msg(hwnd, msg, wp, lp) {
+      return Some(r);
+    }
+    if let Some(r) = self.update_msg(hwnd, msg, wp, lp) {
       return Some(r);
     }
     let [hover_w, tray_w, tip_w, ghost_w, mixer_w] = self.pop_windows();
@@ -1078,7 +1088,7 @@ impl Ui {
         Msg::OverviewToggle => self.toggle_native_overview(),
         Msg::Toast(card) => self.toast_add(card),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
-        Msg::UpdateCard(height) => self.toast_update_card(height),
+        Msg::Update(e) => self.update_event(e),
         Msg::Wm(state) => {
           self.model.wm = state;
           overview_dirty = true;
@@ -1207,6 +1217,7 @@ impl Ui {
   fn create_bars(&mut self) {
     self.pops_reset();
     self.toasts_reset();
+    self.update_reset();
     self.drag_hover = None;
     self.drag_activated = None;
     unsafe { let _ = KillTimer(self.msg_hwnd, TIMER_DRAG_DWELL); }
@@ -1461,6 +1472,7 @@ impl Ui {
         self.icons.clear_bitmaps();
         self.pops_reset();
         self.toasts_reset();
+        self.update_reset();
         // Its surfaces belonged to the lost device. The core's Super key
         // needs a hidden window with this title even before the next open.
         self.overview = None;

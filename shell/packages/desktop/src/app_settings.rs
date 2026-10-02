@@ -113,7 +113,6 @@ impl AppSettings {
         "sidebar-right",
         "settings",
         "osk",
-        "update",
         "session",
         "dock",
       ]

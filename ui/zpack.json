@@ -187,54 +187,6 @@
             ]
         },
         {
-            "name": "update",
-            "htmlPath": "./update.html",
-            "zOrder": "top_most",
-            "shownInTaskbar": false,
-            "focused": false,
-            "resizable": false,
-            "transparent": true,
-            "shownOnStart": false,
-            "includeFiles": [
-                "*.html",
-                "*.css",
-                "*.json",
-                "*.js",
-                "lib/*.js",
-                "fonts/*.woff2"
-            ],
-            "caching": {
-                "rules": [],
-                "defaultDuration": 604800
-            },
-            "privileges": {
-                "shellCommands": [
-                    {
-                        "program": "{{INSTALL_ESC}}\\lunge.exe",
-                        "argsRegex": ".*"
-                    }
-                ]
-            },
-            "presets": [
-                {
-                    "name": "default",
-                    "anchor": "top_right",
-                    "offsetX": "0px",
-                    "offsetY": "40px",
-                    "width": "420px",
-                    "height": "1px",
-                    "monitorSelection": {
-                        "type": "primary"
-                    },
-                    "dockToEdge": {
-                        "edge": null,
-                        "windowMargin": "0px",
-                        "enabled": false
-                    }
-                }
-            ]
-        },
-        {
             "name": "session",
             "htmlPath": "./session.html",
             "zOrder": "top_most",

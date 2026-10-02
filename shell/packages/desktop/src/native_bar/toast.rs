@@ -46,11 +46,11 @@ use super::{
 
 const TITLE: &str = "Logical Lunge · toast";
 /// a card's width (the web stack: 420 with 10 around)
-const CW: f32 = 400.0;
-const STACK_PAD: f32 = 10.0;
+pub(super) const CW: f32 = 400.0;
+pub(super) const STACK_PAD: f32 = 10.0;
 const GAP: f32 = 8.0;
 /// under the bar
-const TOP: f32 = 40.0;
+pub(super) const TOP: f32 = 40.0;
 const RADIUS: f32 = 17.0;
 const BODY_MAX: f32 = 150.0;
 /// the window around a card leaves room for its shadow
@@ -121,7 +121,7 @@ pub struct Toasts {
 }
 
 /// The primary monitor (cards go there, as the web widget did) and its scale.
-fn primary() -> (RECT, f32) {
+pub(super) fn primary() -> (RECT, f32) {
   unsafe {
     let mon = MonitorFromPoint(POINT { x: 0, y: 0 }, MONITOR_DEFAULTTOPRIMARY);
     let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
@@ -135,7 +135,7 @@ fn primary() -> (RECT, f32) {
 /// A fullscreen app, a Direct3D game or a presentation is running: new
 /// cards wait until it is over (as the core held the web widget, and as
 /// Windows holds its own notifications).
-fn busy() -> bool {
+pub(super) fn busy() -> bool {
   matches!(
     unsafe { SHQueryUserNotificationState() },
     Ok(QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE)
