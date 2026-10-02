@@ -41,6 +41,9 @@ pub struct Fonts {
   icons: IDWriteFontCollection2,
   fallback: IDWriteFontFallback,
   formats: HashMap<(bool, u32, u32, bool), IDWriteTextFormat>,
+  /// Windows' "Text size" (Accessibility): 1.0 to 2.25. Browsers (the web
+  /// widgets) enlarge their text by it; native text follows it too.
+  text_scale: f32,
 }
 
 /// Text style: size in DIPs, weight (Google Sans Flex is variable 300-700).
@@ -152,7 +155,7 @@ impl Fonts {
       builder.AddMappings(&dwrite.GetSystemFontFallback()?)?;
       let fallback = builder.CreateFontFallback()?;
 
-      Ok(Self { dwrite: dwrite.clone(), loader, text, icons, fallback, formats: HashMap::new() })
+      Ok(Self { dwrite: dwrite.clone(), loader, text, icons, fallback, formats: HashMap::new(), text_scale: read_text_scale() })
     }
   }
 
@@ -161,8 +164,21 @@ impl Fonts {
     // optical size follows the size, as browsers do (font-optical-sizing:
     // auto); left out, Google Sans Flex drew every size at its default 18,
     // narrower and smaller-looking than the web widgets
-    let axes = [axis(b"wght", style.weight), axis(b"opsz", style.size.clamp(6.0, 144.0))];
-    self.format(false, style.size, style.weight, false, &axes)
+    let size = style.size * self.text_scale;
+    let axes = [axis(b"wght", style.weight), axis(b"opsz", size.clamp(6.0, 144.0))];
+    self.format(false, size, style.weight, false, &axes)
+  }
+
+  /// Reads the text size setting again (it changed: WM_SETTINGCHANGE); true
+  /// when text must be drawn again.
+  pub fn refresh_text_scale(&mut self) -> bool {
+    let k = read_text_scale();
+    if (k - self.text_scale).abs() < 0.001 {
+      return false;
+    }
+    self.text_scale = k;
+    self.formats.retain(|key, _| key.0);
+    true
   }
 
   /// Text format for Material Symbols icons (`fill` = ii's filled variant).
@@ -307,5 +323,25 @@ mod tests {
     assert_eq!(r.len(), 3);
     assert_eq!((r[1].first, r[1].last), (0x2D8, 0x2D9));
     assert_eq!((r[2].first, r[2].last), (0x400, 0x4FF));
+  }
+}
+
+/// HKCU\Software\Microsoft\Accessibility TextScaleFactor (100-225 %,
+/// missing: 100).
+fn read_text_scale() -> f32 {
+  #[cfg(windows)]
+  {
+    let pct = crate::common::windows::read_reg_dword(
+      windows::Win32::System::Registry::HKEY_CURRENT_USER,
+      r"Software\Microsoft\Accessibility",
+      "TextScaleFactor",
+    )
+    .unwrap_or(100)
+    .clamp(100, 225);
+    pct as f32 / 100.0
+  }
+  #[cfg(not(windows))]
+  {
+    1.0
   }
 }

@@ -1055,6 +1055,8 @@ impl Ui {
         // monitors moved (checked when the burst settles)
         if msg != WM_SETTINGCHANGE {
           REBUILD_FORCED.store(true, Ordering::Release);
+        } else if self.fonts.refresh_text_scale() {
+          self.redraw_all();
         }
         unsafe {
           let _ = PostMessageW(self.msg_hwnd, WM_APP_REBUILD, WPARAM(0), LPARAM(0));

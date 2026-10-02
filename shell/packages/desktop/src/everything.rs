@@ -64,9 +64,9 @@ mod windows_ipc {
         Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
       },
       UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
+        ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
         GetClassNameW, GetMessageW, GetWindowLongPtrW, PostMessageW, RegisterClassW, SendMessageTimeoutW, SetTimer,
-        SetWindowLongPtrW, GWLP_USERDATA, MSG,
+        SetWindowLongPtrW, GWLP_USERDATA, MSG, MSGFLT_ALLOW,
         SMTO_ABORTIFHUNG, WINDOW_EX_STYLE, WINDOW_STYLE,
         WNDCLASSW, WM_APP, WM_COPYDATA, WM_TIMER,
       },
@@ -234,6 +234,12 @@ mod windows_ipc {
       CreateWindowExW(WINDOW_EX_STYLE::default(), class, w!(""), WINDOW_STYLE::default(),
         0, 0, 0, 0, None, None, hinst, None)
     }.map_err(|e| e.to_string())?;
+    // The shell runs elevated and Everything usually does not: Windows drops
+    // a lower-integrity process's WM_COPYDATA (the answer) unless the window
+    // lets it in, and every search then timed out.
+    unsafe {
+      let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, None);
+    }
     let mut reply = Reply { result: None };
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut reply as *mut _ as isize); }
     let outcome = send_and_wait(everything, hwnd, search, limit.clamp(1, 40), &mut reply);

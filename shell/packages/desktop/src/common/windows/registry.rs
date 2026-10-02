@@ -6,6 +6,7 @@ use windows::{
     Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS},
     System::Registry::{
       RegGetValueW, HKEY, REG_EXPAND_SZ, REG_SZ, REG_VALUE_TYPE, RRF_RT_ANY,
+      RRF_RT_REG_DWORD,
     },
   },
 };
@@ -58,4 +59,24 @@ pub fn read_reg_string(
     return Ok(Some(String::from_utf16_lossy(&data[..end])));
   }
   Err(ERROR_MORE_DATA.0)
+}
+
+/// Logical Lunge: a DWORD value of the registry; `None` when the key or the
+/// value does not exist or is not a DWORD.
+pub fn read_reg_dword(root: HKEY, path: &str, name: &str) -> Option<u32> {
+  let (path, name) = (HSTRING::from(path), HSTRING::from(name));
+  let mut value = 0u32;
+  let mut bytes = std::mem::size_of::<u32>() as u32;
+  let status = unsafe {
+    RegGetValueW(
+      root,
+      &path,
+      &name,
+      RRF_RT_REG_DWORD,
+      None,
+      Some((&mut value as *mut u32).cast::<c_void>()),
+      Some(&mut bytes),
+    )
+  };
+  (status == ERROR_SUCCESS).then_some(value)
 }

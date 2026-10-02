@@ -168,6 +168,13 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
   );
 
   setup_logging(&cli, app.handle())?;
+  // A panic's message and place go to shell.log (the bar and providers
+  // recover from it; only "panic" was logged, with no way to tell why).
+  let default_hook = std::panic::take_hook();
+  std::panic::set_hook(Box::new(move |info| {
+    tracing::error!("panic: {}", info);
+    default_hook(info);
+  }));
 
   // Initialize `AppSettings` in Tauri state.
   let app_settings = Arc::new(AppSettings::new(app.handle(), config_dir)?);

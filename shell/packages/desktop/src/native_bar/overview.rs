@@ -17,7 +17,7 @@ use windows::{
         ID2D1Bitmap1, ID2D1Factory, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
       },
       DirectComposition::{IDCompositionTarget, IDCompositionVisual2, IDCompositionVisual3},
-      DirectWrite::{DWRITE_HIT_TEST_METRICS, DWRITE_READING_DIRECTION_RIGHT_TO_LEFT, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE},
+      DirectWrite::{DWRITE_HIT_TEST_METRICS, DWRITE_READING_DIRECTION_RIGHT_TO_LEFT, DWRITE_TEXT_RANGE},
       Gdi::{GetMonitorInfoW, MonitorFromPoint, ScreenToClient, MONITORINFO, MONITOR_DEFAULTTOPRIMARY},
     },
     System::{
@@ -958,15 +958,11 @@ impl Overview {
       }
     }
     let brush = p.brush(t.on_layer0)?;
-    // text layouts put the first line at the top: centre the line in the field
-    let mut m = DWRITE_TEXT_METRICS::default();
-    unsafe {
-      let _ = layout.GetMetrics(&mut m);
-    }
-    let line_h = m.height;
+    // the layout is the field's height and its format centres the line
+    // (as the placeholder is drawn): another offset pushed typed text down
     unsafe {
       p.dc.DrawTextLayout(
-        pt(r.x - self.scroll_x, r.y + (r.h - line_h) / 2.0),
+        pt(r.x - self.scroll_x, r.y),
         &layout,
         &brush,
         D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
