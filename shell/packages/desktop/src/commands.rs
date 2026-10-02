@@ -15,6 +15,11 @@ pub async fn screensaver_state() -> Result<crate::screensaver::State, String> {
 }
 
 #[tauri::command]
+pub async fn screensaver_run(path: String, configure: bool) -> Result<(), String> {
+  tokio::task::spawn_blocking(move || crate::screensaver::run(&path, configure)).await.map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 pub async fn screensaver_set(enabled: bool, minutes: u32, secure: bool, selected: String) -> Result<crate::screensaver::State, String> {
   tokio::task::spawn_blocking(move || crate::screensaver::set(enabled, minutes, secure, &selected)).await.map_err(|err| err.to_string())?
 }
