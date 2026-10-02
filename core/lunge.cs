@@ -4971,7 +4971,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -5114,6 +5114,21 @@ static class Toasts
             }
             // Sağ panelin hızlı ayarları (radyolar, Ethernet, Bluetooth, uyanık tut): okumalar da cihaz bilgisi verdiği için
             // yalnızca POST (aynı kökenden GET Origin göndermez)
+            // Sağ panelin galerileri: kütüphaneden bir duvar kağıdı / canlı duvar kağıdı / ekran koruyucu sil
+            // (/library-remove?kind=wall|live|saver&path=...): yol kütüphanenin içinde kalmalı
+            else if (target.StartsWith("/library-remove?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/library-remove\?kind=(wall|live|saver)&path=([^&\s]{1,2048})$");
+                if (!m.Success) status = "400 Bad Request";
+                else if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else
+                {
+                    string err;
+                    try { err = Library.Remove(m.Groups[1].Value, Uri.UnescapeDataString(m.Groups[2].Value)); }
+                    catch (Exception ex) { err = "io"; Slider.Log("kütüphaneden silinemedi: " + ex.Message); }
+                    status = err == null ? "204 No Content" : err == "missing" ? "404 Not Found" : err == "io" ? "500 Internal Server Error" : "400 Bad Request";
+                }
+            }
             else if (target.StartsWith("/qs/"))
             {
                 if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
@@ -5205,6 +5220,13 @@ static class Toasts
                 else if (act == "restart-shell" && SelfHeal.IsMain)
                 {
                     ThreadPool.QueueUserWorkItem(_ => ShellWatchdog.Restart("tercihler değişti"));
+                    status = "202 Accepted";
+                }
+                // Sağ paneli bir sayfasıyla aç (lunge.exe --open-page; video ekran koruyucusunun "Ayarlar"ı): olay akışıyla
+                // native panele gider
+                else if (act.StartsWith("page-") && System.Text.RegularExpressions.Regex.IsMatch(act, "^page-(keys|walls|screensaver|bug)$"))
+                {
+                    Toasts.Emit("ll:sidebar-" + act);
                     status = "202 Accepted";
                 }
                 // Canlı duvar kağıdı ayarı değişti (lunge.exe --live-*): oynatıcı başlar, ayarı yeniden okur ya da kapanır
@@ -9726,6 +9748,63 @@ static class SaverVideo
     }
 }
 
+// Sağ panelin galerilerindeki "Kütüphaneden kaldır": yalnızca kütüphane klasörlerinin içindekiler silinir.
+//   wall : duvar kağıdı klasöründeki bir resim (alt klasör değil)
+//   live : canlı duvar kağıdı klasöründeki bir öğenin videosu -> öğenin klasörü (o video duvar kağıdıysa önce kapatılır)
+//   saver: içe aktarılmış bir .scr (Windows'un kendi ekran koruyucuları hiçbir zaman)
+static class Library
+{
+    static string Root(string dir) { return System.IO.Path.GetFullPath(dir).TrimEnd('\\'); }
+
+    static bool Under(string root, string full)
+    {
+        return full.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // null: silindi; "path" (kütüphane dışı / geçersiz), "missing", "kind"
+    public static string Remove(string kind, string path)
+    {
+        if (string.IsNullOrEmpty(path) || path.IndexOfAny(System.IO.Path.GetInvalidPathChars()) >= 0 || !System.IO.Path.IsPathRooted(path)) return "path";
+        string full;
+        try { full = System.IO.Path.GetFullPath(path); } catch { return "path"; }
+        switch (kind)
+        {
+            case "wall":
+            {
+                string root = Root(Wallpaper.Dir);
+                if (!string.Equals(System.IO.Path.GetDirectoryName(full), root, StringComparison.OrdinalIgnoreCase)) return "path";
+                if (!System.IO.File.Exists(full)) return "missing";
+                System.IO.File.Delete(full);
+                return null;
+            }
+            case "live":
+            {
+                string root = Root(LiveWallpaper.Dir);
+                string folder = System.IO.Path.GetDirectoryName(full);
+                if (folder == null || !Under(root, full) || !string.Equals(System.IO.Path.GetDirectoryName(folder), root, StringComparison.OrdinalIgnoreCase)) return "path";
+                if (!System.IO.File.Exists(full)) return "missing";
+                LiveWallpaper.Forget(full);
+                System.IO.Directory.Delete(folder, true);
+                return null;
+            }
+            case "saver":
+            {
+                string root = Root(ScreenSavers.Dir);
+                if (!Under(root, full) || !full.EndsWith(".scr", StringComparison.OrdinalIgnoreCase)) return "path";
+                if (!System.IO.File.Exists(full)) return "missing";
+                System.IO.File.Delete(full);
+                // bir paketten açılmış klasör: içinde başka ekran koruyucu kalmadıysa o da gider
+                string folder = System.IO.Path.GetDirectoryName(full);
+                if (!string.Equals(folder, root, StringComparison.OrdinalIgnoreCase) && Under(root, folder)
+                    && System.IO.Directory.GetFiles(folder, "*.scr", System.IO.SearchOption.AllDirectories).Length == 0)
+                    System.IO.Directory.Delete(folder, true);
+                return null;
+            }
+        }
+        return "kind";
+    }
+}
+
 static class LiveWallpaper
 {
     public const string Name = "lunge-wallpaper";
@@ -9936,6 +10015,24 @@ static class LiveWallpaper
             var s = Load(true);
             if (!s.Active) return false;
             var next = WithoutVideo(s.Entries, mode);
+            if (Same(next, s.Entries)) return false;
+            s.Entries = next;
+            Save(s);
+            return true;
+        });
+        if (changed) Notify();
+    }
+
+    // Kütüphaneden silinecek video: duvar kağıdı olduğu monitörlerde kapatılır
+    public static void Forget(string video)
+    {
+        bool changed = Locked(() =>
+        {
+            var s = Load(true);
+            var next = s.Entries;
+            foreach (var e in s.Entries)
+                if (string.Equals(e.Value, video, StringComparison.OrdinalIgnoreCase))
+                    next = WithoutVideo(next, e.Key == "*" ? "all" : e.Key);
             if (Same(next, s.Entries)) return false;
             s.Entries = next;
             Save(s);
@@ -11368,7 +11465,7 @@ static class Program
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write(res); so.Flush();
             return;
-        }        // Duvar kağıdı: --wall-info | --wall-local | --wall-browse <tür> [sayfa] | --wall-get <url> <mod>
+        }        // Duvar kağıdı: --wall-info | --wall-local | --wall-browse <tür> [sayfa] | --wall-get <url> <mod> | --wall-download <url>
         //               --wall-set <dosya> <mod> | --wall-thumb <dosya> | --wall-pick <mod>   (mod: all | span | monitör kimliği)
         if (args.Length >= 1 && args[0].StartsWith("--wall-"))
         {
@@ -11382,6 +11479,8 @@ static class Program
                     case "--wall-browse": { int pg = 1; if (args.Length > 2) int.TryParse(args[2], out pg); outText = Wallpaper.Browse(args.Length > 1 ? args[1] : "top", pg); break; }
                     case "--wall-get": { string f = Wallpaper.Download(args[1]); Wallpaper.Apply(f, args.Length > 2 ? args[2] : "all"); outText = "{\"ok\":true}"; break; }
                     case "--wall-set": Wallpaper.Apply(args[1], args.Length > 2 ? args[2] : "all"); outText = "{\"ok\":true}"; break;
+                    // galerinin "İndir"i: kütüphaneye indir, uygulama
+                    case "--wall-download": outText = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "ok", true }, { "path", Wallpaper.Download(args[1]) } }); break;
                     case "--wall-thumb": outText = Wallpaper.Thumb(args[1]); break;
                     case "--wall-pick": outText = new JavaScriptSerializer().Serialize(Wallpaper.Pick(args.Length > 1 ? args[1] : "all")); break;
                     default: outText = "{\"error\":\"unknown\"}"; break;
@@ -11715,6 +11814,13 @@ static class Program
             return;
         }
         if (args.Length == 1 && args[0] == "--osk") { Osk.Run(); return; }
+        // lunge.exe --open-page <keys|walls|screensaver|bug>: sağ paneli o sayfayla açar (çalışan çekirdek üzerinden);
+        // çekirdek yoksa çıkış kodu 1
+        if (args.Length == 2 && args[0] == "--open-page")
+        {
+            if (!System.Text.RegularExpressions.Regex.IsMatch(args[1], "^(keys|walls|screensaver|bug)$")) Environment.Exit(2);
+            Environment.Exit(Supervisor.PostToCore("/cmd?a=page-" + args[1], 1500) == 202 ? 0 : 1);
+        }
 
         // lunge.exe --raise "<pencere başlığı>" : pencereyi her zaman üstte yapıp en öne getir.
         // (shell'in setAlwaysOnTop'u gizle/göster sonrası etkisiz kalıyordu; sağ panel terminalin arkasında açılıyordu.)

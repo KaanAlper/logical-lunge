@@ -351,7 +351,22 @@ fn preview(parent: isize) {
   }
 }
 
+/// Windows' "Settings" for our screen saver: the right panel opens on its
+/// screen saver tab (the core relays it); the message only when no core
+/// runs.
 fn configure() {
+  let opened = std::env::current_exe()
+    .ok()
+    .and_then(|exe| Some(exe.parent()?.join("lunge.exe")))
+    .filter(|core| core.exists())
+    .and_then(|core| {
+      use std::os::windows::process::CommandExt;
+      std::process::Command::new(core).args(["--open-page", "screensaver"]).creation_flags(0x0800_0000).status().ok()
+    })
+    .is_some_and(|status| status.success());
+  if opened {
+    return;
+  }
   // GetUserDefaultUILanguage: primary language 0x1F is Turkish
   let turkish = unsafe {
     windows::Win32::Globalization::GetUserDefaultUILanguage() & 0x3FF == 0x1F

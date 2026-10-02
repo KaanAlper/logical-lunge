@@ -97,6 +97,25 @@ static class CoreRegression
         Check(Request("POST", "/qs/radio?kind=wifi&state=Maybe", "http://127.0.0.1:6124").Contains("400"), "A radio accepted an invalid state");
         Check(Request("POST", "/qs/awake?v=1", "https://example.invalid").Contains("403"), "Keep-awake accepted a foreign origin");
         Check(Request("POST", "/qs/nope", "http://127.0.0.1:6124").Contains("404"), "An unknown quick setting was served");
+        // Gallery "remove from library": only inside the library folders, POST only, never Windows' own screen savers
+        string shell = "http://127.0.0.1:6124";
+        Func<string, string, string> remove = (kind, path) => "/library-remove?kind=" + kind + "&path=" + Uri.EscapeDataString(path);
+        Check(Request("GET", remove("wall", @"C:\x.png"), shell).Contains("405"), "Library removal must require POST");
+        Check(Request("POST", remove("wall", @"C:\x.png"), "https://example.invalid").Contains("403"), "Library removal accepted a foreign origin");
+        Check(Request("POST", "/library-remove?kind=nope&path=x", shell).Contains("400"), "Library removal accepted an unknown kind");
+        Check(Request("POST", remove("wall", Environment.GetFolderPath(Environment.SpecialFolder.Windows) + @"\win.ini"), shell).Contains("400"), "Library removal reached a file outside the library");
+        Check(Request("POST", remove("saver", Environment.GetFolderPath(Environment.SpecialFolder.System) + @"\scrnsave.scr"), shell).Contains("400"), "Library removal reached one of Windows' screen savers");
+        Check(Request("POST", remove("live", LiveWallpaper.Dir + @"\..\..\x.mp4"), shell).Contains("400"), "Library removal followed .. out of the library");
+        Check(Request("POST", remove("wall", "relative.png"), shell).Contains("400"), "Library removal accepted a relative path");
+        string wallFile = System.IO.Path.Combine(Wallpaper.Dir, "ll-test-remove.png");
+        System.IO.File.WriteAllText(wallFile, "x");
+        Check(Request("POST", remove("wall", wallFile), shell).Contains("204") && !System.IO.File.Exists(wallFile), "A library wallpaper was not removed");
+        Check(Request("POST", remove("wall", wallFile), shell).Contains("404"), "Removing a missing wallpaper must say so");
+        string packDir = System.IO.Path.Combine(ScreenSavers.Dir, "ll-test-pack");
+        System.IO.Directory.CreateDirectory(packDir);
+        string packFile = System.IO.Path.Combine(packDir, "a.scr");
+        System.IO.File.WriteAllText(packFile, "x");
+        Check(Request("POST", remove("saver", packFile), shell).Contains("204") && !System.IO.Directory.Exists(packDir), "An imported screen saver (and its emptied pack folder) was not removed");
         string radios = Request("POST", "/qs/radios", "http://127.0.0.1:6124");
         Check(radios.Contains("200 OK") && radios.Contains("\"wifi\"") && radios.Contains("\"bluetooth\""), "Radios were not served");
         string eth = Request("POST", "/qs/eth", "http://127.0.0.1:6124");
