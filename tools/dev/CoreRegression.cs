@@ -86,9 +86,29 @@ static class CoreRegression
         Check(r.Contains("\"button\":-1") && r.Contains("no-ui"), "A dialog without a shell must answer no-ui: " + r);
     }
 
+    static void LauncherTests() {
+        string missingDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-no-dir-" + Guid.NewGuid().ToString("N"));
+        Check(Launcher.Check(System.IO.Path.Combine(missingDir, "a.txt")) == Launcher.PATH_NOT_FOUND, "A file in a missing folder must be PATH_NOT_FOUND");
+        Check(Launcher.Check(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-missing-" + Guid.NewGuid().ToString("N") + ".txt")) == Launcher.NOT_FOUND, "A missing file must be NOT_FOUND");
+        Check(Launcher.Check(Environment.GetFolderPath(Environment.SpecialFolder.Windows)) == Launcher.OK, "A folder must open");
+        Check(Launcher.Check("cmd.exe") == Launcher.OK && Launcher.Check("notepad") == Launcher.OK, "Programs on PATH must be found");
+        Check(Launcher.Check("ll-not-a-program-" + Guid.NewGuid().ToString("N")) == Launcher.NOT_FOUND, "An unknown program must be NOT_FOUND");
+        Check(Launcher.Check("llnoscheme" + Guid.NewGuid().ToString("N").Substring(0, 8) + ":x") == Launcher.NO_ASSOCIATION, "An unregistered address scheme must be NO_ASSOCIATION");
+        Check(Launcher.Check("https://example.invalid/") == Launcher.OK && Launcher.Check(@"shell:AppsFolder\x!App") == Launcher.OK, "https and shell: addresses must open");
+        string odd = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-" + Guid.NewGuid().ToString("N") + ".llnoassoc" + Guid.NewGuid().ToString("N").Substring(0, 6));
+        System.IO.File.WriteAllText(odd, "x");
+        try { Check(Launcher.Check(odd) == Launcher.NO_ASSOCIATION, "A file no app opens must be NO_ASSOCIATION"); }
+        finally { System.IO.File.Delete(odd); }
+        Check(Launcher.Describe(Launcher.NOT_FOUND).Length > 0, "Windows' error text must come back");
+        Check(Request("GET", "/launch?file=cmd.exe", "http://127.0.0.1:6124").Contains("405") && Request("POST", "/launch?file=cmd.exe", "https://example.invalid").Contains("403"), "Launches must be local POSTs");
+        Check(Request("POST", "/launch?file=", "http://127.0.0.1:6124").Contains("400") && Request("POST", "/launch?file=a&verb=delete", "http://127.0.0.1:6124").Contains("400"), "A bad launch must be refused");
+        Check(Request("POST", "/launch?file=" + Uri.EscapeDataString(System.IO.Path.Combine(missingDir, "a.exe")), "http://127.0.0.1:6124").Contains("422"), "A launch that cannot open must answer 422 (our card)");
+    }
+
     static void Main() {
         TakeoverTests();
         DialogTests();
+        LauncherTests();
         string response = Request("POST", "/focus-color?v=invalid", "http://127.0.0.1:6124");
         Check(!response.Contains("text/event-stream") && response.Contains("\"ok\":false"), "Focus-color request was routed into SSE instead of returning a JSON result");
         Check(Request("GET", "/focus-color?v=invalid", "http://127.0.0.1:6124").Contains("405"), "Color writes must require POST");
