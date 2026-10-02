@@ -240,7 +240,7 @@
                     },
                     {
                         "program": "{{INSTALL_ESC}}\\lunge.exe",
-                        "argsRegex": "^--open (https?|spotify):.*"
+                        "argsRegex": "^--open ((https?|spotify):.*|ms-actioncenter:)$"
                     }
                 ]
             },
