@@ -5772,10 +5772,12 @@ static class Binds
         return u;
     }
 
+    // Kancadan çağrılır: dosyayı okumaz, Load'un listesine bakar
+    static Dictionary<string, string> appPaths = new Dictionary<string, string>();
     public static string AppPath(string id)
     {
-        foreach (var a in ReadUser().Apps) if (a.Id == id) return a.Path;
-        return null;
+        string p;
+        lock (gate) return appPaths.TryGetValue(id, out p) ? p : null;
     }
 
     // Düzenleyicinin kaydı: değişen çekirdek kısayolları, uygulama listesinin tamamı ve kaldırılan varsayılan
@@ -5872,8 +5874,9 @@ static class Binds
         var t = new Dictionary<long, string>();
         var user = ReadUser();
         var all = Effective();
+        var paths = new Dictionary<string, string>();
         foreach (var id in user.Removed) all.Remove(id);
-        foreach (var a in user.Apps) all[a.Id] = a.Combo;
+        foreach (var a in user.Apps) { all[a.Id] = a.Combo; paths[a.Id] = a.Path; }
         foreach (var kv in all)
         {
             int m, vk;
@@ -5881,7 +5884,7 @@ static class Binds
             long key = ((long)m << 16) | (uint)vk;
             if (!t.ContainsKey(key)) t[key] = kv.Key; // çakışmada listedeki ilk eylem kazanır
         }
-        lock (gate) table = t;
+        lock (gate) { table = t; appPaths = paths; }
         Slider.Log("keybinds: " + t.Count + " kısayol");
     }
 
