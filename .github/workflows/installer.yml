@@ -1,0 +1,62 @@
+name: Installer
+
+# Builds the windowed setup app (LogicalLunge-Setup-x64.exe / -x86.exe) from main:
+# a front end for install.ps1, which it embeds, so it installs exactly like the
+# one-line command. Every run keeps the two exes and screenshots of each page as an
+# artifact. With "publish", they become main's only release ("setup", the latest
+# release of the repository); the editions keep their own releases.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch or commit to build (empty: main)"
+        type: string
+        default: ""
+      publish:
+        description: "Publish as main's release (replaces its exes)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  setup:
+    name: Setup app (${{ inputs.ref || 'main' }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout the source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || 'main' }}
+
+      - name: Build x64 and x86, draw every page
+        shell: pwsh
+        run: ./installer/gui/build.ps1 -Out dist -Shots
+
+      - name: Keep the exes and screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: LogicalLunge-Setup
+          path: |
+            dist/LogicalLunge-Setup-x64.exe
+            dist/LogicalLunge-Setup-x86.exe
+            dist/shots/*.png
+          retention-days: 14
+
+      - name: Publish as main's release
+        if: ${{ inputs.publish && (inputs.ref == '' || inputs.ref == 'main') }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'setup'
+          $notes = "Logical Lunge Setup: download and run. Pick the interface, the language, the accent color and the extras; it installs the latest release of that interface (the same install as the one-line command).`n`n" +
+                   "LogicalLunge-Setup-x64.exe: 64-bit Windows 10 / 11 (most computers)`nLogicalLunge-Setup-x86.exe: 32-bit Windows"
+          gh release view $tag *> $null
+          if ($LASTEXITCODE) { gh release create $tag --title 'Logical Lunge Setup' --notes $notes --target main --latest }
+          else { gh release edit $tag --notes $notes --latest }
+          if ($LASTEXITCODE) { throw 'Could not create the release' }
+          gh release upload $tag dist/LogicalLunge-Setup-x64.exe dist/LogicalLunge-Setup-x86.exe --clobber
+          if ($LASTEXITCODE) { throw 'Could not upload the exes' }
