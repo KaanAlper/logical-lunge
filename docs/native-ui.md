@@ -47,7 +47,7 @@ that cost no CPU per frame; works on machines without a GPU driver (WARP) and wi
 | 4 | Per-monitor bar, OSD only on one monitor (wheel bar or focused monitor) | one window per monitor, OSD rule unchanged |
 | 5 | Window grows for popups / OSD, always-on-top while grown | popups are separate layered visuals of the same window; window grows the same way |
 | 6 | Workspace click / wheel → core slide (`/cmd?a=ws-N`), fallback `lunge.exe --slide`, fallback WM command | same chain |
-| 7 | Brightness wheel (left edge): one axis gamma 0..100 then brightness 0..100; DDC / WMI via `brightness.ps1`, gamma via `lunge.exe --gamma` | same commands, same caches and 30 s refresh |
+| 7 | Brightness wheel (left edge): one axis gamma 0..100 then brightness 0..100; DDC / WMI and gamma through the core's `/brightness` and `/gamma` routes (in-process, latest value of a burst wins) | same routes, same caches and 30 s refresh |
 | 8 | Volume wheel (right edge) ±5, unmute on up | audio provider functions |
 | 9 | `bar-alive` heartbeat every 30 s | same request from the bar thread (proves the UI thread is alive) |
 | 10 | Hover popups: resources (RAM / swap / CPU / temps via `lunge-temps.exe --read` every 2 s while open), media (art via `lunge-media.exe`, seek `--seek`, prev / play / next, time ticking) with 200 ms close delay and slide in / out | same |

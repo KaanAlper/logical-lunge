@@ -1,21 +1,14 @@
-//! Brightness (WMI on laptops, DDC/CI on monitors, through the core's
-//! `/brightness`) and gamma (`lunge.exe --gamma`) of one monitor, with the web
-//! bar's single axis: gamma 0..100 below brightness 0..100. Reads and writes
-//! run on their own threads; writes are debounced. An older core without
-//! `/brightness` falls back to `scripts\brightness.ps1`.
+//! Brightness (WMI on laptops, DDC/CI on monitors) and gamma of one monitor,
+//! both through the core's local HTTP routes (`/brightness`, `/gamma`; one
+//! in-process call each), with the web bar's single axis: gamma 0..100 below
+//! brightness 0..100. A wheel burst goes to one background worker per
+//! monitor that applies the latest value of each kind; the worker ends after
+//! a while without work, so no thread waits while nobody scrolls.
 
 use std::{
-  os::windows::process::CommandExt,
-  path::PathBuf,
-  process::Command,
-  sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-  },
+  sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
   time::{Duration, Instant},
 };
-
-const NO_WINDOW: u32 = 0x0800_0000;
 
 pub struct Display {
   /// `\\.\DISPLAY1`
@@ -26,8 +19,7 @@ pub struct Display {
   pub gamma: i32,
   pub last_set: Instant,
   last_read: std::cell::Cell<Instant>,
-  brightness_gen: Arc<AtomicU64>,
-  gamma_gen: Arc<AtomicU64>,
+  work: Arc<Work>,
 }
 
 pub enum Update {
@@ -42,47 +34,142 @@ pub enum Step {
   None,
 }
 
-fn install_dir() -> Option<PathBuf> {
-  Some(std::env::current_exe().ok()?.parent()?.to_path_buf())
+type Reply = Box<dyn Fn(Update) + Send>;
+
+/// What the monitor's worker still has to do: only the latest value of each
+/// kind (a burst of wheel steps becomes one write per kind).
+#[derive(Default)]
+struct Pending {
+  brightness: Option<i32>,
+  gamma: Option<i32>,
+  read: Option<Reply>,
+  running: bool,
 }
 
-fn core(args: &[&str]) -> Option<String> {
-  let exe = install_dir()?.join("lunge.exe");
-  let out = Command::new(exe).args(args).creation_flags(NO_WINDOW).output().ok()?;
-  Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+impl Pending {
+  fn is_empty(&self) -> bool {
+    self.brightness.is_none()
+      && self.gamma.is_none()
+      && self.read.is_none()
+  }
 }
 
-/// The core answers in-process (one WMI or DDC/CI call); the script it
-/// replaces started PowerShell and two WMI queries per wheel step, which
-/// lagged by up to a second on laptops.
-fn brightness_path(device: &str) -> String {
-  format!("/brightness?dev={}", device.replace('\\', "%5C"))
+#[derive(Default)]
+struct Work {
+  pending: Mutex<Pending>,
+  wake: Condvar,
 }
 
-/// Ok(None): this monitor's brightness cannot be set. Err: the core did not
-/// answer (an older core), so the script is used instead.
-fn core_read(device: &str) -> Result<Option<i32>, ()> {
+/// The worker ends after this long without work.
+const IDLE: Duration = Duration::from_secs(30);
+/// A read while the core is not answering yet (the bar can start first).
+const READ_ATTEMPTS: u32 = 5;
+
+fn route(name: &str, device: &str) -> String {
+  format!("/{name}?dev={}", device.replace('\\', "%5C"))
+}
+
+/// Ok(None): the core says this value cannot be read here (brightness of a
+/// monitor without DDC/CI). Err: the core did not answer.
+fn read_value(
+  name: &str,
+  key: &str,
+  device: &str,
+) -> Result<Option<i32>, ()> {
   let (status, body) =
-    super::core_api::post(&brightness_path(device)).ok_or(())?;
+    super::core_api::post(&route(name, device)).ok_or(())?;
   if status != 200 {
     return Err(());
   }
   let v: serde_json::Value =
     serde_json::from_slice(&body).map_err(|_| ())?;
-  Ok(v["value"].as_i64().map(|n| n as i32))
+  Ok(v[key].as_i64().map(|n| n as i32))
 }
 
-fn core_write(device: &str, value: i32) -> bool {
-  let path = format!("{}&v={}", brightness_path(device), value);
-  matches!(super::core_api::post(&path), Some((204, _)))
+fn write_value(name: &str, device: &str, value: i32) {
+  let path = format!("{}&v={value}", route(name, device));
+  if !matches!(super::core_api::post(&path), Some((204, _))) {
+    tracing::warn!(
+      "Native bar: {name} {value} was not applied to {device}"
+    );
+  }
 }
 
-fn script_brightness(args: &[&str]) -> Option<String> {
-  let script = install_dir()?.join("scripts").join("brightness.ps1");
-  let script = script.to_string_lossy().into_owned();
-  let mut all = vec!["--ps", script.as_str()];
-  all.extend_from_slice(args);
-  core(&all)
+impl Work {
+  fn lock(&self) -> MutexGuard<'_, Pending> {
+    self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+  }
+
+  /// Hands work to the monitor's worker, starting one if none is running.
+  fn submit(
+    self: &Arc<Self>,
+    device: &str,
+    change: impl FnOnce(&mut Pending),
+  ) {
+    let mut pending = self.lock();
+    change(&mut pending);
+    if pending.running {
+      self.wake.notify_one();
+      return;
+    }
+    pending.running = true;
+    drop(pending);
+    let work = Arc::clone(self);
+    let device = device.to_string();
+    std::thread::spawn(move || work.run(&device));
+  }
+
+  fn run(&self, device: &str) {
+    loop {
+      let (brightness, gamma, read) = {
+        let mut pending = self.lock();
+        while pending.is_empty() {
+          let (next, wait) = self
+            .wake
+            .wait_timeout(pending, IDLE)
+            .unwrap_or_else(PoisonError::into_inner);
+          pending = next;
+          if wait.timed_out() && pending.is_empty() {
+            pending.running = false;
+            return;
+          }
+        }
+        (
+          pending.brightness.take(),
+          pending.gamma.take(),
+          pending.read.take(),
+        )
+      };
+      if let Some(v) = brightness {
+        write_value("brightness", device, v);
+      }
+      if let Some(v) = gamma {
+        write_value("gamma", device, v);
+      }
+      if let Some(reply) = read {
+        Self::read(device, &reply);
+      }
+    }
+  }
+
+  /// Both values, after any pending writes. Nothing is sent while the core
+  /// does not answer: the bar keeps what it knew and reads again later.
+  fn read(device: &str, reply: &Reply) {
+    for attempt in 0..READ_ATTEMPTS {
+      if attempt > 0 {
+        std::thread::sleep(Duration::from_secs(1));
+      }
+      let Ok(brightness) = read_value("brightness", "value", device)
+      else {
+        continue;
+      };
+      reply(Update::Brightness(device.to_string(), brightness));
+      if let Ok(Some(gamma)) = read_value("gamma", "gamma", device) {
+        reply(Update::Gamma(device.to_string(), gamma));
+      }
+      return;
+    }
+  }
 }
 
 impl Display {
@@ -94,38 +181,22 @@ impl Display {
       gamma: 100,
       last_set: Instant::now() - Duration::from_secs(60),
       last_read: std::cell::Cell::new(Instant::now()),
-      brightness_gen: Arc::default(),
-      gamma_gen: Arc::default(),
+      work: Arc::default(),
     }
   }
 
   /// Worth reading again: not read for 30 s and not just set by us.
   pub fn stale(&self) -> bool {
-    self.last_read.get().elapsed() > Duration::from_secs(30) && self.last_set.elapsed() > Duration::from_secs(5)
+    self.last_read.get().elapsed() > Duration::from_secs(30)
+      && self.last_set.elapsed() > Duration::from_secs(5)
   }
 
   /// Reads both values (DDC takes ~0.5 s: done ahead of the first wheel).
-  pub fn read(&self, send: impl Fn(Update) + Send + Clone + 'static) {
+  pub fn read(&self, send: impl Fn(Update) + Send + 'static) {
     self.last_read.set(Instant::now());
-    let device = self.device.clone();
-    let send2 = send.clone();
-    let dev2 = device.clone();
-    std::thread::spawn(move || {
-      let value = core_read(&device).unwrap_or_else(|()| {
-        script_brightness(&["get", &format!("{}\\Monitor0", device)])
-          .and_then(|v| v.parse().ok())
-      });
-      send(Update::Brightness(device, value));
-    });
-    std::thread::spawn(move || {
-      if let Some(json) = core(&["--gamma", &dev2]) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
-          if let Some(g) = v["gamma"].as_i64() {
-            send2(Update::Gamma(dev2, g as i32));
-          }
-        }
-      }
-    });
+    self
+      .work
+      .submit(&self.device, |p| p.read = Some(Box::new(send)));
   }
 
   /// One wheel notch (web bar `onLeftWheel`).
@@ -153,30 +224,12 @@ impl Display {
 
   fn set_gamma(&mut self, v: i32) {
     self.gamma = v;
-    let gen = self.gamma_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    let counter = self.gamma_gen.clone();
-    let device = self.device.clone();
-    std::thread::spawn(move || {
-      std::thread::sleep(Duration::from_millis(40));
-      if counter.load(Ordering::SeqCst) == gen {
-        core(&["--gamma", &device, &v.to_string()]);
-      }
-    });
+    self.work.submit(&self.device, |p| p.gamma = Some(v));
   }
 
   fn set_brightness(&mut self, v: i32) {
     self.brightness = Some(v);
     self.last_set = Instant::now();
-    let gen = self.brightness_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    let counter = self.brightness_gen.clone();
-    let device = self.device.clone();
-    std::thread::spawn(move || {
-      // short: the core applies the latest value of a burst on its own
-      std::thread::sleep(Duration::from_millis(40));
-      if counter.load(Ordering::SeqCst) == gen && !core_write(&device, v) {
-        let monitor = format!("{}\\Monitor0", device);
-        script_brightness(&["set", &v.to_string(), &monitor]);
-      }
-    });
+    self.work.submit(&self.device, |p| p.brightness = Some(v));
   }
 }

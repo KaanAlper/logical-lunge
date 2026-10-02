@@ -4061,13 +4061,25 @@ static class Supervisor
     // çalışır; yönetici haklarıyla çalışan çekirdeği ve pencere yöneticisini ancak çekirdeğin kendisi kapatabilir.
     public static bool RequestFromCore(string act)
     {
+        return PostToCore("/cmd?a=" + act, 2000) == 202;
+    }
+
+    // Komut satırından çalışan çekirdeğe istek (tek yer): HTTP durum kodu; çekirdek yoksa / cevap vermezse 0
+    public static int PostToCore(string target, int timeoutMs)
+    {
         try
         {
-            var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:6131/cmd?a=" + act);
-            rq.Method = "POST"; rq.ContentLength = 0; rq.Timeout = 2000; rq.Proxy = null;
-            using (var rs = (System.Net.HttpWebResponse)rq.GetResponse()) return (int)rs.StatusCode == 202;
+            var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:6131" + target);
+            rq.Method = "POST"; rq.ContentLength = 0; rq.Timeout = timeoutMs; rq.Proxy = null;
+            using (var rs = (System.Net.HttpWebResponse)rq.GetResponse()) return (int)rs.StatusCode;
         }
-        catch { return false; }
+        catch (System.Net.WebException ex)
+        {
+            var rs = ex.Response as System.Net.HttpWebResponse;
+            if (rs == null) return 0;
+            using (rs) return (int)rs.StatusCode;
+        }
+        catch { return 0; }
     }
 
     // lunge.exe --stop-desktop: çalışan çekirdek her şeyi kapatıp çıkar (beklenir); kalanları (0.1.x parçaları, yanıt
@@ -4474,7 +4486,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/brightness?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4613,6 +4625,24 @@ static class Toasts
                 if (!m.Success) status = "400 Bad Request";
                 else if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
                 else status = WinNotifications.Open(long.Parse(m.Groups[1].Value)) ? "204 No Content" : "404 Not Found";
+            }
+            // Gama (parlaklık 0'ın altında ekran başına yazılımsal karartma): /gamma?dev=\\.\DISPLAY1 okur -> {"gamma":N};
+            // &v=0..100 ile POST yazar. Bar'lar her tekerlek adımında buraya gelir (eskiden her adım yeni bir lunge.exe süreci).
+            else if (target.StartsWith("/gamma?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/gamma\?dev=([^&\s]{1,64})(?:&v=(\d{1,3}))?$");
+                string dev = m.Success ? Uri.UnescapeDataString(m.Groups[1].Value) : "";
+                if (!System.Text.RegularExpressions.Regex.IsMatch(dev, @"^\\\\\.\\DISPLAY\d{1,2}$")) status = "400 Bad Request";
+                else if (m.Groups[2].Success)
+                {
+                    if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                    else
+                    {
+                        try { status = NightLight.SetGamma(dev, Math.Min(100, int.Parse(m.Groups[2].Value))) ? "204 No Content" : "500 Internal Server Error"; }
+                        catch (Exception ex) { status = "500 Internal Server Error"; Slider.Log("gama yazılamadı: " + ex.Message); }
+                    }
+                }
+                else { body = "{\"gamma\":" + NightLight.Gamma(dev).ToString(System.Globalization.CultureInfo.InvariantCulture) + "}"; status = "200 OK"; }
             }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {
@@ -6523,11 +6553,18 @@ static class NightLight
         return d;
     }
     public static int Gamma(string dev) { int v; return Gammas().TryGetValue(dev, out v) ? v : 100; }
+    static readonly object gammaGate = new object();
+    // Bar'ların /gamma isteği (tekerlek adımı): yazar ve bekçiyi dosya izleyicisini beklemeden uyandırır
     public static bool SetGamma(string dev, int v)
     {
-        var d = Gammas(); d[dev] = Math.Max(0, Math.Min(100, v));
-        var lines = new List<string>(); foreach (var kv in d) if (kv.Value < 100) lines.Add(kv.Key + "=" + kv.Value);
-        System.IO.File.WriteAllLines(GammaFile, lines.ToArray());
+        lock (gammaGate)
+        {
+            var d = Gammas(); d[dev] = Math.Max(0, Math.Min(100, v));
+            var lines = new List<string>(); foreach (var kv in d) if (kv.Value < 100) lines.Add(kv.Key + "=" + kv.Value);
+            System.IO.File.WriteAllLines(GammaFile, lines.ToArray());
+        }
+        Interlocked.Increment(ref animGen);
+        keeperWake.Set();
         return MainRunning() || Apply(Active);
     }
     public static bool AnyActive() { if (Active) return true; foreach (var v in Gammas().Values) if (v < 100) return true; return false; }
@@ -6617,13 +6654,15 @@ static class NightLight
         return d["on"] + "|" + d["level"] + "|" + d["mode"] + "|" + d["from"] + "|" + d["to"] + "|" + (Active ? "A" : "-") + "|" + string.Join(",", g);
     }
 
+    // Bekçiyi uyandırır: ayar dosyası değişti (izleyici) ya da gama çekirdeğin içinden yazıldı (SetGamma)
+    static readonly AutoResetEvent keeperWake = new AutoResetEvent(false);
     public static void StartKeeper()
     {
         string last = Snapshot();
         Apply(Active);
         // Kenar çubuğundaki düğme / kaydırıcı ve bar'daki karartma ayrı bir helper süreciyle dosyaya yazar: değişikliği
         // hemen fark et (yedek: 5 sn'lik yoklama, zamanlı açılıp kapanma da orada yakalanır).
-        var changed = new AutoResetEvent(false);
+        var changed = keeperWake;
         try
         {
             var fsw = new System.IO.FileSystemWatcher(System.IO.Path.GetDirectoryName(StateFile))
@@ -10121,16 +10160,6 @@ static class Program
             return;
         }
 
-        // lunge.exe --gamma <\\.\DISPLAY1> [0-100]  -> {"gamma":60,"ok":true}  (değer yoksa yalnızca okur)
-        if ((args.Length == 2 || args.Length == 3) && args[0] == "--gamma")
-        {
-            bool ok = true; int gv;
-            if (args.Length == 3 && int.TryParse(args[2], out gv)) ok = NightLight.SetGamma(args[1], gv);
-            var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
-            so.Write("{\"gamma\":" + NightLight.Gamma(args[1]) + ",\"ok\":" + (ok ? "true" : "false") + "}"); so.Flush();
-            return;
-        }
-
         // lunge.exe --nightlight on|off|toggle|status  -> {"on":true}
         if (args.Length == 2 && args[0] == "--nightlight")
         {
@@ -10181,14 +10210,8 @@ static class Program
         if (args.Length == 2 && args[0] == "--slide")
         {
             // Çalışan helper varsa işi ona devret (katman ve kenarlıkları hazır, animasyon hemen başlar)
-            try
-            {
-                string act = args[1] == "next" ? "ws-next" : args[1] == "prev" ? "ws-prev" : "ws-" + args[1];
-                var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:6131/cmd?a=" + Uri.EscapeDataString(act));
-                rq.Timeout = 400; rq.Proxy = null;
-                using (var rs = (System.Net.HttpWebResponse)rq.GetResponse()) if ((int)rs.StatusCode == 204) return;
-            }
-            catch { }
+            string act = args[1] == "next" ? "ws-next" : args[1] == "prev" ? "ws-prev" : "ws-" + args[1];
+            if (Supervisor.PostToCore("/cmd?a=" + Uri.EscapeDataString(act), 400) == 204) return;
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             var g = new TilingClient();
             var sl = new Slider(g);
