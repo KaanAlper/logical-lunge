@@ -110,6 +110,7 @@ async fn main() -> anyhow::Result<()> {
       commands::everything_search,
       commands::screensaver_state,
       commands::screensaver_set,
+      commands::screensaver_run,
     ])
     .build(tauri::generate_context!())?;
 

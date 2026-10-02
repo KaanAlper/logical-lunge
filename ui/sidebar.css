@@ -541,6 +541,8 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .wall-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .wall-tile:hover { transform: scale(1.04); border-radius: 16px; box-shadow: 0 0 0 2px var(--m3primary); }
 .wall-tile.custom { flex-direction: column; gap: 4px; color: var(--m3onSecondaryContainer); background: var(--m3secondaryContainer); font-size: 12px; }
+/* "Dosyadan seç" kendi boyunda: geniş (32:9) satırda da fotoğraf kutusu kadar uzamaz */
+.wall-tile.custom, .wall-row.wide .wall-tile.custom { width: 92px; padding: 0 6px; text-align: center; line-height: 1.2; }
 .wall-tile.custom .icon { font-size: 26px; }
 .wall-tile.ghost .icon, .wall-spin .icon { animation: qm-spin 1s linear infinite; }
 .wall-res { position: absolute; right: 6px; bottom: 5px; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: rgba(0 0 0 / 55%); color: #fff; }
@@ -551,9 +553,12 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .saver-sec { padding: 14px; gap: 12px; }
 .saver-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .saver-switch input { width: 18px; height: 18px; accent-color: var(--m3primary); cursor: pointer; }
-.saver-fields { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(100px, 1fr); gap: 10px; }
-.saver-fields label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; color: var(--m3onSurfaceVariant); }
-.saver-fields select, .saver-minutes { height: 38px; min-width: 0; border: 1px solid var(--m3outlineVariant); border-radius: 12px; background: var(--colLayer2); color: var(--m3onSurface); padding: 0 10px; font-size: 13px; }
+.saver-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.saver-choices .chip { height: 32px; font-size: 13px; }
+.saver-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.saver-saving { display: inline-flex; margin-left: auto; color: var(--m3primary); }
+.saver-saving .icon { font-size: 16px; animation: qm-spin 1s linear infinite; }
+.saver-minutes { height: 34px; border: 1px solid var(--m3outlineVariant); border-radius: 12px; background: var(--colLayer2); color: var(--m3onSurface); padding: 0 10px; font-size: 13px; }
 .saver-minutes { display: flex; align-items: center; gap: 5px; }
 .saver-minutes input { width: 52px; min-width: 0; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; }
 .saver-actions { display: flex; justify-content: flex-end; gap: 8px; }

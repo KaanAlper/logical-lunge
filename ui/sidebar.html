@@ -509,57 +509,65 @@
         );
       }
 
+      // Ekran koruyucu: her değişiklik hemen Windows'a yazılır. Panel odak kaybında kapanır; ayrı bir "Uygula" adımı
+      // (ve tarayıcının kendi penceresinde açılan <select> listesi) seçimin kaybolmasına yol açıyordu.
       function ScreenSaverSection() {
-        const [draft, setDraft] = useState(null);
-        const [saved, setSaved] = useState(null);
-        const [busy, setBusy] = useState(false);
+        const [state, setState] = useState(null);
+        const [saving, setSaving] = useState(false);
         const [error, setError] = useState('');
+        const latest = useRef(null);
+        latest.current = state;
+        const minutesTimer = useRef(null);
         useEffect(() => {
           let alive = true;
-          invoke('screensaver_state').then(state => { if (alive) { setDraft(state); setSaved(state); } })
+          invoke('screensaver_state').then(s => { if (alive) setState(s); })
             .catch(e => { if (alive) setError(String(e)); });
-          return () => { alive = false; };
+          return () => { alive = false; clearTimeout(minutesTimer.current); };
         }, []);
-        const saveScreenSaver = async () => {
-          if (!draft || busy) return;
-          setBusy(true); setError('');
+        const apply = async next => {
+          setState(next); setSaving(true); setError('');
           try {
-            const state = await invoke('screensaver_set', {
-              enabled: draft.enabled, minutes: Number(draft.minutes), secure: draft.secure, selected: draft.selected,
-            });
-            setSaved(state); setDraft(state);
-          } catch (e) { setError(String(e)); }
-          finally { setBusy(false); }
+            setState(await invoke('screensaver_set', {
+              enabled: next.enabled, minutes: Number(next.minutes), secure: next.secure, selected: next.selected,
+            }));
+          } catch (e) {
+            setError(String(e));
+            invoke('screensaver_state').then(setState).catch(() => {}); // ekranda Windows'taki gerçek değer kalsın
+          } finally { setSaving(false); }
         };
-        const update = part => setDraft(d => ({ ...d, ...part }));
-        const changed = draft && saved && (draft.enabled !== saved.enabled || draft.minutes !== saved.minutes
-          || draft.secure !== saved.secure || draft.selected !== saved.selected);
+        const change = part => apply({ ...latest.current, ...part });
+        // Yazarken her tuşta kaydetmesin: son değer yarım saniye sonra
+        const changeMinutes = value => {
+          setState(s => ({ ...s, minutes: value }));
+          clearTimeout(minutesTimer.current);
+          const minutes = Math.max(1, Math.min(120, parseInt(value, 10) || 1));
+          minutesTimer.current = setTimeout(() => apply({ ...latest.current, minutes }), 500);
+        };
+        const run = configure => invoke('screensaver_run', { path: state.selected, configure }).catch(e => setError(String(e)));
         return (
           <div className="wall-sec saver-sec">
-            <div className="kb-gtitle"><Icon name="screensaver" />Ekran koruyucu</div>
-            {!draft && !error && <div className="kb-hint">Windows ayarları okunuyor…</div>}
-            {draft && <>
-              <label className="saver-switch"><span>Etkin</span><input type="checkbox" checked={draft.enabled}
-                onChange={e => update({ enabled: e.target.checked })} /></label>
-              <div className="saver-fields">
-                <label>Koruyucu
-                  <select value={draft.selected} onChange={e => update({ selected: e.target.value })}>
-                    <option value="">Seçin</option>
-                    {draft.choices.map(choice => <option key={choice.path} value={choice.path}>{choice.name}</option>)}
-                  </select>
-                </label>
-                <label>Bekleme süresi
-                  <span className="saver-minutes"><input type="number" min="1" max="120" value={draft.minutes}
-                    onChange={e => update({ minutes: e.target.value })} /> dakika</span>
-                </label>
+            <div className="kb-gtitle"><Icon name="screensaver" />Ekran koruyucu
+              {saving && <span className="saver-saving"><Icon name="progress_activity" /></span>}</div>
+            {!state && !error && <div className="kb-hint">Windows ayarları okunuyor…</div>}
+            {state && <>
+              <label className="saver-switch"><span>Etkin</span><input type="checkbox" checked={state.enabled}
+                onChange={e => change({ enabled: e.target.checked, selected: state.selected || state.choices[0]?.path || '' })} /></label>
+              <div className="saver-choices">
+                {state.choices.map(choice => (
+                  <button key={choice.path} className={`chip ${state.selected === choice.path ? 'on' : ''}`}
+                          onClick={() => change({ selected: choice.path })}>{choice.name}</button>
+                ))}
               </div>
-              <label className="saver-switch"><span>Dönüşte oturum açma iste</span><input type="checkbox" checked={draft.secure}
-                onChange={e => update({ secure: e.target.checked })} /></label>
+              <div className="saver-row">
+                <span>Bekleme süresi</span>
+                <span className="saver-minutes"><input type="number" min="1" max="120" value={state.minutes}
+                  onChange={e => changeMinutes(e.target.value)} /> dakika</span>
+              </div>
+              <label className="saver-switch"><span>Dönüşte oturum açma iste</span><input type="checkbox" checked={state.secure}
+                onChange={e => change({ secure: e.target.checked })} /></label>
               <div className="saver-actions">
-                <button className="chip" disabled={!draft.selected} onClick={() => lunge.shellSpawn(draft.selected, ['/c']).catch(e => setError(String(e)))}>
-                  <Icon name="tune" />Seçenekler</button>
-                <button className="chip on" disabled={!changed || busy} onClick={saveScreenSaver}>
-                  <Icon name={busy ? 'progress_activity' : 'check'} />{busy ? 'Kaydediliyor…' : 'Uygula'}</button>
+                <button className="chip" disabled={!state.selected} onClick={() => run(false)}><Icon name="play_arrow" />Önizle</button>
+                <button className="chip" disabled={!state.selected} onClick={() => run(true)}><Icon name="tune" />Seçenekler</button>
               </div>
             </>}
             {error && <div className="kb-msg error"><Icon name="error" />{error}</div>}
