@@ -13,7 +13,7 @@ static class CoreRegression
     static object Call(Type type, string name, params object[] args) {
         return type.GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, args);
     }
-    static string Request(string method, string target, string origin) {
+    static string Request(string method, string target, string origin, string host = "localhost") {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         try {
@@ -21,7 +21,7 @@ static class CoreRegression
                 client.Connect((IPEndPoint)listener.LocalEndpoint);
                 using (var accepted = listener.AcceptTcpClient()) {
                     var stream = client.GetStream(); stream.ReadTimeout = 1000;
-                    var bytes = Encoding.ASCII.GetBytes(method + " " + target + " HTTP/1.1\r\nHost: localhost\r\nOrigin: " + origin + "\r\nContent-Length: 0\r\n\r\n");
+                    var bytes = Encoding.ASCII.GetBytes(method + " " + target + " HTTP/1.1\r\nHost: " + host + "\r\n" + (origin == null ? "" : "Origin: " + origin + "\r\n") + "Content-Length: 0\r\n\r\n");
                     stream.Write(bytes, 0, bytes.Length);
                     Call(typeof(Toasts), "Accept", accepted);
                     var buffer = new byte[4096];
@@ -72,6 +72,14 @@ static class CoreRegression
         Check(ToastPayload.LocalImagePath("ms-appdata:///local///server/share/a.png", "Fam.App_8wekyb3d8bbwe!App", local) == null && ToastPayload.LocalImagePath("ms-appdata:///local/a.png", @"\\host\share!x", local) == null, "ms-appdata path reached a network share");
         Check(ToastPayload.NameFromAumid("Microsoft.WindowsStore_8wekyb3d8bbwe!App") == "WindowsStore" && ToastPayload.NameFromAumid("com.squirrel.Discord.Discord") == "Discord" && ToastPayload.NameFromAumid(@"{6D809377-6AF0-444B-8957-A3773F02200E}\Mozilla Firefox\firefox.exe") == "firefox", "Sender name fallback is wrong");
         Check(ToastPayload.UnixMs(116444736000000000L) == 0 && ToastPayload.UnixMs(116444736000000000L + 10000) == 1, "Arrival time conversion is wrong");
+        Check(Request("POST", "/prefs.json", null, "rebound.example:6131").Contains("403"), "A request for another host name (DNS rebinding) was served");
+        Check(Request("GET", "/events", "https://example.invalid").Contains("403"), "The event stream accepted a browser origin");
+        Check(Request("GET", "/gamma?dev=" + Uri.EscapeDataString(@"C:\x"), "http://127.0.0.1:6124").Contains("400"), "Gamma accepted a device that is not a display");
+        Check(Request("GET", "/gamma?dev=" + display + "&v=50", "http://127.0.0.1:6124").Contains("405"), "Gamma writes must require POST");
+        Check(Request("GET", "/dock-pin?id=chrome&on=1", "http://127.0.0.1:6124").Contains("405"), "Dock pin writes must require POST");
+        Check(Request("POST", "/dock-pin?id=chrome&on=2", "http://127.0.0.1:6124").Contains("400"), "Dock pin accepted an invalid state");
+        Check(Request("POST", "/dock-pin?id=chrome&on=1", "https://example.invalid").Contains("403"), "Dock pin accepted a foreign origin");
+        Check(Request("GET", "/notifications", "http://127.0.0.1:6124").Contains("405"), "The notification list must require POST");
         string notes = Request("POST", "/notifications", "http://127.0.0.1:6124");
         Check(notes.Contains("200 OK") && notes.Contains("\"items\"") && notes.Contains("\"icons\""), "Notification list was not served");
         Check(Request("POST", "/notifications", "https://example.invalid").Contains("403"), "Notification list accepted a foreign origin");
