@@ -31,7 +31,37 @@ static class CoreRegression
             }
         } finally { listener.Stop(); }
     }
+    // Windows kabuğunun devri: asıl değerler kaydedilir, ikinci uygulama onları ezmez, geri yükleme olmayanı siler
+    static void TakeoverTests() {
+        var reg = new Dictionary<string, object> {
+            { @"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\SnapAssist", 1 },
+            { ShellTakeover.ArrangeKey + "\\" + ShellTakeover.ArrangeName, "1" },
+        };
+        Func<string, string, object> read = (k, n) => { object v; return reg.TryGetValue(k + "\\" + n, out v) ? v : null; };
+        List<Dictionary<string, object>> saved; int autoHide;
+        string first = ShellTakeover.Originals(null, read, out saved, out autoHide);
+        Dictionary<string, object> snap = null, da = null, arrange = null;
+        foreach (var e in saved) {
+            if ((string)e["n"] == "SnapAssist") snap = e;
+            if ((string)e["n"] == "TaskbarDa") da = e;
+            if ((string)e["n"] == ShellTakeover.ArrangeName) arrange = e;
+        }
+        Check(snap != null && (int)ShellTakeover.RestoreValue(snap) == 1, "Takeover did not keep an existing value to restore");
+        Check(da != null && ShellTakeover.RestoreValue(da) == null, "Takeover must delete a value that did not exist before");
+        Check(arrange != null && (string)ShellTakeover.RestoreValue(arrange) == "1", "Aero Snap's original string was not kept");
+        Check(autoHide == -1, "Auto-hide must stay unknown until the taskbar is seen");
+        // a crashed run left its record: the values it changed are not the originals
+        reg[@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\SnapAssist"] = 0;
+        string again = ShellTakeover.Originals(first, read, out saved, out autoHide);
+        Check(again == first, "A second apply overwrote the saved originals");
+        foreach (var e in saved) if ((string)e["n"] == "SnapAssist") Check((int)ShellTakeover.RestoreValue(e) == 1, "Original value lost after a crash");
+        Check(!ShellTakeover.TryParse("{\"reg\":[{\"k\":1}]}", out saved, out autoHide), "A broken record was accepted");
+        string withAh = ShellTakeover.Serialize(new List<Dictionary<string, object>>(), 3);
+        Check(ShellTakeover.TryParse(withAh, out saved, out autoHide) && autoHide == 3, "Auto-hide state did not survive the record");
+    }
+
     static void Main() {
+        TakeoverTests();
         string response = Request("POST", "/focus-color?v=invalid", "http://127.0.0.1:6124");
         Check(!response.Contains("text/event-stream") && response.Contains("\"ok\":false"), "Focus-color request was routed into SSE instead of returning a JSON result");
         Check(Request("GET", "/focus-color?v=invalid", "http://127.0.0.1:6124").Contains("405"), "Color writes must require POST");

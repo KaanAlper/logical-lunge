@@ -845,7 +845,7 @@
       }
 
       // ---------------------------------------------------------------- Gelişmiş
-      function AdvancedPage({ s }) {
+      function AdvancedPage({ s, update }) {
         return (
           <>
             <div className="sec-title">Ayar dosyaları</div>
@@ -857,6 +857,12 @@
             <div className="card">
               <Row icon="sync" label="Pencere yöneticisi ayarlarını yenile" sub="config.yaml'daki değişiklikleri yeniden okur" onClick={() => helper(['--wm', 'wm-reload-config']).catch(() => {})}><Icon name="chevron_right" /></Row>
               <Row icon="refresh" label="Pencereleri yeniden çiz" sub="Yerleşim bozulduysa pencereleri yeniden yerleştirir" onClick={() => helper(['--wm', 'wm-redraw']).catch(() => {})}><Icon name="chevron_right" /></Row>
+            </div>
+            <div className="sec-title">Windows</div>
+            <div className="card">
+              <Row icon="desktop_windows" label="Windows'un yerini al" sub="Logical Lunge açıkken Windows'un görev çubuğu, yerleşim önerileri ve benzeri parçaları kapanır; kapanınca eski hâline döner">
+                <Switch on={s.takeover !== false} onChange={v => helper(['--set-pref', 'takeover', String(v)]).then(() => update({ takeover: v })).catch(() => {})} />
+              </Row>
             </div>
           </>
         );
@@ -944,7 +950,7 @@
                 {page === 'keys' && <KeysPage close={hide} />}
                 {page === 'night' && <NightPage />}
                 {page === 'health' && <HealthPage open={open} s={s} />}
-                {page === 'adv' && <AdvancedPage s={s} />}
+                {page === 'adv' && <AdvancedPage s={s} update={update} />}
                 {page === 'about' && <AboutPage s={s} close={hide} />}
               </div>
               {s.dirty && <ApplyNote />}

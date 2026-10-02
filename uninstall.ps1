@@ -34,6 +34,9 @@ if (-not $isAdmin) {
     # Windows' own notification banners, turned off while Logical Lunge showed notifications as its cards: back to
     # how they were, in this user's registry (the elevated copy may run as another account)
     if (Test-Path $core) { & $core --restore-banners | Out-Null }
+    # The Windows parts Logical Lunge took over (taskbar, snap suggestions ...) back to their saved values; --stop-desktop
+    # did it already, this covers a desktop that was not running
+    if (Test-Path $core) { & $core --takeover-restore | Out-Null }
     # one UAC prompt; the elevated copy needs to know whose settings to restore
     $self = Join-Path $env:TEMP 'logical-lunge-uninstall.ps1'
     Copy-Item $PSCommandPath $self -Force
@@ -69,7 +72,25 @@ if ($saver) {
     }
 }
 # Started elevated by the user themselves: the banners are restored here (see the non-elevated part above)
-if (-not $Elevated -and (Test-Path (Join-Path $APP 'lunge.exe'))) { & (Join-Path $APP 'lunge.exe') --restore-banners | Out-Null }
+if (-not $Elevated -and (Test-Path (Join-Path $APP 'lunge.exe'))) { & (Join-Path $APP 'lunge.exe') --restore-banners | Out-Null; & (Join-Path $APP 'lunge.exe') --takeover-restore | Out-Null }
+# The takeover record is still there (the elevated copy runs as another account, or lunge.exe could not run): its
+# saved values go back into the user's registry (they apply at the next sign-in)
+$takeover = Join-Path $STATE 'shell-takeover.json'
+if (Test-Path $takeover) {
+    try {
+        foreach ($e in @((Get-Content $takeover -Raw | ConvertFrom-Json).reg)) {
+            $path = "$HKU\$($e.k)"
+            if ($e.had -and $null -ne $e.old) {
+                if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+                $type = if ($e.old -is [string]) { 'String' } else { 'DWord' }
+                Set-ItemProperty -Path $path -Name $e.n -Value $e.old -Type $type
+            }
+            else { Remove-ItemProperty -Path $path -Name $e.n -ErrorAction SilentlyContinue }
+        }
+        Remove-Item $takeover -Force
+    }
+    catch { Log "    taken-over Windows settings: $($_.Exception.Message)" }
+}
 Remove-Item (Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue
 
 Log '==> Removing startup tasks'
