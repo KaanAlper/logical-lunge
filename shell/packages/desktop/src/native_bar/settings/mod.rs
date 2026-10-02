@@ -270,11 +270,7 @@ fn core_run(args: &[&str]) {
 }
 
 fn explorer(dir: &str) {
-  use std::os::windows::process::CommandExt;
-  if dir.is_empty() {
-    return;
-  }
-  let _ = std::process::Command::new("explorer").arg(dir).creation_flags(0x0800_0000).spawn();
+  super::launch::open(dir, "", super::launch::Verb::Open);
 }
 
 fn load() {

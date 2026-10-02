@@ -16,6 +16,7 @@ mod fonts;
 mod gfx;
 mod icons;
 mod ime;
+mod launch;
 mod menu;
 mod mixer;
 mod model;

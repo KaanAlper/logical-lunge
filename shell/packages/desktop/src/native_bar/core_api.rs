@@ -10,9 +10,19 @@ use std::{
 
 /// POST `path`; returns the status code and body.
 pub fn post(path: &str) -> Option<(u16, Vec<u8>)> {
-  let addr: SocketAddr = "127.0.0.1:6131".parse().ok()?;
-  let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(400)).ok()?;
-  s.set_read_timeout(Some(Duration::from_secs(4))).ok()?;
+  post_waiting(path, Duration::from_secs(4)).ok()?
+}
+
+/// POST `path`, waiting up to `wait` for the answer. `Err`: no core to
+/// connect to; `Ok(None)`: connected, but no (readable) answer in time.
+pub fn post_waiting(path: &str, wait: Duration) -> Result<Option<(u16, Vec<u8>)>, std::io::Error> {
+  let addr: SocketAddr = "127.0.0.1:6131".parse().expect("loopback address");
+  let s = TcpStream::connect_timeout(&addr, Duration::from_millis(400))?;
+  Ok(answer(s, path, wait))
+}
+
+fn answer(mut s: TcpStream, path: &str, wait: Duration) -> Option<(u16, Vec<u8>)> {
+  s.set_read_timeout(Some(wait)).ok()?;
   s.set_write_timeout(Some(Duration::from_secs(1))).ok()?;
   write!(
     s,

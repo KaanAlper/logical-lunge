@@ -1600,60 +1600,6 @@ fn url_encode(s: &str) -> String {
     .collect()
 }
 
-#[repr(C)]
-struct ShellExecuteInfo {
-  size: u32,
-  mask: u32,
-  hwnd: isize,
-  verb: *const u16,
-  file: *const u16,
-  params: *const u16,
-  dir: *const u16,
-  show: i32,
-  instance: isize,
-  id_list: *mut std::ffi::c_void,
-  class: *const u16,
-  class_key: isize,
-  hot_key: u32,
-  icon: isize,
-  process: isize,
-}
-
-#[link(name = "shell32")]
-extern "system" {
-  fn ShellExecuteExW(info: *mut ShellExecuteInfo) -> i32;
-}
-
-/// Starts an app (its `shell:AppsFolder\...` path) as administrator: UAC
-/// asks, as with Windows' own "Run as administrator".
-fn run_as_admin(path: String) {
-  std::thread::spawn(move || unsafe {
-    let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
-    let verb: Vec<u16> = "runas\0".encode_utf16().collect();
-    let file: Vec<u16> = format!("{path}\0").encode_utf16().collect();
-    let mut info = ShellExecuteInfo {
-      size: std::mem::size_of::<ShellExecuteInfo>() as u32,
-      mask: 0x100, // SEE_MASK_NOASYNC
-      hwnd: 0,
-      verb: verb.as_ptr(),
-      file: file.as_ptr(),
-      params: std::ptr::null(),
-      dir: std::ptr::null(),
-      show: 1,
-      instance: 0,
-      id_list: std::ptr::null_mut(),
-      class: std::ptr::null(),
-      class_key: 0,
-      hot_key: 0,
-      icon: 0,
-      process: 0,
-    };
-    if ShellExecuteExW(&mut info) == 0 {
-      tracing::info!("Super menu: run as administrator: not started ({})", path);
-    }
-  });
-}
-
 /// Match the web menu's focused monitor, falling back to the primary one
 /// before the window manager sends its first state.
 fn overview_monitor(wm: &WmState) -> (RECT, f32) {
@@ -2250,7 +2196,7 @@ impl Ui {
       }
       "admin" => {
         ui.overview_hide();
-        run_as_admin(path);
+        super::launch::open(path, "", super::launch::Verb::RunAs);
       }
       "dock" => {
         if let Some(exe) = exe {
@@ -2327,16 +2273,10 @@ impl Ui {
           if let Some(exe) = core_api::core_exe() {
             let _ = std::process::Command::new(exe).arg("--focus-under-cursor").creation_flags(CREATE_NO_WINDOW).status();
           }
-          spawn("explorer", &[&path]);
+          super::launch::open(path, "", super::launch::Verb::Open);
         });
       }
-      Act::OpenPath(path) => {
-        std::thread::spawn(move || {
-          if let Some(exe) = core_api::core_exe() {
-            let _ = std::process::Command::new(exe).args(["--launch", &path]).creation_flags(CREATE_NO_WINDOW).status();
-          }
-        });
-      }
+      Act::OpenPath(path) => super::launch::open(path, "", super::launch::Verb::Open),
       Act::Script(mode, text) => {
         std::thread::spawn(move || {
           match core_json(&["--run", mode, &text]) {

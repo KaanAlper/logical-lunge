@@ -9,10 +9,7 @@
 //! (`state\dock-pins.json`, `/dock-pins`, `/dock-pin`); the Super menu's
 //! right-click menu writes there too and the core says `ll:dock-pins`.
 
-use std::{
-  os::windows::process::CommandExt,
-  time::Instant,
-};
+use std::time::Instant;
 
 use windows::{
   core::{w, Interface},
@@ -41,7 +38,6 @@ use super::{
   Layer, Msg, Ui, CLASS, TIMER_DOCK_CLOSE, TIMER_DOCK_TICK,
 };
 
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// dock.html: resting tile, gap, largest magnification, how far it spreads
 /// (in tiles)
@@ -597,11 +593,7 @@ impl Ui {
       return;
     }
     if let Some(path) = item.path {
-      std::thread::spawn(move || {
-        if let Err(err) = std::process::Command::new("explorer").arg(&path).creation_flags(CREATE_NO_WINDOW).spawn() {
-          tracing::warn!("Dock: open {}: {:?}", path, err);
-        }
-      });
+      super::launch::open(path, "", super::launch::Verb::Open);
     }
   }
 
