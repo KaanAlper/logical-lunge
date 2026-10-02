@@ -5693,11 +5693,120 @@ static class Binds
         { "browser", "Super+W" }, { "files", "Super+E" }, { "code", "Super+C" }, { "editor", "Super+X" },
         { "close", "Alt+F4" }, { "screenshot", "Print" }, { "screenshot-screen", "Ctrl+Print" }, { "clipboard", "Super+V" },
         { "file-search", "Super+S" },
+        // Windows'un kendi kabuğunun kombinasyonları da bizim: hiçbiri Windows'a ulaşmaz (Başlat, Arama, Bildirim
+        // merkezi açılmasın), karşılıkları Logical Lunge'da
+        { "overview-alt", "Ctrl+Escape" }, { "run", "Super+R" }, { "search", "Super+Q" }, { "workspaces", "Super+Tab" },
+        { "settings", "Super+I" }, { "sidebar", "Super+A" }, { "notifications", "Super+N" },
+        { "screenshot-alt", "Super+Shift+S" }, { "task-manager", "Ctrl+Shift+Escape" },
     };
+
+    // Uygulama açan kısayollar (düzenleyicide "Uygulamalar": kaldırılabilir, kullanıcı yenilerini ekleyebilir)
+    static readonly HashSet<string> appIds = new HashSet<string> { "terminal", "terminal-alt", "browser", "files", "code", "editor" };
+    public static bool IsApp(string id) { return appIds.Contains(id) || id.StartsWith("app:"); }
+    public static bool IsDefault(string id)
+    {
+        for (int i = 0; i < Defaults.GetLength(0); i++) if (Defaults[i, 0] == id) return true;
+        return false;
+    }
+
+    // "super+shift+s" -> "Super+Shift+S"; tanınmayan kombinasyon: null
+    public static string Canonical(string combo)
+    {
+        int m, vk;
+        return Parse(combo, out m, out vk) ? Combo(m, vk) : null;
+    }
+
+    // Kullanıcının eklediği uygulama kısayolu (keybinds.json > "$apps")
+    public sealed class CustomApp { public string Id = "", Name = "", Path = "", Combo = ""; }
+
+    public sealed class UserState
+    {
+        public Dictionary<string, object> Raw = new Dictionary<string, object>();
+        public List<CustomApp> Apps = new List<CustomApp>();
+        public HashSet<string> Removed = new HashSet<string>();
+    }
+
+    static readonly System.Text.RegularExpressions.Regex appId = new System.Text.RegularExpressions.Regex("^app:[a-z0-9-]{1,40}$");
+    static readonly string[] launchable = { ".exe", ".lnk", ".url", ".appref-ms", ".bat", ".cmd" };
+
+    // null: geçerli; değilse neden
+    public static string ValidateApp(CustomApp a)
+    {
+        if (!appId.IsMatch(a.Id)) return "app id";
+        if (a.Name.Length == 0 || a.Name.Length > 120) return "app name";
+        if (a.Combo != "" && Canonical(a.Combo) == null) return "combo " + a.Combo;
+        string p = a.Path;
+        // uygulama listesindeki (Super menüsü) mağaza uygulamaları: shell:AppsFolder\<AUMID>
+        if (p.StartsWith(@"shell:AppsFolder\", StringComparison.OrdinalIgnoreCase) && p.Length > 17 && p.IndexOfAny(new[] { '"', '\r', '\n' }, 17) < 0) return null;
+        try
+        {
+            if (!System.IO.Path.IsPathRooted(p) || !System.IO.File.Exists(p)) return "app path";
+            string ext = System.IO.Path.GetExtension(p).ToLowerInvariant();
+            if (Array.IndexOf(launchable, ext) < 0) return "app type";
+        }
+        catch { return "app path"; }
+        return null;
+    }
+
+    public static UserState ReadUser()
+    {
+        var u = new UserState();
+        try
+        {
+            if (!System.IO.File.Exists(FilePath)) return u;
+            u.Raw = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(FilePath)) ?? new Dictionary<string, object>();
+        }
+        catch (Exception ex) { Slider.Log("keybinds: " + ex.Message); return u; }
+        object v;
+        if (u.Raw.TryGetValue("$apps", out v) && v is System.Collections.ArrayList)
+            foreach (var o in (System.Collections.ArrayList)v)
+            {
+                var d = o as Dictionary<string, object>;
+                if (d == null) continue;
+                Func<string, string> str = k => { object x; return d.TryGetValue(k, out x) && x is string ? (string)x : ""; };
+                var a = new CustomApp { Id = str("id"), Name = str("name"), Path = str("path"), Combo = str("combo") };
+                if (ValidateApp(a) == null) u.Apps.Add(a);
+            }
+        if (u.Raw.TryGetValue("$removed", out v) && v is System.Collections.ArrayList)
+            foreach (var o in (System.Collections.ArrayList)v) if (o is string && IsApp((string)o)) u.Removed.Add((string)o);
+        return u;
+    }
+
+    public static string AppPath(string id)
+    {
+        foreach (var a in ReadUser().Apps) if (a.Id == id) return a.Path;
+        return null;
+    }
+
+    // Düzenleyicinin kaydı: değişen çekirdek kısayolları, uygulama listesinin tamamı ve kaldırılan varsayılan
+    // uygulamalar. reset: önceki kullanıcı değerleri silinir. Okunamayan dosyanın üstüne yazılmaz (kısayollar silinirdi).
+    public static bool Write(Dictionary<string, string> core, List<CustomApp> apps, HashSet<string> removed, bool reset = false)
+    {
+        Dictionary<string, object> d = new Dictionary<string, object>();
+        if (!reset && !SettingsFile.TryReadForUpdate(FilePath,
+                text => new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(text) ?? new Dictionary<string, object>(),
+                () => new Dictionary<string, object>(), out d))
+            return false;
+        foreach (var kv in core)
+        {
+            if (kv.Key.StartsWith("app:")) { foreach (var a in apps) if (a.Id == kv.Key) a.Combo = kv.Value; continue; }
+            string def = null;
+            for (int i = 0; i < Defaults.GetLength(0); i++) if (Defaults[i, 0] == kv.Key) def = Defaults[i, 1];
+            if (def == null) return false;
+            if (kv.Value == def) d.Remove(kv.Key); else d[kv.Key] = kv.Value;
+        }
+        d["$apps"] = System.Linq.Enumerable.ToList(System.Linq.Enumerable.Select(apps, a => new Dictionary<string, object> { { "id", a.Id }, { "name", a.Name }, { "path", a.Path }, { "combo", a.Combo } }));
+        d["$removed"] = new List<string>(removed);
+        if (apps.Count == 0) d.Remove("$apps");
+        if (removed.Count == 0) d.Remove("$removed");
+        if (!Files.WriteAtomic(FilePath, new JavaScriptSerializer().Serialize(d))) return false;
+        Load();
+        return true;
+    }
 
     static readonly object gate = new object();
     static Dictionary<long, string> table = new Dictionary<long, string>();
-    static System.IO.FileSystemWatcher watcher, captureWatcher;
+    static System.IO.FileSystemWatcher watcher, captureWatcher, wmWatcher;
 
     public static string FilePath
     {
@@ -5734,6 +5843,7 @@ static class Binds
             case "insert": return 0x2D; case "home": return 0x24; case "end": return 0x23;
             case "pageup": return 0x21; case "pagedown": return 0x22; case "print": case "printscreen": return 0x2C;
             case "minus": return 0xBD; case "plus": case "equal": return 0xBB; case "comma": return 0xBC; case "period": return 0xBE;
+            case ";": case "semicolon": return 0xBA; case "'": case "quote": return 0xDE;
         }
         if (p.Length == 1 && ((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= '0' && p[0] <= '9'))) return char.ToUpperInvariant(p[0]);
         int f;
@@ -5750,7 +5860,7 @@ static class Binds
             if (System.IO.File.Exists(FilePath))
             {
                 var user = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(FilePath));
-                if (user != null) foreach (var kv in user) if (d.ContainsKey(kv.Key)) d[kv.Key] = kv.Value == null ? "" : kv.Value.ToString();
+                if (user != null) foreach (var kv in user) if (d.ContainsKey(kv.Key) && !(kv.Value is System.Collections.ArrayList)) d[kv.Key] = kv.Value == null ? "" : kv.Value.ToString();
             }
         }
         catch (Exception ex) { Slider.Log("keybinds: " + ex.Message); }
@@ -5760,7 +5870,11 @@ static class Binds
     public static void Load()
     {
         var t = new Dictionary<long, string>();
-        foreach (var kv in Effective())
+        var user = ReadUser();
+        var all = Effective();
+        foreach (var id in user.Removed) all.Remove(id);
+        foreach (var a in user.Apps) all[a.Id] = a.Combo;
+        foreach (var kv in all)
         {
             int m, vk;
             if (!Parse(kv.Value, out m, out vk)) continue;
@@ -5780,8 +5894,15 @@ static class Binds
     public static void Watch()
     {
         Load();
+        WmBinds.Load();
         try
         {
+            var wm = new System.IO.FileSystemWatcher(System.IO.Path.GetDirectoryName(Paths.ConfigFile), System.IO.Path.GetFileName(Paths.ConfigFile));
+            System.IO.FileSystemEventHandler wmReload = (s, e) => { Thread.Sleep(80); WmBinds.Load(); };
+            wm.Changed += wmReload; wm.Created += wmReload;
+            wm.Renamed += (s, e) => { Thread.Sleep(80); WmBinds.Load(); };
+            wm.EnableRaisingEvents = true;
+            wmWatcher = wm;
             watcher = new System.IO.FileSystemWatcher(System.IO.Path.GetDirectoryName(FilePath), "keybinds.json");
             System.IO.FileSystemEventHandler reload = (s, e) => { Thread.Sleep(80); Load(); };
             watcher.Changed += reload; watcher.Created += reload; watcher.Deleted += reload;
@@ -5809,6 +5930,7 @@ static class Binds
             case 0x08: return "Backspace"; case 0x2E: return "Delete"; case 0x2D: return "Insert"; case 0x24: return "Home";
             case 0x23: return "End"; case 0x21: return "PageUp"; case 0x22: return "PageDown"; case 0x2C: return "Print";
             case 0xBD: return "Minus"; case 0xBB: return "Plus"; case 0xBC: return "Comma"; case 0xBE: return "Period";
+            case 0xBA: return ";"; case 0xDE: return "'";
         }
         if ((vk >= 0x41 && vk <= 0x5A) || (vk >= 0x30 && vk <= 0x39)) return ((char)vk).ToString();
         if (vk >= 0x70 && vk <= 0x87) return "F" + (vk - 0x70 + 1);
@@ -5873,7 +5995,9 @@ class Keys2
     readonly Control ui;
     readonly Slider slider;
     Native.LowLevelKeyboardProc proc;
-    bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, winInjected, dockChord, dockMasked;
+    bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, dockChord, dockMasked;
+    // masaüstü değişti (kilit ekranı, UAC): basılı tuş bilgisi o masaüstünde kaldı, bırakmalar bize hiç gelmedi
+    volatile bool desktopSwitched;
     int winVk = VK_LWIN, lastWinEvent;
 
     public static Keys2 Instance;
@@ -5930,12 +6054,7 @@ class Keys2
     {
         // Tuş basılıyken değiştirme (durum karışmasın)
         if (winDown && !force) return;
-        if (force)
-        {
-            // enjekte ettiğimiz Win basılı kalmasın (Windows sonraki her tuşu Win+tuş sanar)
-            if (winInjected) { SuppressStart(); Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK); }
-            winDown = false; winInjected = false; held.Clear();
-        }
+        if (force) ForgetKeys();
         IntPtr fresh = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
         if (fresh == IntPtr.Zero) return;
         IntPtr old = hookHandle;
@@ -5945,13 +6064,26 @@ class Keys2
 
     static bool Down(int vk) { return (Native.GetAsyncKeyState(vk) & 0x8000) != 0; }
 
+    // Bırakmaları bize gelmeyen basılı tuş bilgisini unut (kanca söküldü, masaüstü değişti)
+    void ForgetKeys()
+    {
+        winDown = false; dockChord = false; dockMasked = false; held.Clear();
+    }
+
+    // Kilit ekranı / UAC / güvenli masaüstü: o sırada basılan ve bırakılan tuşlar bize gelmez. Kanca thread'inde çalışır.
+    Native.WinEventDelegate desktopCb;
+    public void WatchDesktopSwitch()
+    {
+        desktopCb = (h, ev, hwnd, obj, child, thread, time) => { ForgetKeys(); Unstick(); };
+        Native.SetWinEventHook(0x0020, 0x0020, IntPtr.Zero, desktopCb, 0, 0, 0x0000); // EVENT_SYSTEM_DESKTOPSWITCH, OUTOFCONTEXT
+    }
+
     // Windows Win'i basılı sanıyor ama biz onu ne basılı tutuyoruz ne de enjekte ettik: kanca zamanında cevap
     // veremeyince basış sisteme geçmiş, bırakışı biz yutmuşuz. Böyle kalırsa Q arama, A bildirimler, Ctrl Başlat
     // açar ve hiçbir yere yazı yazılamaz. Bırakış enjekte edilir (sahte tuş: Başlat menüsü açılmasın).
     // Kanca thread'inde çağrılır (kancayla yarışmaz).
     public void Unstick()
     {
-        if (winInjected) return;
         foreach (int w in new[] { VK_LWIN, VK_RWIN })
         {
             if (!Down(w)) continue;
@@ -6052,10 +6184,9 @@ class Keys2
             return (IntPtr)1;
         }
 
-        // Gerçek Win tuşu Windows'a HİÇ iletilmez: Windows tek başına bir Win basışı görmediği için Başlat
-        // menüsü (ve görev çubuğundaki logo) hiçbir tuş sırasıyla açılamaz. Bizim işlemediğimiz bir kombinasyon
-        // (Win+L, Win+V, tiling'in lwin+f'i...) gelince Win'i o anda enjekte edip tuşu arkasından yeniden
-        // göndeririz; bırakmada önce sahte tuş, sonra Win bırakma gider.
+        // Gerçek Win tuşu Windows'a HİÇ iletilmez ve hiç enjekte edilmez: Windows bir Win basışı görmediği için Başlat
+        // menüsü, Arama, Bildirim merkezi, Win+X hiçbir tuş sırasıyla açılamaz. Super'li her kombinasyon bizim:
+        // kısayol tablosu, Windows'un kilidi (Reserved), pencere yöneticisinin tablosu (WmBinds); hiçbirinde yoksa yutulur.
         if (vk == VK_LWIN || vk == VK_RWIN)
         {
             // Win+L gibi durumlarda bırakma olayı hiç gelmeyebilir: otomatik tekrar ~30 ms'de bir gelir,
@@ -6065,8 +6196,7 @@ class Keys2
             lastWinEvent = now;
             if (isDown && fresh)
             {
-                if (winInjected) Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK);
-                winDown = true; winInjected = false; winVk = vk;
+                winDown = true; winVk = vk;
                 otherKeyWhileWin = false; swallowedWithWin = false;
                 // Win'den önce basılı tutulan Ctrl/Shift/Alt da "kombinasyon" sayılır
                 modifierWhileWin = Down(VK_CONTROL) || Down(VK_SHIFT) || Down(VK_MENU);
@@ -6080,15 +6210,13 @@ class Keys2
                 winDown = false;
                 dockChord = false;
                 dockMasked = false;
-                // Down(): basış sisteme geçmişse (kanca geç kaldı) Windows Win'i hâlâ basılı sanıyor; o da bırakılır
-                if (winInjected || Down(vk))
+                // Basış sisteme geçmişse (kanca geç kaldı) Windows Win'i hâlâ basılı sanıyor: bırakış, araya sahte bir
+                // tuş girerek gönderilir (tek başına Win bırakışı Başlat'ı açardı)
+                if (Down(vk))
                 {
-                    winInjected = false;
                     SuppressStart();
                     Native.keybd_event((byte)vk, 0, 0x2 | 0x1, Native.LL_MARK); // KEYUP | EXTENDEDKEY
-                    if (winVk != vk) Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK);
                 }
-                // Yalnızca tek başına Super: ll overview (enjekte edilmiş Win'de başka bir tuş zaten basıldı)
                 if (toggleDock) ui.BeginInvoke((Action)(() => Toasts.Emit("ll:dock-toggle")));
                 else if (!otherKeyWhileWin && !modifierWhileWin && !Binds.Capturing) ui.BeginInvoke((Action)ToggleOverview);
             }
@@ -6139,25 +6267,22 @@ class Keys2
             }
         }
         if (isUp && held.Remove(vk)) return (IntPtr)1;
-        // Masaüstünü göster / tüm pencereleri küçült kısayolları (Win+D, Win+M, Win+Home, Win+,) pencere yöneticisinin
-        // düzenini bozar (küçültülen pencereler yerleşimden düşer): hiç iletilmez.
-        if (winDown && isDown && (vk == 0x44 || vk == 0x4D || vk == 0x24 || vk == 0xBC))
+        if (winDown && isDown && !modKey)
         {
+            int mods = Binds.SUPER | (Down(VK_CONTROL) ? Binds.CTRL : 0) | (Down(VK_SHIFT) ? Binds.SHIFT : 0) | (Down(VK_MENU) ? Binds.ALT : 0);
             held.Add(vk);
             swallowedWithWin = true;
-            return (IntPtr)1;
-        }
-        // Bizim işlemediğimiz Win+tuş: Win'i şimdi enjekte et, tuşu da arkasından yeniden gönder
-        // (kancadan enjekte edilen olay mevcut olaydan SONRA işlenir; sıra bozulmasın diye bunu yutuyoruz).
-        if (winDown && isDown && !(vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || (vk >= 0xA0 && vk <= 0xA5)))
-        {
-            if (!winInjected)
+            // Windows'un kilidi (Super+L): Win Windows'a ulaşmadığı için kilidi çekirdek ister
+            string reserved = Reserved.Action(mods, vk);
+            if (reserved != null) { if (reserved.Length > 0) RunAction(reserved); return (IntPtr)1; }
+            // Pencere yöneticisinin Super'li kısayolu: komutları IPC ile (pencere yöneticisi Win'i hiç görmez)
+            string[] wm = WmBinds.Lookup(mods, vk);
+            if (wm != null)
             {
-                winInjected = true;
-                Native.keybd_event((byte)winVk, 0, 0x1, Native.LL_MARK); // EXTENDEDKEY
+                ThreadPool.QueueUserWorkItem(_ => { lock (inWsLock) { try { slider.Commands(wm); } catch (Exception ex) { Slider.Log("kısayol: " + ex.Message); } } });
+                return (IntPtr)1;
             }
-            Native.keybd_event((byte)vk, (byte)k.scanCode, (k.flags & 0x1) != 0 ? 0x1u : 0u, Native.LL_MARK);
-            return (IntPtr)1;
+            return (IntPtr)1; // hiçbir tabloda yok: Windows'a da gitmez
         }
 
         return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
@@ -6166,20 +6291,44 @@ class Keys2
     readonly HashSet<int> held = new HashSet<int>();
 
     // Kısayol eylemleri. false: işlenmedi (tuş normal yoluna devam eder)
+    // Aynı işi gören kısayollar (Windows'un kendi kombinasyonlarının karşılıkları): tablo, eylem kodu değil
+    static readonly Dictionary<string, string> aliases = new Dictionary<string, string> {
+        { "overview-alt", "overview" }, { "run", "overview" }, { "search", "overview" }, { "workspaces", "overview" },
+        { "notifications", "sidebar" }, { "screenshot-alt", "screenshot" },
+    };
+
+    [DllImport("user32.dll")] static extern bool LockWorkStation();
+
     bool RunAction(string act)
     {
-        // Pencere hareketi / odak / workspace kısayolları overview'u (arama, pano) kapatır
+        string alias;
+        if (aliases.TryGetValue(act, out alias)) act = alias;
+        // Pencere hareketi / odak / workspace kısayolları overview'u (arama, pano) kapatır. Kanca thread'i başka bir
+        // sürecin penceresini gizlerken beklemesin (ShowWindow karşı tarafı bekler): arayüz thread'inde.
         if (act.StartsWith("move-") || act.StartsWith("focus-") || act.StartsWith("ws-"))
         {
             lastMoveAction = Environment.TickCount;
-            IntPtr ov = Native.FindWindow(null, "lunge-overview");
-            if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) HideOverview(ov);
+            ui.BeginInvoke((Action)(() =>
+            {
+                IntPtr ov = Native.FindWindow(null, "lunge-overview");
+                if (ov != IntPtr.Zero && Native.IsWindowVisible(ov)) HideOverview(ov);
+            }));
+        }
+        if (act == "settings") { ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:settings-toggle")); return true; }
+        if (act == "lock") { LockWorkStation(); return true; }
+        if (act == "task-manager") { LaunchQueue.Enqueue("taskmgr.exe"); return true; }
+        if (act.StartsWith("app:"))
+        {
+            string path = Binds.AppPath(act);
+            if (path == null) return false;
+            LaunchQueue.Enqueue(path);
+            return true;
         }
         if (act == "clipboard") { ui.BeginInvoke((Action)ToggleClipboard); return true; }
         if (act == "file-search") { ui.BeginInvoke((Action)ToggleFileSearch); return true; }
         // Parmak hareketleri (dokunmatik yüzey): overview ve sağ panel (panel kabukta: olay bildirim akışıyla gider)
         if (act == "overview") { ui.BeginInvoke((Action)ToggleOverview); return true; }
-        if (act == "sidebar") { Toasts.Emit("ll:sidebar-right-toggle"); return true; }
+        if (act == "sidebar") { ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:sidebar-right-toggle")); return true; }
         string[] dirs = { "left", "right", "up", "down" };
         foreach (var d0 in dirs)
         {
@@ -11053,6 +11202,16 @@ static class Keep
 
 static class Program
 {
+    // Kullanıcı girdisi var ama iki kanca da 1,5 sn'dir çağrılmadı: Windows kancaları sökmüş
+    static bool HooksStale()
+    {
+        var li = new Native.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(Native.LASTINPUTINFO)) };
+        if (!Native.GetLastInputInfo(ref li)) return false;
+        int last = (int)li.dwTime, now = Environment.TickCount;
+        int seen = Math.Max(Keys2.LastHookTick, MouseFocus.LastHookTick);
+        return now - last < 3000 && last - seen > 1500;
+    }
+
     // Windows komut satırı kurallarına göre tek argümanı tırnakla
     internal static string QuoteArg(string a)
     {
@@ -11208,6 +11367,23 @@ static class Program
             bool ok = args.Length == 3 ? Binds.Set(args[1], args[2]) : Binds.Set("", null);
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write(ok ? "{\"ok\":true}" : "{\"ok\":false}"); so.Flush();
+            return;
+        }
+        // Kısayol düzenleyicisi: model, bekleyen durumun çakışmaları, kayıt, sıfırlama, uygulama seçtirme (çıktı JSON)
+        if ((args.Length == 1 && (args[0] == "--keybinds-model" || args[0] == "--keybinds-pick-app" || args[0] == "--keybinds-reset"))
+            || (args.Length == 2 && (args[0] == "--keybinds-check" || args[0] == "--keybinds-save" || (args[0] == "--keybinds-reset" && args[1] == "--apps"))))
+        {
+            string outText;
+            switch (args[0])
+            {
+                case "--keybinds-model": outText = Keymap.Model(); break;
+                case "--keybinds-check": outText = Keymap.Check(args[1]); break;
+                case "--keybinds-save": outText = Keymap.Save(args[1]); break;
+                case "--keybinds-reset": outText = Keymap.Reset(args.Length == 2); break;
+                default: outText = Keymap.PickApp(); break;
+            }
+            var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            so.Write(outText); so.Flush();
             return;
         }
         if (args.Length == 1 && args[0] == "--keybinds")
@@ -11669,30 +11845,18 @@ static class Program
             Binds.Watch();
             var keys = new Keys2(ui, slider);
             keys.Start();
+            keys.WatchDesktopSwitch();
             keys.StartTestPipe();
-            var mouse = new MouseFocus(new TilingClient());
-            mouse.InstallHook();
-            mouse.StartWorker();
-            mouse.StartClickWorker();
             // Windows kancayı bir şekilde sökse bile geri gelsin
             var re = new System.Windows.Forms.Timer { Interval = 15000 };
-            re.Tick += (s, e) => { keys.Reinstall(); mouse.Reinstall(); };
+            re.Tick += (s, e) => keys.Reinstall();
             // Kanca bekçisi: kullanıcı girdisi var ama iki kanca da 1,5 sn'dir çağrılmadı -> Windows sökmüş; 15 sn'lik yenilemeyi
             // beklemeden yeniden kur (o arada Super, Alt+Tab, kısayollar bize gelmiyordu)
             var health = new System.Windows.Forms.Timer { Interval = 1000 };
             health.Tick += (s, e) =>
             {
                 keys.Unstick();
-                var li = new Native.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(Native.LASTINPUTINFO)) };
-                if (!Native.GetLastInputInfo(ref li)) return;
-                int last = (int)li.dwTime, now = Environment.TickCount;
-                int seen = Math.Max(Keys2.LastHookTick, MouseFocus.LastHookTick);
-                if (now - last < 3000 && last - seen > 1500)
-                {
-                    keys.Reinstall(true); mouse.Reinstall();
-                    Keys2.LastHookTick = now; MouseFocus.LastHookTick = now;
-                    Slider.Log("klavye/fare kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu");
-                }
+                if (HooksStale()) { keys.Reinstall(true); Keys2.LastHookTick = Environment.TickCount; Slider.Log("klavye kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
             };
             health.Start();
             re.Start();
@@ -11702,6 +11866,30 @@ static class Program
         hookThread.IsBackground = true;
         hookThread.Priority = ThreadPriority.Highest;
         hookThread.Start();
+
+        // Fare kancası ayrı thread'de: fare olaylarının işi klavye olaylarını bekletmesin (klavye kancası Windows'un süre
+        // sınırını aşınca o tuş kancasız geçiyor, tek başına bir Win basışı Başlat menüsünü açıyordu)
+        var mouseThread = new Thread(() =>
+        {
+            var mouse = new MouseFocus(new TilingClient());
+            mouse.InstallHook();
+            mouse.StartWorker();
+            mouse.StartClickWorker();
+            var re = new System.Windows.Forms.Timer { Interval = 15000 };
+            re.Tick += (s, e) => mouse.Reinstall();
+            var health = new System.Windows.Forms.Timer { Interval = 1000 };
+            health.Tick += (s, e) =>
+            {
+                if (HooksStale()) { mouse.Reinstall(); MouseFocus.LastHookTick = Environment.TickCount; Slider.Log("fare kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
+            };
+            health.Start();
+            re.Start();
+            Application.Run();
+        });
+        mouseThread.SetApartmentState(ApartmentState.STA);
+        mouseThread.IsBackground = true;
+        mouseThread.Priority = ThreadPriority.Highest;
+        mouseThread.Start();
 
         var roundThread = new Thread(() =>
         {

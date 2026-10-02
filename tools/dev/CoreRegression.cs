@@ -1,6 +1,7 @@
 // Compiled with core/lunge.cs and /main:CoreRegression. Never starts the desktop.
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
@@ -212,6 +213,30 @@ static class CoreRegression
             Check(refused(LiveWallpaper.Dir + "-other\\a.mp4"), "A sibling folder sharing the library's name prefix was accepted");
         }
         finally { System.IO.Directory.Delete(saverDir, true); }
+        // Kısayollar: pencere yöneticisi biçimi, çakışmalar, uygulama kısayollarının doğrulaması
+        Check(WmBinds.ToUi("lwin+shift+oem_1") == "Super+Shift+;" && WmBinds.ToWm("Super+Shift+;") == "lwin+shift+oem_1", "Window manager key names did not round-trip");
+        Check(WmBinds.ToWm("Super+PageUp") == "lwin+page_up" && WmBinds.ToUi("lwin+ctrl+page_down") == "Super+Ctrl+PageDown", "Page keys did not convert");
+        Check(Binds.Canonical("super+shift+s") == "Super+Shift+S" && Binds.Canonical("ctrl+shift+escape") == "Ctrl+Shift+Escape" && Binds.Canonical("Super+Banana") == null, "Combos were not normalised");
+        var conflicts = Keymap.Conflicts(new Dictionary<string, string> { { "browser", "Super+W" }, { "app:x", "super+w" }, { "files", "Super+L" }, { "code", "" } },
+            new Dictionary<int, List<string>> { { 0, new List<string> { "Super+F" } }, { 1, new List<string> { "Super+F", "Super+G" } } });
+        Func<string, Dictionary<string, object>> conflictFor = c => conflicts.Find(x => (string)x["combo"] == c);
+        Check(conflicts.Count == 3, "Expected three conflicts, got " + conflicts.Count);
+        Check(conflictFor("Super+W") != null && ((List<string>)conflictFor("Super+W")["keys"]).Count == 2, "Two shortcuts on Super+W were not reported");
+        Check(conflictFor("Super+L") != null && conflictFor("Super+L")["reserved"] != null, "A shortcut on Windows' lock combo was not reported");
+        Check(conflictFor("Super+F") != null, "Two window manager entries on Super+F were not reported");
+        Check(Keymap.Conflicts(new Dictionary<string, string> { { "browser", "Super+W" } }, new Dictionary<int, List<string>>()).Count == 0, "A lone shortcut was reported as a conflict");
+        Func<string, string, string> keyAppError = (id, path) => Binds.ValidateApp(new Binds.CustomApp { Id = id, Name = "x", Path = path });
+        string exe = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
+        Check(keyAppError("app:ok-1", exe) == null, "A valid app shortcut was refused");
+        Check(keyAppError("browser", exe) != null && keyAppError("app:../x", exe) != null, "An app shortcut with a bad id was accepted");
+        Check(keyAppError("app:x", @"C:\no\such.exe") != null && keyAppError("app:x", "relative.exe") != null, "A missing or relative app path was accepted");
+        Check(keyAppError("app:x", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "x.txt")) != null, "A non-launchable file type was accepted");
+        Check(keyAppError("app:x", @"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App") == null, "A store app from the app list was refused");
+        Check(keyAppError("app:x", "shell:AppsFolder\\a\" x") != null, "A store app id with a quote was accepted");
+        Check(Keymap.Check("{\"core\":{\"nope\":\"Super+Z\"}}").Contains("\"ok\":false"), "An unknown shortcut id was accepted");
+        Check(Keymap.Check("{\"core\":{\"browser\":\"Super+Banana\"}}").Contains("\"ok\":false"), "An unknown key name was accepted");
+        Check(Keymap.Check("{\"removed\":[\"ws-1\"]}").Contains("\"ok\":false"), "A non-app shortcut could be removed");
+        Check(Reserved.Action(Binds.SUPER, 0x4C) == "lock" && Reserved.Action(Binds.SUPER, 0x4B) == null, "Super+L is not the lock action");
         Console.WriteLine("PASS: core routing, origin, method, release selection, settings file updates, Windows notifications and live wallpaper entries");
     }
 }

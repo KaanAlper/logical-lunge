@@ -230,8 +230,6 @@ keybindings:
   # %LUNGE_HOME%: Logical Lunge'un kurulum klasörü (çekirdek pencere yöneticisini başlatırken verir)
   - commands: ['shell-exec %LUNGE_HOME%\tools\wezterm\wezterm-gui.exe']
     bindings: ['ctrl+alt+t']
-  - commands: ['shell-exec ms-settings:']
-    bindings: ['lwin+i']
   - commands: ['shell-exec sndvol']
     bindings: ['lwin+ctrl+v']
 
