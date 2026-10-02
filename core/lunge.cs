@@ -9004,6 +9004,95 @@ static class Wallpaper
 // (boş "file": herkese bir video varken o monitör kapalı). Videonun bir karesi statik duvar kağıdı olur: tema renkleri
 // ona uyar, video başlamadan ya da durunca masaüstünde aynı resim görünür.
 // Mağaza: Sucrose Store (github.com/Taiizor/Store, MIT); yalnızca video türü ve yetişkin olmayan içerik.
+// ---------------- Ekran koruyucu kütüphanesi ----------------
+// İçe aktarılan .scr dosyaları %LOCALAPPDATA%\LogicalLunge\screensavers altında durur; kabuk onları Windows'unkilerle
+// birlikte listeler. Bir .zip içindeki ekran koruyucular yanlarındaki dosyalarla (dll, veri) kendi klasörüne açılır.
+static class ScreenSavers
+{
+    public static string Dir { get { return Paths.DataDir("screensavers"); } }
+    const long MAX_PACK = 512L << 20;
+
+    // --saver-pick -> {"added":[yollar]} (birden çok dosya seçilebilir)
+    public static string Pick()
+    {
+        bool tr = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr";
+        using (var d = new OpenFileDialog
+        {
+            Title = tr ? "Ekran koruyucu seç" : "Choose screen savers",
+            Filter = (tr ? "Ekran koruyucu" : "Screen saver") + "|*.scr;*.zip",
+            Multiselect = true,
+        })
+        {
+            var added = new List<string>();
+            if (d.ShowDialog() == DialogResult.OK)
+                foreach (var f in d.FileNames) added.AddRange(Import(f));
+            return new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "added", added } });
+        }
+    }
+
+    static List<string> Import(string picked)
+    {
+        var added = new List<string>();
+        if (System.IO.Path.GetExtension(picked).Equals(".scr", StringComparison.OrdinalIgnoreCase))
+        {
+            string dst = System.IO.Path.Combine(Dir, System.IO.Path.GetFileName(picked));
+            if (!string.Equals(System.IO.Path.GetFullPath(picked), dst, StringComparison.OrdinalIgnoreCase)) System.IO.File.Copy(picked, dst, true);
+            added.Add(dst);
+            return added;
+        }
+        using (var zip = System.IO.Compression.ZipFile.OpenRead(picked))
+        {
+            bool any = false;
+            long total = 0;
+            foreach (var e in zip.Entries) { total += e.Length; if (e.FullName.EndsWith(".scr", StringComparison.OrdinalIgnoreCase)) any = true; }
+            if (!any) throw new NotSupportedException("noscr");
+            if (total > MAX_PACK) throw new NotSupportedException("size");
+            string root = System.IO.Path.GetFullPath(System.IO.Path.Combine(Dir, System.IO.Path.GetFileNameWithoutExtension(picked))) + System.IO.Path.DirectorySeparatorChar;
+            foreach (var e in zip.Entries)
+            {
+                if (e.FullName.EndsWith("/") || e.FullName.EndsWith("\\")) continue;
+                string dst = System.IO.Path.GetFullPath(System.IO.Path.Combine(root, e.FullName));
+                if (!dst.StartsWith(root, StringComparison.OrdinalIgnoreCase)) continue; // paketin dışına yazmaz
+                System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(dst));
+                using (var src = e.Open())
+                using (var outf = System.IO.File.Create(dst)) src.CopyTo(outf);
+                if (dst.EndsWith(".scr", StringComparison.OrdinalIgnoreCase)) added.Add(dst);
+            }
+        }
+        return added;
+    }
+
+    // --saver-icons -> {"yol (küçük harf)": "data:image/png;base64,..."}: Windows'un ve kütüphanenin ekran koruyucuları
+    public static string Icons()
+    {
+        var map = new Dictionary<string, object>();
+        string win = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        var dirs = new[] { System.IO.Path.Combine(win, "System32"), System.IO.Path.Combine(win, "SysWOW64"), Dir };
+        foreach (var dir in dirs)
+        {
+            if (!System.IO.Directory.Exists(dir)) continue;
+            var opt = dir == Dir ? System.IO.SearchOption.AllDirectories : System.IO.SearchOption.TopDirectoryOnly;
+            IEnumerable<string> found;
+            try { found = System.IO.Directory.EnumerateFiles(dir, "*.scr", opt); } catch { continue; }
+            foreach (var f in found)
+            {
+                try
+                {
+                    using (var icon = Icon.ExtractAssociatedIcon(f))
+                    using (var bmp = icon.ToBitmap())
+                    using (var ms = new System.IO.MemoryStream())
+                    {
+                        bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                        map[f.ToLowerInvariant()] = "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+                    }
+                }
+                catch { } // simgesi okunamayan ekran koruyucu kartta genel simgeyle görünür
+            }
+        }
+        return new JavaScriptSerializer().Serialize(map);
+    }
+}
+
 static class LiveWallpaper
 {
     public const string Name = "lunge-wallpaper";
@@ -9247,33 +9336,135 @@ static class LiveWallpaper
         return s.Length == 0 ? "video" : s;
     }
 
-    // --live-pick <mod>: video seçtir, kütüphaneye kopyala, uygula -> kopyanın yolu ("" vazgeçildi)
+    // --live-pick <mod>: video ya da indirilmiş bir Lively / Wallpaper Engine paketi seçtir (.zip, ya da açılmış paketin
+    // LivelyInfo.json / project.json dosyası), videoyu kütüphaneye al, uygula -> kopyanın yolu ("" vazgeçildi)
     public static string Pick(string mode)
     {
+        bool tr = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr";
         using (var d = new OpenFileDialog
         {
-            Title = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr" ? "Video seç" : "Choose video",
-            Filter = "Video|*.mp4;*.m4v;*.mov;*.wmv;*.webm;*.mkv",
+            Title = tr ? "Video ya da paket seç" : "Choose a video or package",
+            Filter = (tr ? "Video, Lively, Wallpaper Engine" : "Video, Lively, Wallpaper Engine") + "|*.mp4;*.m4v;*.mov;*.wmv;*.webm;*.mkv;*.zip;LivelyInfo.json;project.json",
             InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
         })
         {
             if (d.ShowDialog() != DialogResult.OK) return "";
-            if (!IsVideo(d.FileName)) throw new ArgumentException("video");
-            string name = Slug(System.IO.Path.GetFileNameWithoutExtension(d.FileName));
+            string dst = Import(d.FileName);
+            Set(dst, mode);
+            return dst;
+        }
+    }
+
+    // Paketteki dosyalar: göreli yol ("/" ile) -> boyut ve açıcı
+    class PackFile { public long Size; public Func<System.IO.Stream> Open; }
+
+    // Videoyu (ya da paketin videosunu) kütüphaneye kopyalar -> kütüphanedeki yol. Lively: LivelyInfo.json {Title, Author,
+    // FileName, Thumbnail}; Wallpaper Engine: project.json {title, type: "video", file, preview}. Bildirimsiz paket: en
+    // büyük video.
+    public static string Import(string picked)
+    {
+        var files = new Dictionary<string, PackFile>(StringComparer.OrdinalIgnoreCase);
+        System.IO.Compression.ZipArchive zip = null;
+        try
+        {
+            string ext = System.IO.Path.GetExtension(picked).ToLowerInvariant();
+            if (IsVideo(picked))
+            {
+                string full = picked;
+                files[System.IO.Path.GetFileName(picked)] = new PackFile { Size = new System.IO.FileInfo(picked).Length, Open = () => System.IO.File.OpenRead(full) };
+            }
+            else if (ext == ".zip")
+            {
+                zip = System.IO.Compression.ZipFile.OpenRead(picked);
+                foreach (var e in zip.Entries)
+                {
+                    if (e.FullName.EndsWith("/") || e.FullName.EndsWith("\\")) continue;
+                    var entry = e;
+                    files[e.FullName.Replace('\\', '/')] = new PackFile { Size = e.Length, Open = () => entry.Open() };
+                }
+            }
+            else
+            {
+                string root = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(picked));
+                int n = 0;
+                foreach (var f in System.IO.Directory.EnumerateFiles(root, "*", System.IO.SearchOption.AllDirectories))
+                {
+                    if (++n > 4000) break;
+                    string full = f;
+                    files[f.Substring(root.Length).TrimStart('\\').Replace('\\', '/')] = new PackFile { Size = new System.IO.FileInfo(f).Length, Open = () => System.IO.File.OpenRead(full) };
+                }
+            }
+
+            // bildirim dosyası: en kısa yoldaki LivelyInfo.json ya da project.json; diğer dosyalar onun klasörüne göre
+            string manifest = null;
+            foreach (var k in files.Keys)
+            {
+                string fn = k.Substring(k.LastIndexOf('/') + 1);
+                if ((fn.Equals("LivelyInfo.json", StringComparison.OrdinalIgnoreCase) || fn.Equals("project.json", StringComparison.OrdinalIgnoreCase))
+                    && (manifest == null || k.Length < manifest.Length)) manifest = k;
+            }
+            string prefix = manifest == null ? "" : manifest.Substring(0, manifest.LastIndexOf('/') + 1);
+            string title = System.IO.Path.GetFileNameWithoutExtension(picked), author = "", file = "", preview = "";
+            if (manifest != null && files[manifest].Size < 512 * 1024)
+            {
+                Dictionary<string, object> info = null;
+                using (var st = files[manifest].Open())
+                using (var rd = new System.IO.StreamReader(st, Encoding.UTF8))
+                {
+                    try { info = json.Deserialize<Dictionary<string, object>>(rd.ReadToEnd()); }
+                    catch (Exception ex) { Slider.Log("canlı duvar kağıdı paketi okunamadı: " + ex.Message); }
+                }
+                if (info != null)
+                {
+                    bool lively = manifest.EndsWith("LivelyInfo.json", StringComparison.OrdinalIgnoreCase);
+                    // Wallpaper Engine'in sahne ve web duvar kağıtları kendi motorunu ister
+                    if (!lively && info.ContainsKey("type") && !string.Equals(Str(info, "type", ""), "video", StringComparison.OrdinalIgnoreCase))
+                        throw new NotSupportedException("type");
+                    title = Str(info, lively ? "Title" : "title", title);
+                    author = lively ? Str(info, "Author", "") : "";
+                    file = System.IO.Path.GetFileName(Str(info, lively ? "FileName" : "file", "").Replace('\\', '/').Replace('/', System.IO.Path.DirectorySeparatorChar));
+                    preview = System.IO.Path.GetFileName(Str(info, lively ? "Thumbnail" : "preview", ""));
+                }
+            }
+            string video = null;
+            if (file.Length > 0 && IsVideo(file) && files.ContainsKey(prefix + file)) video = prefix + file;
+            if (video == null)
+                foreach (var kv in files)
+                    if (IsVideo(kv.Key) && (video == null || kv.Value.Size > files[video].Size)) video = kv.Key;
+            if (video == null) throw new NotSupportedException("type");
+            if (files[video].Size > MAX_VIDEO) throw new NotSupportedException("size");
+
+            string name = Slug(title);
             string dir = System.IO.Path.Combine(Dir, name);
             System.IO.Directory.CreateDirectory(dir);
             // oynatıcı yolu adres gibi okur: # ve % gibi işaretler dosya adına girmesin
-            string dst = System.IO.Path.Combine(dir, name + System.IO.Path.GetExtension(d.FileName).ToLowerInvariant());
-            if (!string.Equals(System.IO.Path.GetFullPath(d.FileName), dst, StringComparison.OrdinalIgnoreCase))
+            string vname = video.Substring(video.LastIndexOf('/') + 1);
+            string dst = System.IO.Path.Combine(dir, Slug(System.IO.Path.GetFileNameWithoutExtension(vname)) + System.IO.Path.GetExtension(vname).ToLowerInvariant());
+            bool same = IsVideo(picked) && string.Equals(System.IO.Path.GetFullPath(picked), dst, StringComparison.OrdinalIgnoreCase);
+            if (!same)
             {
-                System.IO.File.Copy(d.FileName, dst, true);
+                using (var src = files[video].Open())
+                using (var outf = System.IO.File.Create(dst)) src.CopyTo(outf);
                 // aynı adlı başka bir videonun karesi kalmasın
                 try { System.IO.File.Delete(System.IO.Path.ChangeExtension(dst, ".frame.png")); } catch { }
             }
             System.IO.File.SetLastWriteTimeUtc(dst, DateTime.UtcNow);
-            Set(dst, mode);
+            string pext = System.IO.Path.GetExtension(preview).ToLowerInvariant();
+            if ((pext == ".jpg" || pext == ".jpeg" || pext == ".png") && files.ContainsKey(prefix + preview) && files[prefix + preview].Size < 8L << 20)
+            {
+                try
+                {
+                    using (var src = files[prefix + preview].Open())
+                    using (var outf = System.IO.File.Create(System.IO.Path.Combine(dir, "cover.jpg"))) src.CopyTo(outf);
+                }
+                catch (Exception ex) { Slider.Log("canlı duvar kağıdı kapağı alınamadı: " + ex.Message); }
+            }
+            if (manifest != null)
+                System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "info.json"),
+                    json.Serialize(new Dictionary<string, object> { { "Title", title }, { "Author", author } }), new UTF8Encoding(false));
             return dst;
         }
+        finally { if (zip != null) zip.Dispose(); }
     }
 
     // --live-local -> kütüphanedeki videolar, en yeni önce: [{"path","name","author","thumb"}] (thumb: kapak ya da kare)
@@ -10569,7 +10760,8 @@ static class Program
         }
         // Canlı duvar kağıdı: --live-store [kategori] | --live-get <kategori> <ad> <mod> | --live-progress | --live-local
         //                     --live-set <video> <mod> | --live-pick <mod> | --live-clear <mod> | --live-options <0|1> <0|1>
-        if (args.Length >= 1 && args[0].StartsWith("--live-"))
+        // Ekran koruyucu: --saver-pick | --saver-icons (aynı çıktı biçimi)
+        if (args.Length >= 1 && (args[0].StartsWith("--live-") || args[0].StartsWith("--saver-")))
         {
             string outText, ok = "{\"ok\":true}";
             try
@@ -10584,6 +10776,8 @@ static class Program
                     case "--live-pick": outText = new JavaScriptSerializer().Serialize(LiveWallpaper.Pick(args.Length > 1 ? args[1] : "all")); break;
                     case "--live-clear": LiveWallpaper.Clear(args.Length > 1 ? args[1] : "all"); outText = ok; break;
                     case "--live-options": LiveWallpaper.SetOptions(args[1] == "1", args[2] == "1"); outText = ok; break;
+                    case "--saver-pick": outText = ScreenSavers.Pick(); break;
+                    case "--saver-icons": outText = ScreenSavers.Icons(); break;
                     default: outText = "{\"error\":\"unknown\"}"; break;
                 }
             }
