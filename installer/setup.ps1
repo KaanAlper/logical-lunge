@@ -692,6 +692,11 @@ try {
     # these at sign-in. Harmless without a touchpad.
     Set-Reg "$cu\PrecisionTouchPad" 'ThreeFingerSlideEnabled' 0
     Set-Reg "$cu\PrecisionTouchPad" 'FourFingerSlideEnabled' 0
+    # A crash of one of our programs: no Windows crash box (Windows Error Reporting's UI, per user, by exe name);
+    # the core restarts the part and says so with its own card. Restored by uninstall like every setting here.
+    foreach ($exe in 'lunge.exe', 'lunge-shell.exe', 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-wallpaper.exe', 'LogicalLunge.scr') {
+        Set-Reg "$HKU\Software\Microsoft\Windows\Windows Error Reporting\ExcludedApplications" $exe 1
+    }
 
     # ------------------------------------------------------------ scheduled tasks
     Step-Progress 99
