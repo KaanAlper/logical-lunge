@@ -143,6 +143,33 @@ static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
 /// song recognition: the run whose result counts (a stopped or replaced run
 /// stays quiet) and its `lunge.exe --songrec`, which a second press kills
 static SONGREC_RUN: AtomicU64 = AtomicU64::new(0);
+/// what the bars were built for (each monitor's rectangle and DPI), and
+/// whether a display or DPI change asked for a rebuild whatever it is
+static LAYOUT: Mutex<Vec<(i32, i32, i32, i32, u32)>> = Mutex::new(Vec::new());
+static REBUILD_FORCED: AtomicBool = AtomicBool::new(false);
+
+/// Each monitor's rectangle and effective DPI: all a bar is built from.
+fn monitor_layout() -> Vec<(i32, i32, i32, i32, u32)> {
+  let mut monitors: Vec<(HMONITOR, RECT)> = Vec::new();
+  unsafe extern "system" fn collect(m: HMONITOR, _: HDC, rc: *mut RECT, data: LPARAM) -> BOOL {
+    let v = &mut *(data.0 as *mut Vec<(HMONITOR, RECT)>);
+    v.push((m, *rc));
+    BOOL(1)
+  }
+  unsafe {
+    let _ = EnumDisplayMonitors(None, None, Some(collect), LPARAM(&mut monitors as *mut _ as isize));
+  }
+  monitors
+    .into_iter()
+    .map(|(m, r)| {
+      let (mut dx, mut dy) = (96u32, 96u32);
+      unsafe {
+        let _ = GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+      }
+      (r.left, r.top, r.right, r.bottom, dx)
+    })
+    .collect()
+}
 static SONGREC_CHILD: Mutex<Option<(u64, std::process::Child)>> = Mutex::new(None);
 
 /// The bar cannot go on (a panic, the graphics device never came back). Its
@@ -691,8 +718,14 @@ impl Ui {
           unsafe {
             let _ = KillTimer(self.msg_hwnd, TIMER_REBUILD);
           }
-          self.create_bars();
-          self.overview_recreate_window();
+          // a settings broadcast (a wallpaper slide, a theme, an environment
+          // variable) left the monitors as they were: nothing to rebuild
+          let forced = REBUILD_FORCED.swap(false, Ordering::AcqRel);
+          let same = monitor_layout() == *LAYOUT.lock().unwrap_or_else(|e| e.into_inner());
+          if forced || !same {
+            self.create_bars();
+            self.overview_recreate_window();
+          }
         }
         WM_TIMER if wp.0 == TIMER_OSD => {
           unsafe {
@@ -814,6 +847,12 @@ impl Ui {
         Some(LRESULT(0))
       }
       WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE => {
+        // Windows broadcasts WM_SETTINGCHANGE for wallpaper slides, theme
+        // and environment changes too: that one rebuilds only when the
+        // monitors moved (checked when the burst settles)
+        if msg != WM_SETTINGCHANGE {
+          REBUILD_FORCED.store(true, Ordering::Release);
+        }
         unsafe {
           let _ = PostMessageW(self.msg_hwnd, WM_APP_REBUILD, WPARAM(0), LPARAM(0));
         }
@@ -1136,6 +1175,7 @@ impl Ui {
     unsafe {
       let _ = EnumDisplayMonitors(None, None, Some(collect), LPARAM(&mut monitors as *mut _ as isize));
     }
+    *LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) = monitor_layout();
     let title = if self.demo { format!("{} (native)", TITLE) } else { TITLE.to_string() };
     for (mon, rc) in monitors {
       match self.create_bar(mon, rc, &title) {
