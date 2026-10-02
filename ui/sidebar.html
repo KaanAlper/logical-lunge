@@ -851,9 +851,16 @@
           }).catch(() => {});
           helper(['--mic', 'status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, mic: !r.muted })); }).catch(() => {});
         }, []);
-        // Açılışta (panel gizliyken) bir kez ve her açılışta tazele
-        useEffect(() => { refresh(); }, []);
-        useEffect(() => { if (open) refresh(); }, [open]);
+        // Açılışta (panel gizliyken) bir kez ve açılınca tazele: her tazeleme dört PowerShell ve iki süreç, art arda açıp
+        // kapatınca birikmesin diye en çok 30 sn'de bir (paneldeki anahtarlar durumu zaten hemen günceller)
+        const lastRefresh = useRef(0);
+        const refreshSoon = () => {
+          if (Date.now() - lastRefresh.current < 30000) return;
+          lastRefresh.current = Date.now();
+          refresh();
+        };
+        useEffect(() => { refreshSoon(); }, []);
+        useEffect(() => { if (open) refreshSoon(); }, [open]);
         useEffect(() => {
           const f = () => setSt(x => ({ ...x, theme: window.llTheme?.get() ?? 'dark', dnd: load('ll.dnd', false) }));
           window.addEventListener('storage', f);

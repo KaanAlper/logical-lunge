@@ -429,10 +429,15 @@
       async function download() {
         busy = true;
         render('downloading', info);
+        // her soru bir süreç: bir öncekinin cevabı beklenir
+        let asking = false;
         const poll = setInterval(async () => {
+          if (asking) return;
+          asking = true;
           const s = json(await helper(['--update-status']).catch(() => ''));
+          asking = false;
           if (s && s.state === 'downloading') setProgress(s);
-        }, 300);
+        }, 500);
         try {
           const s = json(await helper(['--update-download']));
           clearInterval(poll);
@@ -451,7 +456,11 @@
         } catch (e) { render('error', { error: String(e?.message ?? e) }); busy = false; return; }
         // Kurulum betiği durumu yazar; UAC reddedilirse ya da kurulum hata verirse buradan görürüz.
         // Başarılıysa masaüstü yeniden başlar ve bu widget kapanır.
+        // Masaüstü hiç yeniden başlamazsa (izin penceresi bekliyor, kurulum takıldı) on dakika sonra sormayı bırakır;
+        // sağ paneldeki düğme yeniden denetler
+        const until = Date.now() + 10 * 60000;
         const poll = setInterval(async () => {
+          if (Date.now() > until) { clearInterval(poll); busy = false; return; }
           const s = json(await helper(['--update-status']).catch(() => ''));
           if (s?.state === 'error') { clearInterval(poll); busy = false; render('error', { error: s.error }); }
         }, 1000);
