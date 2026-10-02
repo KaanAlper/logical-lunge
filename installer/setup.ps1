@@ -542,9 +542,16 @@ try {
         Optional 'everything' {
             $own = Join-Path $APP 'tools\everything\Everything.exe'
             if (-not (Test-Path $own)) {
-                $theirs = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ } |
-                    ForEach-Object { Join-Path $_ 'Everything\Everything.exe' } | Where-Object { Test-Path $_ }
-                if ($theirs -or (Get-Process everything -ErrorAction SilentlyContinue)) { Log '    Everything is already installed; the file search uses it'; return }
+                # an Everything already on the machine, wherever it came from: its standard folders, the PATH (package
+                # managers' shims) and the user's or the machine's sign-in entry; the shell looks in the same places
+                $known = @(@($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ } | ForEach-Object { Join-Path $_ 'Everything\Everything.exe' })
+                $known += @(Get-Command everything.exe -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
+                foreach ($run in "$HKU\Software\Microsoft\Windows\CurrentVersion\Run", 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run') {
+                    $known += @((Get-ItemProperty $run -Name Everything -ErrorAction SilentlyContinue).Everything)
+                }
+                $theirs = @($known | Where-Object { $_ } | ForEach-Object { ($_ -replace '^\s*"([^"]+)".*$', '$1') -replace '^\s*(.*?\.exe).*$', '$1' } |
+                    Where-Object { Test-Path -LiteralPath $_ })
+                if ($theirs.Count -or (Get-Process everything -ErrorAction SilentlyContinue)) { Log "    Everything is already installed ($($theirs | Select-Object -First 1)); the file search uses it"; return }
                 $zip = Get-File "https://www.voidtools.com/Everything-$EVERYTHING_VER.x64.zip" "Everything-$EVERYTHING_VER.x64.zip" 96
                 if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne $EVERYTHING_SHA256) {
                     Remove-Item $zip, "$zip.ok" -Force -ErrorAction SilentlyContinue
