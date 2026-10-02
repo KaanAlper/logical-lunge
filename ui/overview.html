@@ -460,7 +460,8 @@
         // helper'dadır, arama menüsü kapanmaz; komut seçilince kapanır, iptalde helper odağı geri verir. Helper cevap
         // vermeden kapanırsa (çökme) iptal sayılır.
         const menuOpen = useRef(false);
-        const shellMenu = path => {
+        // dock: uygulamanın exe adı; varsa menünün başında "Dock'ta tut" (Dock çalışan pencereyi bu adla eşler)
+        const shellMenu = (path, dock) => {
           if (menuOpen.current) return;
           menuOpen.current = true;
           let done = false;
@@ -469,7 +470,7 @@
             done = true; menuOpen.current = false;
             if (invoked) hide('sağ tık menüsünden komut'); else inputRef.current?.focus();
           };
-          lunge.shellSpawn(HELPER, ['--shell-menu', path]).then(p => {
+          lunge.shellSpawn(HELPER, dock ? ['--shell-menu', path, '--dock', dock] : ['--shell-menu', path]).then(p => {
             let buf = '';
             p.onStdout(c => { buf += c; const m = /"invoked":(true|false)/.exec(buf); if (m) finish(m[1] === 'true'); });
             p.onExit(() => finish(false));
@@ -635,7 +636,7 @@
               .filter(x => x.s >= 0)
               .sort((x, y) => y.s - x.s)
               .slice(0, 15)
-              .forEach(({ a }) => push({ key: 'app' + a.path, type: 'Uygulama', name: a.name, img: a.icon, material: 'apps', verb: 'Aç', q: term, menu: a.path,
+              .forEach(({ a }) => push({ key: 'app' + a.path, type: 'Uygulama', name: a.name, img: a.icon, material: 'apps', verb: 'Aç', q: term, menu: a.path, dock: a.exe || null,
                 exec: async () => { await focusUnderCursor(); spawn('explorer', [a.path]); } }));
           }
           if (!appOnly && term) {
@@ -657,7 +658,7 @@
 
         const onKey = e => {
           if (e.key === 'Escape') { e.preventDefault(); if (query) setQuery(''); else hide(); }
-          else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && results[sel]?.menu) { e.preventDefault(); shellMenu(results[sel].menu); }
+          else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && results[sel]?.menu) { e.preventDefault(); shellMenu(results[sel].menu, results[sel].dock); }
           else if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => Math.min(results.length - 1, s + 1)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
           else if (e.key === 'Enter') { e.preventDefault(); exec(results[sel]); }
@@ -706,7 +707,7 @@
                       {results.map((r, i) => (
                         <div key={r.key} className={`item ${i === sel ? 'selected' : ''}`}
                              onMouseEnter={() => setSel(i)} onClick={() => exec(r)}
-                             onContextMenu={e => { e.preventDefault(); if (r.menu) { setSel(i); shellMenu(r.menu); } }}>
+                             onContextMenu={e => { e.preventDefault(); if (r.menu) { setSel(i); shellMenu(r.menu, r.dock); } }}>
                           <div className="ico">
                             {r.img ? <img src={r.img} alt="" />
                               : r.bigText ? <span className="big">{r.bigText}</span>

@@ -24,16 +24,24 @@
       const helper = '{{INSTALL_ESC}}\\lunge.exe';
       win.setTitle('Logical Lunge · dock').catch(() => {});
       const providers = lunge.createProviderGroup({ tiling: { type: 'tiling' } });
-      const pinKey = 'll.dock.pins';
+      // Sabitlemeler çekirdekte (state\dock-pins.json): Super menüsünün sağ tık menüsü de oraya yazar, değişince ll:dock-pins
+      const CORE = 'http://127.0.0.1:6131';
+      const legacyPinKey = 'll.dock.pins'; // eski sürüm: yalnızca bu widget'ın tarayıcı deposu
       // Balıkgözü ölçüleri: dinlenme boyu, aralık, en büyük ölçek ve kaç komşuya yayıldığı (simge cinsinden)
       const TILE = 50, GAP = 6, MAGNIFY = 1.55, SPREAD = 1.1;
       const key = s => String(s || '').toLocaleLowerCase('en-US').replace(/\.exe$/, '');
 
-      function readPins() {
-        try {
-          const pins = JSON.parse(localStorage.getItem(pinKey) || '[]');
-          return Array.isArray(pins) ? pins.filter(p => typeof p === 'string').slice(0, 24) : [];
-        } catch { return []; }
+      const cleanPins = pins => (Array.isArray(pins) ? pins.filter(p => typeof p === 'string').slice(0, 24) : null);
+      // null: çekirdekte kayıt yok ya da çekirdeğe ulaşılamadı
+      const fetchPins = () => fetch(`${CORE}/dock-pins`, { method: 'POST', cache: 'no-store' })
+        .then(r => (r.ok ? r.json() : null)).then(cleanPins).catch(() => null);
+      // Eski sürümün sabitlemeleri bir kez çekirdeğe taşınır (çekirdekte kayıt yoksa)
+      async function migratePins() {
+        let old = null;
+        try { old = cleanPins(JSON.parse(localStorage.getItem(legacyPinKey))); } catch {}
+        if (!old) return;
+        const r = await fetch(`${CORE}/dock-pins?if-missing=1&v=${encodeURIComponent(JSON.stringify(old))}`, { method: 'POST', cache: 'no-store' }).catch(() => null);
+        if (r?.ok) localStorage.removeItem(legacyPinKey);
       }
 
       function windowsByApp(tiling) {
@@ -60,7 +68,7 @@
         const openRef = useRef(false);
         const [tiling, setTiling] = useState(providers.outputMap.tiling);
         const [apps, setApps] = useState([]);
-        const [pins, setPins] = useState(readPins);
+        const [pins, setPins] = useState([]);
         // Balıkgözü: imlecin x konumu (öğe şeridine göre); null: imleç Dock'ta değil
         const [pointer, setPointer] = useState(null);
         const itemsRef = useRef(null);
@@ -94,6 +102,13 @@
             }
           } catch {}
         };
+
+        useEffect(() => {
+          const reload = () => fetchPins().then(p => { if (p) setPins(p); });
+          migratePins().finally(reload);
+          const changed = listen('ll:dock-pins', reload);
+          return () => { changed.then(off => off()); };
+        }, []);
 
         useEffect(() => {
           lunge.hideWindow(win).catch(() => {});
@@ -139,10 +154,12 @@
           if (item.app?.path) lunge.shellSpawn('explorer', [item.app.path]).catch(console.error);
         };
         const pin = id => {
-          const next = pins.includes(id) ? pins.filter(p => p !== id) : [...pins, id];
-          localStorage.setItem(pinKey, JSON.stringify(next));
-          setPins(next);
+          const on = !pins.includes(id);
+          setPins(on ? [...pins, id] : pins.filter(p => p !== id));
           setMenu(null);
+          fetch(`${CORE}/dock-pin?id=${encodeURIComponent(id)}&on=${on ? 1 : 0}`, { method: 'POST', cache: 'no-store' })
+            .then(r => { if (r.status !== 204) throw new Error(`HTTP ${r.status}`); })
+            .catch(error => { console.error('Dock pin', error); fetchPins().then(p => { if (p) setPins(p); }); });
         };
 
         // Dinlenme boyu: çok uygulama varsa simgeler sığacak kadar küçülür (36..50 px)

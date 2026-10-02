@@ -3324,31 +3324,77 @@ static class Files
 
 // Tepsi sabitlemeleri (state\tray-pins.json; anahtar = simge ipucunun ilk
 // kelimesi). Değişince kabuğa ll:tray-pins gider.
-static class TrayPins
+// Sabitleme listesi (state klasöründe JSON dizi): tepsi simgeleri, Dock uygulamaları. Değişince kabuğa olay gider.
+sealed class PinFile
 {
-    static readonly object gate = new object();
-    static string FilePath { get { return Paths.State("tray-pins.json"); } }
+    readonly object gate = new object();
+    readonly string file, evt;
+    readonly int max;
+    public PinFile(string file, string evt, int max) { this.file = file; this.evt = evt; this.max = max; }
+    string FilePath { get { return Paths.State(file); } }
 
     // JSON dizi; kayıt yoksa "null"
-    public static string Read()
+    public string Read()
     {
         try { return System.IO.File.Exists(FilePath) ? System.IO.File.ReadAllText(FilePath) : "null"; }
         catch { return "null"; }
     }
 
+    static bool Valid(string key) { return !string.IsNullOrEmpty(key) && key.Length <= 64; }
+
+    // null: dosya var ama okunamadı (o zaman üstüne yazılmaz: diğer sabitlemeler silinirdi)
+    List<string> Keys()
+    {
+        var keys = new List<string>();
+        if (!System.IO.File.Exists(FilePath)) return keys;
+        try
+        {
+            var arr = new JavaScriptSerializer().Deserialize<object[]>(System.IO.File.ReadAllText(FilePath));
+            if (arr != null) foreach (var o in arr) { var k = o as string; if (Valid(k)) keys.Add(k); }
+            return keys;
+        }
+        catch { return null; }
+    }
+
+    public bool Contains(string key)
+    {
+        var keys = Keys();
+        return keys != null && keys.Contains(key);
+    }
+
     // ifMissing: yalnızca kayıt yoksa yaz (eski sürümün tarayıcı deposundan taşıma). false: geçersiz değer / yazılamadı
-    public static bool Write(string json, bool ifMissing)
+    public bool Write(string json, bool ifMissing)
     {
         object[] arr;
         try { arr = new JavaScriptSerializer().Deserialize<object[]>(json); } catch { return false; }
-        if (arr == null || arr.Length > 64) return false;
+        if (arr == null || arr.Length > max) return false;
         var keys = new List<string>();
         foreach (var o in arr)
         {
             var k = o as string;
-            if (string.IsNullOrEmpty(k) || k.Length > 64) return false;
+            if (!Valid(k)) return false;
             keys.Add(k);
         }
+        return Save(keys, ifMissing);
+    }
+
+    // Tek anahtarı ekler / çıkarır (Dock'un ve Super menüsünün sağ tık menüsü)
+    public bool Set(string key, bool on)
+    {
+        if (!Valid(key)) return false;
+        lock (gate)
+        {
+            var keys = Keys();
+            if (keys == null) return false;
+            if (keys.Contains(key) == on) return true;
+            if (on) { if (keys.Count >= max) return false; keys.Add(key); }
+            else keys.Remove(key);
+            return Save(keys, false);
+        }
+    }
+
+    bool Save(List<string> keys, bool ifMissing)
+    {
         string text = new JavaScriptSerializer().Serialize(keys);
         lock (gate)
         {
@@ -3356,8 +3402,56 @@ static class TrayPins
             if (text == Read()) return true;
             if (!Files.WriteAtomic(FilePath, text)) return false;
         }
-        Toasts.Emit("ll:tray-pins");
+        Toasts.Emit(evt);
         return true;
+    }
+}
+
+static class Pins
+{
+    public static readonly PinFile Tray = new PinFile("tray-pins.json", "ll:tray-pins", 64);
+    // Dock'ta tutulan uygulamalar: exe adı (küçük harf, .exe'siz); Dock çalışan pencereyi süreç adıyla eşler
+    public static readonly PinFile Dock = new PinFile("dock-pins.json", "ll:dock-pins", 24);
+}
+
+// Çekirdeğin kendi çizdiği metinler (sağ tık menüsü) için ui\logical-lunge\i18n.json'dan birebir çeviri (native bar'daki
+// tr() gibi): Türkçe arayüzde ya da çevirisi yoksa olduğu gibi
+static class I18n
+{
+    static Dictionary<string, string> table;
+
+    public static string T(string tr)
+    {
+        if (table == null) table = Load();
+        string v;
+        return table.TryGetValue(tr, out v) ? v : tr;
+    }
+
+    static Dictionary<string, string> Load()
+    {
+        var d = new Dictionary<string, string>();
+        try
+        {
+            object lang;
+            string code = Prefs.Read().TryGetValue("language", out lang) ? lang as string : null;
+            if (string.IsNullOrEmpty(code) || code == "system") code = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+            if (code == "tr") return d;
+            var j = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(System.IO.File.ReadAllText(Paths.UiPack("i18n.json"))) as Dictionary<string, object>;
+            if (j == null) return d;
+            var langs = j["langs"] as object[];
+            if (langs == null || Array.IndexOf(langs, code) < 0) code = "en";
+            var keys = j["keys"] as object[];
+            object valsObj;
+            var vals = j.TryGetValue(code, out valsObj) ? valsObj as object[] : null;
+            if (keys == null || vals == null) return d;
+            for (int i = 0; i < keys.Length && i < vals.Length; i++)
+            {
+                var k = keys[i] as string; var v = vals[i] as string;
+                if (k != null && v != null) d[k] = v;
+            }
+        }
+        catch { }
+        return d;
     }
 }
 
@@ -4486,7 +4580,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4582,12 +4676,20 @@ static class Toasts
                 var m = System.Text.RegularExpressions.Regex.Match(target, @"^/pref\?k=([A-Za-z]{1,20})&v=([^&\s]{1,40})$");
                 status = m.Success && Prefs.Set(m.Groups[1].Value, Uri.UnescapeDataString(m.Groups[2].Value)) ? "204 No Content" : "400 Bad Request";
             }
-            // Tepsi sabitlemeleri: /tray-pins okur; /tray-pins?v=[...] yazar; /tray-pins?if-missing=1&v=[...] yalnızca kayıt yoksa
-            else if (target == "/tray-pins") { body = TrayPins.Read(); status = "200 OK"; }
-            else if (target.StartsWith("/tray-pins?"))
+            // Sabitlemeler: /tray-pins | /dock-pins okur; ?v=[...] yazar; ?if-missing=1&v=[...] yalnızca kayıt yoksa
+            else if (target == "/tray-pins" || target == "/dock-pins") { body = (target == "/dock-pins" ? Pins.Dock : Pins.Tray).Read(); status = "200 OK"; }
+            else if (target.StartsWith("/tray-pins?") || target.StartsWith("/dock-pins?"))
             {
-                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/tray-pins\?(if-missing=1&)?v=([^&\s]{2,6000})$");
-                status = m.Success && TrayPins.Write(Uri.UnescapeDataString(m.Groups[2].Value), m.Groups[1].Success) ? "204 No Content" : "400 Bad Request";
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/(tray|dock)-pins\?(if-missing=1&)?v=([^&\s]{2,6000})$");
+                status = m.Success && (m.Groups[1].Value == "dock" ? Pins.Dock : Pins.Tray).Write(Uri.UnescapeDataString(m.Groups[3].Value), m.Groups[2].Success) ? "204 No Content" : "400 Bad Request";
+            }
+            // Tek uygulamayı Dock'a ekler / çıkarır: /dock-pin?id=<exe adı>&on=1|0 (Dock, Super menüsünün sağ tık menüsü)
+            else if (target.StartsWith("/dock-pin?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/dock-pin\?id=([^&\s]{1,200})&on=([01])$");
+                if (!m.Success) status = "400 Bad Request";
+                else if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else status = Pins.Dock.Set(Uri.UnescapeDataString(m.Groups[1].Value), m.Groups[2].Value == "1") ? "204 No Content" : "400 Bad Request";
             }
             // Parlaklık (bar tekerleği): /brightness?dev=\\.\DISPLAY1 okur -> {"value":N} ya da {"value":null} (ayarlanamıyor);
             // &v=0..100 ile POST yazar (arka planda, monitör başına son değer kazanır)
@@ -8475,6 +8577,9 @@ static class ShellMenu
 
     static readonly Guid BHID_SFUIObject = new Guid("3981e225-f559-11d3-8e3a-00c04f6837d5");
     const uint First = 1, Last = 0x7fff;
+    // Kabuk menüsünün kimlik aralığının dışında: Super menüsünden Dock'a ekleme
+    const uint DockItem = 0x8001;
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool AppendMenu(IntPtr h, uint flags, UIntPtr id, string text);
 
     // Alt menüler (Birlikte aç, Gönder) içeriklerini sahip pencereye gelen bu iletilerle doldurur ve çizer
     sealed class Owner : NativeWindow
@@ -8497,12 +8602,14 @@ static class ShellMenu
         }
     }
 
-    public static void Run(string path)
+    // dock: uygulamanın exe adı (Super menüsü apps.json'dan verir); varsa menünün başında "Dock'ta tut / Dock'tan kaldır"
+    public static void Run(string path, string dock)
     {
         var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
         try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
         IntPtr prev = Native.GetForegroundWindow();
-        bool invoked = false;
+        bool invoked = false, dockOnly = false;
+        if (dock != null && (dock.Length > 64 || dock.IndexOfAny(new[] { '\\', '/', ':', '"' }) >= 0)) dock = null;
         Owner owner = null;
         IntPtr menu = IntPtr.Zero;
         IContextMenu cm = null;
@@ -8519,14 +8626,30 @@ static class ShellMenu
             owner = new Owner { Cm2 = cm as IContextMenu2, Cm3 = cm as IContextMenu3 };
             owner.CreateHandle(new CreateParams { Caption = "lunge-shell-menu", Style = unchecked((int)0x80000000), ExStyle = 0x80 }); // WS_POPUP, TOOLWINDOW; görünmez
             menu = CreatePopupMenu();
+            uint at = 0;
+            if (dock != null)
+            {
+                AppendMenu(menu, 0 /*MF_STRING*/, new UIntPtr(DockItem), I18n.T(Pins.Dock.Contains(dock) ? "Dock’tan kaldır" : "Dock’ta tut"));
+                AppendMenu(menu, 0x800 /*MF_SEPARATOR*/, UIntPtr.Zero, null);
+                at = 2;
+            }
             uint flags = (Control.ModifierKeys & Keys.Shift) != 0 ? 0x100u : 0u; // CMF_EXTENDEDVERBS
-            if (cm.QueryContextMenu(menu, 0, First, Last, flags) < 0) return;
+            if (cm.QueryContextMenu(menu, at, First, Last, flags) < 0) return;
             var pt = Cursor.Position;
             // Menü dışına tıklanınca kapanması için sahip pencere ön planda olmalı; sonra WM_NULL (TrackPopupMenu belgesi)
             Native.SetForegroundWindow(owner.Handle);
             uint cmd = TrackPopupMenuEx(menu, 0x100 | 0x2, pt.X, pt.Y, owner.Handle, IntPtr.Zero); // RETURNCMD, RIGHTBUTTON
             Native.PostMessage(owner.Handle, 0, IntPtr.Zero, IntPtr.Zero);
-            if (cmd >= First)
+            if (cmd == DockItem)
+            {
+                invoked = true;
+                dockOnly = true;
+                so.WriteLine("{\"invoked\":true}");
+                bool on = !Pins.Dock.Contains(dock);
+                // Çalışan çekirdek yazar ve Dock'a haber verir (ll:dock-pins); çekirdek yoksa dosyaya doğrudan
+                if (Supervisor.PostToCore("/dock-pin?id=" + Uri.EscapeDataString(dock) + "&on=" + (on ? "1" : "0"), 2000) != 204) Pins.Dock.Set(dock, on);
+            }
+            else if (cmd >= First && cmd <= Last)
             {
                 invoked = true;
                 so.WriteLine("{\"invoked\":true}");
@@ -8553,7 +8676,7 @@ static class ShellMenu
                 if (prev != IntPtr.Zero) Native.SetForegroundWindow(prev);
             }
         }
-        try { if (invoked) WaitForOwnWindows(owner == null ? IntPtr.Zero : owner.Handle); } catch { }
+        try { if (invoked && !dockOnly) WaitForOwnWindows(owner == null ? IntPtr.Zero : owner.Handle); } catch { }
         if (menu != IntPtr.Zero) DestroyMenu(menu);
         if (owner != null) owner.DestroyHandle();
         if (cm != null) Marshal.ReleaseComObject(cm);
@@ -9831,7 +9954,12 @@ static class Program
         // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
-        if (args.Length == 2 && args[0] == "--shell-menu") { ShellMenu.Run(args[1]); return; }
+        // lunge.exe --shell-menu <ayrıştırma adı> [--dock <exe adı>]
+        if (args.Length >= 2 && args[0] == "--shell-menu" && (args.Length == 2 || (args.Length == 4 && args[2] == "--dock")))
+        {
+            ShellMenu.Run(args[1], args.Length == 4 ? args[3] : null);
+            return;
+        }
         // lunge.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
         if (args.Length == 2 && args[0] == "--audio-default")
         {

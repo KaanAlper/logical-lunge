@@ -1479,8 +1479,16 @@ impl Ui {
   /// unelevated process so what it opens is unelevated too). The helper
   /// answers `{"invoked":true|false}` as soon as the menu closes; it may live
   /// on for a window it opened (Properties). A command closes the Super menu,
-  /// a cancel leaves it open (the helper gives the focus back).
+  /// a cancel leaves it open (the helper gives the focus back). An app with
+  /// an exe name gets "Keep in Dock" on top (the Dock matches its running
+  /// windows by that name).
   fn overview_menu(&mut self, path: String) {
+    let dock = self
+      .icons
+      .apps()
+      .iter()
+      .find(|a| a.path.eq_ignore_ascii_case(&path))
+      .and_then(|a| a.exe.clone());
     let Some(o) = self.overview.as_mut() else { return };
     if o.menu_open {
       return;
@@ -1490,8 +1498,12 @@ impl Ui {
       use std::io::BufRead;
       let mut invoked = None;
       if let Some(exe) = core_api::core_exe() {
+        let mut args = vec!["--shell-menu".to_string(), path];
+        if let Some(dock) = dock {
+          args.extend(["--dock".to_string(), dock]);
+        }
         let child = std::process::Command::new(exe)
-          .args(["--shell-menu", &path])
+          .args(&args)
           .stdout(std::process::Stdio::piped())
           .creation_flags(CREATE_NO_WINDOW)
           .spawn();

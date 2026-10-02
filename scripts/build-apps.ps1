@@ -96,6 +96,14 @@ foreach ($it in $items) {
     $seen[$key] = $true
     $exe = $null
     if ($id -match '\\([^\\]+)\.exe$') { $exe = $Matches[1].ToLower() }
+    else {
+        # Kendi kimliğiyle kayıtlı masaüstü uygulaması (Chrome, Discord...): kısayolunun hedefi. Dock çalışan pencereyi
+        # süreç adıyla bu exe'ye bağlar, Super menüsünün "Dock'ta tut" maddesi de bununla çıkar.
+        try {
+            $target = [string]$it.ExtendedProperty('System.Link.TargetParsingPath')
+            if ($target -match '\\([^\\]+)\.exe$') { $exe = $Matches[1].ToLower() }
+        } catch {}
+    }
     # Win+R penceresi: 'run' yazınca da bulunsun
     $alias = $null
     if ($id -eq 'Microsoft.Windows.Shell.RunDialog') { $name = "$name (Run)"; $alias = 'run' }
