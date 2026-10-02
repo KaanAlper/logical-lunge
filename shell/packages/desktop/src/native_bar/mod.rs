@@ -24,6 +24,7 @@ mod search;
 mod osk;
 mod dock;
 mod session;
+mod settings;
 mod toast;
 mod update;
 mod view;
@@ -132,6 +133,14 @@ const TIMER_OSK_CLOSE: usize = 40;
 const TIMER_DOCK_TICK: usize = 50;
 /// the Dock faded out: its window goes
 const TIMER_DOCK_CLOSE: usize = 51;
+/// the settings window faded out: it goes
+const TIMER_SETTINGS_CLOSE: usize = 60;
+/// slider values sent a moment after the last move
+const TIMER_SETTINGS_COMMIT: usize = 61;
+/// the health page reads the core again while it is looked at
+const TIMER_SETTINGS_HEALTH: usize = 62;
+/// "saved" under the workspace settings goes
+const TIMER_SETTINGS_SAVED: usize = 63;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -170,6 +179,10 @@ enum Msg {
   OskToggle,
   /// the Dock's pins as the core keeps them (None: no answer)
   DockPins(Option<Vec<String>>),
+  /// `ll:settings-toggle` (the sidebar's gear)
+  SettingsToggle,
+  /// the settings window's answers from the core
+  Settings(settings::Event),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -179,6 +192,8 @@ static FAILED: AtomicBool = AtomicBool::new(false);
 static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
 /// the session screen's window on the primary monitor: it takes the keyboard
 static SESSION_PRIMARY: AtomicIsize = AtomicIsize::new(0);
+/// the settings window: it takes the keyboard
+static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
 /// song recognition: the run whose result counts (a stopped or replaced run
 /// stays quiet) and its `lunge.exe --songrec`, which a second press kills
 static SONGREC_RUN: AtomicU64 = AtomicU64::new(0);
@@ -304,6 +319,12 @@ pub fn session_toggle() {
 
 pub fn session_hide() {
   send(Msg::SessionHide);
+}
+
+/// `ll:settings-toggle` from the web widgets (the sidebar's gear): the
+/// native settings window.
+pub fn settings_toggle() {
+  send(Msg::SettingsToggle);
 }
 
 /// `ll:osk-toggle` from the web widgets (the sidebar's keyboard tile): the
@@ -565,6 +586,9 @@ struct Ui {
   overview: Option<overview::Overview>,
   /// the session screen while it is open
   session: Option<session::Session>,
+  /// the settings window while it is open, and the page it was last on
+  settings: Option<settings::Settings>,
+  settings_page: usize,
   /// the open context menu (menu.rs) and closed ones still fading out
   menu: Option<menu::MenuState>,
   menu_gone: menu::MenuGone,
@@ -674,6 +698,8 @@ fn ui_thread(
         emit: opts.emit,
         overview: None,
         session: None,
+        settings: None,
+        settings_page: 0,
         menu: None,
         menu_gone: Default::default(),
         osk: None,
@@ -759,7 +785,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
   if msg == WM_MOUSEACTIVATE {
     // clicking the bar never takes the keyboard from the app; the Super menu does
     let menu = hwnd.0 as isize == OVERVIEW_HWND.load(Ordering::Acquire)
-      || hwnd.0 as isize == SESSION_PRIMARY.load(Ordering::Acquire);
+      || hwnd.0 as isize == SESSION_PRIMARY.load(Ordering::Acquire)
+      || hwnd.0 as isize == SETTINGS_HWND.load(Ordering::Acquire);
     return LRESULT(if menu { MA_ACTIVATE } else { MA_NOACTIVATE } as isize);
   }
   if msg == WM_ERASEBKGND {
@@ -799,6 +826,9 @@ impl Ui {
     if let Some(r) = self.session_msg(hwnd, msg, wp, lp) {
       return r;
     }
+    if let Some(r) = self.settings_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if let Some(r) = self.osk_msg(hwnd, msg, wp, lp) {
       return r;
     }
@@ -806,6 +836,10 @@ impl Ui {
       return r;
     }
     if self.overview.as_ref().is_some_and(|o| o.hwnd == hwnd) {
+      // the Super menu opening closes the settings (as on the web)
+      if msg == WM_SHOWWINDOW && wp.0 != 0 {
+        self.settings_close();
+      }
       return self.overview_msg(msg, wp, lp);
     }
     if hwnd == self.msg_hwnd {
@@ -828,6 +862,7 @@ impl Ui {
           if forced || !same {
             // the session screen is made for the old monitors
             self.session_destroy();
+            self.settings_destroy();
             self.osk_destroy();
             self.dock_destroy();
             self.create_bars();
@@ -888,6 +923,9 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_UPDATE => self.update_timer(),
         WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
         WM_TIMER if wp.0 == TIMER_SESSION_CLOSE => self.session_destroy(),
+        WM_TIMER if matches!(wp.0, TIMER_SETTINGS_CLOSE | TIMER_SETTINGS_COMMIT | TIMER_SETTINGS_HEALTH | TIMER_SETTINGS_SAVED) => {
+          self.settings_timer(wp.0)
+        }
         WM_TIMER if wp.0 == TIMER_OSK_CLOSE => self.osk_destroy(),
         WM_TIMER if wp.0 == TIMER_DOCK_TICK => self.dock_tick(),
         WM_TIMER if wp.0 == TIMER_DOCK_CLOSE => self.dock_destroy(),
@@ -1163,6 +1201,8 @@ impl Ui {
         Msg::OverviewToggle => self.toggle_native_overview(),
         Msg::SessionToggle => self.session_toggle(),
         Msg::SessionHide => self.session_close(),
+        Msg::SettingsToggle => self.settings_toggle(),
+        Msg::Settings(e) => self.settings_event(e),
         Msg::OskToggle => self.osk_toggle(),
         Msg::DockPins(pins) => self.dock_pins(pins),
         Msg::Toast(card) => self.toast_add(card),
@@ -1558,6 +1598,7 @@ impl Ui {
         self.pops_reset();
         self.toasts_reset();
         self.update_reset();
+        self.settings_destroy();
         // Its surfaces belonged to the lost device. The core's Super key
         // needs a hidden window with this title even before the next open.
         self.overview = None;
@@ -1651,6 +1692,7 @@ impl Ui {
     self.redraw_all();
     self.pops_repaint();
     self.overview_render();
+    self.settings_restyle();
   }
 
   fn set_light(&mut self, light: bool) {

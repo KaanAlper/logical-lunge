@@ -361,7 +361,7 @@ pub fn clock_at(unix: i64, hour12: bool) -> String {
   }
 }
 
-fn format_time(pattern: &str) -> String {
+pub(super) fn format_time(pattern: &str) -> String {
   unsafe {
     let mut buf = [0u16; 64];
     // invariant locale: "3:05 PM" like the web bar, whatever the UI language
