@@ -177,7 +177,7 @@
       }
       async function runScript(mode, text) {
         try {
-          const r = await lunge.shellExec(HELPER, ['--ps', `${LL}\\run.ps1`, mode, text]);
+          const r = await lunge.shellExec(HELPER, ['--run', mode, text]);
           const out = (r.stdout || '').trim();
           if (out) {
             const res = JSON.parse(out.split(/\r?\n/).pop());
@@ -308,8 +308,8 @@
         { name: 'reload', desc: 'Pencere yöneticisi ayarlarını yenile', run: tiling => tiling?.runCommand('wm-reload-config') },
         { name: 'apps', desc: 'Uygulama listesini yenile', run: async () => {
           try {
-            const run = await lunge.shellExec(HELPER, ['--ps', `${LL}\\build-apps.ps1`]);
-            if (run.code != null && run.code !== 0) throw new Error(`PowerShell ${run.code}`);
+            const run = await lunge.shellExec(HELPER, ['--build-apps']);
+            if (run.code != null && run.code !== 0) throw new Error((run.stderr || '').trim() || `lunge.exe ${run.code}`);
             const list = await window.__llLoadApps?.();
             if (!list?.length) throw new Error('Uygulama listesi boş.');
             toast({ kind: 'ok', title: 'Uygulama listesi yenilendi', body: `${list.length} uygulama`, icon: 'apps' });

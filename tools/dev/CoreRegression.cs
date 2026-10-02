@@ -107,9 +107,24 @@ static class CoreRegression
         Check(Request("POST", "/qs/status", "http://127.0.0.1:6124").Contains("\"awake\":true"), "Keep-awake is not reported as on");
         Check(Request("POST", "/qs/awake?v=0", "http://127.0.0.1:6124").Contains("204"), "Keep-awake did not turn off");
         Check(Request("POST", "/qs/status", "http://127.0.0.1:6124").Contains("\"awake\":false"), "Keep-awake is not reported as off");
+        // The Super menu's command runner (was scripts\run.ps1)
+        Check(RunCommand.Run("run", "   ") == null, "An empty command must do nothing");
+        string echo = RunCommand.Run("term", "echo ll-run-test");
+        Check(echo != null && echo.Contains("\"kind\":\"ok\"") && echo.Contains("ll-run-test"), "A hidden command's output was not returned: " + echo);
+        string missing = RunCommand.Run("term", "ll-no-such-command-xyz");
+        Check(missing != null && missing.Contains("\"kind\":\"error\""), "A missing command was not reported: " + missing);
         string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-core-test-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(dir);
         try {
+            // The Super menu's app list (was scripts\build-apps.ps1): Shell.Application wants an STA thread
+            string appsPath = System.IO.Path.Combine(dir, "apps.json");
+            int appCount = 0; Exception appError = null;
+            var sta = new System.Threading.Thread(() => { try { appCount = AppIndex.Build(appsPath); } catch (Exception ex) { appError = ex; } });
+            sta.SetApartmentState(System.Threading.ApartmentState.STA);
+            sta.Start(); sta.Join();
+            Check(appError == null && appCount > 0, "The app list was not built: " + (appError == null ? "empty" : appError.GetBaseException().Message));
+            var appList = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Deserialize<List<Dictionary<string, object>>>(System.IO.File.ReadAllText(appsPath));
+            Check(appList.Count == appCount && appList[0].ContainsKey("path") && appList[0].ContainsKey("icon"), "The app list file is not the expected JSON");
             Func<string, Dictionary<string, object>> parse = t => new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(t);
             Func<Dictionary<string, object>> empty = () => new Dictionary<string, object>();
             Dictionary<string, object> d;

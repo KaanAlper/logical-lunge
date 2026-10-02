@@ -734,7 +734,7 @@ pub enum Act {
   None,
   /// open an app list entry (`explorer <path>`)
   Launch(String),
-  /// scripts\run.ps1 <mode> <text>: "run", "term" (terminal command), "url"
+  /// lunge.exe --run <mode> <text>: "run", "term" (terminal command), "url"
   Script(&'static str, String),
   Copy(String),
   /// put a clipboard history entry back (`lunge.exe --clip-set <id>`)

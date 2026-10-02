@@ -4955,7 +4955,7 @@ static class Toasts
             }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {
-                // Super menüsünün uygulama listesi (build-apps.ps1 kullanıcının veri klasörüne yazar)
+                // Super menüsünün uygulama listesi (lunge.exe --build-apps kullanıcının veri klasörüne yazar)
                 try { body = System.IO.File.ReadAllText(Paths.AppsJson); status = "200 OK"; }
                 catch { body = "[]"; status = "200 OK"; }
             }
@@ -11317,6 +11317,35 @@ static class Program
             Environment.Exit(p.ExitCode);
         }
 
+        // lunge.exe --run <run|term|url> <metin>: Super menüsünün komut / web eylemi (RunCommand); sonucu JSON, açıldıysa boş
+        if (args.Length >= 2 && args[0] == "--run")
+        {
+            string result = RunCommand.Run(args[1], string.Join(" ", args, 2, args.Length - 2));
+            if (result != null)
+            {
+                var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+                so.Write(result); so.Flush();
+            }
+            return;
+        }
+        // lunge.exe --build-apps: Super menüsünün uygulama listesini (state\apps.json) yeniden yazar (AppIndex)
+        if (args.Length == 1 && args[0] == "--build-apps")
+        {
+            try
+            {
+                int n = AppIndex.Build(Paths.AppsJson);
+                var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+                so.Write(n + " uygulama -> " + Paths.AppsJson); so.Flush();
+            }
+            catch (Exception ex)
+            {
+                var se = new System.IO.StreamWriter(Console.OpenStandardError(), new UTF8Encoding(false));
+                se.Write(ex.GetBaseException().Message); se.Flush();
+                Environment.Exit(1);
+            }
+            return;
+        }
+
         // lunge.exe --mic toggle|on|off|status -> {"muted":true}  (on = mikrofon açık)
         if (args.Length == 2 && args[0] == "--mic")
         {
@@ -11564,9 +11593,8 @@ static class Program
             {
                 string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 string apps = Paths.AppsJson;
-                string build = Paths.Script("build-apps.ps1");
-                if (!System.IO.File.Exists(apps) && System.IO.File.Exists(build))
-                    Process.Start(new ProcessStartInfo("powershell.exe", "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + build + "\"") { UseShellExecute = false, CreateNoWindow = true });
+                if (!System.IO.File.Exists(apps))
+                    Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--build-apps") { UseShellExecute = false, CreateNoWindow = true });
                 string colors = System.IO.Path.Combine(home, @".config\wezterm\ll-colors.lua");
                 string tc = Paths.Tool(@"termcolors\lunge-termcolors.exe");
                 if (!System.IO.File.Exists(colors) && System.IO.File.Exists(tc))
