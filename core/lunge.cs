@@ -3717,7 +3717,7 @@ static class I18n
     }
 }
 
-// Ayarlar penceresinin (ui/settings.html) çekirdek komutları
+// Ayarlar penceresinin (kabuğun native ayarlar penceresi) çekirdek komutları
 static class Settings
 {
     static readonly JavaScriptSerializer Js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };

@@ -8,6 +8,8 @@ import assert from 'node:assert/strict';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const web = path.resolve(process.argv[2] || root);
 const hasBar = fs.existsSync(path.join(web, 'ui/bar.html'));
+// native-ui draws the settings window natively (its tests are the shell's)
+const hasSettings = fs.existsSync(path.join(root, 'ui/settings.html'));
 const require = createRequire(path.join(root, 'ui/package.json'));
 const esbuild = require('esbuild');
 const { chromium } = require(process.env.LL_PLAYWRIGHT || 'playwright');
@@ -61,24 +63,26 @@ try {
     window.__data={battery:{chargePercent:49,isCharging:true,state:'charging',powerConsumption:25.6,timeTillFull:5400000}};
   },prefs);
   const base=`http://127.0.0.1:${server.address().port}`;
-  await page.goto(`${base}/settings.html`);
-  await page.waitForFunction(()=>window.__emit);
-  await page.evaluate(()=>window.__emit('ll:settings-toggle'));
-  await page.locator('.win.open').waitFor();
-  await page.getByRole('button',{name:'Mavi',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('[aria-label="Mavi"]').getAttribute('aria-pressed')==='true');
-  const blue=await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--colLayer0'));
-  await page.getByRole('button',{name:'Kırmızı',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('[aria-label="Kırmızı"]').getAttribute('aria-pressed')==='true');
-  assert.notEqual(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--colLayer0')),blue);
-  fail=true;
-  await page.getByRole('button',{name:'Yeşil',exact:true}).click();
-  await page.getByRole('alert').waitFor();
-  assert.equal(await page.getByRole('button',{name:'Kırmızı',exact:true}).getAttribute('aria-pressed'),'true');
-  await page.getByRole('button',{name:/Aydınlık/}).click();
-  await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
-  await page.waitForFunction(()=>document.querySelector('.seg button.sel')?.textContent.includes('Aydınlık'));
-  await page.screenshot({path:path.join(out,'settings-light.png')});
+  if(hasSettings) {
+    await page.goto(`${base}/settings.html`);
+    await page.waitForFunction(()=>window.__emit);
+    await page.evaluate(()=>window.__emit('ll:settings-toggle'));
+    await page.locator('.win.open').waitFor();
+    await page.getByRole('button',{name:'Mavi',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('[aria-label="Mavi"]').getAttribute('aria-pressed')==='true');
+    const blue=await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--colLayer0'));
+    await page.getByRole('button',{name:'Kırmızı',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('[aria-label="Kırmızı"]').getAttribute('aria-pressed')==='true');
+    assert.notEqual(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--colLayer0')),blue);
+    fail=true;
+    await page.getByRole('button',{name:'Yeşil',exact:true}).click();
+    await page.getByRole('alert').waitFor();
+    assert.equal(await page.getByRole('button',{name:'Kırmızı',exact:true}).getAttribute('aria-pressed'),'true');
+    await page.getByRole('button',{name:/Aydınlık/}).click();
+    await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
+    await page.waitForFunction(()=>document.querySelector('.seg button.sel')?.textContent.includes('Aydınlık'));
+    await page.screenshot({path:path.join(out,'settings-light.png')});
+  }
   if(hasBar) {
     await page.goto(`${base}/bar.html`);
     await page.locator('.battery').hover();
@@ -95,5 +99,5 @@ try {
     await page.waitForFunction(()=>document.querySelector('.battery-pop').textContent.includes('Veri yok'));
   }
   assert.deepEqual(errors,[]);
-  console.log('PASS headless settings: clickable colors, shell palette, failed save, light mode' + (hasBar ? '; battery hover: units, centered charging icon, unavailable data' : ''));
+  console.log('PASS headless' + (hasSettings ? ' settings: clickable colors, shell palette, failed save, light mode' : '') + (hasBar ? '; battery hover: units, centered charging icon, unavailable data' : ''));
 } finally {await browser.close(); await new Promise(r=>server.close(r));}

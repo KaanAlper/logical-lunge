@@ -111,7 +111,6 @@ impl AppSettings {
       schema: None,
       startup_configs: [
         "sidebar-right",
-        "settings",
       ]
       .into_iter()
       .map(|widget| StartupConfig {
