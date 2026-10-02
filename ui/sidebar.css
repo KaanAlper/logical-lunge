@@ -228,6 +228,14 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 /* AndroidQuickPanel: 5 sütun, hücre 56px, aralık/padding 6px */
 .quickpanel { display: flex; flex-direction: column; background: var(--colLayer1); border-radius: 17px; }
 .qrow { display: flex; gap: 6px; }
+.qrows { display: flex; flex-direction: column; gap: 6px; }
+/* Düzenleme modunda sürükle-bırak: tutulan kutucuk imleci izler, bırakılacağı yerde kesik çizgili boşluk */
+.qt.editing { cursor: grab; touch-action: none; user-select: none; }
+.qt.placeholder { background: transparent; outline: 2px dashed color-mix(in srgb, var(--m3primary) 60%, transparent); outline-offset: -2px; }
+.qt.placeholder > * { visibility: hidden; }
+.qt-ghost { position: fixed; z-index: 40; display: flex; pointer-events: none; transform: scale(1.04); filter: drop-shadow(0 10px 22px rgb(0 0 0 / 35%)); }
+.qt-ghost .qt { flex: 1 1 auto !important; height: 100% !important; }
+.quickpanel.dragging, .quickpanel.dragging * { cursor: grabbing !important; }
 .qsep { height: 1px; margin: 6px 28px; background: var(--m3outlineVariant); }
 
 /* AndroidQuickToggleButton (GroupButton): colLayer2 zemin; açıkken colPrimary (alt görünümde yalnızca ikon dairesi);

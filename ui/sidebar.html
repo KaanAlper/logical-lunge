@@ -668,6 +668,34 @@
         return rows;
       }
 
+      // Kutucukların panel içindeki yeri (rowsFor + satır içinde boyutla esneme): sürüklenen kutucuğun bırakılacağı sıra
+      // DOM ölçmeden hesaplanır (yerleşim belirli: her satır COLUMNS birim, kutucuk boyutuyla esner)
+      function rectsFor(list, width) {
+        const out = new Map();
+        rowsFor(list).forEach((row, ri) => {
+          const units = row.reduce((n, t) => n + t.size, 0);
+          const free = width - SPACING * (row.length - 1);
+          let x = 0;
+          for (const t of row) {
+            const w = free * t.size / units;
+            out.set(t.type, { x, y: ri * (CELL_H + SPACING), w, h: CELL_H });
+            x += w + SPACING;
+          }
+        });
+        return out;
+      }
+      // Bırakılacak sıra: boşluğun ortası imlece en yakın olan konum
+      function dropIndex(list, item, px, py, width) {
+        const rest = list.filter(t => t.type !== item.type);
+        let best = 0, bestD = Infinity;
+        for (let i = 0; i <= rest.length; i++) {
+          const r = rectsFor([...rest.slice(0, i), item, ...rest.slice(i)], width).get(item.type);
+          const d = (r.x + r.w / 2 - px) ** 2 + (r.y + r.h / 2 - py) ** 2;
+          if (d < bestD) { bestD = d; best = i; }
+        }
+        return best;
+      }
+
       const signalIcon = s => (s >= 75 ? 'signal_wifi_4_bar' : s >= 50 ? 'network_wifi_3_bar' : s >= 25 ? 'network_wifi_2_bar' : 'network_wifi_1_bar');
       const openSettings = uri => lunge.shellSpawn('explorer', [uri]);
 
@@ -832,11 +860,110 @@
         // Düzenleme modunda gizli (adaptörü olmayan) kutucuklar da görünsün
         const visible = toggles.filter(t => defs[t.type] && (edit || !defs[t.type].hidden));
         const unused = AVAILABLE.filter(a => !toggles.some(t => t.type === a)).map(type => ({ type, size: 1 }));
+
+        // ---- Sürükle-bırak (düzenleme modu): sol tıkla tutulan kutucuk imleci izler, bırakılacağı yerde boşluk açılır,
+        // diğerleri yeni yerine ve boyuna kayarak geçer. Alttaki kullanılmayanlara bırakılan kaldırılır, oradan sürüklenen
+        // eklenir. Kımıldamadan bırakmak tıklamadır (ekle / kaldır).
+        const usedRef = useRef(null), unusedRef = useRef(null);
+        const press = useRef(null); // basıldı, henüz sürüklenmedi
+        const [drag, setDrag] = useState(null); // { item, x, y, dx, dy, w, h, toUsed, index }
+        const dragNow = useRef(null);
+        const dragged = useRef(false); // sürüklemenin ardından gelen click ekle / kaldır yapmasın
+        const latest = useRef(null); // pencere dinleyicileri her harekette yeniden kurulmasın: son değerler burada
+        latest.current = { toggles, visible };
+        const startPress = (e, item) => {
+          if (!edit || e.button !== 0) return;
+          const r = e.currentTarget.getBoundingClientRect();
+          press.current = { item, x0: e.clientX, y0: e.clientY, dx: e.clientX - r.left, dy: e.clientY - r.top, w: r.width, h: r.height };
+        };
+        useEffect(() => {
+          if (!edit) return;
+          const target = (item, x, y) => {
+            const box = unusedRef.current?.getBoundingClientRect();
+            if (box && y > box.top - SPACING) return { toUsed: false, index: 0 };
+            const used = usedRef.current?.getBoundingClientRect();
+            if (!used) return { toUsed: true, index: 0 };
+            return { toUsed: true, index: dropIndex(latest.current.visible, item, x - used.left, y - used.top, used.width) };
+          };
+          const move = e => {
+            const p = press.current;
+            if (!p) return;
+            if (!dragged.current) {
+              if (Math.hypot(e.clientX - p.x0, e.clientY - p.y0) < 5) return;
+              dragged.current = true;
+            }
+            dragNow.current = { ...p, x: e.clientX, y: e.clientY, ...target(p.item, e.clientX, e.clientY) };
+            setDrag(dragNow.current);
+          };
+          const end = drop => {
+            const d = dragNow.current, pressed = press.current;
+            press.current = null; dragNow.current = null;
+            setDrag(null);
+            if (d && drop) {
+              const { toggles, visible } = latest.current;
+              const rest = toggles.filter(t => t.type !== d.item.type);
+              if (!d.toUsed) update(rest);
+              else {
+                const before = visible.filter(t => t.type !== d.item.type)[d.index];
+                const at = before ? rest.findIndex(t => t.type === before.type) : rest.length;
+                update([...rest.slice(0, at), d.item, ...rest.slice(at)]);
+              }
+            }
+            // click olayı pointerup'tan sonra gelir: sürüklemenin bıraktığı işaret ondan sonra silinir
+            if (pressed) setTimeout(() => { dragged.current = false; }, 0);
+          };
+          const up = () => end(true);
+          const key = e => { if (e.key === 'Escape') end(false); };
+          window.addEventListener('pointermove', move);
+          window.addEventListener('pointerup', up);
+          window.addEventListener('keydown', key);
+          return () => {
+            window.removeEventListener('pointermove', move);
+            window.removeEventListener('pointerup', up);
+            window.removeEventListener('keydown', key);
+            press.current = null; dragNow.current = null;
+            setDrag(null);
+          };
+        }, [edit]);
+
+        // Sürüklerken gösterilen düzen: sürüklenen kutucuk bırakılacağı yerde boşluk olarak durur
+        let shownUsed = visible, shownUnused = unused;
+        if (drag) {
+          const ph = { ...drag.item, placeholder: true };
+          const restUsed = visible.filter(t => t.type !== drag.item.type);
+          const restUnused = unused.filter(t => t.type !== drag.item.type);
+          shownUsed = drag.toUsed ? [...restUsed.slice(0, drag.index), ph, ...restUsed.slice(drag.index)] : restUsed;
+          shownUnused = drag.toUsed ? restUnused : [...restUnused, { ...ph, size: 1 }];
+        }
+
+        // Yer / boyut değişen kutucuk eski yerinden yenisine kayar (FLIP); animasyonlar kapalıysa atlanır
+        const lastRects = useRef(new Map());
+        useLayoutEffect(() => {
+          const panel = panelRef.current;
+          if (!edit || !panel) { lastRects.current = new Map(); return; }
+          const animate = window.LL_PREFS?.animations !== false && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          const next = new Map();
+          panel.querySelectorAll('.qrows .qt[data-qt]').forEach(el => {
+            const r = el.getBoundingClientRect();
+            next.set(el.dataset.qt, r);
+            const p = lastRects.current.get(el.dataset.qt);
+            if (!p || !animate) return;
+            const dx = p.left - r.left, dy = p.top - r.top, sx = p.width / r.width, sy = p.height / r.height;
+            if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5 && Math.abs(sx - 1) < 0.01 && Math.abs(sy - 1) < 0.01) return;
+            el.animate([
+              { transformOrigin: 'top left', transform: `translate(${dx}px, ${dy}px) scale(${sx}, ${sy})` },
+              { transformOrigin: 'top left', transform: 'none' },
+            ], { duration: 200, easing: 'cubic-bezier(.2, .8, .2, 1)' });
+          });
+          lastRects.current = next;
+        });
+
         const renderRows = list => rowsFor(list).map((row, ri) => (
           <div className="qrow" key={ri}>
             {row.map(t => (
               <QuickToggle key={t.type} type={t.type} def={defs[t.type]} size={t.size} edit={edit} active={menu === t.type}
-                onEditClick={() => editClick(t.type)} onEditSize={() => editSize(t.type)}
+                placeholder={t.placeholder} onPress={e => startPress(e, { type: t.type, size: t.size })}
+                onEditClick={() => { if (!dragged.current) editClick(t.type); }} onEditSize={() => editSize(t.type)}
                 onEditWheel={d => editMove(t.type, d)} />
             ))}
           </div>
@@ -865,12 +992,17 @@
         }, [menu]);
 
         return (
-          <div className="quickpanel" ref={panelRef} style={{ padding: PADDING, gap: SPACING }}>
-            {renderRows(visible)}
+          <div className={`quickpanel ${drag ? 'dragging' : ''}`} ref={panelRef} style={{ padding: PADDING, gap: SPACING }}>
+            <div className="qrows" ref={usedRef}>{renderRows(shownUsed)}</div>
             {edit && <div className="qsep" />}
-            {edit && renderRows(unused)}
+            {edit && <div className="qrows unused" ref={unusedRef}>{renderRows(shownUnused)}</div>}
+            {drag && (
+              <div className="qt-ghost" style={{ left: drag.x - drag.dx, top: drag.y - drag.dy, width: drag.w, height: drag.h }}>
+                <QuickToggle type={drag.item.type} def={defs[drag.item.type]} size={drag.item.size} edit={false} />
+              </div>
+            )}
             <div className="qedit-row">
-              <button className={`qbtn ${edit ? 'on' : ''}`} title="Hızlı ayarları düzenle (tık: ekle/kaldır, sağ tık: boyut, tekerlek: sıra)" onClick={() => setEdit(e => !e)}>
+              <button className={`qbtn ${edit ? 'on' : ''}`} title="Hızlı ayarları düzenle (sürükle: taşı, tık: ekle/kaldır, sağ tık: boyut)" onClick={() => setEdit(e => !e)}>
                 <Icon name={edit ? 'check' : 'edit'} />
               </button>
             </div>
@@ -1088,14 +1220,15 @@
 
       // ii AndroidQuickToggleButton.qml (GroupButton): basınca yaylanarak genişler, köşe küçülür.
       // Geniş ve menülü kutucukta: soldaki yuvarlak ikon = aç/kapa, sağdaki yazı alanı = alta kayan bölüm.
-      function QuickToggle({ type, def, size, edit, active, onEditClick, onEditSize, onEditWheel }) {
+      function QuickToggle({ type, def, size, edit, active, placeholder, onPress, onEditClick, onEditSize, onEditWheel }) {
         if (!def) return null;
         const expanded = size === 2;
         const altLook = def.alt && expanded; // ii: altAction varken geniş kutucuğun zemini koyu kalır, ikon dairesi renklenir
         const available = def.available !== false;
-        const cls = ['qt', expanded ? 'expanded' : 'single', def.toggled ? 'toggled' : '', altLook ? 'alt' : '', edit ? 'editing' : '', available ? '' : 'disabled', active ? 'menu-open' : '', def.hidden ? 'ghosted' : ''].join(' ');
+        const cls = ['qt', expanded ? 'expanded' : 'single', def.toggled ? 'toggled' : '', altLook ? 'alt' : '', edit ? 'editing' : '', available ? '' : 'disabled', active ? 'menu-open' : '', def.hidden ? 'ghosted' : '', placeholder ? 'placeholder' : ''].join(' ');
         return (
           <button className={cls} style={{ flex: `${size} 1 0`, minWidth: 0, height: CELL_H }} title={def.name} data-qt={type}
+            onPointerDown={edit ? onPress : undefined}
             onClick={() => (edit ? onEditClick() : !available ? null : (expanded && def.menu) ? def.menu() : def.action())}
             onContextMenu={e => { e.preventDefault(); if (edit) onEditSize(); else if (def.menu) def.menu(); }}
             onWheel={e => { if (edit) { e.preventDefault(); onEditWheel(e.deltaY > 0 ? 1 : -1); } }}>
