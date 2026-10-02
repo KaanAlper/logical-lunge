@@ -57,7 +57,7 @@ if (Test-Path $bf) { $backup = Get-Content $bf -Raw | ConvertFrom-Json }
 
 Log '==> Stopping Logical Lunge'
 # the core first: its watchdogs would restart the other parts
-foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-temps', 'lunge-songrec', 'lunge-termcolors') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
+foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-wallpaper', 'lunge-temps', 'lunge-songrec', 'lunge-termcolors') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
 # Started elevated by the user themselves: the banners are restored here (see the non-elevated part above)
 if (-not $Elevated -and (Test-Path (Join-Path $APP 'lunge.exe'))) { & (Join-Path $APP 'lunge.exe') --restore-banners | Out-Null }
 Remove-Item (Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue

@@ -104,6 +104,18 @@ static class CoreRegression
             System.IO.File.WriteAllText(path, "{not json");
             Check(SettingsFile.TryReadForUpdate(path, parse, empty, out d) && d.Count == 0 && System.IO.File.Exists(path + ".bad"), "A corrupt settings file must be backed up before starting over");
         } finally { try { System.IO.Directory.Delete(dir, true); } catch { } }
-        Console.WriteLine("PASS: core routing, origin, method, release selection, settings file updates and Windows notifications");
+        // Canlı duvar kağıdı kayıtları: herkese bir video, tek monitör kapalı, monitörün kendi videosu, hepsi kapalı
+        var none = new List<KeyValuePair<string, string>>();
+        var forAll = (List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithVideo", none, "all", @"C:\v\a.mp4");
+        Check((string)Call(typeof(LiveWallpaper), "FileFor", forAll, "M1") == @"C:\v\a.mp4", "A video for every monitor did not reach a monitor");
+        var oneOff = (List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithoutVideo", forAll, "M2");
+        Check((string)Call(typeof(LiveWallpaper), "FileFor", oneOff, "m2") == "" && (string)Call(typeof(LiveWallpaper), "FileFor", oneOff, "M1") == @"C:\v\a.mp4", "Turning one monitor off changed the others");
+        var own = (List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithVideo", oneOff, "M2", @"C:\v\b.mp4");
+        Check(own.Count == 2 && (string)Call(typeof(LiveWallpaper), "FileFor", own, "M2") == @"C:\v\b.mp4", "A monitor's own video did not replace its off entry");
+        Check(((List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithoutVideo", own, "span")).Count == 0, "Turning every monitor off left entries");
+        var single = (List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithVideo", none, "M1", @"C:\v\c.mp4");
+        Check(((List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithoutVideo", single, "M1")).Count == 0 && none.Count == 0 && forAll.Count == 1, "The last video off must clear the state, and inputs must stay unchanged");
+        Check((string)Call(typeof(LiveWallpaper), "Slug", "a/../b:c") == "a____b_c" && (string)Call(typeof(LiveWallpaper), "Slug", "CON") == "_CON", "Store names must become plain folder names");
+        Console.WriteLine("PASS: core routing, origin, method, release selection, settings file updates, Windows notifications and live wallpaper entries");
     }
 }
