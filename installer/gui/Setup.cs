@@ -73,6 +73,7 @@ sealed class SetupForm : Form
     string hover;
 
     const float W = 760, H = 540;
+    const double SlideMs = 220;
 
     public SetupForm()
     {
@@ -146,7 +147,7 @@ sealed class SetupForm : Form
         AddHit(close, "close", CloseClicked);
 
         // the page slides in from the right
-        float t = (float)Math.Min(1.0, (DateTime.UtcNow - slideStart).TotalMilliseconds / 220.0);
+        float t = (float)Math.Min(1.0, (DateTime.UtcNow - slideStart).TotalMilliseconds / SlideMs);
         float off = 28 * (1 - (1 - (1 - t) * (1 - t)));
         g.TranslateTransform(off, 0);
         if (page == Page.Interface) PaintInterface(g);
@@ -160,10 +161,10 @@ sealed class SetupForm : Form
     {
         Str(g, T("Hangi arayüzü kurmak istersin?", "Which interface do you want?"), F(24, true), Fg, 40, 82, 680, 36);
         Str(g, T("İkisi de aynı masaüstü; sonradan değiştirebilirsin.", "Both are the same desktop; you can switch later."), F(13), Sub, 40, 120, 680, 22);
-        Card(g, "native-ui", 40, 170, "Native", T("Yerel çizilen hafif bar ve Super menüsü. Diğer paneller şimdilik WebView2.",
-            "A light, natively drawn bar and Super menu. Other panels use WebView2 for now."), T("Önerilen", "Recommended"));
-        Card(g, "web-ui", 392, 170, "Web UI", T("Bar ve paneller React / WebView2 pencereleriyle çizilir.",
-            "The bar and panels are drawn in React / WebView2 windows."), null);
+        Card(g, "native-ui", 40, 170, "Native", T("Bar, Super menüsü, sağ panel, ayarlar, Dock ve bildirimler tamamen yerel çizilir: en hızlısı.",
+            "The bar, Super menu, right panel, settings, Dock and notifications are all drawn natively: the fastest."), T("Önerilen", "Recommended"));
+        Card(g, "web-ui", 392, 170, "Web UI", T("Aynı masaüstü; bar ve paneller React / WebView2 pencereleriyle çizilir.",
+            "The same desktop; the bar and panels are drawn in React / WebView2 windows."), null);
         Button(g, "next", T("Devam", "Next"), W - 40 - 140, H - 72, 140, true, () => Go(Page.Personalize));
     }
 
@@ -427,7 +428,28 @@ sealed class SetupForm : Form
         page = p;
         slideStart = DateTime.UtcNow;
         hover = null;
-        Invalidate();
+        StartFrames();
+    }
+
+    // The page slide is drawn on the compositor's frame clock: the 50 ms form timer gave it four or five frames and
+    // Invalidate() waited behind every other message, so Devam / Geri moved in jumps. Each frame paints at once
+    // (Refresh) and then waits for the next composition pass (DwmFlush, the display's refresh); the message loop runs
+    // between frames, so clicks and keys stay live.
+    bool animating;
+    void StartFrames()
+    {
+        if (animating) { Invalidate(); return; }
+        animating = true;
+        BeginInvoke((Action)Frame);
+    }
+
+    void Frame()
+    {
+        if (IsDisposed) return;
+        Refresh();
+        if ((DateTime.UtcNow - slideStart).TotalMilliseconds >= SlideMs + 20) { animating = false; return; }
+        if (DwmFlush() != 0) System.Threading.Thread.Sleep(8); // composition off: about the same pace
+        BeginInvoke((Action)Frame);
     }
 
     void CloseClicked()
@@ -483,9 +505,9 @@ sealed class SetupForm : Form
     void OnTick()
     {
         tick++;
-        bool sliding = (DateTime.UtcNow - slideStart).TotalMilliseconds < 260;
         if (page == Page.Progress && tick % 2 == 0) Poll();
-        if (page == Page.Progress || sliding) Invalidate();
+        // the slide has its own frames (Frame)
+        if (page == Page.Progress && !animating) Invalidate();
     }
 
     void Poll()
@@ -762,6 +784,7 @@ sealed class SetupForm : Form
 
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    [DllImport("dwmapi.dll")] static extern int DwmFlush();
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp);
 }
