@@ -87,6 +87,13 @@ jobs:
           EDITION: ${{ inputs.edition }}
         run: ./build.ps1 -Edition $env:EDITION
 
+      - name: Run the shell's unit tests
+        shell: pwsh
+        working-directory: shell
+        run: |
+          cargo test --release -p lunge-shell -p lunge-wallpaper -p systray-util
+          if ($LASTEXITCODE) { throw 'Shell unit tests failed' }
+
       - name: Check theme, media and core regressions
         shell: powershell
         run: |
