@@ -17,7 +17,7 @@
 use windows::{
   core::{w, PCWSTR},
   Win32::{
-    Foundation::{BOOL, HWND, LPARAM, POINT, RECT, WPARAM},
+    Foundation::{BOOL, COLORREF, HWND, LPARAM, POINT, RECT, WPARAM},
     Graphics::Gdi::MapWindowPoints,
     UI::WindowsAndMessaging::*,
   },
@@ -142,6 +142,12 @@ pub fn attach(window: HWND, layer: Layer, rect: RECT) -> bool {
         defview,
         workerw,
       } => {
+        // a child of the no-redirection-bitmap Progman is drawn only when
+        // layered; the classic layout has no such need (and its WorkerW
+        // children show a video swap chain only when not layered)
+        let ex = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        SetWindowLongPtrW(window, GWL_EXSTYLE, ex | WS_EX_LAYERED.0 as isize);
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA);
         let ok = place_child(window, hwnd(progman), hwnd(defview), rect);
         // the WorkerW drawing the static wallpaper stays under ours
         if workerw != 0 {
