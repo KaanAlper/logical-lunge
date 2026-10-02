@@ -209,7 +209,8 @@ impl AudioProvider {
                 sender,
               )) => {
                 let res = self.handle_function(audio_function).map_err(|err| err.to_string());
-                sender.send(res).unwrap();
+                // the caller may be gone (a timed-out call): the provider goes on
+                let _ = sender.send(res);
               }
               _ => {}
             }
@@ -374,6 +375,13 @@ impl AudioProvider {
   fn add_device(&mut self, com_device: IMMDevice) -> anyhow::Result<()> {
     let device_id = unsafe { com_device.GetId()?.to_string() }?;
     info!("Adding new audio device: {}", device_id);
+
+    // Added twice (OnDeviceAdded and its ACTIVE state change both come, and
+    // again on every replug or wake): the old registration goes first, or it
+    // would stay registered with every volume event doubled.
+    if self.device_states.contains_key(&device_id) {
+      let _ = self.remove_device(&device_id);
+    }
 
     let device_type = DeviceType::from(unsafe {
       com_device.cast::<IMMEndpoint>()?.GetDataFlow()

@@ -23,7 +23,7 @@ use windows::{
         NOTIFY_ICON_MESSAGE, NOTIFY_ICON_STATE,
       },
       WindowsAndMessaging::{
-        DefWindowProcW, GetWindowThreadProcessId, PostMessageW,
+        DefWindowProcW, FindWindowW, GetWindowThreadProcessId, PostMessageW,
         RegisterWindowMessageW, SendMessageW, SendNotifyMessageW,
         SetTimer, SetWindowPos, HWND_BROADCAST, HWND_TOPMOST,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_ACTIVATEAPP,
@@ -282,9 +282,11 @@ impl TraySpy {
       Some(Self::window_proc),
     )?;
 
-    // TODO: Check whether this can be done in a better way. Check out
-    // SimpleClassicTheme.Taskbar project for potential implementation.
-    unsafe { SetTimer(HWND(window as _), 1, 100, None) };
+    // Apps send their icons to the first "Shell_TrayWnd" in the z-order:
+    // the spy stays above Explorer's taskbar. Checked four times a second,
+    // raised only when it was overtaken (moving it on every tick woke the
+    // system and every window hook ten times a second).
+    unsafe { SetTimer(HWND(window as _), 1, 250, None) };
 
     let event_tx =
       TRAY_EVENT_TX.get().expect("Tray event sender not set.");
@@ -316,8 +318,14 @@ impl TraySpy {
   ) -> LRESULT {
     match msg {
       WM_TIMER => {
-        // Regain tray priority.
-        let _ = Self::bring_to_top(hwnd);
+        // Regain tray priority (when another tray window is first).
+        let first = unsafe {
+          FindWindowW(w!("Shell_TrayWnd"), windows::core::PCWSTR::null())
+        }
+        .unwrap_or_default();
+        if first != hwnd {
+          let _ = Self::bring_to_top(hwnd);
+        }
         LRESULT(0)
       }
       WM_COPYDATA => Self::handle_copy_data(hwnd, msg, wparam, lparam),

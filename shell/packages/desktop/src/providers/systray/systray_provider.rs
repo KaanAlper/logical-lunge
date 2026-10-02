@@ -269,7 +269,8 @@ impl Provider for SystrayProvider {
               sender,
             ) => {
               let res = Self::handle_function(&mut systray, systray_function).map_err(|err| err.to_string());
-              sender.send(res).unwrap();
+              // the caller may be gone (a timed-out call): the provider goes on
+              let _ = sender.send(res);
             }
             _ => {}
           }
