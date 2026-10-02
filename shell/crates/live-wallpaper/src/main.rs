@@ -5,7 +5,8 @@
 //! fullscreen app covers a monitor, the screen is locked or off,
 //! or the computer runs on battery.
 //! `lunge-wallpaper --frame <video> <png>` saves one frame as a picture
-//! (the static wallpaper under the live one).
+//! (the static wallpaper under the live one). Copied as LogicalLunge.scr
+//! it is the video screen saver (saver.rs).
 
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
@@ -19,6 +20,8 @@ mod desktop;
 mod frame;
 #[cfg(windows)]
 mod render;
+#[cfg(windows)]
+mod saver;
 #[cfg(windows)]
 mod ui;
 
@@ -39,6 +42,11 @@ fn main() {
   };
 
   let args: Vec<String> = std::env::args().collect();
+  // LogicalLunge.scr (this program under the screen saver's name)
+  if saver::wanted(&args) {
+    saver::main(&args);
+    return;
+  }
   if args.len() == 4 && args[1] == "--frame" {
     let code = match frame::save(
       std::path::Path::new(&args[2]),

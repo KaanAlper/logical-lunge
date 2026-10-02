@@ -4,7 +4,7 @@
 #
 # Package layout (app\ is copied as is to %ProgramFiles%\LogicalLunge):
 #   app\lunge.exe, lunge-tiling.exe, lunge-tiling-cli.exe, lunge-tiling-watcher.exe, lunge-shell.exe,
-#       lunge-wallpaper.exe (live wallpaper), VERSION,
+#       lunge-wallpaper.exe (live wallpaper), LogicalLunge.scr (its copy: the video screen saver), VERSION,
 #       uninstall.ps1, ui\logical-lunge\*, scripts\*.ps1, tools\{lunge-media.exe, temps\, termcolors\, songrec\}
 #   config\   templates for ~\.config\logical-lunge and the terminal
 #   installer\setup.ps1
@@ -114,6 +114,8 @@ else {
 foreach ($exe in 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'lunge-wallpaper.exe') {
     if (-not (Test-Path (Join-Path $app $exe))) { throw "$exe is missing (build without -SkipRust)" }
 }
+# the video screen saver: the same player under a .scr name (it switches by its own name)
+Copy-Item (Join-Path $app 'lunge-wallpaper.exe') (Join-Path $app 'LogicalLunge.scr') -Force
 
 Step 'UI (widgets bundled with their libraries and fonts; translations)'
 # React, the Tauri API and the shell client are bundled in (ui\build.mjs): nothing is loaded from the network
