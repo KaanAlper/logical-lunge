@@ -38,7 +38,7 @@ use super::{
   Ev, FieldId, Hit, ScrollId, Sidebar,
 };
 
-const TABS: [(&str, &str); 4] = [("Duvar kâğıdı", "wallpaper"), ("Canlı", "motion_photos_on"), ("Mağaza", "storefront"), ("Ekran koruyucu", "screensaver")];
+const TABS: [(&str, &str); 4] = [("Duvar kâğıdı", "wallpaper"), ("Canlı", "motion_photos_on"), ("Mağaza", "storefront"), ("Ekran koruyucu", "ambient_screen")];
 const WALL_CATS: [(&str, &str, &str); 6] = [
   ("anime", "Anime", "animation"),
   ("nature", "Doğa", "forest"),
@@ -47,7 +47,7 @@ const WALL_CATS: [(&str, &str, &str); 6] = [
   ("minimal", "Minimal", "crop_square"),
   ("local", "Kütüphanem", "photo_library"),
 ];
-const SAVER_SUBS: [(&str, &str); 3] = [("Ekran koruyucular", "screensaver"), ("Videolar", "video_library"), ("Mağaza", "storefront")];
+const SAVER_SUBS: [(&str, &str); 3] = [("Ekran koruyucular", "ambient_screen"), ("Videolar", "video_library"), ("Mağaza", "storefront")];
 
 /// The galleries of the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

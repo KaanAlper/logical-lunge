@@ -482,7 +482,7 @@ impl Ui {
           items.push(MenuItem::new("here", Some("desktop_windows"), tr("Bu monitöre uygula")).submenu(per_monitor));
         }
         if g == G::Live {
-          items.push(MenuItem::new("saver", Some("screensaver"), tr("Ekran koruyucu yap")));
+          items.push(MenuItem::new("saver", Some("ambient_screen"), tr("Ekran koruyucu yap")));
         }
         if local {
           items.push(MenuItem::sep());
@@ -496,7 +496,7 @@ impl Ui {
         if mons.len() > 1 {
           items.push(MenuItem::new("here", Some("desktop_windows"), tr("Bu monitöre uygula")).submenu(per_monitor));
         }
-        items.push(MenuItem::new("saver", Some("screensaver"), tr("Ekran koruyucu yap")));
+        items.push(MenuItem::new("saver", Some("ambient_screen"), tr("Ekran koruyucu yap")));
       }
       G::Savers => {
         let imported = core_api::core_exe().is_some() && is_imported(&t.path);
@@ -510,7 +510,7 @@ impl Ui {
       }
       G::Videos => {
         let listed = self.sidebar.walls.in_videos(&t.path);
-        items.push(MenuItem::new("vset", Some("screensaver"), tr("Ekran koruyucu yap")));
+        items.push(MenuItem::new("vset", Some("ambient_screen"), tr("Ekran koruyucu yap")));
         items.push(MenuItem::new("vadd", Some("playlist_add"), tr("Listeye ekle")).enabled(!listed));
         items.push(MenuItem::new("vremove", Some("playlist_remove"), tr("Listeden çıkar")).enabled(listed));
         items.push(MenuItem::new("vrun", Some("play_arrow"), tr("Şimdi göster")));

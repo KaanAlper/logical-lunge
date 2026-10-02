@@ -230,7 +230,7 @@ fn paint_tile(cx: &mut Cx, sb: &mut Sidebar, g: G, r: Rect, t: &Tile, hot: bool,
   }
   if !drew {
     let icon = match g {
-      G::Savers => "screensaver",
+      G::Savers => "ambient_screen",
       G::Wall | G::Span => "image",
       _ => "movie",
     };
@@ -365,7 +365,7 @@ fn paint_saver(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, minutes: &mut TextFiel
   // the box behind (drawn first, height known after)
   let est = if saver.is_some() { 14.0 + 28.0 + 3.0 * 44.0 + 32.0 + 14.0 } else { 14.0 + 28.0 + 30.0 + 14.0 };
   cx.round(Rect::new(x, box_top, w, est), 17.0, cx.t.layer1)?;
-  iy += cx.section_title(inner_x - 8.0, iy, inner_w, "screensaver", &title)?;
+  iy += cx.section_title(inner_x - 8.0, iy, inner_w, "ambient_screen", &title)?;
   if sb.walls.saving {
     cx.spinner(x + w - 14.0 - 8.0, iy - 15.0, 16.0, cx.t.primary)?;
   }
