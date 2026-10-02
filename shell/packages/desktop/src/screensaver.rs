@@ -59,6 +59,26 @@ mod win {
     if len > 0 { String::from_utf16_lossy(&text[..len as usize]) } else { stem }
   }
 
+  /// `.scr` files under %LOCALAPPDATA%\LogicalLunge\screensavers, two
+  /// folders deep.
+  fn library() -> Vec<PathBuf> {
+    let Some(data) = std::env::var_os("LOCALAPPDATA") else { return Vec::new() };
+    let mut found = Vec::new();
+    let mut folders = vec![(PathBuf::from(data).join("LogicalLunge").join("screensavers"), 0)];
+    while let Some((folder, depth)) = folders.pop() {
+      let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+      for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+          if depth < 2 { folders.push((path, depth + 1)); }
+        } else if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("scr")) {
+          found.push(path);
+        }
+      }
+    }
+    found
+  }
+
   fn system_choices(current: &str) -> Vec<Choice> {
     let root = std::env::var_os("WINDIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
     let file_of = |path: &Path| path.file_name().map(|f| f.to_string_lossy().to_lowercase());
@@ -73,6 +93,12 @@ mod win {
             choices.push(Choice { name: friendly_name(&path), path: path.to_string_lossy().into_owned() });
           }
         }
+      }
+    }
+    // imported ones (the core's --saver-pick), a zip's in their own folder
+    for path in library() {
+      if !choices.iter().any(|c| c.path.eq_ignore_ascii_case(&path.to_string_lossy())) {
+        choices.push(Choice { name: friendly_name(&path), path: path.to_string_lossy().into_owned() });
       }
     }
     if !current.is_empty() && Path::new(current).is_file() && !choices.iter().any(|c| c.path.eq_ignore_ascii_case(current)) {

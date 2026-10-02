@@ -568,8 +568,13 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .saver-sec { padding: 14px; gap: 12px; }
 .saver-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .saver-switch input { width: 18px; height: 18px; accent-color: var(--m3primary); cursor: pointer; }
-.saver-choices { display: flex; flex-wrap: wrap; gap: 6px; }
-.saver-choices .chip { height: 32px; font-size: 13px; }
+/* Ekran koruyucu galerisi: duvar kağıdı satırı, simge ortada, ad altta; seçili kart çerçeveli */
+.wall-tile.sel { box-shadow: 0 0 0 2px var(--m3primary); }
+.wall-name { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; font-size: 11px; line-height: 1.25; color: #fff;
+  background: linear-gradient(transparent, rgba(0 0 0 / 70%)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.saver-row-tiles .wall-tile:not(.custom) { width: 118px; flex-direction: column; }
+.saver-row-tiles .wall-tile:not(.custom) img { width: 36px; height: 36px; object-fit: contain; margin-bottom: 14px; }
+.saver-row-tiles .wall-tile:not(.custom) > .icon { margin-bottom: 14px; }
 .saver-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .saver-saving { display: inline-flex; margin-left: auto; color: var(--m3primary); }
 .saver-saving .icon { font-size: 16px; animation: qm-spin 1s linear infinite; }

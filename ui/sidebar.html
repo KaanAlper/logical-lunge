@@ -412,11 +412,11 @@
       const WALL_CATS = [['anime', 'Anime', 'animation'], ['nature', 'Doğa', 'forest'], ['space', 'Uzay', 'rocket'], ['city', 'Şehir', 'location_city'], ['minimal', 'Minimal', 'crop_square'], ['local', 'Kütüphanem', 'photo_library']];
       const wallCache = {};
       // preview: üzerine gelince oynayan önizleme (canlı duvar kağıtları); busyText: indirme ilerlemesi
-      function WallRow({ items, busy, busyText, onPick, onCustom, customLabel, customIcon, wide }) {
+      function WallRow({ items, busy, busyText, onPick, onCustom, customLabel, customIcon, wide, selected, fallbackIcon, cls }) {
         const ref = useRef(null);
         const [hover, setHover] = useState(null);
         return (
-          <div className={`wall-row ${wide ? 'wide' : ''}`} ref={ref}
+          <div className={`wall-row ${wide ? 'wide' : ''} ${cls || ''}`} ref={ref}
                onWheel={e => { if (ref.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { ref.current.scrollLeft += e.deltaY; } }}>
             <button className="wall-tile custom" onClick={onCustom}>
               <Icon name={customIcon || 'add_photo_alternate'} /><span>{customLabel}</span>
@@ -424,10 +424,11 @@
             {items === null && <div className="wall-tile ghost"><Icon name="progress_activity" /></div>}
             {items && items.length === 0 && <div className="wall-empty">Bir şey bulunamadı</div>}
             {items && items.map(it => (
-              <button key={it.key} className={`wall-tile ${busy === it.key ? 'busy' : ''}`} onClick={() => onPick(it)} title={it.res || it.name || ''}
+              <button key={it.key} className={`wall-tile ${busy === it.key ? 'busy' : ''} ${selected === it.key ? 'sel' : ''}`} onClick={() => onPick(it)} title={it.res || it.name || ''}
                       onMouseEnter={it.preview ? () => setHover(it.key) : undefined} onMouseLeave={it.preview ? () => setHover(null) : undefined}>
-                {it.thumb ? <img src={hover === it.key ? it.preview : it.thumb} alt="" loading="lazy" /> : <Icon name="movie" />}
+                {it.thumb ? <img src={hover === it.key ? it.preview : it.thumb} alt="" loading="lazy" /> : <Icon name={fallbackIcon || 'movie'} />}
                 {it.res && <span className="wall-res">{it.res}</span>}
+                {it.label && <span className="wall-name">{it.label}</span>}
                 {busy === it.key && <span className="wall-spin"><Icon name="progress_activity" />{busyText && <b>{busyText}</b>}</span>}
               </button>
             ))}
@@ -540,7 +541,8 @@
                 <button key={c.id} className={`chip ${cat === c.id ? 'on' : ''}`} onClick={() => setCat(c.id)}>{liveCatName(c.id)}</button>
               ))}
             </div>
-            <WallRow items={items} busy={busy} busyText={progress} customLabel="Video seç" customIcon="video_file" onCustom={pick} onPick={apply} />
+            <WallRow items={items} busy={busy} busyText={progress} customLabel="Video ya da paket içe aktar" customIcon="video_file" onCustom={pick} onPick={apply} />
+            <div className="kb-hint"><Icon name="info" />İndirdiğin videoyu, Lively (.zip) ya da Wallpaper Engine video paketini (.zip ya da project.json) içe aktarabilirsin.</div>
             <div className="live-foot">
               {on && <button className="chip" onClick={clear}><Icon name="stop_circle" />Canlı duvar kağıdını kapat</button>}
               <label className="saver-switch"><span>Tam ekran uygulamada duraklat</span>
@@ -674,6 +676,22 @@
           minutesTimer.current = setTimeout(() => apply({ ...latest.current, minutes }), 500);
         };
         const run = configure => invoke('screensaver_run', { path: state.selected, configure }).catch(e => setError(String(e)));
+        // Kart simgeleri (çekirdek .scr dosyalarının kendi simgelerini verir); içe aktarma sonrası yeniden
+        const [icons, setIcons] = useState({});
+        const [note, setNote] = useState('');
+        const loadIcons = () => helper(['--saver-icons']).then(s => { const r = json(s); if (r && !r.error) setIcons(r); }).catch(() => {});
+        useEffect(() => { loadIcons(); }, []);
+        const importSavers = async () => {
+          setError(''); setNote('');
+          const r = json(await helper(['--saver-pick']).catch(() => '')) || {};
+          if (r.error) { setError(r.error === 'noscr' ? 'Pakette ekran koruyucu (.scr) yok' : r.error === 'size' ? 'Paket çok büyük' : 'İçe aktarılamadı'); return; }
+          const added = Array.isArray(r.added) ? r.added : [];
+          if (!added.length) return;
+          setNote(`${added.length} ekran koruyucu eklendi`);
+          loadIcons();
+          const s = await invoke('screensaver_state').catch(() => null);
+          if (s) setState(s);
+        };
         return (
           <div className="wall-sec saver-sec">
             <div className="kb-gtitle"><Icon name="screensaver" />Ekran koruyucu
@@ -682,12 +700,10 @@
             {state && <>
               <label className="saver-switch"><span>Etkin</span><input type="checkbox" checked={state.enabled}
                 onChange={e => change({ enabled: e.target.checked, selected: state.selected || state.choices[0]?.path || '' })} /></label>
-              <div className="saver-choices">
-                {state.choices.map(choice => (
-                  <button key={choice.path} className={`chip ${state.selected === choice.path ? 'on' : ''}`}
-                          onClick={() => change({ selected: choice.path })}>{choice.name}</button>
-                ))}
-              </div>
+              <WallRow cls="saver-row-tiles" fallbackIcon="screensaver" selected={state.selected} customLabel="İçe aktar" customIcon="upload_file"
+                       onCustom={importSavers} onPick={it => change({ selected: it.key })}
+                       items={state.choices.map(c => ({ key: c.path, name: c.name, label: c.name, thumb: icons[c.path.toLowerCase()] || '' }))} />
+              {note && <div className="kb-msg ok"><Icon name="check_circle" />{note}</div>}
               <div className="saver-row">
                 <span>Bekleme süresi</span>
                 <span className="saver-minutes"><input type="number" min="1" max="120" value={state.minutes}
