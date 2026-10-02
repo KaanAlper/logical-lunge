@@ -7,7 +7,6 @@ impl Ui {
   pub(in crate::native_bar::sidebar) fn sb_walls_open(&mut self) {
     let w = &mut self.sidebar.walls;
     w.msg = None;
-    w.confirm = None;
     w.busy = None;
     self.sb_walls_load_tab();
   }
@@ -348,9 +347,6 @@ impl Ui {
       return;
     }
     let w = &mut self.sidebar.walls;
-    if w.confirm.is_some() && !matches!(h, WHit::Confirm(_)) {
-      return;
-    }
     match h {
       WHit::Tab(i) => {
         if w.tab != i {
@@ -462,13 +458,6 @@ impl Ui {
         let on = w.videos["shuffle"].as_bool() == Some(true);
         job(move || WEv::Videos(core_json(&["--saver-shuffle", if on { "0" } else { "1" }])));
       }
-      WHit::Confirm(yes) => {
-        if let Some(c) = w.confirm.take() {
-          if yes {
-            self.sb_walls_remove(c.g, c.path);
-          }
-        }
-      }
     }
     self.sb_render();
   }
@@ -548,7 +537,17 @@ impl Ui {
       }
       "remove" => {
         let text = if g == G::Savers { t.name.clone() } else if t.name.is_empty() { file_name(&t.path) } else { t.name.clone() };
-        self.sidebar.walls.confirm = Some(Confirm { text, g, path: t.path });
+        let tr = |s: &str| self.model.tr(s);
+        let spec = Spec::new(Kind::Question, tr("Kütüphaneden kaldırılsın mı?"), text, vec![tr("Kaldır"), tr("Vazgeç")]).cancel(1).default_button(1);
+        let path = t.path;
+        // the dialog takes the keyboard: the panel stays open meanwhile
+        self.sb_modal(true);
+        self.dialog_open(spec, move |ui: &mut Ui, answer| {
+          ui.sb_modal(false);
+          if answer.button == Some(0) {
+            ui.sb_walls_remove(g, path);
+          }
+        });
       }
       "preview" => self.sb_saver_run(t.path, false),
       "options" => self.sb_saver_run(t.path, true),
@@ -615,11 +614,6 @@ impl Ui {
         self.sidebar.focus = None;
       }
     }
-  }
-
-  /// Esc on the page: the confirmation goes first.
-  pub(in crate::native_bar::sidebar) fn sb_walls_escape(&mut self) -> bool {
-    self.sidebar.walls.confirm.take().is_some()
   }
 
   /// Hover over a tile: when it changed (moving previews start from their first frame).

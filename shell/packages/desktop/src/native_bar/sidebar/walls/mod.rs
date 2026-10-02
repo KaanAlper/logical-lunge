@@ -29,6 +29,7 @@ use super::{
   super::{
     core_api,
     gfx::{Rect, Rgba},
+    dialog::{Kind, Spec},
     menu::Item as MenuItem,
     model::Model,
     send, Msg, Ui,
@@ -90,7 +91,6 @@ pub(super) enum WHit {
   SaverPreview,
   SaverOptions,
   Shuffle,
-  Confirm(bool),
 }
 
 pub(in crate::native_bar) enum WEv {
@@ -126,12 +126,6 @@ pub(in crate::native_bar) struct Tile {
   pub id: String,
 }
 
-struct Confirm {
-  text: String,
-  g: G,
-  path: String,
-}
-
 #[derive(Default)]
 pub(super) struct Walls {
   pub tab: usize,
@@ -154,7 +148,6 @@ pub(super) struct Walls {
   saving: bool,
   icons: Value,
   videos: Value,
-  confirm: Option<Confirm>,
   /// the tile under the pointer and since when (moving previews start over)
   hover: Option<(String, Instant)>,
   store_failed: bool,

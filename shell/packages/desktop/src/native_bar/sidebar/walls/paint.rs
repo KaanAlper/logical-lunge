@@ -28,12 +28,7 @@ pub(in crate::native_bar::sidebar) fn paint(cx: &mut Cx, sb: &mut Sidebar, m: &M
     _ => y = paint_store(cx, sb, x, y, width)?,
   }
   cx.pop_clip();
-  let content = y + off - r.y;
-  if let Some(c) = &sb.walls.confirm {
-    let text = c.text.clone();
-    paint_confirm(cx, r, &text)?;
-  }
-  Ok(content)
+  Ok(y + off - r.y)
 }
 
 /// A segmented button (`.nl-seg button`): ends rounded, the selected one a pill.
@@ -515,40 +510,6 @@ fn paint_saver(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, minutes: &mut TextFiel
   }
   Ok(y)
 }
-
-fn paint_confirm(cx: &mut Cx, r: Rect, text: &str) -> anyhow::Result<()> {
-  let page = Rect::new(r.x - 10.0, r.y - 50.0, r.w + 20.0, r.h + 54.0);
-  cx.round(page, 19.0, Rgba(4, 3, 7, 0.6))?;
-  cx.hit(page, Hit::Walls(WHit::Confirm(false)));
-  let tw = r.w - 40.0;
-  let th = cx.wrapped_h(text, st(13.0), tw - 36.0, 200.0)?;
-  let h = 18.0 + 26.0 + 8.0 + th + 18.0 + 36.0 + 18.0;
-  let b = Rect::new(r.x + 10.0, r.y + (r.h - h) / 2.0, r.w - 20.0, h);
-  cx.shadow(b, 18.0, 1.0)?;
-  cx.round(b, 18.0, cx.t.layer1)?;
-  cx.p.stroke_round(b.inset(0.5, 0.5), 18.0, cx.t.outline_variant, 1.0)?;
-  cx.hit(b, Hit::Panel);
-  cx.icon("delete", b.x + 18.0 + 12.0, b.y + 18.0 + 13.0, 24.0, false, Rgba::hex(0xf2c779))?;
-  cx.text(&cx.tr("Kütüphaneden kaldırılsın mı?"), Rect::new(b.x + 18.0 + 32.0, b.y + 18.0, b.w - 60.0, 26.0), stw(15.0, 600.0), cx.t.on_layer1)?;
-  cx.p.text_wrapped(text, Rect::new(b.x + 18.0, b.y + 18.0 + 26.0 + 8.0, b.w - 36.0, th + 2.0), st(13.0), cx.t.on_surface_variant, false)?;
-  let by = b.bottom() - 18.0 - 36.0;
-  let remove = cx.tr("Kaldır");
-  let cancel = cx.tr("Vazgeç");
-  let rw = cx.measure(&remove, st(13.0))?.ceil() + 28.0;
-  let cw = cx.measure(&cancel, st(13.0))?.ceil() + 28.0;
-  let rb = Rect::new(b.right() - 18.0 - rw, by, rw, 36.0);
-  let cb = Rect::new(rb.x - 8.0 - cw, by, cw, 36.0);
-  let hc = Hit::Walls(WHit::Confirm(false));
-  cx.round(cb, 12.0, if cx.hot(&hc) { cx.c.layer2_hover } else { cx.c.layer2 })?;
-  cx.text_center(&cancel, cb, st(13.0), cx.t.on_layer1)?;
-  cx.hit(cb, hc);
-  let hr = Hit::Walls(WHit::Confirm(true));
-  cx.round(rb, 12.0, if cx.hot(&hr) { crate::native_bar::sidebar::kit::blend(cx.t.error, Rgba(255, 255, 255, 1.0), 0.1) } else { cx.t.error })?;
-  cx.text_center(&remove, rb, stw(13.0, 600.0), cx.t.on_primary)?;
-  cx.hit(rb, hr);
-  Ok(())
-}
-
 
 impl<'p, 'a> Cx<'p, 'a> {
   /// A vertical gradient (a gallery name's dark fade).

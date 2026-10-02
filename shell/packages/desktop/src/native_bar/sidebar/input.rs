@@ -503,12 +503,9 @@ impl Ui {
     false
   }
 
-  /// Esc on a page: its own dialog first (a removal to confirm, missing logs).
+  /// Esc on a page: nothing of its own to close first (confirmations are
+  /// the shared dialog, which takes its own Esc).
   pub(in crate::native_bar::sidebar) fn sb_page_escape(&mut self) -> bool {
-    if self.sb_walls_escape() {
-      self.sb_render();
-      return true;
-    }
     false
   }
 }

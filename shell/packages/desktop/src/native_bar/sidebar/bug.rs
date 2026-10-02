@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use super::{
   super::{
     core_api,
+    dialog::{Kind, Spec},
     gfx::{Rect, Rgba},
     model::Model,
     send, Msg, Ui,
@@ -41,7 +42,6 @@ pub(super) enum BugHit {
   File(usize),
   Retry(usize),
   Send,
-  Confirm(bool),
 }
 
 pub(in crate::native_bar) enum BugEv {
@@ -68,7 +68,6 @@ pub(super) struct Bug {
   sending: bool,
   progress: Option<u32>,
   pub(super) sent: bool,
-  confirm_missing: bool,
   error: String,
 }
 
@@ -331,9 +330,6 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   let (label, icon) = if b.sending { (t("Gönderiliyor…", "Sending…"), None) } else { (t("Raporu gönder", "Send report"), Some("send")) };
   submit_button(cx, btn, label, icon, b.sending, enabled, Hit::Bug(BugHit::Send))?;
   cx.pop_clip();
-  if b.confirm_missing {
-    paint_missing(cx, d, english)?;
-  }
   Ok(())
 }
 
@@ -353,38 +349,6 @@ fn submit_button(cx: &mut Cx, r: Rect, label: &str, icon: Option<&str>, spinning
   if enabled {
     cx.hit(r, hit);
   }
-  Ok(())
-}
-
-fn paint_missing(cx: &mut Cx, d: Rect, english: bool) -> anyhow::Result<()> {
-  let t = |tr: &'static str, en: &'static str| if english { en } else { tr };
-  cx.round(d, 24.0, Rgba(4, 3, 7, 0.78))?;
-  cx.hit(d, Hit::Panel);
-  let body = t("Kırmızı işaretli ekleri yeniden deneyebilir veya raporu onlar olmadan gönderebilirsin.", "Retry the marked attachments or send the report without them.");
-  let w = d.w - 36.0;
-  let th = cx.wrapped_h(body, st(12.0), w - 36.0, 200.0)?;
-  let h = 18.0 + 24.0 + 10.0 + 22.0 + 10.0 + th + 16.0 + 34.0 + 18.0;
-  let b = Rect::new(d.x + 18.0, d.y + (d.h - h) / 2.0, w, h);
-  cx.round(b, 18.0, cx.t.layer1)?;
-  cx.p.stroke_round(b.inset(0.5, 0.5), 18.0, cx.t.outline_variant, 1.0)?;
-  let mut y = b.y + 18.0;
-  cx.icon("warning", b.x + 18.0 + 12.0, y + 12.0, 24.0, false, Rgba::hex(0xf2c779))?;
-  y += 24.0 + 10.0;
-  cx.text(t("Bazı günlükler eklenemedi", "Some logs could not be attached"), Rect::new(b.x + 18.0, y, w - 36.0, 22.0), stw(15.0, 600.0), cx.t.on_layer1)?;
-  y += 22.0 + 10.0;
-  cx.p.text_wrapped(body, Rect::new(b.x + 18.0, y, w - 36.0, th + 2.0), st(12.0), cx.t.on_surface_variant, false)?;
-  let by = b.bottom() - 18.0 - 34.0;
-  let (back, go) = (t("Geri dön", "Go back"), t("Eksik günlüklerle gönder", "Send without missing logs"));
-  let gw = cx.measure(go, st(11.0))?.ceil() + 22.0;
-  let bw = cx.measure(back, st(11.0))?.ceil() + 22.0;
-  let gr = Rect::new(b.right() - 18.0 - gw, by, gw, 34.0);
-  let br = Rect::new(gr.x - 8.0 - bw, by, bw, 34.0);
-  cx.round(br, 10.0, cx.c.layer2)?;
-  cx.text_center(back, br, st(11.0), cx.t.on_layer1)?;
-  cx.hit(br, Hit::Bug(BugHit::Confirm(false)));
-  cx.round(gr, 10.0, cx.t.primary)?;
-  cx.text_center(go, gr, st(11.0), cx.t.on_primary)?;
-  cx.hit(gr, Hit::Bug(BugHit::Confirm(true)));
   Ok(())
 }
 
@@ -532,7 +496,6 @@ impl Ui {
       sending: false,
       progress: None,
       sent: false,
-      confirm_missing: false,
       error: String::new(),
     });
     let now = now_local();
@@ -620,10 +583,26 @@ impl Ui {
     }
     let missing: Vec<&str> = FILES.iter().enumerate().filter(|(i, _)| b.selected[*i] && matches!(b.files[*i], Phase::Error)).map(|(_, f)| f.1).collect();
     if !missing.is_empty() && !allow_missing {
-      b.confirm_missing = true;
+      let english = b.english;
+      let t = |tr: &'static str, en: &'static str| if english { en } else { tr };
+      let spec = Spec::new(
+        Kind::Warning,
+        t("Bazı günlükler eklenemedi", "Some logs could not be attached"),
+        t("Kırmızı işaretli ekleri yeniden deneyebilir veya raporu onlar olmadan gönderebilirsin.", "Retry the marked attachments or send the report without them."),
+        vec![t("Eksik günlüklerle gönder", "Send without missing logs").to_string(), t("Geri dön", "Go back").to_string()],
+      )
+      .cancel(1)
+      .default_button(1);
+      self.sb_modal(true);
+      self.dialog_open(spec, |ui: &mut Ui, answer| {
+        ui.sb_modal(false);
+        if answer.button == Some(0) {
+          ui.sb_bug_send(true);
+        }
+        ui.sb_render();
+      });
       return;
     }
-    b.confirm_missing = false;
     b.error.clear();
     b.sending = true;
     b.progress = None;
@@ -685,14 +664,6 @@ impl Ui {
         }
       }
       BugHit::Send => self.sb_bug_send(false),
-      BugHit::Confirm(yes) => {
-        if let Some(b) = self.sidebar.bug.as_mut() {
-          b.confirm_missing = false;
-        }
-        if yes {
-          self.sb_bug_send(true);
-        }
-      }
       _ => {}
     }
     self.sb_render();
