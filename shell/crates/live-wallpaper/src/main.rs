@@ -27,6 +27,13 @@ mod ui;
 
 #[cfg(windows)]
 fn main() {
+  // no "drive not ready" / "cannot open file" boxes of Windows (a video on
+  // a removed drive): the error is logged
+  unsafe {
+    use windows::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOOPENFILEERRORBOX};
+    let mode = SetErrorMode(SEM_FAILCRITICALERRORS);
+    SetErrorMode(mode | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+  }
   use windows::{
     core::w,
     Win32::{

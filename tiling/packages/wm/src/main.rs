@@ -52,6 +52,7 @@ mod wm_state;
 /// Conditionally starts the WM or runs a CLI command based on the given
 /// subcommand.
 fn main() -> anyhow::Result<()> {
+  quiet_error_boxes();
   let args = std::env::args().collect::<Vec<_>>();
   let app_command = AppCommand::parse_with_default(&args);
 
@@ -69,10 +70,9 @@ fn main() -> anyhow::Result<()> {
           start_wm(config_path, verbosity, &dispatcher).await;
 
         if let Err(err) = &start_res {
-          // If unable to start the WM, the error is fatal and a message
-          // dialog is shown.
-          tracing::error!("{:?}", err);
-          dispatcher.show_error_dialog("Fatal error", &err.to_string());
+          // If unable to start the WM, the error is fatal: it goes to the
+          // log and to a Logical Lunge notification card.
+          dispatcher.report_error(true, &format!("{:?}", err));
         }
 
         if let Err(err) = dispatcher.stop_event_loop() {
@@ -184,8 +184,7 @@ async fn start_wm(
     None,
     &mut config,
   ) {
-    tracing::error!("{:?}", err);
-    dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+    dispatcher.report_error(false, &err.to_string());
   }
 
   // Create an interval for periodically cleaning up invalid windows.
@@ -285,8 +284,7 @@ async fn start_wm(
     };
 
     if let Err(err) = res {
-      tracing::error!("{:?}", err);
-      dispatcher.show_error_dialog("Non-fatal error", &err.to_string());
+      dispatcher.report_error(false, &err.to_string());
     }
   }
 
@@ -396,3 +394,22 @@ fn update_path_env() {
     );
   }
 }
+
+/// No "drive not ready" / "cannot open file" boxes of Windows: errors come
+/// back to the window manager and go to Logical Lunge's cards.
+#[cfg(target_os = "windows")]
+fn quiet_error_boxes() {
+  #[link(name = "kernel32")]
+  extern "system" {
+    fn SetErrorMode(mode: u32) -> u32;
+  }
+  const SEM_FAILCRITICALERRORS: u32 = 0x0001;
+  const SEM_NOOPENFILEERRORBOX: u32 = 0x8000;
+  unsafe {
+    let mode = SetErrorMode(SEM_FAILCRITICALERRORS);
+    SetErrorMode(mode | SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
+  }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn quiet_error_boxes() {}

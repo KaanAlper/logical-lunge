@@ -351,24 +351,42 @@ fn preview(parent: isize) {
   }
 }
 
+/// Windows' "Settings" for our screen saver: where to choose the video, in
+/// Logical Lunge's own dialog (`lunge.exe --ask`), never Windows' box.
 fn configure() {
   // GetUserDefaultUILanguage: primary language 0x1F is Turkish
   let turkish = unsafe {
     windows::Win32::Globalization::GetUserDefaultUILanguage() & 0x3FF == 0x1F
   };
-  let (title, text) = if turkish {
+  let (title, text, ok) = if turkish {
     (
-      w!("Logical Lunge ekran koruyucusu"),
-      w!("Videoyu Logical Lunge'da seçin: sağ panel > Duvar kâğıdı > Ekran koruyucu. Kütüphanenizdeki ya da mağazadaki canlı duvar kâğıtları ekran koruyucu olarak oynatılabilir."),
+      "Logical Lunge ekran koruyucusu",
+      "Videoyu Logical Lunge'da seçin: sağ panel > Duvar kâğıdı > Ekran koruyucu. Kütüphanenizdeki ya da mağazadaki canlı duvar kâğıtları ekran koruyucu olarak oynatılabilir.",
+      "Tamam",
     )
   } else {
     (
-      w!("Logical Lunge screen saver"),
-      w!("Choose the video in Logical Lunge: right panel > Wallpaper > Screen saver. Any live wallpaper from your library or the store can play as the screen saver."),
+      "Logical Lunge screen saver",
+      "Choose the video in Logical Lunge: right panel > Wallpaper > Screen saver. Any live wallpaper from your library or the store can play as the screen saver.",
+      "OK",
     )
   };
-  unsafe {
-    MessageBoxW(None, text, title, MB_OK | MB_ICONINFORMATION);
+  let asked = std::env::current_exe()
+    .ok()
+    .and_then(|exe| Some(exe.parent()?.join("lunge.exe")))
+    .filter(|core| core.exists())
+    .and_then(|core| {
+      use std::os::windows::process::CommandExt;
+      std::process::Command::new(core)
+        .args(["--ask", "--kind", "info", "--title", title, "--body", text, "--buttons", ok])
+        .creation_flags(0x0800_0000)
+        .status()
+        .ok()
+    })
+    .is_some_and(|status| status.code() == Some(0));
+  if !asked {
+    // Logical Lunge is not running: nothing of ours to show it in
+    crate::log::line("screen saver settings: Logical Lunge is not running");
   }
 }
 
