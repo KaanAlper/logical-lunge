@@ -1,0 +1,62 @@
+@import url('./fonts.css');
+@import url('./base.css');
+
+:root {
+  color-scheme: dark; font-family: 'Rubik', 'Segoe UI', sans-serif;
+  /* defaults until the theme module applies the accent palette */
+  --m3primary: #d0bcff; --m3onPrimary: #381e72; --m3primaryContainer: #4f378b; --m3onPrimaryContainer: #eaddff;
+  --m3onSurface: #e6e0e9; --m3onSurfaceVariant: #cac4d0; --colLayer0: #141218; --colLayer0Border: #2c2a31; --colLayer2: #2b2930;
+}
+:root[data-theme="light"] { color-scheme: light; }
+* { box-sizing: border-box; }
+html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; background: transparent; }
+button { font: inherit; }
+
+.dock-screen {
+  position: fixed; inset: 0; display: flex; justify-content: center; align-items: flex-end; padding: 0 18px 18px;
+  opacity: 0; pointer-events: none; transition: opacity 180ms ease;
+}
+.dock-screen.visible { opacity: 1; pointer-events: auto; }
+
+/* The bar keeps its height; magnified icons rise above it instead of being clipped. */
+.dock {
+  position: relative; display: flex; align-items: flex-end; gap: 6px; max-width: min(92vw, 1400px); height: 66px;
+  padding: 0 10px 8px; border: 1px solid color-mix(in srgb, var(--colLayer0Border) 85%, transparent); border-radius: 22px;
+  background: color-mix(in srgb, var(--colLayer0) 78%, transparent); color: var(--m3onSurface);
+  box-shadow: 0 16px 48px rgb(0 0 0 / 38%), inset 0 1px rgb(255 255 255 / 6%); backdrop-filter: blur(26px) saturate(1.2);
+  transform: translateY(24px) scale(.96); transition: transform 230ms cubic-bezier(.2, .8, .2, 1);
+}
+.visible .dock { transform: translateY(0) scale(1); }
+
+.items { display: flex; align-items: flex-end; gap: 6px; padding: 0 2px; overflow: visible; }
+
+/* Icons sit without a box; --s is the magnification (1 at rest), --base the resting size. */
+.tile {
+  --s: 1; position: relative; flex: none; display: grid; place-items: center;
+  width: calc(var(--base, 50px) * var(--s)); height: calc(var(--base, 50px) * var(--s));
+  padding: 0; border: 0; border-radius: 14px; background: transparent; color: var(--m3onSurface); cursor: pointer;
+  transition: width 130ms ease-out, height 130ms ease-out, background 140ms ease;
+}
+.tile img { width: 82%; height: 82%; object-fit: contain; pointer-events: none; filter: drop-shadow(0 3px 6px rgb(0 0 0 / 35%)); }
+.tile:focus-visible { outline: 2px solid var(--m3primary); outline-offset: 2px; }
+.material { font-family: 'Material Symbols Rounded'; font-size: calc(var(--base, 50px) * var(--s) * .56); font-variation-settings: 'FILL' 1; }
+.launcher { background: var(--m3primaryContainer); color: var(--m3onPrimaryContainer); border-radius: 16px; }
+.launcher:hover { background: color-mix(in srgb, var(--m3primaryContainer) 80%, var(--m3primary)); }
+.divider { width: 1px; height: 38px; align-self: center; margin: 0 3px; background: color-mix(in srgb, var(--m3onSurfaceVariant) 28%, transparent); }
+.running { position: absolute; bottom: -6px; width: 4px; height: 4px; border-radius: 50%; background: var(--m3primary); }
+
+/* Name of the icon under the pointer, above it */
+.label {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  padding: 4px 10px; border-radius: 999px; font-size: 12px; color: var(--m3onSurface);
+  background: color-mix(in srgb, var(--colLayer2) 92%, transparent); box-shadow: 0 6px 18px rgb(0 0 0 / 30%);
+}
+
+.menu {
+  position: absolute; bottom: calc(100% + 12px); min-width: 150px; padding: 5px; border-radius: 14px;
+  background: var(--colLayer2); border: 1px solid var(--colLayer0Border); box-shadow: 0 12px 32px rgb(0 0 0 / 40%);
+}
+.menu button { width: 100%; padding: 8px 10px; border: 0; border-radius: 9px; color: var(--m3onSurface); background: transparent; text-align: left; cursor: pointer; }
+.menu button:hover:not(:disabled) { background: color-mix(in srgb, var(--m3primary) 14%, transparent); }
+.menu button:disabled { opacity: .45; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .dock-screen, .dock, .tile { transition: none; } }

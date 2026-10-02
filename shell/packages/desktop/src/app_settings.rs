@@ -118,6 +118,7 @@ impl AppSettings {
         "osk",
         "update",
         "session",
+        "dock",
       ]
       .into_iter()
       .map(|widget| StartupConfig {
@@ -149,8 +150,8 @@ impl AppSettings {
 
 /// Logical Lunge: adds every widget of `pack` that `configs` does not list
 /// yet, with its default preset. The settings file is written once, on the
-/// first start, so without this a panel added in a later version never
-/// starts for anyone who installed an earlier one.
+/// first start, so without this a panel added in a later version (the dock)
+/// never starts for anyone who installed an earlier one.
 pub fn with_pack_widgets(
   mut configs: Vec<StartupConfig>,
   pack: &str,
