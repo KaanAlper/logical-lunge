@@ -88,6 +88,8 @@ pub struct PopState {
 
   temps: Option<Temps>,
   temps_busy: bool,
+  /// what the mixer showed last (its 10 Hz tick redraws only on change)
+  mixer_drawn: Option<Vec<MixerSeen>>,
   /// when the temperature tool was last started to wake its service
   temps_woken: Option<Instant>,
   art: HashMap<String, Option<ID2D1Bitmap1>>,
@@ -100,6 +102,20 @@ pub struct PopState {
 
 fn tools_dir() -> PathBuf {
   std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("tools"))).unwrap_or_default()
+}
+
+/// A mixer row as far as the eye can tell: name, has an icon, volume,
+/// muted, level (both in the bar's 2 % steps); the last entry is the hover.
+type MixerSeen = (String, bool, u8, bool, u8);
+
+fn mixer_seen(rows: &[MixerRow], hover: Option<usize>) -> Vec<MixerSeen> {
+  let step = |v: f32| (v.clamp(0.0, 1.0) * 50.0).round() as u8;
+  let hover = hover.map_or(u8::MAX, |h| h.min(254) as u8);
+  rows
+    .iter()
+    .map(|r| (r.name.clone(), r.icon.is_some(), step(r.volume), r.muted, step(r.peak)))
+    .chain(std::iter::once((String::new(), false, hover, false, 0)))
+    .collect()
 }
 
 fn window_rect(hwnd: HWND) -> RECT {
@@ -842,7 +858,17 @@ impl Ui {
     } else {
       audio.read();
     }
-    self.mixer_render();
+    self.mixer_render_changed();
+  }
+
+  /// Volumes, mutes and levels (to the bar's 2 % steps) and the hover:
+  /// silent apps and a still mixer cost no frames.
+  fn mixer_render_changed(&mut self) {
+    let rows = self.mixer_rows();
+    if self.pops.mixer_drawn.as_ref() == Some(&mixer_seen(&rows, self.pops.mixer_hover)) {
+      return;
+    }
+    self.mixer_paint(rows);
   }
 
   /// The output device (from the audio provider) and the apps playing.
@@ -872,13 +898,18 @@ impl Ui {
   }
 
   pub(super) fn mixer_render(&mut self) {
+    let rows = self.mixer_rows();
+    self.mixer_paint(rows);
+  }
+
+  fn mixer_paint(&mut self, rows: Vec<MixerRow>) {
     let i = self.pops.mixer_bar;
     if i >= self.bars.len() {
       return;
     }
     let scale = self.bars[i].scale;
     let theme = self.theme();
-    let rows = self.mixer_rows();
+    self.pops.mixer_drawn = Some(mixer_seen(&rows, self.pops.mixer_hover));
     let size = popup::mixer_size(rows.len().saturating_sub(1));
     if !Self::ensure(&mut self.pops.mixer, &self.gfx, "Logical Lunge · mixer", scale, Motion::Slide) {
       return;
