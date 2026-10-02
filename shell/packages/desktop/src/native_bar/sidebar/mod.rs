@@ -167,6 +167,10 @@ struct Win {
   _target: IDCompositionTarget,
   root: IDCompositionVisual2,
   panel: Layer,
+  /// a lifted quick settings tile: moved by the compositor, never repainted
+  /// while it follows the pointer
+  ghost: Layer,
+  ghost_scale: windows::Win32::Graphics::DirectComposition::IDCompositionScaleTransform,
   page: Layer,
 }
 
@@ -218,6 +222,8 @@ pub(super) struct Sidebar {
   modal: u32,
   shown_at: Option<Instant>,
   dash: Option<ID2D1StrokeStyle>,
+  /// where the lifted tile's visual is (pixels): its landing starts there
+  ghost_at: (f32, f32),
 }
 
 impl Default for Sidebar {
@@ -251,6 +257,7 @@ impl Default for Sidebar {
       modal: 0,
       shown_at: None,
       dash: None,
+      ghost_at: (0.0, 0.0),
       store,
     }
   }
@@ -333,20 +340,26 @@ fn make_win(gfx: &Gfx) -> anyhow::Result<Win> {
       GetModuleHandleW(None)?,
       None,
     )?;
-    let made = (|| -> windows::core::Result<(IDCompositionTarget, IDCompositionVisual2, Layer, Layer)> {
+    let made = (|| -> windows::core::Result<(IDCompositionTarget, IDCompositionVisual2, Layer, Layer, windows::Win32::Graphics::DirectComposition::IDCompositionScaleTransform, Layer)> {
       let target = gfx.dcomp.CreateTargetForHwnd(hwnd, true)?;
       let root = gfx.dcomp.CreateVisual()?;
       let panel = Layer::new(gfx, w as u32, h as u32)?;
+      let ghost = Layer::new(gfx, w as u32, (quick::drag::GHOST_H * scale).ceil() as u32)?;
+      let ghost_scale = gfx.dcomp.CreateScaleTransform()?;
+      ghost.visual.SetTransform(&ghost_scale)?;
+      let gv: IDCompositionVisual3 = ghost.visual.cast()?;
+      gv.SetOpacity2(0.0)?;
       let page = Layer::new(gfx, w as u32, h as u32)?;
       root.AddVisual(&panel.visual, false, None)?;
+      root.AddVisual(&ghost.visual, false, None)?;
       root.AddVisual(&page.visual, false, None)?;
       target.SetRoot(&root)?;
-      Ok((target, root, panel, page))
+      Ok((target, root, panel, ghost, ghost_scale, page))
     })();
     match made {
-      Ok((target, root, panel, page)) => {
+      Ok((target, root, panel, ghost, ghost_scale, page)) => {
         SIDEBAR_HWND.store(hwnd.0 as isize, Ordering::Release);
-        Ok(Win { hwnd, scale, h: h as f32 / scale, _target: target, root, panel, page })
+        Ok(Win { hwnd, scale, h: h as f32 / scale, _target: target, root, panel, ghost, ghost_scale, page })
       }
       Err(err) => {
         let _ = DestroyWindow(hwnd);
@@ -514,7 +527,9 @@ impl Ui {
 
   fn quick_drop_cancel(&mut self) -> bool {
     let tr = |s: &str| self.model.tr(s);
-    self.sidebar.quick.release(&self.model, &tr, false)
+    self.sidebar.quick.release(&self.model, &tr, false);
+    self.sidebar.quick.landing = None;
+    false
   }
 
   /// The slide is over: the window goes (nothing stays on screen or in the
@@ -649,6 +664,7 @@ impl Ui {
       TIMER_SB_PAGE => self.sb_page_gone(),
       TIMER_SB_FRAME => {
         self.sb_notifs_frame();
+        self.sb_tiles_frame();
         self.sb_render();
       }
       TIMER_SB_TICK => {
@@ -683,7 +699,7 @@ impl Ui {
     }
     match self.sb_render_inner() {
       Ok(busy) => {
-        let busy = busy || self.sidebar.notifs.busy();
+        let busy = busy || self.sidebar.notifs.busy() || self.sidebar.quick.pressing() || self.sidebar.quick.landing.is_some();
         if busy {
           self.sb_frames();
         } else if self.sidebar.frames {

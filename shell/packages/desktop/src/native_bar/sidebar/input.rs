@@ -147,10 +147,7 @@ impl Ui {
         return;
       }
       Some(Drag::Tile) => {
-        let tr = |s: &str| self.model.tr(s);
-        if self.sidebar.quick.drag_move(&self.model, &tr, x, y) {
-          self.sb_render();
-        }
+        self.sb_tile_drag(x, y, false);
         return;
       }
       Some(Drag::Notif) => {
@@ -218,8 +215,11 @@ impl Ui {
         self.sb_slide_to(&h, x, y, false);
       }
       Some(Hit::Quick(QHit::Tile(t))) if self.sidebar.quick.edit => {
-        self.sidebar.quick.press(t, x, y);
+        let tr = |s: &str| self.model.tr(s);
+        self.sidebar.quick.press(&self.model, &tr, t, x, y);
         self.sidebar.drag = Some(Drag::Tile);
+        // a long press lifts it: frames watch the time
+        self.sb_frames();
       }
       Some(Hit::Notif(NHit::Group(app))) => {
         self.sidebar.notifs.press(&app, x, y);
@@ -252,10 +252,8 @@ impl Ui {
         return;
       }
       Some(Drag::Tile) => {
-        let tr = |s: &str| self.model.tr(s);
-        if self.sidebar.quick.release(&self.model, &tr, true) {
-          self.sidebar.store.quick_toggles = Some(self.sidebar.quick.toggles.clone());
-          self.sidebar.save_soon();
+        if self.sb_tile_drop(true) {
+          return;
         }
       }
       Some(Drag::Notif) => {
@@ -285,8 +283,7 @@ impl Ui {
   pub(in crate::native_bar::sidebar) fn sb_drag_cancel(&mut self) {
     match self.sidebar.drag.take() {
       Some(Drag::Tile) => {
-        let tr = |s: &str| self.model.tr(s);
-        self.sidebar.quick.release(&self.model, &tr, false);
+        self.sb_tile_drop(false);
       }
       Some(Drag::Notif) => {
         let app = self.sidebar.notifs.release();
@@ -348,6 +345,15 @@ impl Ui {
       return true;
     }
     let (ctrl, shift) = modifiers();
+    // Esc during a tile drag: it goes back where it was
+    if vk == 0x1B && self.sidebar.drag == Some(Drag::Tile) {
+      self.sidebar.drag = None;
+      unsafe {
+        let _ = ReleaseCapture();
+      }
+      self.sb_tile_drop(false);
+      return true;
+    }
     // the shortcut editor waits for the core to catch a combination
     if self.sidebar.keys.capturing.is_some() {
       return true;

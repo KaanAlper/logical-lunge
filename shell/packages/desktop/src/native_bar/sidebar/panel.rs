@@ -53,7 +53,6 @@ pub(super) fn paint_main(cx: &mut Cx, sb: &mut Sidebar, m: &crate::native_bar::m
   sb.fields.insert(FieldId::WifiPw, pw);
   sb.fields.insert(FieldId::NightFrom, from);
   sb.fields.insert(FieldId::NightTo, to);
-  sb.quick.paint_ghost(cx, m)?;
   Ok(())
 }
 

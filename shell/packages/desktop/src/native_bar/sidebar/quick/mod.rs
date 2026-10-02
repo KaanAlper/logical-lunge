@@ -12,6 +12,7 @@
 mod actions;
 mod cards;
 mod defs;
+pub(super) mod drag;
 
 use std::{
   collections::HashMap,
@@ -104,23 +105,49 @@ struct Press {
   tile: Toggle,
   x0: f32,
   y0: f32,
-  dx: f32,
-  dy: f32,
-  w: f32,
-  h: f32,
-}
-
-pub(super) struct Drag {
-  tile: Toggle,
+  /// the pointer now (a long press lifts the tile where it is)
   x: f32,
   y: f32,
   dx: f32,
   dy: f32,
   w: f32,
   h: f32,
+  at: Instant,
+  /// where it was: (in the used rows, index)
+  orig: (bool, usize),
+}
+
+/// A tile lifted and following the pointer. The pointer keeps its grab
+/// offset (`dx`, `dy`) so the tile does not jump on the first move.
+pub(super) struct Drag {
+  pub tile: Toggle,
+  pub x: f32,
+  pub y: f32,
+  pub dx: f32,
+  pub dy: f32,
+  pub w: f32,
+  pub h: f32,
   to_used: bool,
   index: usize,
+  orig: (bool, usize),
 }
+
+/// What a pointer move did to a press on a tile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Moved {
+  Nothing,
+  /// it lifted now (a long press or a move past the threshold)
+  Lifted,
+  /// it follows the pointer, same drop place
+  Moved,
+  /// the drop place changed: the other tiles move
+  Retargeted,
+}
+
+/// a press held this long lifts the tile without moving
+pub(super) const LIFT_MS: u128 = 350;
+/// the other tiles slide to their new places, the dropped one lands
+pub(super) const SLIDE_MS: f32 = 180.0;
 
 struct CardAnim {
   tile: Tile,
@@ -142,6 +169,8 @@ pub(super) struct Quick {
   pub drag: Option<Drag>,
   /// a drag just ended: the click that follows does not add / remove
   dragged: bool,
+  /// the dropped (or given back) tile while its ghost lands: not drawn yet
+  pub landing: Option<(Tile, Instant)>,
   /// where each tile was drawn (cards open under it), and in the edit mode
   /// the moves under way
   placed: HashMap<Tile, Rect>,
@@ -364,7 +393,7 @@ impl Quick {
         let last = self.shown.get(&t.tile).copied();
         match moving {
           Some((from, to, at)) if to == *target => {
-            let k = (now.duration_since(at).as_secs_f32() * 1000.0 / 200.0).min(1.0);
+            let k = (now.duration_since(at).as_secs_f32() * 1000.0 / SLIDE_MS).min(1.0);
             r = lerp_rect(from, to, MOVE.at(k));
             if k < 1.0 {
               cx.busy = true;
@@ -380,6 +409,9 @@ impl Quick {
         }
       }
       shown.insert(t.tile, r);
+      if self.landing.is_some_and(|(l, _)| l == t.tile) {
+        continue; // its ghost is landing there
+      }
       self.paint_tile(cx, m, *t, r, *ph, *in_used, dash)?;
     }
     self.placed = shown.clone();
@@ -462,10 +494,9 @@ impl Quick {
     Ok(())
   }
 
-  /// The dragged tile under the pointer, a little bigger, with a shadow.
-  pub fn paint_ghost(&self, cx: &mut Cx, m: &Model) -> anyhow::Result<()> {
+  /// The lifted tile at `r` (its own surface): a little bigger, with a shadow.
+  pub fn paint_ghost(&self, cx: &mut Cx, m: &Model, r: Rect) -> anyhow::Result<()> {
     let Some(d) = &self.drag else { return Ok(()) };
-    let r = Rect::new(d.x - d.dx - d.w * 0.02, d.y - d.dy - d.h * 0.02, d.w * 1.04, d.h * 1.04);
     cx.shadow(r, 23.0, 0.8)?;
     // drawn as it looks outside the edit mode
     let me = Quick { edit: false, toggles: Vec::new(), hw: self.hw.clone(), ..Default::default() };
@@ -506,39 +537,84 @@ impl Quick {
   // ------------------------------------------------------------------ input
 
   /// A press on a tile in the edit mode may become a drag.
-  pub fn press(&mut self, tile: Tile, x: f32, y: f32) {
+  pub fn press(&mut self, m: &Model, tr: &dyn Fn(&str) -> String, tile: Tile, x: f32, y: f32) {
     if !self.edit {
       return;
     }
     let size = self.toggles.iter().find(|t| t.tile == tile).map_or(1, |t| t.size);
     let r = self.shown.get(&tile).copied().unwrap_or(Rect::new(x - 20.0, y - 20.0, 40.0, CELL_H));
-    self.press = Some(Press { tile: Toggle { tile, size }, x0: x, y0: y, dx: x - r.x, dy: y - r.y, w: r.w, h: r.h });
-  }
-
-  /// The pointer moved with the button down: true when a drag shows.
-  pub fn drag_move(&mut self, m: &Model, tr: &dyn Fn(&str) -> String, x: f32, y: f32) -> bool {
-    let Some(p) = &self.press else { return false };
-    if self.drag.is_none() && (x - p.x0).hypot(y - p.y0) < 5.0 {
-      return false;
-    }
-    let (tile, dx, dy, w, h) = (p.tile, p.dx, p.dy, p.w, p.h);
-    let (to_used, index) = if self.edit && self.unused_area.h > 0.0 && y > self.unused_area.y - SPACING {
-      (false, 0)
-    } else {
-      let visible = self.visible(m, tr);
-      (true, drop_index(&visible, tile, x - self.used_area.x, y - self.used_area.y, self.used_area.w))
+    let visible = self.visible(m, tr);
+    let orig = match visible.iter().position(|t| t.tile == tile) {
+      Some(i) => (true, i),
+      None => (false, 0),
     };
-    self.drag = Some(Drag { tile, x, y, dx, dy, w, h, to_used, index });
-    self.dragged = true;
-    true
+    self.press = Some(Press { tile: Toggle { tile, size }, x0: x, y0: y, x, y, dx: x - r.x, dy: y - r.y, w: r.w, h: r.h, at: Instant::now(), orig });
   }
 
-  /// The button went up: a drag drops (true: the layout changed).
-  pub fn release(&mut self, m: &Model, tr: &dyn Fn(&str) -> String, drop: bool) -> bool {
+  /// A press held long enough without moving: where to lift the tile.
+  pub fn lift_due(&self) -> Option<(f32, f32)> {
+    let p = self.press.as_ref()?;
+    (self.drag.is_none() && p.at.elapsed().as_millis() >= LIFT_MS).then_some((p.x, p.y))
+  }
+
+  pub fn pressing(&self) -> bool {
+    self.press.is_some() && self.drag.is_none()
+  }
+
+  /// Where the tile would drop with the pointer at (x, y): outside the
+  /// tiles it goes back where it was.
+  fn target(&self, m: &Model, tr: &dyn Fn(&str) -> String, tile: Toggle, x: f32, y: f32, orig: (bool, usize)) -> (bool, usize) {
+    let near = Rect::new(self.area.x - 24.0, self.area.y - 24.0, self.area.w + 48.0, self.area.h + 48.0);
+    if !near.contains(x, y) {
+      return orig;
+    }
+    if self.unused_area.h > 0.0 && y > self.unused_area.y - SPACING {
+      return (false, 0);
+    }
+    let visible = self.visible(m, tr);
+    (true, drop_index(&visible, tile, x - self.used_area.x, y - self.used_area.y, self.used_area.w))
+  }
+
+  /// The pointer moved with the button down (or a long press is due).
+  pub fn drag_move(&mut self, m: &Model, tr: &dyn Fn(&str) -> String, x: f32, y: f32, lift: bool) -> Moved {
+    let Some(p) = self.press.as_mut() else { return Moved::Nothing };
+    p.x = x;
+    p.y = y;
+    if self.drag.is_none() {
+      if !lift && (x - p.x0).hypot(y - p.y0) < 5.0 {
+        return Moved::Nothing;
+      }
+      let (tile, dx, dy, w, h, orig) = (p.tile, p.dx, p.dy, p.w, p.h, p.orig);
+      let (to_used, index) = self.target(m, tr, tile, x, y, orig);
+      self.drag = Some(Drag { tile, x, y, dx, dy, w, h, to_used, index, orig });
+      self.dragged = true;
+      return Moved::Lifted;
+    }
+    let (tile, orig) = {
+      let d = self.drag.as_ref().unwrap();
+      (d.tile, d.orig)
+    };
+    let (to_used, index) = self.target(m, tr, tile, x, y, orig);
+    let d = self.drag.as_mut().unwrap();
+    d.x = x;
+    d.y = y;
+    if (d.to_used, d.index) != (to_used, index) {
+      d.to_used = to_used;
+      d.index = index;
+      Moved::Retargeted
+    } else {
+      Moved::Moved
+    }
+  }
+
+  /// The button went up (`drop`) or the drag was cancelled: the tile that
+  /// lands, and whether the layout changed.
+  pub fn release(&mut self, m: &Model, tr: &dyn Fn(&str) -> String, drop: bool) -> Option<(Tile, bool)> {
     self.press = None;
-    let Some(d) = self.drag.take() else { return false };
-    if !drop {
-      return false;
+    let d = self.drag.take()?;
+    self.landing = Some((d.tile.tile, Instant::now()));
+    if !drop || (d.to_used, d.index) == d.orig {
+      return Some((d.tile.tile, false));
     }
     let rest: Vec<Toggle> = self.toggles.iter().filter(|t| t.tile != d.tile.tile).copied().collect();
     if !d.to_used {
@@ -550,7 +626,7 @@ impl Quick {
       n.insert(at, d.tile);
       self.toggles = n;
     }
-    true
+    Some((d.tile.tile, true))
   }
 
   /// The click after a press: false when a drag just ended (no add / remove).
