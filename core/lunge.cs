@@ -3351,6 +3351,7 @@ static class ShellWatchdog
                     if (problem == null) { bad = 0; failures = 0; continue; }
                     if (++bad < 2) continue;
                     bad = 0;
+                    if (shell == null) Toasts.SendLater("warn", "Kabuk durdu, yeniden başlatıldı", "Bar ve paneller yeniden açıldı.", "restart_alt");
                     Restart(problem);
                     failures++;
                     if (failures >= 3) Thread.Sleep(Math.Min(300000, 30000 * failures)); // sürekli başarısızsa sık sık deneme
@@ -4081,27 +4082,37 @@ static class UserLaunch
     }
 
     // hidden: pencere gizli açılır (terminal ön-ısıtması). false: masaüstü kabuğu yok (Gezgin açılmamış / çökmüş).
-    public static bool Start(string file, string args, string dir, bool hidden = false)
+    public static bool Start(string file, string args, string dir, bool hidden = false, string verb = "")
     {
+        // Açılamayacak bir şeyde Gezgin kendi kutusunu gösterirdi: önce denetlenir, sorun bizim kartımızla söylenir
+        int problem = Launcher.Check(file);
+        if (problem != Launcher.OK) { Launcher.Report(file, problem); return false; }
         if (!elevated)
         {
             try
             {
-                Process.Start(new ProcessStartInfo(file, args ?? "") { UseShellExecute = true, WorkingDirectory = dir ?? Paths.Home, WindowStyle = hidden ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal }).Dispose();
+                // ErrorDialog false: ShellExecuteEx SEE_MASK_FLAG_NO_UI ile (hata istisna olarak gelir, kutu açılmaz)
+                Process.Start(new ProcessStartInfo(file, args ?? "") { UseShellExecute = true, ErrorDialog = false, Verb = verb ?? "", WorkingDirectory = dir ?? Paths.Home, WindowStyle = hidden ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal }).Dispose();
                 return true;
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                // 1223: kullanıcı UAC'ı reddetti (bir hata değil)
+                if (ex.NativeErrorCode != 1223) Launcher.Report(file, ex.NativeErrorCode);
+                return false;
             }
             catch (Exception ex) { Slider.Log("başlatılamadı: " + file + ": " + ex.Message); return false; }
         }
         // COM nesneleri tek iş parçacıklı (STA) bir thread ister
         bool ok = false;
-        var t = new Thread(() => ok = ViaDesktopShell(file, args ?? "", dir ?? Paths.Home, hidden ? 0 : 1)) { IsBackground = true, Name = "user-launch" };
+        var t = new Thread(() => ok = ViaDesktopShell(file, args ?? "", dir ?? Paths.Home, hidden ? 0 : 1, verb ?? "")) { IsBackground = true, Name = "user-launch" };
         t.SetApartmentState(ApartmentState.STA);
         t.Start();
         if (!t.Join(15000)) { Slider.Log("kullanıcı olarak başlatma zaman aşımı: " + file); return false; }
         return ok;
     }
 
-    static bool ViaDesktopShell(string file, string args, string dir, int show)
+    static bool ViaDesktopShell(string file, string args, string dir, int show, string verb)
     {
         object windows = null, desktop = null, view = null, folderView = null, app = null;
         try
@@ -4120,7 +4131,7 @@ static class UserLaunch
             Guid disp = IID_IDispatch;
             if (shellView.GetItemObject(SVGIO_BACKGROUND, ref disp, out folderView) != 0 || folderView == null) return false;
             app = folderView.GetType().InvokeMember("Application", System.Reflection.BindingFlags.GetProperty, null, folderView, null);
-            app.GetType().InvokeMember("ShellExecute", System.Reflection.BindingFlags.InvokeMethod, null, app, new object[] { file, args, dir, "", show });
+            app.GetType().InvokeMember("ShellExecute", System.Reflection.BindingFlags.InvokeMethod, null, app, new object[] { file, args, dir, verb, show });
             return true;
         }
         catch (Exception ex) { Slider.Log("kullanıcı olarak başlatılamadı (" + file + "): " + ex.Message); return false; }
@@ -4134,6 +4145,9 @@ static class UserLaunch
     // Masaüstü kabuğu hazır olana kadar bekleyerek (oturum açılışında Gezgin çekirdekten sonra gelebilir)
     public static bool StartWhenReady(string file, string args, string dir, int waitMs)
     {
+        // açılamayacaksa bir kez söylenir (beklerken her saniye kart çıkmasın)
+        int problem = Launcher.Check(file);
+        if (problem != Launcher.OK) { Launcher.Report(file, problem); return false; }
         var sw = Stopwatch.StartNew();
         while (true)
         {
@@ -4649,6 +4663,8 @@ static class TilingWatchdog
         }
         Volatile.Write(ref recoveringUntil, Environment.TickCount + 30000);
         Slider.Log("tiling nöbetçisi: " + why + "; masaüstü yeniden başlatılıyor");
+        // Windows'un çökme kutusu yerine (kurulum bizim exe'lerimizi Hata Bildirimi'nden çıkarır): kabuk geri gelince görünür
+        Toasts.SendLater("warn", "Pencere yöneticisi durdu, yeniden başlatıldı", why, "restart_alt");
         foreach (var name in new[] { Names.Shell, Names.Tiling })
             foreach (var p in Process.GetProcessesByName(name))
             {
@@ -4796,7 +4812,7 @@ static class Toasts
                 new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
                 return;
             }
-            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4810,6 +4826,7 @@ static class Toasts
             var head = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n: hazır\n\n");
             s.Write(head, 0, head.Length);
             lock (clients) clients.Add(s);
+            FlushLater();
         }
         catch { try { c.Close(); } catch { } }
     }
@@ -4855,8 +4872,23 @@ static class Toasts
             // native bar ve komut satırı zaten POST gönderir.
             bool writes = target.StartsWith("/cmd?") || target.StartsWith("/pref?") || target.StartsWith("/tray-pins?") || target.StartsWith("/dock-pins?")
                 || target.StartsWith("/widget?") || target.StartsWith("/overview-") || target.StartsWith("/log?") || target.StartsWith("/bar-alive?")
-                || target.StartsWith("/notification-open?") || target.StartsWith("/dialog") || target.StartsWith("/notify?");
+                || target.StartsWith("/notification-open?") || target.StartsWith("/dialog") || target.StartsWith("/notify?") || target.StartsWith("/launch?");
             if (writes && !req.StartsWith("POST ")) status = "405 Method Not Allowed";
+            else if (target.StartsWith("/launch?"))
+            {
+                // Kabuğun başlattıkları (Super menüsü, Dock, ayarlar): tek yoldan, kullanıcı olarak, Windows kutusu yerine
+                // bizim kartımızla. verb: "" / open / runas / explore
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/launch\?file=([^&\s]{1,4096})(?:&args=([^&\s]{0,8192}))?(?:&verb=(open|runas|explore))?$");
+                if (!m.Success) status = "400 Bad Request";
+                else
+                {
+                    string file = Uri.UnescapeDataString(m.Groups[1].Value);
+                    string largs = m.Groups[2].Success ? Uri.UnescapeDataString(m.Groups[2].Value) : "";
+                    string verb = m.Groups[3].Success ? m.Groups[3].Value : "";
+                    bool started = UserLaunch.Start(file, largs, Paths.Home, false, verb == "open" ? "" : verb);
+                    status = started ? "204 No Content" : "422 Unprocessable Entity";
+                }
+            }
             else if (target.StartsWith("/notify?"))
             {
                 // Bizim parçaların (pencere yöneticisi, betikler) uyarı ve hataları: Windows kutusu yerine bildirim kartı
@@ -5149,6 +5181,27 @@ static class Toasts
         Write("data: " + json.Serialize(new Dictionary<string, object> { { "emit", evt } }) + "\n\n");
     }
 
+    // Kabuk kapalıyken söylenecek kart (ör. "kabuk durdu, yeniden başlatıldı"): akışa ilk bağlanan istemciye gider
+    static readonly List<Dictionary<string, object>> later = new List<Dictionary<string, object>>();
+
+    public static void SendLater(string kind, string title, string body, string icon)
+    {
+        lock (later)
+        {
+            if (later.Count >= 8) later.RemoveAt(0);
+            later.Add(new Dictionary<string, object> { { "kind", kind }, { "title", title }, { "body", body }, { "icon", icon } });
+        }
+        lock (clients) if (clients.Count == 0) return;
+        FlushLater();
+    }
+
+    static void FlushLater()
+    {
+        List<Dictionary<string, object>> now;
+        lock (later) { if (later.Count == 0) return; now = new List<Dictionary<string, object>>(later); later.Clear(); }
+        foreach (var c in now) Card(c);
+    }
+
     public static void Send(string kind, string title, string body, string icon)
     {
         Card(new Dictionary<string, object> { { "kind", kind }, { "title", title }, { "body", body }, { "icon", icon } });
@@ -5158,153 +5211,6 @@ static class Toasts
     public static void Card(Dictionary<string, object> card)
     {
         Write("data: " + json.Serialize(card) + "\n\n");
-    }
-}
-
-// ---------------- Windows hata pencerelerini yakala ----------------
-// Tek "Tamam" butonlu bilgi/hata kutularını (tiling "Non-fatal error", Explorer "bulunamıyor",
-// shell/kenarlık hataları...) kapatıp metnini toast olarak gösterir. Cevap bekleyen (Evet/Hayır)
-// kutulara dokunmaz.
-class DialogCatcher
-{
-    Native.WinEventDelegate cb;
-    static readonly HashSet<string> owners = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { Names.Tiling, Names.Shell, Names.Core, "explorer", "powershell", "rundll32", "cmd" };
-    // Oluşturulurken görünmez yapılan, henüz karar verilmemiş kutular -> özgün genişletilmiş stil
-    readonly Dictionary<IntPtr, int> pending = new Dictionary<IntPtr, int>();
-    System.Windows.Forms.Timer safety;
-
-    [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object obj);
-    [DllImport("oleacc.dll")] static extern int AccessibleChildren(Accessibility.IAccessible container, int start, int count, [Out] object[] children, out int obtained);
-
-    // Mesaj döngüsü olan kendi thread'inde çağrılır
-    public void Start()
-    {
-        cb = OnEvent;
-        // CREATE..SHOW: kutu oluşturulduğu anda (gösterilmeden) görünmez yapılır, gösterilince karar verilir
-        Native.SetWinEventHook(0x8000, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
-        // Güvenlik ağı: 2 sn'de karar verilemeyen kutu (olay kaçtıysa) geri görünür olur; hiçbir pencere görünmez kalmaz
-        safety = new System.Windows.Forms.Timer { Interval = 500 };
-        safety.Tick += (s, e) =>
-        {
-            // karar verilmiş / kapanmış kutunun zamanı kalmasın (gün boyu açık çekirdekte sözlük büyüyordu)
-            if (createdAt.Count > pending.Count)
-                foreach (var h in new List<IntPtr>(createdAt.Keys)) if (!pending.ContainsKey(h)) createdAt.Remove(h);
-            foreach (var kv in new List<KeyValuePair<IntPtr, int>>(pending))
-                if (!Native.IsWindow(kv.Key)) { pending.Remove(kv.Key); createdAt.Remove(kv.Key); }
-                else if (Environment.TickCount - Created(kv.Key) > 2000) { Restore(kv.Key, kv.Value); Slider.Log("dialog: karar verilemedi, geri gösterildi"); }
-        };
-        safety.Start();
-    }
-
-    readonly Dictionary<IntPtr, int> createdAt = new Dictionary<IntPtr, int>();
-    int Created(IntPtr h) { int t; return createdAt.TryGetValue(h, out t) ? t : 0; }
-
-    static string ClassOf(IntPtr h) { var c = new StringBuilder(64); Native.GetClassName(h, c, 64); return c.ToString(); }
-
-    void Hide(IntPtr h)
-    {
-        int ex0 = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
-        if ((ex0 & 0x00080000) == 0) Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex0 | 0x00080000); // WS_EX_LAYERED
-        Native.SetLayeredWindowAttributes(h, 0, 0, 0x2); // LWA_ALPHA, tamamen saydam
-        pending[h] = ex0; createdAt[h] = Environment.TickCount;
-    }
-
-    void Restore(IntPtr h, int ex0)
-    {
-        pending.Remove(h); createdAt.Remove(h);
-        Native.SetLayeredWindowAttributes(h, 0, 255, 0x2);
-        Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex0);
-        Native.RedrawWindow(h, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400); // INVALIDATE|UPDATENOW|ALLCHILDREN|FRAME
-    }
-
-    void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
-    {
-        EventLag.Note("iletişim kutusu", time);
-        if (idObject != 0 || hwnd == IntPtr.Zero) return;
-        try
-        {
-            if (ev != 0x8000 && ev != Native.EVENT_OBJECT_SHOW) return;
-            if (ClassOf(hwnd) != "#32770") return;
-            uint pid; Native.GetWindowThreadProcessId(hwnd, out pid);
-            string proc;
-            proc = ProcInfo.Name(pid); if (proc.Length == 0) return;
-            if (!owners.Contains(proc)) return;
-
-            if (ev == 0x8000) { Hide(hwnd); return; } // EVENT_OBJECT_CREATE: henüz ekranda değil
-            if (!pending.ContainsKey(hwnd)) Hide(hwnd); // oluşturma olayı kaçtıysa şimdi
-            int ex0 = pending[hwnd];
-
-            var texts = new List<string>(); var buttons = new List<IntPtr>(); IntPtr dui = IntPtr.Zero;
-            Native.EnumChildWindows(hwnd, delegate (IntPtr ch, IntPtr l)
-            {
-                string cn = ClassOf(ch);
-                var t = new StringBuilder(2048); Native.GetWindowText(ch, t, 2048);
-                string tx = t.ToString().Trim();
-                if (cn == "Button") { if (Native.IsWindowVisible(ch)) buttons.Add(ch); }
-                else if (cn == "Static" && tx.Length > 0) texts.Add(tx);
-                else if (cn == "DirectUIHWND" && dui == IntPtr.Zero) dui = ch;
-                return true;
-            }, IntPtr.Zero);
-            // Yeni tür kutular (TaskDialog: Çalıştır, explorer, kısayol hataları): metin DirectUIHWND'in içinde çiziliyor,
-            // pencere metni olarak okunmuyor; erişilebilirlik arabiriminden (ekran okuyucuların yolu) okunur.
-            if (texts.Count == 0 && dui != IntPtr.Zero) ReadAccessibleTexts(dui, texts);
-
-            // Yalnızca tek düğmeli (Tamam) bilgi / hata kutusu bildirime döner; soru soranlar (Evet/Hayır, özellikler,
-            // dosya işlemleri) olduğu gibi görünür
-            if (buttons.Count != 1 || texts.Count == 0) { Restore(hwnd, ex0); return; }
-
-            pending.Remove(hwnd); createdAt.Remove(hwnd);
-            var title = new StringBuilder(256); Native.GetWindowText(hwnd, title, 256);
-            Native.PostMessage(buttons[0], 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
-            string head = title.ToString();
-            if (proc.Equals(Names.Tiling, StringComparison.OrdinalIgnoreCase)) head = "Pencere yöneticisi: " + head;
-            Toasts.Send("error", head.Length > 0 ? head : "Hata", string.Join("\n", texts), "error");
-            Slider.Log("dialog -> toast: " + proc + " | " + head);
-        }
-        catch (Exception ex)
-        {
-            Slider.Log("dialog: " + ex.GetBaseException().Message);
-            int ex0; if (pending.TryGetValue(hwnd, out ex0)) Restore(hwnd, ex0);
-        }
-    }
-
-    // MSAA: kutunun içindeki metin öğeleri (ROLE_SYSTEM_STATICTEXT / TEXT), sırayla ve tekrarsız
-    static void ReadAccessibleTexts(IntPtr h, List<string> into)
-    {
-        try
-        {
-            var iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71"); // IID_IAccessible
-            object o;
-            if (AccessibleObjectFromWindow(h, 0xFFFFFFFC, ref iid, out o) != 0) return; // OBJID_CLIENT
-            var acc = o as Accessibility.IAccessible;
-            if (acc != null) Walk(acc, into, 0);
-        }
-        catch { }
-    }
-
-    static void Walk(Accessibility.IAccessible acc, List<string> into, int depth)
-    {
-        if (depth > 8) return;
-        int n;
-        try { n = acc.accChildCount; } catch { return; }
-        if (n <= 0 || n > 200) return;
-        var kids = new object[n]; int got;
-        if (AccessibleChildren(acc, 0, n, kids, out got) != 0) return;
-        for (int i = 0; i < got; i++)
-        {
-            try
-            {
-                var child = kids[i] as Accessibility.IAccessible;
-                object role; string name;
-                if (child != null) { role = child.get_accRole(0); name = child.get_accName(0); }
-                else { role = acc.get_accRole(kids[i]); name = acc.get_accName(kids[i]); }
-                int r = role is int ? (int)role : 0;
-                if ((r == 41 || r == 42) && !string.IsNullOrWhiteSpace(name) && !into.Contains(name.Trim())) into.Add(name.Trim());
-                if (child != null) Walk(child, into, depth + 1);
-            }
-            catch { }
-        }
     }
 }
 
@@ -11150,7 +11056,6 @@ static class LaunchQueue
 // Native callback sahiplerinin GC'den korunması
 static class Keep
 {
-    public static DialogCatcher Dialogs;
     public static Rounder Round;
 }
 
@@ -11449,6 +11354,14 @@ static class Program
         }
         // lunge.exe --open <https://... | spotify:... | ms-actioncenter:>: bağlantıyı varsayılan uygulamada aç. explorer.exe'ye
         // verilen adres "&" içerince klasör açıyordu; ShellExecute doğrudan protokol işleyicisine gider.
+        // "Birlikte aç" (açacak uygulaması olmayan dosyanın kartı): Windows'un uygulama seçicisi, kullanıcı olarak
+        if (args.Length == 2 && args[0] == "--open" && args[1].StartsWith("openwith:", StringComparison.OrdinalIgnoreCase))
+        {
+            string target = args[1].Substring(9);
+            if (System.IO.Path.IsPathRooted(target) && System.IO.File.Exists(target))
+                UserLaunch.Start("rundll32.exe", "shell32.dll,OpenAs_RunDLL " + target, Paths.Home);
+            return;
+        }
         if (args.Length == 2 && args[0] == "--open" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^(https?|spotify|mailto|ms-actioncenter):", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
         {
             UserLaunch.Start(args[1], "", Paths.Home);
@@ -11779,12 +11692,6 @@ static class Program
         Wallpaper.StartKeeper();
         Toasts.Start();
         WinNotifications.Start();
-        // Windows'a verilen callback'lerin sahibi nesneler canlı kalmalı: aksi halde çöp toplayıcı
-        // onları siler ve Windows silinmiş fonksiyonu çağırınca helper sessizce çöker.
-        var dialogThread = new Thread(() => { Keep.Dialogs = new DialogCatcher(); Keep.Dialogs.Start(); Application.Run(); });
-        dialogThread.SetApartmentState(ApartmentState.STA);
-        dialogThread.IsBackground = true;
-        dialogThread.Start();
 
         // Klavye kancası KENDİ thread'inde ve orada başka hiçbir iş yapılmaz: LL hook ~300ms'de
         // yanıt vermezse Windows kancayı söker ve o sırada klavye donar. (Eskiden köşe yuvarlama
