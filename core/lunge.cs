@@ -838,8 +838,57 @@ class Slider
     }
     int ovW, ovH, culledCount;
     public volatile bool Interrupt;
-    // Animasyon sürerken başka işler (dwindle yön komutu) tiling'i meşgul etmesin
-    public static volatile bool Animating;
+    // Animasyon sürerken başka işler (dwindle yön komutu) tiling'i meşgul etmesin. Başladığı an saklanır: bekçi
+    // (StartWatchdog) takılı kalan bir animasyonu (katman ekranda donmuş) bulup kaldırır.
+    static volatile bool animating;
+    static int animSince, swipeTouched;
+    public static bool Animating
+    {
+        get { return animating; }
+        set { if (value && !animating) animSince = Environment.TickCount; animating = value; }
+    }
+    // Katmana kayıtlı pencere önizlemeleri: bir hata animasyonu yarıda keserse bekçi hepsini bırakabilsin
+    static readonly HashSet<IntPtr> liveThumbs = new HashSet<IntPtr>();
+    static void Unregister(IntPtr id)
+    {
+        lock (liveThumbs) liveThumbs.Remove(id);
+        Native.DwmUnregisterThumbnail(id);
+    }
+
+    // En uzun animasyon ~1 sn (+ tiling'i en fazla 1,5 sn bekleme); 10 sn'dir süren (parmak kaydırmasında son
+    // hareketten bu yana) bir animasyon takılmıştır: katman kaldırılır, önizlemeler bırakılır.
+    const int STUCK_MS = 10000;
+    public void StartWatchdog()
+    {
+        new System.Threading.Timer(_ =>
+        {
+            if (!Stuck()) return;
+            try { Ui.BeginInvoke((Action)(() => { if (Stuck()) Recover("animasyon " + (Environment.TickCount - animSince) / 1000 + " sn'dir bitmedi"); })); } catch { }
+        }, null, 2000, 2000);
+    }
+    bool Stuck()
+    {
+        if (!animating) return false;
+        int since = swipe != null ? Math.Max(0, Environment.TickCount - swipeTouched) : Environment.TickCount - animSince;
+        return since > STUCK_MS;
+    }
+
+    // Yarıda kalan animasyonun temizliği (UI thread'inde): bütün katmanlar gizlenir, kenarlık / sabit pencere takımları
+    // döner, kayıtlı önizlemeler bırakılır
+    public void Recover(string why)
+    {
+        Log("animasyon kurtarma: " + why);
+        swipe = null;
+        var all = new List<Overlay> { overlay, spare };
+        lock (overlays) all.AddRange(overlays.Values);
+        foreach (var o in all) { try { o.Conceal(); } catch { } }
+        try { RingsClear(); } catch { }
+        try { PinsClear(); } catch { }
+        List<IntPtr> ids;
+        lock (liveThumbs) { ids = new List<IntPtr>(liveThumbs); liveThumbs.Clear(); }
+        foreach (var id in ids) Native.DwmUnregisterThumbnail(id);
+        Animating = false;
+    }
     // Hyprland'de art arda basışta animasyon akmaya devam eder: bir önceki geçişten bu yana geçen süre
     // tam süreden kısaysa yeni animasyonu o kadar kısalt (en az MIN_MS). Tek basış tam uzunlukta kalır.
     static long lastSlideStart, lastMoveStart;
@@ -853,20 +902,37 @@ class Slider
     }
 
     // Ana helper açılışta: katman hazır ve gizli beklesin, ilk animasyon da bekletmesin
+    // Monitör düzeni değişince (takıldı / çıkarıldı / çözünürlük) artık olmayan dikdörtgenlerin katmanları kapatılır:
+    // önceden 8'e kadar birikip gizli pencereleri ve kenarlık havuzlarını (her biri onlarca DWM önizlemesi) tutuyordu.
     public void Warm()
     {
         lock (overlays)
+        {
+            var want = new HashSet<Rectangle>();
             foreach (var sc in Screen.AllScreens)
             {
                 var b = sc.Bounds;
                 int barH = BarPx(b.X + b.Width / 2, b.Y + b.Height / 2);
-                var r = new Rectangle(b.X, b.Y + barH, b.Width, b.Height - barH);
+                want.Add(new Rectangle(b.X, b.Y + barH, b.Width, b.Height - barH));
+            }
+            if (!Animating)
+                foreach (var kv in new List<KeyValuePair<Rectangle, Overlay>>(overlays))
+                {
+                    var o = kv.Value;
+                    if (want.Contains(kv.Key) || o == overlay) continue; // kullanılan katman sonraki seferde
+                    overlays.Remove(kv.Key);
+                    if (o == spare) continue; // yedek kalır (yeni dikdörtgenler onu taşır)
+                    try { EmptyRingPools(o.Rings); o.Rings.Dispose(); o.Dispose(); } catch (Exception ex) { Log("katman kapatma: " + ex.Message); }
+                }
+            foreach (var r in want)
+            {
                 if (overlays.ContainsKey(r) || overlays.Count >= 8) continue;
-                var o = overlays.Count == 0 ? spare : new Overlay();
+                var o = overlays.Count == 0 && !overlays.ContainsValue(spare) ? spare : new Overlay();
                 o.Prepare(r);
                 FillRingPools(o.Rings);
                 overlays[r] = o;
             }
+        }
     }
 
     static RingTemplate ringSrc, ringSrcInactive;
@@ -1032,7 +1098,31 @@ class Slider
             t.RingA = t.RingI = null;
         }
         ringed.Clear();
+        TrimRingPools(overlay.Rings);
         FillRingPools(overlay.Rings); // sonraki animasyon için (katman gizliyken)
+    }
+
+    // Kalabalık bir workspace'te havuz o an kaydedilen takımlarla büyür (pencere başına 8 önizleme) ve geri dönen
+    // her takım havuzda kalırdı: animasyondan sonra hazır bekleyen sayıya indirilir
+    static void TrimRingPools(RingLayer layer)
+    {
+        if (layer == null) return;
+        foreach (var pool in new[] { layer.PoolA, layer.PoolI })
+        {
+            int want = pool == layer.PoolA ? POOL_A : POOL_I;
+            var extra = new List<IntPtr[]>();
+            lock (pool) while (pool.Count > want) extra.Add(pool.Pop());
+            foreach (var ids in extra) foreach (var id in ids) Native.DwmUnregisterThumbnail(id);
+        }
+    }
+    static void EmptyRingPools(RingLayer layer)
+    {
+        foreach (var pool in new[] { layer.PoolA, layer.PoolI })
+        {
+            var all = new List<IntPtr[]>();
+            lock (pool) while (pool.Count > 0) all.Add(pool.Pop());
+            foreach (var ids in all) foreach (var id in ids) Native.DwmUnregisterThumbnail(id);
+        }
     }
 
     static Native.RECT Unshift(Native.RECT r, int ox, int oy)
@@ -1183,6 +1273,7 @@ class Slider
     {
         IntPtr id;
         if (Native.DwmRegisterThumbnail(overlay.Hwnd, src, out id) != 0) return null;
+        lock (liveThumbs) liveThumbs.Add(id);
         var t = new Thumb { Id = id, Dest = dest, Src = src };
         var p = new Native.DWM_THUMBNAIL_PROPERTIES
         {
@@ -1328,6 +1419,12 @@ class Slider
 
     public Frozen Freeze(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden = 0)
     {
+        try { return FreezeCore(mon, handles, startScreen, hidden); }
+        catch (Exception ex) { Recover("donma: " + ex.Message); throw; }
+    }
+
+    Frozen FreezeCore(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden)
+    {
         SwipeAbort(); // aynı katman: süren parmak kaydırması bitsin
         Interrupt = false;
         Interlocked.Increment(ref Gen);
@@ -1388,7 +1485,14 @@ class Slider
     // gerçek yeridir (en küçük boyutu olan uygulama tiling'in hesabından farklı yere oturabilir).
     class Anim { public Thumb T; public IntPtr H; public Native.RECT Start, End, Before; public bool Moved, Resizes; public int Cx0, Cy0; public long SrcAt = -1; }
 
+    // Hata animasyonu yarıda keserse katman ekranda donmuş kalmasın: temizlenir, hata çağırana gider
     public void Finish(Frozen f, IEnumerable<long> endHandles, long popin, int durationMs, Dictionary<long, Native.RECT> targetFrames = null)
+    {
+        try { FinishCore(f, endHandles, popin, durationMs, targetFrames); }
+        catch (Exception ex) { Recover("bitiş: " + ex.Message); throw; }
+    }
+
+    void FinishCore(Frozen f, IEnumerable<long> endHandles, long popin, int durationMs, Dictionary<long, Native.RECT> targetFrames)
     {
         if (f.Ov != null) overlay = f.Ov;
         // Yer değiştiren pencereler windows_move eğrisiyle (durationMs), yeni pencere windows_in süresi ve eğrisiyle
@@ -1484,7 +1588,7 @@ class Slider
         overlay.Conceal();
         RingsClear();
         PinsClear();
-        foreach (var t in f.All) Native.DwmUnregisterThumbnail(t.Id);
+        foreach (var t in f.All) Unregister(t.Id);
         Animating = false;
     }
 
@@ -1837,6 +1941,12 @@ class Slider
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
+        try { RunCore(commands, dirHint, targetName); }
+        catch (Exception ex) { if (Animating) Recover("kayma: " + ex.Message); throw; }
+    }
+
+    void RunCore(string[] commands, int dirHint, string targetName)
+    {
         SwipeAbort();
         // Animasyonlar kapalı (ayarlar) ya da bu hareketin süresi 0 (config.yaml): workspace doğrudan değişir
         bool carry0 = commands.Length == 2 && commands[0].StartsWith("move --") && commands[1].StartsWith("focus --");
@@ -2074,7 +2184,7 @@ class Slider
                 Thread.Sleep(4);
             }
             overlay.Conceal(); RingsClear(); PinsClear();
-            foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
+            foreach (var t in thumbs) Unregister(t.Id);
             Animating = false;
             Log("fast done " + clock.ElapsedMilliseconds + "ms (animasyon " + dur0 + "ms, bitti " + animEnd + "ms, " + (viaState ? "pencereler hazır" : "komut " + (task.IsCompleted ? "bitti" : "sürüyor")) + ")");
             if (warpMon != null) WarpInto(warpMon, warpWs); // odak yandaki monitöre geçti
@@ -2141,7 +2251,7 @@ class Slider
         }
 
         overlay.Conceal(); RingsClear(); PinsClear();
-        foreach (var t in thumbs) Native.DwmUnregisterThumbnail(t.Id);
+        foreach (var t in thumbs) Unregister(t.Id);
         Log("done " + clock.ElapsedMilliseconds + "ms new=" + newThumbs.Count);
         if (warpMon != null) WarpInto(warpMon, warpWs);
     }
@@ -2181,6 +2291,13 @@ class Slider
     }
 
     public bool SwipeBegin()
+    {
+        swipeTouched = Environment.TickCount;
+        try { return SwipeBeginCore(); }
+        catch (Exception ex) { Recover("parmakla kaydırma başlangıcı: " + ex.Message); return false; }
+    }
+
+    bool SwipeBeginCore()
     {
         if (swipe != null) return true;
         if (!Prefs.Animations || Anims.Workspaces.Ms <= 0) return false;
@@ -2262,6 +2379,7 @@ class Slider
     {
         var s = swipe;
         if (s == null || double.IsNaN(p)) return;
+        swipeTouched = Environment.TickCount;
         const double RUBBER = 0.06;
         if (p > 0 && s.NextName == null) p = RUBBER * (1 - Math.Exp(-p / RUBBER));
         else if (p < 0 && s.PrevName == null) p = -RUBBER * (1 - Math.Exp(p / RUBBER));
@@ -2272,6 +2390,13 @@ class Slider
 
     // Parmaklar kalktı. velocity: ilerleme / ms (+ sonrakine doğru).
     public void SwipeEnd(double velocity)
+    {
+        swipeTouched = Environment.TickCount;
+        try { SwipeEndCore(velocity); }
+        catch (Exception ex) { Recover("parmakla kaydırma sonu: " + ex.Message); }
+    }
+
+    void SwipeEndCore(double velocity)
     {
         var s = swipe;
         if (s == null) return;
@@ -2336,7 +2461,7 @@ class Slider
         if (s == null) return;
         swipe = null;
         overlay.Conceal(); RingsClear(); PinsClear();
-        foreach (var t in s.All) Native.DwmUnregisterThumbnail(t.Id);
+        foreach (var t in s.All) Unregister(t.Id);
         Animating = false;
     }
 }
@@ -11350,6 +11475,7 @@ static class Program
         var tiling = new TilingClient();
         var slider = new Slider(tiling);
         slider.Warm();
+        slider.StartWatchdog();
         // Monitör takıldı/çıkarıldı ya da çözünürlük değişti: yeni dikdörtgenlerin katmanı da hazır beklesin
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s0, e0) => { try { ui.BeginInvoke((Action)slider.Warm); } catch { } };
         Slider.Ui = ui;
