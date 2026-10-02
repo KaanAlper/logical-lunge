@@ -11,7 +11,7 @@ use windows::Win32::Graphics::Dwm::{
 };
 
 /// The `borders:` section of the window manager config. Unknown keys (e.g. those of a standalone
-/// tacky-borders config.yaml: `watch_config_changes`, `enable_ipc_server`, `komorebi_colors`) are
+/// standalone border-tool config: `watch_config_changes`, `enable_ipc_server`, `komorebi_colors`) are
 /// ignored, so an older config never turns the borders off.
 #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
 pub struct Config {

@@ -19,7 +19,7 @@ pub struct ParsedConfig {
   pub workspaces: Vec<WorkspaceConfig>,
 
   /// Window borders drawn by the WM itself (Logical Lunge). Handed as-is to
-  /// the border engine; its keys are those of tacky-borders' config.yaml
+  /// the border engine; its keys are the engine's own
   /// (`global`, `window_rules`, `render_backend`). No borders if absent.
   pub borders: Option<serde_json::Value>,
 }
