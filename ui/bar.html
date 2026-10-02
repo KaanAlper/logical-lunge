@@ -208,59 +208,50 @@
             run(target === 'next' ? 'focus --next-workspace' : target === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${target}`);
           }));
       }
-      // PowerShell her zaman çekirdek üzerinden: hiç konsol penceresi açılmaz
-      const psFile = (file, args = []) => lunge.shellExec(HELPER, ['--ps', `${LL}\\${file}`, ...args]);
-      const LL = `${'{{INSTALL_ESC}}\\scripts'}`;
-
-      // ---- Parlaklık (WMI → dahili ekran; olmazsa DDC/CI) ----
-      // Bar hangi monitördeyse onun parlaklığı (pencere yöneticisinin currentMonitor.deviceName)
+      // ---- Parlaklık (WMI → dahili ekran; olmazsa DDC/CI) ve gama (parlaklık 0'ın altı) ----
+      // Bar hangi monitördeyse onunki (pencere yöneticisinin currentMonitor.deviceName). İkisi de çekirdekte, süreç içinde
+      // tek çağrı: eskiden parlaklık cevap vermeyince PowerShell betiğine, gama her adımda yeni bir lunge.exe sürecine
+      // gidiyordu. Native bar da aynı yolları kullanır.
       let MONITOR = 'Primary';
       let brightnessCache = null;
       let brightnessUnsupported = false; // çekirdek "bu monitörde ayarlanamıyor" dedi: tekerlek yalnızca gamayı değiştirir
-      // Çekirdek tek bir WMI / DDC/CI çağrısıyla cevaplar (betik her adımda PowerShell açıyordu, dizüstünde gecikiyordu);
-      // cevap vermezse (eski çekirdek) betik kullanılır
-      const brightnessUrl = v => `http://127.0.0.1:6131/brightness?dev=${encodeURIComponent(MONITOR.split('\\Monitor')[0])}${v === undefined ? '' : `&v=${v}`}`;
+      let gammaCache = 100;
+      let lastBrightnessSet = 0;
+      const coreUrl = (route, v) => `http://127.0.0.1:6131/${route}?dev=${encodeURIComponent(MONITOR.split('\\Monitor')[0])}${v === undefined ? '' : `&v=${v}`}`;
       async function readBrightness() {
         try {
-          const r = await fetch(brightnessUrl(), { method: 'POST', cache: 'no-store' });
+          const r = await fetch(coreUrl('brightness'), { method: 'POST', cache: 'no-store' });
           if (r.ok) {
             const { value } = await r.json();
             brightnessUnsupported = typeof value !== 'number';
             if (!brightnessUnsupported) brightnessCache = value;
-            return brightnessCache;
           }
-        } catch {}
-        try {
-          const out = await psFile('brightness.ps1', ['get', MONITOR]);
-          const v = parseInt(out.stdout.trim(), 10);
-          if (!isNaN(v)) brightnessCache = v;
         } catch {}
         return brightnessCache;
       }
-      // Gama (parlaklık 0'ın altı): helper ekran başına saklar, yeniden başlatınca da uygular
-      let gammaCache = 100, gammaTimer = null;
-      const gammaDev = () => MONITOR.split('\\Monitor')[0];
       function readGamma() {
-        return lunge.shellExec(HELPER, ['--gamma', gammaDev()]).then(r => { try { gammaCache = JSON.parse(r.stdout).gamma; } catch {} }).catch(() => {});
+        return fetch(coreUrl('gamma'), { method: 'POST', cache: 'no-store' })
+          .then(r => (r.ok ? r.json() : null))
+          .then(r => { if (typeof r?.gamma === 'number') gammaCache = r.gamma; })
+          .catch(() => {});
       }
-      function setGamma(v) {
-        gammaCache = v;
-        clearTimeout(gammaTimer);
-        gammaTimer = setTimeout(() => lunge.shellExec(HELPER, ['--gamma', gammaDev(), String(v)]).catch(() => {}), 40);
+      // Tekerlek adımlarının yalnızca en yenisi gider: istek sürerken gelen değer bekler, istek bitince yollanır
+      function latestOnly(route) {
+        let busy = false, next = null;
+        const flush = () => {
+          if (next === null) { busy = false; return; }
+          const v = next;
+          next = null; busy = true;
+          fetch(coreUrl(route, v), { method: 'POST', cache: 'no-store' })
+            .then(r => { if (r.status !== 204) console.warn(`${route} ${v}: HTTP ${r.status}`); })
+            .catch(() => {})
+            .finally(flush);
+        };
+        return v => { next = v; if (!busy) flush(); };
       }
-      let brightnessTimer = null;
-      let lastBrightnessSet = 0;
-      function setBrightness(v) {
-        brightnessCache = v;
-        lastBrightnessSet = Date.now();
-        clearTimeout(brightnessTimer);
-        // kısa: art arda gelen değerlerin sonuncusunu çekirdek kendisi uygular
-        brightnessTimer = setTimeout(() => {
-          fetch(brightnessUrl(v), { method: 'POST', cache: 'no-store' })
-            .then(r => { if (r.status !== 204) throw new Error(`HTTP ${r.status}`); })
-            .catch(() => psFile('brightness.ps1', ['set', String(v), MONITOR]).catch(() => {}));
-        }, 40);
-      }
+      const sendGamma = latestOnly('gamma'), sendBrightness = latestOnly('brightness');
+      function setGamma(v) { gammaCache = v; sendGamma(v); }
+      function setBrightness(v) { brightnessCache = v; lastBrightnessSet = Date.now(); sendBrightness(v); }
 
       createRoot(document.getElementById('root')).render(<App />);
 
