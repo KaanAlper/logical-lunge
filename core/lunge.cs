@@ -233,25 +233,39 @@ class TilingClient
     readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
     readonly object gate = new object();
 
+    // Süre sınırı: pencere yöneticisi takılınca çağıran donmasın. Mesaj döngüsü olan thread'ler (arayüz, klavye kancası)
+    // toplam en fazla ~1,5 sn bekler, arka plan işleri 5 sn (iki deneme de bu sürenin içinde). Önceden bağlanma (3 sn), gönderme (1,5 sn) ve
+    // her ileti için 2 sn'lik okuma iki denemede toplanıyor, kilit sırası da eklenince arayüz 13 sn'ye kadar donuyordu.
     Dictionary<string, object> Send(string message)
     {
-        lock (gate)
+        bool interactive = System.Windows.Forms.Application.MessageLoop;
+        int budget = interactive ? 1500 : 5000;
+        var sw = Stopwatch.StartNew();
+        if (!Monitor.TryEnter(gate, budget)) { LogError("kilit bekleme süresi doldu (" + message + ")"); return null; }
+        try
         {
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 try
                 {
+                    int left = budget - (int)sw.ElapsedMilliseconds;
+                    if (left <= 0) break;
                     if (ws == null || ws.State != WebSocketState.Open)
                     {
+                        Drop();
                         ws = new ClientWebSocket();
                         ws.Options.Proxy = null; // yoksa WPAD proxy araması bağlantıyı saniyelerce geciktiriyor
-                        ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(3000);
+                        if (!ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(Math.Min(3000, left)))
+                        { Drop(); LogError("bağlanılamadı"); continue; }
                     }
                     var bytes = Encoding.UTF8.GetBytes(message);
-                    ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1500);
+                    left = budget - (int)sw.ElapsedMilliseconds;
+                    if (left <= 0 || !ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None).Wait(Math.Min(1500, left)))
+                    { Drop(); LogError("gönderilemedi"); continue; }
                     while (true)
                     {
-                        string text = Receive();
+                        left = budget - (int)sw.ElapsedMilliseconds;
+                        string text = left > 0 ? Receive(Math.Min(2000, left)) : null;
                         if (text == null) break;
                         var obj = json.DeserializeObject(text) as Dictionary<string, object>;
                         if (obj == null) continue;
@@ -261,25 +275,54 @@ class TilingClient
                         if ((type as string) == "client_response" && (cm as string) == message) return obj;
                     }
                 }
-                catch (Exception ex) { Slider.Log("ipc error: " + ex.GetBaseException().Message); ws = null; }
+                catch (Exception ex) { LogError(ex.GetBaseException().Message); Drop(); }
             }
             return null;
         }
+        finally { Monitor.Exit(gate); }
     }
 
-    string Receive()
+    // Yarım kalan okuma / bağlantı bırakılmaz: ClientWebSocket aynı anda tek okuma kabul eder, süresi dolan okuma bekler
+    // durumda kalırsa sonraki her istek hata veriyordu
+    void Drop()
+    {
+        if (ws == null) return;
+        try { ws.Abort(); ws.Dispose(); } catch { }
+        ws = null;
+    }
+
+    string Receive(int timeoutMs)
     {
         var buf = new byte[1 << 16];
         var sb = new StringBuilder();
         while (true)
         {
             var t = ws.ReceiveAsync(new ArraySegment<byte>(buf), CancellationToken.None);
-            if (!t.Wait(2000)) return null;
+            if (!t.Wait(timeoutMs)) { Drop(); return null; }
             var r = t.Result;
-            if (r.MessageType == WebSocketMessageType.Close) { ws = null; return null; }
+            if (r.MessageType == WebSocketMessageType.Close) { Drop(); return null; }
             sb.Append(Encoding.UTF8.GetString(buf, 0, r.Count));
             if (r.EndOfMessage) return sb.ToString();
         }
+    }
+
+    // Pencere yöneticisi kapalıyken her istek bir hata satırı yazıyordu; satırlar sayılar (port, süre, kod) yüzünden
+    // birebir aynı olmadığı için günlük birleştirmesi tutmuyordu. Rakamlar atılmış metin anahtardır: aynı anahtar
+    // dakikada bir yazılır, arada kaç kez tekrarlandığı eklenir.
+    static readonly Dictionary<string, int[]> errorSeen = new Dictionary<string, int[]>();
+    static void LogError(string text)
+    {
+        string key = System.Text.RegularExpressions.Regex.Replace(text, @"\d+", "#");
+        int now = Environment.TickCount, skipped;
+        lock (errorSeen)
+        {
+            int[] e;
+            if (errorSeen.TryGetValue(key, out e) && now - e[0] < 60000) { e[1]++; return; }
+            skipped = e != null ? e[1] : 0;
+            if (errorSeen.Count > 64) errorSeen.Clear();
+            errorSeen[key] = new[] { now, 0 };
+        }
+        Slider.Log("ipc error: " + text + (skipped > 0 ? " (arada " + skipped + " kez daha)" : ""));
     }
 
     public List<Dictionary<string, object>> Monitors()
