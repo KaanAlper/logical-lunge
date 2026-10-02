@@ -80,6 +80,12 @@ static class CoreRegression
         Check(Request("POST", "/dock-pin?id=chrome&on=2", "http://127.0.0.1:6124").Contains("400"), "Dock pin accepted an invalid state");
         Check(Request("POST", "/dock-pin?id=chrome&on=1", "https://example.invalid").Contains("403"), "Dock pin accepted a foreign origin");
         Check(Request("GET", "/notifications", "http://127.0.0.1:6124").Contains("405"), "The notification list must require POST");
+        // A web page's <img>/link GET carries no Origin: it must not reach anything that changes state
+        Check(Request("GET", "/cmd?a=stop-desktop", null).Contains("405"), "A plain GET reached a desktop command");
+        Check(Request("GET", "/pref?k=theme&v=light", null).Contains("405"), "A plain GET wrote a preference");
+        Check(Request("GET", "/dock-pins?v=%5B%5D", null).Contains("405"), "A plain GET overwrote the Dock pins");
+        Check(Request("GET", "/widget?w=osk&v=1", null).Contains("405"), "A plain GET showed a widget");
+        Check(Request("POST", "/pref?k=nope&v=1", null).Contains("400"), "A POST without Origin from a local client must still be served");
         string notes = Request("POST", "/notifications", "http://127.0.0.1:6124");
         Check(notes.Contains("200 OK") && notes.Contains("\"items\"") && notes.Contains("\"icons\""), "Notification list was not served");
         Check(Request("POST", "/notifications", "https://example.invalid").Contains("403"), "Notification list accepted a foreign origin");

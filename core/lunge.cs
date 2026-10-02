@@ -4522,7 +4522,14 @@ static class Toasts
         {
             int sp1 = req.IndexOf(' '), sp2 = sp1 < 0 ? -1 : req.IndexOf(' ', sp1 + 1);
             string target = sp2 > sp1 ? req.Substring(sp1 + 1, sp2 - sp1 - 1) : ""; // "/cmd?a=ws-3"
-            if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; Slider.Log("overview modu okundu: '" + body + "'"); }
+            // Bir şey değiştiren istekler yalnızca POST: tarayıcı bir sitenin <img> / bağlantı GET'ine Origin koymaz, o istek
+            // buraya yerel bir istemci gibi gelir (masaüstünü kapatabilir, tercih ve sabitleme yazabilirdi). Widget'lar,
+            // native bar ve komut satırı zaten POST gönderir.
+            bool writes = target.StartsWith("/cmd?") || target.StartsWith("/pref?") || target.StartsWith("/tray-pins?") || target.StartsWith("/dock-pins?")
+                || target.StartsWith("/widget?") || target.StartsWith("/overview-") || target.StartsWith("/log?") || target.StartsWith("/bar-alive?")
+                || target.StartsWith("/notification-open?");
+            if (writes && !req.StartsWith("POST ")) status = "405 Method Not Allowed";
+            else if (target.StartsWith("/overview-mode")) { body = Keys2.TakeOverviewMode(); status = "200 OK"; Slider.Log("overview modu okundu: '" + body + "'"); }
             else if (target.StartsWith("/overview-wait"))
             {
                 // Uzun yoklama: istek overview gösterilene / gizlenene ya da 25 sn dolana kadar bekletilir
