@@ -89,6 +89,24 @@ static class CoreRegression
         string notes = Request("POST", "/notifications", "http://127.0.0.1:6124");
         Check(notes.Contains("200 OK") && notes.Contains("\"items\"") && notes.Contains("\"icons\""), "Notification list was not served");
         Check(Request("POST", "/notifications", "https://example.invalid").Contains("403"), "Notification list accepted a foreign origin");
+        // Quick settings moved from PowerShell into the core: reads and writes are POST-only and answer JSON
+        Check(Request("GET", "/qs/radio?kind=wifi&state=Off", null).Contains("405"), "A plain GET switched a radio");
+        Check(Request("GET", "/qs/awake?v=1", null).Contains("405"), "A plain GET changed keep-awake");
+        Check(Request("GET", "/qs/eth-toggle", null).Contains("405"), "A plain GET toggled Ethernet");
+        Check(Request("GET", "/qs/bt", "http://127.0.0.1:6124").Contains("405"), "The Bluetooth device list must require POST");
+        Check(Request("POST", "/qs/radio?kind=wifi&state=Maybe", "http://127.0.0.1:6124").Contains("400"), "A radio accepted an invalid state");
+        Check(Request("POST", "/qs/awake?v=1", "https://example.invalid").Contains("403"), "Keep-awake accepted a foreign origin");
+        Check(Request("POST", "/qs/nope", "http://127.0.0.1:6124").Contains("404"), "An unknown quick setting was served");
+        string radios = Request("POST", "/qs/radios", "http://127.0.0.1:6124");
+        Check(radios.Contains("200 OK") && radios.Contains("\"wifi\"") && radios.Contains("\"bluetooth\""), "Radios were not served");
+        string eth = Request("POST", "/qs/eth", "http://127.0.0.1:6124");
+        Check(eth.Contains("200 OK") && eth.Contains("\"state\""), "Ethernet state was not served");
+        string bt = Request("POST", "/qs/bt", "http://127.0.0.1:6124");
+        Check(bt.Contains("200 OK") && bt.Contains("\"adapter\"") && bt.Contains("\"devices\""), "Bluetooth devices were not served");
+        Check(Request("POST", "/qs/awake?v=1", "http://127.0.0.1:6124").Contains("204"), "Keep-awake did not turn on");
+        Check(Request("POST", "/qs/status", "http://127.0.0.1:6124").Contains("\"awake\":true"), "Keep-awake is not reported as on");
+        Check(Request("POST", "/qs/awake?v=0", "http://127.0.0.1:6124").Contains("204"), "Keep-awake did not turn off");
+        Check(Request("POST", "/qs/status", "http://127.0.0.1:6124").Contains("\"awake\":false"), "Keep-awake is not reported as off");
         string dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-core-test-" + Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(dir);
         try {
