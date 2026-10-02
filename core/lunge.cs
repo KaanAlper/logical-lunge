@@ -3013,6 +3013,69 @@ class Dwindle
 // "üzerine gelince etkinleştir" özelliği fare kıpırdamadan da (pencere kapanıp yerleşim
 // değişince) odak değiştiriyordu; bu da Alt+F4 sonrası odak geçmişini bozuyordu.
 // Düşük seviyeli fare kancası sahte/sentetik hareketleri görmez.
+// Masaüstü simge listesinde (SHELLDLL_DefView içindeki SysListView32) bir noktada simge var mı: Explorer'ın sürecinde
+// LVM_HITTEST. Kancadan çağrılır: her şey kısa süreli, bir şey tutmazsa "boş değil" (Explorer'ın menüsü açılır).
+static class DesktopClick
+{
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point p);
+    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+    [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref Point p);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr result);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")] static extern IntPtr VirtualAllocEx(IntPtr p, IntPtr at, UIntPtr size, uint type, uint protect);
+    [DllImport("kernel32.dll")] static extern bool VirtualFreeEx(IntPtr p, IntPtr at, UIntPtr size, uint type);
+    [DllImport("kernel32.dll")] static extern bool WriteProcessMemory(IntPtr p, IntPtr at, byte[] buf, UIntPtr size, out UIntPtr done);
+
+    static string ClassOf(IntPtr h)
+    {
+        var sb = new StringBuilder(32);
+        GetClassName(h, sb, 32);
+        return sb.ToString();
+    }
+
+    public static bool EmptyAt(int x, int y)
+    {
+        try
+        {
+            IntPtr list = WindowFromPoint(new Point(x, y));
+            if (list == IntPtr.Zero || ClassOf(list) != "SysListView32") return false;
+            IntPtr view = GetParent(list);
+            if (view == IntPtr.Zero || ClassOf(view) != "SHELLDLL_DefView") return false;
+            string top = ClassOf(GetParent(view));
+            if (top != "Progman" && top != "WorkerW") return false;
+            var pt = new Point(x, y);
+            if (!ScreenToClient(list, ref pt)) return false;
+            uint pid;
+            GetWindowThreadProcessId(list, out pid);
+            IntPtr proc = OpenProcess(0x0008 | 0x0020, false, pid); // VM_OPERATION, VM_WRITE
+            if (proc == IntPtr.Zero) return false;
+            IntPtr mem = IntPtr.Zero;
+            try
+            {
+                // LVHITTESTINFO: pt, flags, iItem, iSubItem, iGroup
+                var info = new byte[24];
+                BitConverter.GetBytes(pt.X).CopyTo(info, 0);
+                BitConverter.GetBytes(pt.Y).CopyTo(info, 4);
+                mem = VirtualAllocEx(proc, IntPtr.Zero, (UIntPtr)24, 0x3000, 0x04); // MEM_COMMIT|RESERVE, READWRITE
+                UIntPtr done;
+                if (mem == IntPtr.Zero || !WriteProcessMemory(proc, mem, info, (UIntPtr)24, out done)) return false;
+                IntPtr item;
+                if (SendMessageTimeout(list, 0x1012 /* LVM_HITTEST */, IntPtr.Zero, mem, 0x2 /* ABORTIFHUNG */, 120, out item) == IntPtr.Zero) return false;
+                return item.ToInt64() == -1;
+            }
+            finally
+            {
+                if (mem != IntPtr.Zero) VirtualFreeEx(proc, mem, UIntPtr.Zero, 0x8000); // MEM_RELEASE
+                CloseHandle(proc);
+            }
+        }
+        catch (Exception) { return false; }
+    }
+}
+
 class MouseFocus
 {
     readonly TilingClient tiling;
@@ -3041,10 +3104,33 @@ class MouseFocus
     // Kanca en son ne zaman çağrıldı (kanca bekçisi: Windows geç cevap veren kancayı sessizce söker)
     public static volatile int LastHookTick = Environment.TickCount;
 
+    // Masaüstünün boş yerine sağ tık: Explorer'ın menüsü yerine barın menüsü (menu.rs). Basış ve bırakış yutulur, bar
+    // ll:desktop-menu ile menüyü imlecin yerinde açar. Bir simgenin üstünde Explorer'ın kendi menüsü kalır; bizim
+    // enjekte ettiğimiz (işaretli) tıklama da geçer ("Diğer seçenekler": Explorer'ın masaüstü menüsü).
+    bool desktopRight;
+
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         LastHookTick = Environment.TickCount;
         int msg = wParam.ToInt32();
+        if (nCode >= 0 && (msg == 0x204 || msg == 0x205)) // WM_RBUTTONDOWN / UP
+        {
+            var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
+            if (msg == 0x204)
+            {
+                desktopRight = (m.flags & 1) == 0 && ShellState.Up && DesktopClick.EmptyAt(m.pt.X, m.pt.Y);
+                clickX = m.pt.X; clickY = m.pt.Y;
+                clicked.Set();
+                if (desktopRight) return (IntPtr)1;
+            }
+            else if (desktopRight)
+            {
+                desktopRight = false;
+                ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu"));
+                return (IntPtr)1;
+            }
+            return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
         if (nCode >= 0 && msg == 0x200) // WM_MOUSEMOVE
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
@@ -3054,7 +3140,7 @@ class MouseFocus
                 moved.Set();
             }
         }
-        else if (nCode >= 0 && (msg == 0x201 || msg == 0x204 || msg == 0x207)) // sol / sağ / orta basış
+        else if (nCode >= 0 && (msg == 0x201 || msg == 0x207)) // sol / orta basış (sağ: yukarıda)
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
             clickX = m.pt.X; clickY = m.pt.Y;

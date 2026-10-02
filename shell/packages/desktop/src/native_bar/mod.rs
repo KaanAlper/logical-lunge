@@ -8,6 +8,7 @@
 mod anim;
 mod brightness;
 mod core_api;
+mod desktop_menu;
 mod drag_drop;
 mod fonts;
 mod gfx;
@@ -1672,6 +1673,7 @@ impl Ui {
       Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
       Some("ll:tray-pins") => return self.reload_pins(),
       Some("ll:ws-numbers") => return self.flash_numbers(),
+      Some("ll:desktop-menu") => return self.desktop_menu(),
       Some("ll:dock-toggle") => return self.dock_toggle(),
       Some("ll:dock-pins") => return self.dock_pins_changed(),
       None => {
@@ -1892,6 +1894,9 @@ impl Ui {
     let Some(kind) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) else {
       self.tray_close();
       self.mixer_close();
+      if button == 1 {
+        self.bar_menu();
+      }
       return;
     };
     if !matches!(kind, HitKind::TrayMore | HitKind::TrayIcon(_)) {
@@ -1924,6 +1929,8 @@ impl Ui {
       (HitKind::TrayMore, 0) => self.tray_toggle(i),
       (HitKind::Mixer, 0) => self.mixer_toggle(i),
       (HitKind::TrayIcon(id), b) => self.tray_action(id, b),
+      // our menu where nothing has a right click of its own
+      (_, 1) => self.bar_menu(),
       _ => {}
     }
   }
