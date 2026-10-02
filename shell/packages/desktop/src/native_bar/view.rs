@@ -154,6 +154,8 @@ pub enum HitKind {
   Osk,
   Theme,
   Indicators,
+  /// per-app volume (left of the indicators)
+  Mixer,
   TrayMore,
   TrayIcon(String),
   /// tooltip only
@@ -633,11 +635,23 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
   }
   f.hits.push(Hit { rect: ind, kind: HitKind::Indicators });
 
+  // the volume mixer (EarTrumpet's place): left of the indicators that open the sidebar
+  let mut tray_right = ind.x;
+  if level < 2 {
+    let mixer = Rect::new(ind.x - 4.0 - 30.0, 5.0, 30.0, 30.0);
+    if hovered(&HitKind::Mixer) || m.mixer_open {
+      p.fill_round(mixer, 15.0, t.layer1_hover)?;
+    }
+    p.icon("tune", mixer.x + 15.0, 20.0, 19.0, false, t.on_layer0)?;
+    f.hits.push(Hit { rect: mixer, kind: HitKind::Mixer });
+    tray_right = mixer.x;
+  }
+
   // ii SysTray.qml: pinned icons in the bar, the rest under the arrow
   if level == 0 && m.tray_count() > 0 {
     let pinned = m.pinned_icons();
     let items_w = pinned.len() as f32 * 26.0 + (pinned.len().max(1) as f32 - 1.0) * 2.0;
-    let mut tx = ind.x - 5.0 - if pinned.is_empty() { 0.0 } else { items_w };
+    let mut tx = tray_right - 5.0 - if pinned.is_empty() { 0.0 } else { items_w };
     for ic in &pinned {
       let r = Rect::new(tx, 7.0, 26.0, 26.0);
       let kind = HitKind::TrayIcon(ic.id.clone());
@@ -650,14 +664,14 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
       f.hits.push(Hit { rect: r, kind });
       tx += 28.0;
     }
-    let more_x = ind.x - 5.0 - if pinned.is_empty() { 0.0 } else { items_w + 2.0 } - 26.0;
+    let more_x = tray_right - 5.0 - if pinned.is_empty() { 0.0 } else { items_w + 2.0 } - 26.0;
     let more = Rect::new(more_x, 7.0, 26.0, 26.0);
     if hovered(&HitKind::TrayMore) {
       p.fill_round(more, 13.0, t.layer1_hover)?;
     }
     p.icon(if m.tray_open { "expand_less" } else { "expand_more" }, more.x + 13.0, 20.0, 20.0, false, t.on_layer0)?;
     f.hits.push(Hit { rect: more, kind: HitKind::TrayMore });
-    f.tray_zone = Rect::new(more.x - 4.0, 0.0, ind.x - 5.0 - more.x + 8.0, BAR_H);
+    f.tray_zone = Rect::new(more.x - 4.0, 0.0, tray_right - 5.0 - more.x + 8.0, BAR_H);
   }
   scroll_hint(p, t, w - 4.0 - 14.0, "volume_up", hover_right)?;
 

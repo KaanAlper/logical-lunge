@@ -36,6 +36,8 @@ pub struct Model {
   pub pins: Option<Vec<String>>,
   /// The tray panel is open (the arrow points up).
   pub tray_open: bool,
+  /// the volume mixer is open (its bar button stays pressed)
+  pub mixer_open: bool,
   pub hour12: bool,
   /// Language of the date and of `tr()`: prefs.json, else the Windows UI language.
   locale: String,

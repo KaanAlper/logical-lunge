@@ -12,6 +12,7 @@ mod drag_drop;
 mod fonts;
 mod gfx;
 mod icons;
+mod mixer;
 mod model;
 mod palette;
 mod popup;
@@ -104,6 +105,9 @@ const TIMER_TEST_FAIL: usize = 13;
 const TIMER_SNAPSHOT: usize = 14;
 const TIMER_DRAG_DWELL: usize = 15;
 const TIMER_WS_NUMBERS: usize = 16;
+/// the volume mixer's levels while it is open
+const TIMER_MIXER_TICK: usize = 17;
+const TIMER_MIXER_HIDE: usize = 18;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -690,6 +694,8 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_POP_HIDE => self.pop_hidden(),
         WM_TIMER if wp.0 == TIMER_POP_TICK => self.pop_tick(),
         WM_TIMER if wp.0 == TIMER_TRAY_HIDE => self.tray_hidden(),
+        WM_TIMER if wp.0 == TIMER_MIXER_TICK => self.mixer_tick(),
+        WM_TIMER if wp.0 == TIMER_MIXER_HIDE => self.mixer_hidden(),
         WM_TIMER if wp.0 == TIMER_TIP => self.tip_show(),
         WM_TIMER if wp.0 == TIMER_STABLE => {
           unsafe {
@@ -697,7 +703,11 @@ impl Ui {
           }
           stable();
         }
-        WM_APP_TRAY_CLOSE => self.tray_close(),
+        // a click outside the shell or another window in front: the tray panel and the mixer close
+        WM_APP_TRAY_CLOSE => {
+          self.tray_close();
+          self.mixer_close();
+        }
         WM_TIMER if wp.0 == TIMER_CYCLE => self.fake_switch(),
         WM_TIMER if wp.0 == TIMER_TEST_FAIL => panic!("LL_NATIVE_BAR_FAIL_AFTER"),
         WM_TIMER if wp.0 == TIMER_SNAPSHOT => {
@@ -734,8 +744,8 @@ impl Ui {
       }
       return Some(LRESULT(0));
     }
-    let [hover_w, tray_w, tip_w, ghost_w] = self.pop_windows();
-    if Some(hwnd) == hover_w || Some(hwnd) == tray_w || Some(hwnd) == tip_w || Some(hwnd) == ghost_w {
+    let [hover_w, tray_w, tip_w, ghost_w, mixer_w] = self.pop_windows();
+    if [hover_w, tray_w, tip_w, ghost_w, mixer_w].contains(&Some(hwnd)) {
       if msg == WM_PAINT {
         unsafe {
           let _ = windows::Win32::Graphics::Gdi::ValidateRect(hwnd, None);
@@ -745,6 +755,7 @@ impl Ui {
       let (x, y) = lparam_point(lp);
       let tray = Some(hwnd) == tray_w;
       let hover = Some(hwnd) == hover_w;
+      let mixer = Some(hwnd) == mixer_w;
       match msg {
         WM_MOUSEMOVE => {
           track_leave(hwnd);
@@ -752,7 +763,21 @@ impl Ui {
             self.tray_mouse(x, y);
           } else if hover {
             self.pop_mouse(x, y);
+          } else if mixer {
+            self.mixer_mouse(x, y);
           }
+        }
+        WM_MOUSELEAVE if mixer => self.mixer_leave(),
+        WM_LBUTTONDOWN if mixer => self.mixer_button_down(x, y),
+        WM_LBUTTONUP if mixer => self.mixer_button_up(),
+        WM_CAPTURECHANGED if mixer => self.mixer_capture_lost(),
+        WM_MOUSEWHEEL if mixer => {
+          // the wheel comes in screen coordinates
+          let mut p = POINT { x, y };
+          unsafe {
+            let _ = ScreenToClient(hwnd, &mut p);
+          }
+          self.mixer_wheel(p.x, p.y, ((wp.0 >> 16) & 0xFFFF) as i16 as i32);
         }
         WM_MOUSELEAVE if tray => self.tray_leave(),
         WM_MOUSELEAVE if hover => self.pop_leave(),
@@ -1573,10 +1598,14 @@ impl Ui {
     self.tip_click(i);
     let Some(kind) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) else {
       self.tray_close();
+      self.mixer_close();
       return;
     };
     if !matches!(kind, HitKind::TrayMore | HitKind::TrayIcon(_)) {
       self.tray_close();
+    }
+    if kind != HitKind::Mixer {
+      self.mixer_close();
     }
     let media = |f: fn(MediaControlArgs) -> MediaFunction| ProviderFunction::Media(f(MediaControlArgs { session_id: None }));
     match (kind, button) {
@@ -1600,6 +1629,7 @@ impl Ui {
       }
       (HitKind::Indicators, 0) => (self.emit)("ll:sidebar-right-toggle", serde_json::Value::Null),
       (HitKind::TrayMore, 0) => self.tray_toggle(i),
+      (HitKind::Mixer, 0) => self.mixer_toggle(i),
       (HitKind::TrayIcon(id), b) => self.tray_action(id, b),
       _ => {}
     }

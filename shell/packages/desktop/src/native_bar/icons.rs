@@ -154,29 +154,33 @@ impl Icons {
     best
   }
 
+  /// App list entry of a process (its exe name), remembered once the list
+  /// is loaded.
+  fn app_of(&mut self, proc: &str) -> Option<usize> {
+    let key = proc.to_lowercase();
+    if let Some(m) = self.matches.get(&key) {
+      return *m;
+    }
+    let m = self.match_app(proc);
+    if self.has_apps() {
+      self.matches.insert(key, m);
+    }
+    m
+  }
+
+  /// Name and icon of a process from the app list (the mixer's rows).
+  pub fn for_process(&mut self, gfx: &Gfx, proc: &str) -> (Option<String>, Option<ID2D1Bitmap1>) {
+    match self.app_of(proc) {
+      Some(i) => (Some(self.apps[i].name.clone()), self.app(gfx, i)),
+      None => (None, None),
+    }
+  }
+
   /// Bitmap for a window: app list first, then the window's own icon.
   /// Returns the handle to ask the core for when neither is known yet.
   pub fn for_window(&mut self, gfx: &Gfx, proc: &str, handle: i64) -> (Option<ID2D1Bitmap1>, Option<i64>) {
-    let key = proc.to_lowercase();
-    let m = match self.matches.get(&key) {
-      Some(m) => *m,
-      None => {
-        let m = self.match_app(proc);
-        if self.has_apps() {
-          self.matches.insert(key, m);
-        }
-        m
-      }
-    };
-    if let Some(i) = m {
-      let k = format!("app:{}", i);
-      if !self.bitmaps.contains_key(&k) {
-        let bmp = self.apps[i].icon.as_deref().and_then(data_url_bytes).and_then(|b| gfx.bitmap(&b).ok());
-        self.bitmaps.insert(k.clone(), bmp);
-      }
-      if let Some(Some(b)) = self.bitmaps.get(&k) {
-        return (Some(b.clone()), None);
-      }
+    if let Some(b) = self.app_of(proc).and_then(|i| self.app(gfx, i)) {
+      return (Some(b), None);
     }
     if handle == 0 {
       return (None, None);

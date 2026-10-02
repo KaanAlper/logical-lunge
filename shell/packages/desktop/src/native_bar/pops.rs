@@ -1,6 +1,6 @@
 //! What the popups do: hover popups (resources, media) with ii's 200 ms
 //! close delay, the tray panel (click-away closes it, dragging does not),
-//! drag to pin / unpin tray icons, and tooltips.
+//! drag to pin / unpin tray icons, the volume mixer, and tooltips.
 
 use std::{
   collections::{HashMap, HashSet},
@@ -24,12 +24,16 @@ use windows::Win32::{
 use super::{
   gfx::Rect,
   model::{pin_key, Model},
-  popup::{self, Hit, MediaView, Motion, PopHit, PopKind, PopWin, Temps, TrayView, GAP, PAD},
+  mixer::Mixer,
+  popup::{self, Hit, MediaView, MixerRow, MixerView, Motion, PopHit, PopKind, PopWin, Temps, TrayView, GAP, PAD},
   send,
   view::{self, HitKind, Painter},
-  Msg, Ui, TIMER_POP_CLOSE, TIMER_POP_HIDE, TIMER_POP_TICK, TIMER_TIP, TIMER_TRAY_HIDE, WAKE, WM_APP_TRAY_CLOSE,
+  Msg, Ui, TIMER_MIXER_HIDE, TIMER_MIXER_TICK, TIMER_POP_CLOSE, TIMER_POP_HIDE, TIMER_POP_TICK, TIMER_TIP, TIMER_TRAY_HIDE, WAKE,
+  WM_APP_TRAY_CLOSE,
 };
-use crate::providers::{MediaControlArgs, MediaFunction, ProviderFunction, SystrayFunction, SystrayIconArgs};
+use crate::providers::{
+  AudioFunction, MediaControlArgs, MediaFunction, ProviderFunction, SetMuteArgs, SetVolumeArgs, SystrayFunction, SystrayIconArgs,
+};
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -62,6 +66,16 @@ pub struct PopState {
   tray_drop: bool,
   mouse_hook: Option<HHOOK>,
   fg_hook: Option<HWINEVENTHOOK>,
+
+  mixer: Option<PopWin>,
+  mixer_bar: usize,
+  mixer_anchor: Rect,
+  mixer_hover: Option<usize>,
+  /// slider being dragged: its row and track
+  mixer_drag: Option<(usize, Rect)>,
+  /// the default output's sessions, only while the mixer is open
+  audio: Option<Mixer>,
+  mixer_ticks: u32,
 
   tip: Option<PopWin>,
   tip_at: Option<TipAt>,
@@ -137,9 +151,15 @@ fn post_close() {
 }
 
 impl Ui {
-  pub(super) fn pop_windows(&self) -> [Option<HWND>; 4] {
+  pub(super) fn pop_windows(&self) -> [Option<HWND>; 5] {
     let p = &self.pops;
-    [p.hover.as_ref().map(|w| w.hwnd), p.tray.as_ref().map(|w| w.hwnd), p.tip.as_ref().map(|w| w.hwnd), p.ghost.as_ref().map(|w| w.hwnd)]
+    [
+      p.hover.as_ref().map(|w| w.hwnd),
+      p.tray.as_ref().map(|w| w.hwnd),
+      p.tip.as_ref().map(|w| w.hwnd),
+      p.ghost.as_ref().map(|w| w.hwnd),
+      p.mixer.as_ref().map(|w| w.hwnd),
+    ]
   }
 
   /// Graphics device rebuilt / monitors changed: popups start over.
@@ -151,9 +171,21 @@ impl Ui {
         let _ = ReleaseCapture();
       }
     }
+    if self.pops.mixer_drag.take().is_some() {
+      unsafe {
+        let _ = ReleaseCapture();
+      }
+    }
+    unsafe {
+      let _ = KillTimer(self.msg_hwnd, TIMER_MIXER_TICK);
+    }
     let p = &mut self.pops;
     p.hover = None;
     p.tray = None;
+    p.mixer = None;
+    p.audio = None;
+    p.mixer_drag = None;
+    self.model.mixer_open = false;
     p.tip = None;
     p.ghost = None;
     p.kind = None;
@@ -427,7 +459,7 @@ impl Ui {
           self.pop_render();
         }
       }
-      PopHit::TrayIcon(_) => {}
+      PopHit::TrayIcon(_) | PopHit::MixerRow(_) | PopHit::MixerMute(_) | PopHit::MixerSlider(..) => {}
     }
   }
 
@@ -533,6 +565,7 @@ impl Ui {
   }
 
   fn tray_open(&mut self, i: usize) {
+    self.mixer_close();
     unsafe {
       let _ = KillTimer(self.msg_hwnd, TIMER_TRAY_HIDE);
     }
@@ -548,7 +581,9 @@ impl Ui {
     if self.pops.drag.as_ref().is_some_and(|d| d.started) {
       return; // dragging: the panel is a drop target
     }
-    self.tray_hooks(false);
+    if !self.mixer_shown() {
+      self.tray_hooks(false); // the mixer uses the same click-away hooks
+    }
     self.pops.tray_hover = None;
     if self.model.tray_open {
       self.model.tray_open = false;
@@ -697,6 +732,273 @@ impl Ui {
       _ => SystrayFunction::IconLeftDoubleClick(args),
     };
     self.provider("systray", ProviderFunction::Systray(f));
+  }
+
+  // ------------------------------------------------------------ volume mixer
+
+  fn mixer_shown(&self) -> bool {
+    self.pops.mixer.as_ref().is_some_and(|w| w.shown && !w.closing)
+  }
+
+  pub(super) fn mixer_toggle(&mut self, i: usize) {
+    if self.mixer_shown() {
+      self.mixer_close();
+    } else {
+      self.mixer_open(i);
+    }
+  }
+
+  fn mixer_open(&mut self, i: usize) {
+    self.tray_close();
+    unsafe {
+      let _ = KillTimer(self.msg_hwnd, TIMER_MIXER_HIDE);
+    }
+    self.pops.audio = match Mixer::open() {
+      Ok(m) => Some(m),
+      Err(err) => {
+        tracing::warn!("Native bar mixer: {:?}", err);
+        None
+      }
+    };
+    self.pops.mixer_bar = i;
+    self.pops.mixer_anchor = self.bars[i].frame.hits.iter().find(|h| h.kind == HitKind::Mixer).map(|h| h.rect).unwrap_or_default();
+    self.pops.mixer_ticks = 0;
+    self.pops.mixer_hover = None;
+    self.model.mixer_open = true;
+    self.tray_hooks(true);
+    self.mixer_render();
+    self.redraw_all();
+    // levels move while open; nothing is read while closed
+    unsafe { SetTimer(self.msg_hwnd, TIMER_MIXER_TICK, 100, None) };
+  }
+
+  pub(super) fn mixer_close(&mut self) {
+    if self.pops.mixer_drag.take().is_some() {
+      unsafe {
+        let _ = ReleaseCapture();
+      }
+    }
+    unsafe {
+      let _ = KillTimer(self.msg_hwnd, TIMER_MIXER_TICK);
+    }
+    self.pops.audio = None;
+    self.pops.mixer_hover = None;
+    if !self.model.tray_open {
+      self.tray_hooks(false);
+    }
+    if self.model.mixer_open {
+      self.model.mixer_open = false;
+      self.redraw_all();
+    }
+    if let Some(w) = &mut self.pops.mixer {
+      if w.shown && !w.closing && w.close(&self.gfx).is_ok() {
+        unsafe { SetTimer(self.msg_hwnd, TIMER_MIXER_HIDE, w.close_ms(), None) };
+      }
+    }
+  }
+
+  pub(super) fn mixer_hidden(&mut self) {
+    unsafe {
+      let _ = KillTimer(self.msg_hwnd, TIMER_MIXER_HIDE);
+    }
+    if let Some(w) = &mut self.pops.mixer {
+      if w.closing {
+        w.hide();
+      }
+    }
+  }
+
+  /// Ten times a second while open: levels and volumes; the sessions
+  /// themselves (apps starting or stopping) once a second.
+  pub(super) fn mixer_tick(&mut self) {
+    let Some(audio) = self.pops.audio.as_mut() else { return };
+    self.pops.mixer_ticks = self.pops.mixer_ticks.wrapping_add(1);
+    if self.pops.mixer_ticks % 10 == 0 {
+      if let Err(err) = audio.refresh() {
+        tracing::warn!("Native bar mixer: {:?}", err);
+      }
+    } else {
+      audio.read();
+    }
+    self.mixer_render();
+  }
+
+  /// The output device (from the audio provider) and the apps playing.
+  fn mixer_rows(&mut self) -> Vec<MixerRow> {
+    let dev = self.model.audio.as_ref().and_then(|a| a.default_playback_device.as_ref());
+    let muted = dev.is_some_and(|d| d.is_muted);
+    let mut rows = vec![MixerRow {
+      name: dev.map(|d| d.name.clone()).unwrap_or_else(|| self.model.tr("Ses çıkışı")),
+      icon: None,
+      glyph: if muted { "volume_off" } else { "volume_up" },
+      volume: dev.map(|d| d.volume as f32 / 100.0).unwrap_or(0.0),
+      muted,
+      peak: 0.0,
+    }];
+    let Some(audio) = self.pops.audio.as_ref() else { return rows };
+    for app in audio.apps.iter().take(popup::MIX_MAX_APPS) {
+      let (name, icon, glyph) = if app.exe.is_none() {
+        (self.model.tr("Sistem sesleri"), None, "notifications")
+      } else {
+        let process = app.process();
+        let (name, icon) = self.icons.for_process(&self.gfx, &process);
+        (name.unwrap_or_else(|| title_case(&process)), icon, "music_note")
+      };
+      rows.push(MixerRow { name, icon, glyph, volume: app.volume, muted: app.muted, peak: app.peak });
+    }
+    rows
+  }
+
+  pub(super) fn mixer_render(&mut self) {
+    let i = self.pops.mixer_bar;
+    if i >= self.bars.len() {
+      return;
+    }
+    let scale = self.bars[i].scale;
+    let theme = self.theme();
+    let rows = self.mixer_rows();
+    let size = popup::mixer_size(rows.len().saturating_sub(1));
+    if !Self::ensure(&mut self.pops.mixer, &self.gfx, "Logical Lunge · mixer", scale, Motion::Slide) {
+      return;
+    }
+    let (x, y) = self.under(i, self.pops.mixer_anchor, size.0);
+    let empty = self.model.tr("Ses çalan uygulama yok");
+    let Ui { gfx, fonts, res, icons, pops, .. } = self;
+    let hover = pops.mixer_hover;
+    let Some(win) = pops.mixer.as_mut() else { return };
+    if win.resize(gfx, size.0 + 2.0 * PAD, size.1 + 2.0 * PAD).is_err() {
+      return;
+    }
+    let mut requests = Vec::new();
+    let mut hits = Vec::new();
+    let drawn = win.draw(|dc| {
+      let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
+      let v = MixerView { rows: &rows, hover, empty: &empty };
+      match popup::paint_mixer(&mut p, &theme, &v) {
+        Ok(h) => hits = h,
+        Err(err) => tracing::warn!("Native bar mixer paint: {:?}", err),
+      }
+      Ok(())
+    });
+    if drawn.is_err() {
+      return;
+    }
+    win.hits = hits;
+    let _ = win.show_at(gfx, x, y);
+  }
+
+  fn mixer_hit(&self, x: i32, y: i32) -> Option<PopHit> {
+    let w = self.pops.mixer.as_ref()?;
+    let s = w.scale;
+    popup::hit_at(&w.hits, x as f32 / s, y as f32 / s).map(|h| h.kind.clone())
+  }
+
+  fn mixer_row_of(hit: Option<PopHit>) -> Option<usize> {
+    match hit? {
+      PopHit::MixerRow(i) | PopHit::MixerMute(i) | PopHit::MixerSlider(i, _) => Some(i),
+      _ => None,
+    }
+  }
+
+  /// Volume at a position on a slider's track (window pixels).
+  fn mixer_at(&self, x: i32, track: Rect) -> f32 {
+    let s = self.pops.mixer.as_ref().map(|w| w.scale).unwrap_or(1.0);
+    if track.w <= 0.0 {
+      return 0.0;
+    }
+    ((x as f32 / s - track.x) / track.w).clamp(0.0, 1.0)
+  }
+
+  pub(super) fn mixer_mouse(&mut self, x: i32, y: i32) {
+    if let Some((row, track)) = self.pops.mixer_drag {
+      let v = self.mixer_at(x, track);
+      self.mixer_set(row, v);
+      return;
+    }
+    let hover = Self::mixer_row_of(self.mixer_hit(x, y));
+    if hover != self.pops.mixer_hover {
+      self.pops.mixer_hover = hover;
+      self.mixer_render();
+    }
+  }
+
+  pub(super) fn mixer_leave(&mut self) {
+    if self.pops.mixer_drag.is_none() && self.pops.mixer_hover.take().is_some() {
+      self.mixer_render();
+    }
+  }
+
+  pub(super) fn mixer_button_down(&mut self, x: i32, y: i32) {
+    match self.mixer_hit(x, y) {
+      Some(PopHit::MixerSlider(row, track)) => {
+        self.pops.mixer_drag = Some((row, track));
+        if let Some(w) = &self.pops.mixer {
+          unsafe {
+            SetCapture(w.hwnd);
+          }
+        }
+        let v = self.mixer_at(x, track);
+        self.mixer_set(row, v);
+      }
+      Some(PopHit::MixerMute(row)) => self.mixer_mute(row),
+      _ => {}
+    }
+  }
+
+  pub(super) fn mixer_button_up(&mut self) {
+    if self.pops.mixer_drag.take().is_some() {
+      unsafe {
+        let _ = ReleaseCapture();
+      }
+    }
+  }
+
+  /// Capture taken away (another window, Alt+Tab): the drag ends.
+  pub(super) fn mixer_capture_lost(&mut self) {
+    self.pops.mixer_drag = None;
+  }
+
+  /// Wheel over a row: 5 % a notch, as on the bar.
+  pub(super) fn mixer_wheel(&mut self, x: i32, y: i32, delta: i32) {
+    let Some(row) = Self::mixer_row_of(self.mixer_hit(x, y)) else { return };
+    let v = self.mixer_volume(row) + if delta > 0 { 0.05 } else { -0.05 };
+    self.mixer_set(row, v.clamp(0.0, 1.0));
+  }
+
+  fn mixer_volume(&self, row: usize) -> f32 {
+    if row == 0 {
+      return self.model.audio.as_ref().and_then(|a| a.default_playback_device.as_ref()).map(|d| d.volume as f32 / 100.0).unwrap_or(0.0);
+    }
+    self.pops.audio.as_ref().and_then(|a| a.apps.get(row - 1)).map(|a| a.volume).unwrap_or(0.0)
+  }
+
+  fn mixer_set(&mut self, row: usize, v: f32) {
+    if row == 0 {
+      // the device: through the audio provider, as the bar's wheel; drawn at
+      // once, the provider's next output confirms it
+      let volume = (v * 100.0).round();
+      self.provider("audio", ProviderFunction::Audio(AudioFunction::SetVolume(SetVolumeArgs { volume, device_id: None })));
+      if let Some(d) = self.model.audio.as_mut().and_then(|a| a.default_playback_device.as_mut()) {
+        d.volume = volume as u32;
+      }
+    } else if let Some(audio) = self.pops.audio.as_mut() {
+      audio.set_volume(row - 1, v);
+    }
+    self.mixer_render();
+  }
+
+  fn mixer_mute(&mut self, row: usize) {
+    if row == 0 {
+      let Some(d) = self.model.audio.as_mut().and_then(|a| a.default_playback_device.as_mut()) else { return };
+      d.is_muted = !d.is_muted;
+      let mute = d.is_muted;
+      self.provider("audio", ProviderFunction::Audio(AudioFunction::SetMute(SetMuteArgs { mute, device_id: None })));
+    } else if let Some(audio) = self.pops.audio.as_mut() {
+      if let Some(muted) = audio.apps.get(row - 1).map(|a| a.muted) {
+        audio.set_mute(row - 1, !muted);
+      }
+    }
+    self.mixer_render();
   }
 
   // ------------------------------------------------------------ drag to pin
@@ -860,6 +1162,7 @@ impl Ui {
         HitKind::Snip => Some(m.tr("Bölge ekran görüntüsü")),
         HitKind::Osk => Some(m.tr("Ekran klavyesi")),
         HitKind::Theme => Some(m.tr("Karanlık / aydınlık")),
+        HitKind::Mixer => Some(m.tr("Uygulama sesleri")),
         HitKind::Battery => None,
         HitKind::TrayIcon(id) => m.tray_icon(id).map(|ic| ic.tooltip.clone()).filter(|t| !t.trim().is_empty()),
         HitKind::TrayMore => Some(m.tr("Diğer simgeler (sürükleyerek taşı)")),
@@ -960,5 +1263,14 @@ impl Ui {
     let x = cx - ((size.0 / 2.0 + PAD) * scale).round() as i32;
     let y = top - (PAD * scale).round() as i32;
     let _ = win.show_at(gfx, x, y);
+  }
+}
+
+/// "firefox" -> "Firefox" (an app that is not in the app list)
+fn title_case(s: &str) -> String {
+  let mut c = s.chars();
+  match c.next() {
+    Some(f) => f.to_uppercase().chain(c).collect(),
+    None => String::new(),
   }
 }

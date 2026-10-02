@@ -63,6 +63,12 @@ pub enum PopHit {
   /// the progress bar (its rect, to map a click to a position)
   Seek(Rect),
   TrayIcon(String),
+  /// a mixer row (0: the output device), anywhere on it (hover, wheel)
+  MixerRow(usize),
+  /// a mixer row's icon: mutes
+  MixerMute(usize),
+  /// mixer row's slider, with its track (a position maps to a volume)
+  MixerSlider(usize, Rect),
 }
 
 pub struct Hit {
@@ -753,6 +759,106 @@ pub fn paint_tray(p: &mut Painter, m: &Model, t: &Theme, v: &TrayView) -> anyhow
   }
   frame_border(p, t, r, 17.0)?;
   Ok(hits)
+}
+
+// ---- volume mixer (per-app volume, like EarTrumpet)
+
+pub const MIXER_W: f32 = 340.0;
+const MIX_ROW: f32 = 52.0;
+/// rows beyond this are left out (more apps playing at once is rare)
+pub const MIX_MAX_APPS: usize = 10;
+
+pub struct MixerRow {
+  pub name: String,
+  pub icon: Option<ID2D1Bitmap1>,
+  /// Material Symbols name when there is no icon
+  pub glyph: &'static str,
+  pub volume: f32,
+  pub muted: bool,
+  pub peak: f32,
+}
+
+pub struct MixerView<'a> {
+  /// rows[0]: the output device, then the apps
+  pub rows: &'a [MixerRow],
+  pub hover: Option<usize>,
+  /// translated "no app is playing"
+  pub empty: &'a str,
+}
+
+pub fn mixer_size(apps: usize) -> (f32, f32) {
+  let rows = apps.clamp(1, MIX_MAX_APPS) as f32;
+  (MIXER_W, 10.0 + MIX_ROW + 13.0 + rows * MIX_ROW + 8.0)
+}
+
+pub fn paint_mixer(p: &mut Painter, t: &Theme, v: &MixerView) -> anyhow::Result<Vec<Hit>> {
+  let mut hits = Vec::new();
+  let apps = v.rows.len().saturating_sub(1).min(MIX_MAX_APPS);
+  let size = mixer_size(apps);
+  let r = Rect::new(PAD, PAD, size.0, size.1);
+  frame_box(p, t, r, 17.0)?;
+  let mut y = r.y + 10.0;
+  for (i, row) in v.rows.iter().enumerate().take(apps + 1) {
+    mixer_row(p, t, Rect::new(r.x + 6.0, y, r.w - 12.0, MIX_ROW), row, v.hover == Some(i), i, &mut hits)?;
+    y += MIX_ROW;
+    if i == 0 {
+      p.fill_round(Rect::new(r.x + 16.0, y + 6.0, r.w - 32.0, 1.0), 0.5, t.outline_variant)?;
+      y += 13.0;
+    }
+  }
+  if apps == 0 {
+    p.text(v.empty, Rect::new(r.x, y, r.w, MIX_ROW), style(12.5), t.subtext, Align::Center, false)?;
+  }
+  frame_border(p, t, r, 17.0)?;
+  Ok(hits)
+}
+
+/// icon (click: mute) | name over the slider | percent
+fn mixer_row(p: &mut Painter, t: &Theme, r: Rect, row: &MixerRow, hover: bool, i: usize, hits: &mut Vec<Hit>) -> anyhow::Result<()> {
+  if hover {
+    p.fill_round(r, 12.0, t.layer1_hover)?;
+  }
+  // first: the icon and the slider pushed after it win where they overlap
+  hits.push(Hit { rect: r, kind: PopHit::MixerRow(i) });
+  let icon = Rect::new(r.x + 6.0, r.y + 10.0, 32.0, 32.0);
+  let dim = if row.muted { 0.45 } else { 1.0 };
+  match &row.icon {
+    Some(bmp) => {
+      let size = unsafe { bmp.GetSize() };
+      let img: ID2D1Image = bmp.cast()?;
+      p.image_round(&img, size.width, size.height, icon.inset(3.0, 3.0), 0.0, dim)?;
+    }
+    None => p.icon(row.glyph, icon.x + 16.0, icon.y + 16.0, 22.0, false, t.on_layer1.alpha(dim))?,
+  }
+  if row.muted {
+    p.fill_circle(icon.right() - 3.0, icon.bottom() - 3.0, 8.0, t.error)?;
+    p.icon("volume_off", icon.right() - 3.0, icon.bottom() - 3.0, 11.0, true, t.on_primary)?;
+  }
+  hits.push(Hit { rect: icon, kind: PopHit::MixerMute(i) });
+
+  let pct = format!("{}", (row.volume.clamp(0.0, 1.0) * 100.0).round() as i32);
+  let pct_w = 34.0;
+  let x = icon.right() + 10.0;
+  let w = (r.right() - 10.0 - pct_w - x).max(10.0);
+  p.text(&row.name, Rect::new(x, r.y + 4.0, w, 22.0), style(12.5), if row.muted { t.subtext } else { t.on_layer1 }, Align::Left, false)?;
+  // track: volume in a soft fill, the current level brighter inside it (EarTrumpet's meter)
+  let track = Rect::new(x, r.y + 33.0, w, 4.0);
+  let fill = if row.muted { t.subtext } else { t.primary };
+  p.fill_round(track, 2.0, t.outline_variant)?;
+  let vw = track.w * row.volume.clamp(0.0, 1.0);
+  if vw > 0.5 {
+    p.fill_round(Rect::new(track.x, track.y, vw, track.h), 2.0, fill.alpha(0.45))?;
+    let lw = vw * row.peak.clamp(0.0, 1.0);
+    if lw > 0.5 {
+      p.fill_round(Rect::new(track.x, track.y, lw, track.h), 2.0, fill)?;
+    }
+  }
+  p.fill_circle(track.x + vw, track.y + track.h / 2.0, 7.0, fill)?;
+  hits.push(Hit { rect: Rect::new(track.x - 8.0, r.y + 24.0, track.w + 16.0, 22.0), kind: PopHit::MixerSlider(i, track) });
+
+  let tw = p.measure_with(&pct, style(12.5), true)?;
+  p.text(&pct, Rect::new(r.right() - 10.0 - tw, r.y + 24.0, tw + 1.0, 22.0), style(12.5), t.subtext, Align::Left, true)?;
+  Ok(())
 }
 
 // ---- tooltip (ii StyledToolTip)
