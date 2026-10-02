@@ -750,6 +750,17 @@
         const lastWheel = useRef(0);
         const prevIdx = useRef(null);
         const [dir, setDir] = useState(0);
+        // Ctrl+Super (+Shift) ile gezinme: çekirdek kısayolu duyurur, numaralar kısa süre noktaların yerini alır
+        const [numbers, setNumbers] = useState(false);
+        useEffect(() => {
+          let timer;
+          const un = listen('ll:ws-numbers', () => {
+            setNumbers(true);
+            clearTimeout(timer);
+            timer = setTimeout(() => setNumbers(false), 700);
+          });
+          return () => { clearTimeout(timer); un.then(f => f()); };
+        }, []);
 
         const current = parseInt(tiling?.focusedWorkspace?.name ?? '1', 10) || 1;
         const order = tiling?.workspaceOrder?.length ? tiling.workspaceOrder.map(Number) : Array.from({ length: 30 }, (_, i) => i + 1);
@@ -790,7 +801,7 @@
         };
 
         return (
-          <div className="ws-track" onWheel={onWheel} style={{ width: SHOWN * WS }}
+          <div className={`ws-track${numbers ? ' show-numbers' : ''}`} onWheel={onWheel} style={{ width: SHOWN * WS }}
                onContextMenu={e => { e.preventDefault(); onRightClick(); }}>
             {runs.map(r => (
               <div key={r.start} className="ws-occ" style={{ left: r.start * WS, width: (r.end - r.start + 1) * WS }} />

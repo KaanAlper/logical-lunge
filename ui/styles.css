@@ -432,7 +432,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   filter: saturate(0.7);
 }
 .ws.active .ws-icon { filter: none; transform: scale(1.05); }
-.show-numbers .ws .ws-icon { transform: scale(0.72) translate(6px, 6px); }
+/* numaralar görünürken simge hücrenin sağ altına küçülür (yanındaki hücreye değmez; native bar'daki 8.5 DIP rozet) */
+.show-numbers .ws .ws-icon { transform: translate(6px, 6px) scale(0.47); }
 
 /* ---------- Tray sürükle-bırak ---------- */
 .tray.drop-target { outline: 1px dashed var(--m3primary); outline-offset: 2px; border-radius: 999px; }

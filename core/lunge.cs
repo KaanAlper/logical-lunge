@@ -5317,6 +5317,9 @@ class Keys2
                 {
                     held.Add(vk);
                     if (winDown) swallowedWithWin = true;
+                    // Ctrl+Super (+Shift) ile gezinme: bar noktaların yerine numaraları kısa süre gösterir (kanca beklemesin)
+                    if (!repeat && (act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-")))
+                        ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:ws-numbers"));
                     return (IntPtr)1;
                 }
             }
