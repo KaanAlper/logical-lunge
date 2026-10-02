@@ -49,7 +49,7 @@ indexed = {  # kitty-theme.conf: starship istemi için "gri" indeksler Material 
     240: c["onPrimary"], 243: c["primary"], 244: c["error"], 245: c["outlineVariant"],
 }
 q = lambda s: f"'{s}'"
-lua = ["-- tools\\termcolors\\wezterm-colors.py tarafından üretildi (ii kitty-theme.conf eşlemesi). Elle düzenleme.",
+lua = ["-- tools\\termcolors\\wezterm-colors.py tarafından üretildi (duvar kağıdı renkleri). Elle düzenleme.",
        "return {",
        f"  background = {q(t(0))}, foreground = {q(t(7))},",
        f"  cursor_bg = {q(t(7))}, cursor_border = {q(t(7))}, cursor_fg = {q(t(0))},",

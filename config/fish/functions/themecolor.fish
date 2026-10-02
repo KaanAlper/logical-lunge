@@ -1,12 +1,12 @@
 function themecolor --description 'Terminal renk teması: ok tuşlarıyla önizle, Enter ile kalıcı kaydet, Esc ile vazgeç'
-    set -l file ~/.config/wezterm/ll-theme
+    set -l file ~/.config/wezterm/ll-terminal-theme
     mkdir -p (path dirname $file)
-    set -l current ii
+    set -l current wallpaper
     test -f $file; and set current (string trim -c '"\' ' <$file)
 
-    # "ii" = ii'nin duvar kağıdından ürettiği Material You renkleri; diğerleri WezTerm'in yerleşik temaları
+    # "wallpaper" = duvar kağıdından üretilen Material You renkleri; diğerleri WezTerm'in yerleşik temaları
     set -l themes \
-        'ii  ·  duvar kağıdından (varsayılan)' \
+        'wallpaper  ·  duvar kağıdından (varsayılan)' \
         'Catppuccin Mocha' 'Catppuccin Macchiato' 'Catppuccin Latte' \
         'Tokyo Night' 'Tokyo Night Storm (Gogh)' 'Rosé Pine (Gogh)' 'Rosé Pine Moon (Gogh)' \
         'Kanagawa (Gogh)' 'Kanagawa Dragon (Gogh)' 'Gruvbox dark, medium (base16)' 'Gruvbox Material (Gogh)' \
@@ -23,13 +23,13 @@ function themecolor --description 'Terminal renk teması: ok tuşlarıyla önizl
     # Açıkken şu anki tema seçili gelsin
     set -l pos 1
     for i in (seq (count $themes))
-        set -l name (string replace -r '^ii .*' ii -- $themes[$i])
+        set -l name (string replace -r '^wallpaper .*' wallpaper -- $themes[$i])
         test "$name" = "$current"; and set pos $i; and break
     end
 
     # İmleç her temaya geldiğinde dosyaya yaz: WezTerm dosyayı izliyor, önizleme anında görünür
     set -l fish_exe (cygpath -w /usr/bin/fish.exe)
-    set -l write "string replace -r '^ii .*' ii -- {} >'$file'"
+    set -l write "string replace -r '^wallpaper .*' wallpaper -- {} >'$file'"
     set -l sel (printf '%s\n' $themes | fzf --height=55% --layout=reverse --border=rounded --info=hidden \
         --prompt='Tema › ' --pointer='›' --header='↑↓ önizle  ·  Enter kaydet  ·  Esc vazgeç' \
         --color='border:5,prompt:5,pointer:5,header:8' \
@@ -41,7 +41,7 @@ function themecolor --description 'Terminal renk teması: ok tuşlarıyla önizl
         echo "Tema değişmedi: $current"
         return 0
     end
-    set sel (string replace -r '^ii .*' ii -- $sel)
+    set sel (string replace -r '^wallpaper .*' wallpaper -- $sel)
     echo $sel >$file
     echo "Tema: $sel (kalıcı)"
 end

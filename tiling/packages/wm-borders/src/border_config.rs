@@ -60,7 +60,7 @@ impl BorderConfig {
                 .unwrap_or_else(|| global.effects.clone()),
 
             // If the tracking window is part of the initial windows list (meaning it was already
-            // open when tacky-borders was launched), then there should be no initialize delay.
+            // open when the border engine started), then there should be no initialize delay.
             initialize_delay: if is_initial_window {
                 0
             } else {

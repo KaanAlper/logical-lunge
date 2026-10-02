@@ -63,12 +63,12 @@ config.launch_menu = {
 }
 if has_fish then table.insert(config.launch_menu, 1, { label = 'fish', args = { fish } }) end
 
--- ---- Renkler: ii kitty-theme.conf (duvar kağıdından Material You, starship indeksleri dahil) ----
+-- ---- Renkler: duvar kağıdından Material You (starship indeksleri dahil) ----
 -- tools\termcolors\wezterm-colors.py ~/.config/wezterm/ll-colors.lua'yı üretir; dosya değişince WezTerm anında yeniler.
--- Tema seçimi: fish'te `themecolor` (ok tuşları + Enter). "ii" = duvar kağıdından üretilen renkler, başka her ad
--- WezTerm'in yerleşik temalarından biri. Dosya değişince açık terminaller anında yeni temaya geçer.
-local theme_file = wezterm.home_dir .. '/.config/wezterm/ll-theme'
-local theme = 'ii'
+-- Tema seçimi: fish'te `themecolor` (ok tuşları + Enter). "wallpaper" = duvar kağıdından üretilen renkler, başka her
+-- ad WezTerm'in yerleşik temalarından biri. Dosya değişince açık terminaller anında yeni temaya geçer.
+local theme_file = wezterm.home_dir .. '/.config/wezterm/ll-terminal-theme'
+local theme = 'wallpaper'
 local tf = io.open(theme_file, 'r')
 if tf then
   local line = tf:read('*l') or ''
@@ -77,13 +77,13 @@ if tf then
   if line ~= '' then theme = line end
 else
   local nf = io.open(theme_file, 'w')
-  if nf then nf:write('ii\n'); nf:close() end
+  if nf then nf:write('wallpaper\n'); nf:close() end
 end
 wezterm.add_to_config_reload_watch_list(theme_file)
 
 local colors_file = wezterm.home_dir .. '/.config/wezterm/ll-colors.lua'
 -- Tema tablosunu (1113 tema, ~70 ms) kurmadan adı doğrudan ver; themecolor yalnız geçerli adlar yazar
-if theme ~= 'ii' then
+if theme ~= 'wallpaper' then
   config.color_scheme = theme
 else
   local ok, generated = pcall(dofile, colors_file)
