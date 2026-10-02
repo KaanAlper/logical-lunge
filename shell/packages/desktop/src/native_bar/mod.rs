@@ -10,6 +10,7 @@ mod brightness;
 mod core_api;
 mod desktop_menu;
 mod desktop_shell;
+mod dialog;
 mod drag_drop;
 mod fonts;
 mod gfx;
@@ -138,6 +139,8 @@ const TIMER_DOCK_TICK: usize = 50;
 const TIMER_DOCK_CLOSE: usize = 51;
 /// the settings window faded out: it goes
 const TIMER_SETTINGS_CLOSE: usize = 60;
+/// an answered dialog faded out: its window goes, the next one opens
+const TIMER_DIALOG_CLOSE: usize = 70;
 /// slider values sent a moment after the last move
 const TIMER_SETTINGS_COMMIT: usize = 61;
 /// the health page reads the core again while it is looked at
@@ -175,6 +178,8 @@ enum Msg {
   SongRecDone,
   /// a notification card (the core's stream or a widget's `ll:toast`)
   Toast(serde_json::Value),
+  /// the core asks a question (`POST /dialog`, `lunge.exe --ask`)
+  Dialog(serde_json::Value),
   /// a card's image, read on another thread
   ToastImage(u64, Option<Vec<u8>>),
   /// the update card: checks, progress and results
@@ -205,6 +210,8 @@ static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
 static SESSION_PRIMARY: AtomicIsize = AtomicIsize::new(0);
 /// the settings window: it takes the keyboard
 static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
+/// the open dialog (dialog.rs): it takes the keyboard
+static DIALOG_HWND: AtomicIsize = AtomicIsize::new(0);
 /// the right panel's window while it is open: it takes the keyboard
 static SIDEBAR_HWND: AtomicIsize = AtomicIsize::new(0);
 /// song recognition: the run whose result counts (a stopped or replaced run
@@ -443,6 +450,7 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
     core_api::CoreEvent::Connected => send(Msg::Core(None)),
     core_api::CoreEvent::Emit(evt) => send(Msg::Core(Some(evt))),
     core_api::CoreEvent::Card(card) => send(Msg::Toast(card)),
+    core_api::CoreEvent::Dialog(d) => send(Msg::Dialog(d)),
   });
 
   // The indexer can finish after the shell starts. Ignore its temporary []
@@ -617,6 +625,8 @@ struct Ui {
   /// the open context menu (menu.rs) and closed ones still fading out
   menu: Option<menu::MenuState>,
   menu_gone: menu::MenuGone,
+  /// the open dialog and the ones waiting their turn
+  dialogs: dialog::Dialogs,
   /// the on-screen keyboard while it is open
   osk: Option<osk::Osk>,
   /// the Dock's pins, and its window while it is open
@@ -729,6 +739,7 @@ fn ui_thread(
         settings_page: 0,
         menu: None,
         menu_gone: Default::default(),
+        dialogs: Default::default(),
         osk: None,
         dock: Default::default(),
         sidebar: Default::default(),
@@ -815,6 +826,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     let menu = hwnd.0 as isize == OVERVIEW_HWND.load(Ordering::Acquire)
       || hwnd.0 as isize == SESSION_PRIMARY.load(Ordering::Acquire)
       || hwnd.0 as isize == SETTINGS_HWND.load(Ordering::Acquire)
+      || hwnd.0 as isize == DIALOG_HWND.load(Ordering::Acquire)
       || hwnd.0 as isize == SIDEBAR_HWND.load(Ordering::Acquire);
     return LRESULT(if menu { MA_ACTIVATE } else { MA_NOACTIVATE } as isize);
   }
@@ -850,6 +862,9 @@ fn monitor_device(mon: HMONITOR) -> String {
 impl Ui {
   fn handle(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<LRESULT> {
     if let Some(r) = self.menu_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
+    if let Some(r) = self.dialog_msg(hwnd, msg, wp, lp) {
       return r;
     }
     if let Some(r) = self.session_msg(hwnd, msg, wp, lp) {
@@ -895,6 +910,7 @@ impl Ui {
           if forced || !same {
             // the session screen is made for the old monitors
             self.session_destroy();
+            self.dialog_destroy_all();
             self.settings_destroy();
             self.osk_destroy();
             self.dock_destroy();
@@ -956,6 +972,7 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_UPDATE => self.update_timer(),
         WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
         WM_TIMER if wp.0 == TIMER_SESSION_CLOSE => self.session_destroy(),
+        WM_TIMER if wp.0 == TIMER_DIALOG_CLOSE => self.dialog_closed(),
         WM_TIMER if matches!(wp.0, TIMER_SETTINGS_CLOSE | TIMER_SETTINGS_COMMIT | TIMER_SETTINGS_HEALTH | TIMER_SETTINGS_SAVED) => {
           self.settings_timer(wp.0)
         }
@@ -1248,6 +1265,7 @@ impl Ui {
         Msg::DockPins(pins) => self.dock_pins(pins),
         Msg::Sidebar(e) => self.sidebar_event(e),
         Msg::Toast(card) => self.toast_add(card),
+        Msg::Dialog(d) => self.core_dialog(d),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
         Msg::Update(e) => self.update_event(e),
         Msg::Wm(state) => {

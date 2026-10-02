@@ -59,6 +59,8 @@ pub enum CoreEvent {
   Emit(String),
   /// a notification card
   Card(serde_json::Value),
+  /// a question for the dialog (dialog.rs): `{"id": n, "kind", "title", ...}`
+  Dialog(serde_json::Value),
 }
 
 pub fn events(on: impl Fn(CoreEvent) + Send + 'static) {
@@ -103,6 +105,8 @@ fn read_events(stream: TcpStream, on: &impl Fn(CoreEvent)) {
       if evt.starts_with("ll:") {
         on(CoreEvent::Emit(evt.to_string()));
       }
+    } else if v["dialog"].is_object() {
+      on(CoreEvent::Dialog(v["dialog"].clone()));
     } else if v.is_object() {
       on(CoreEvent::Card(v));
     }
