@@ -1,0 +1,688 @@
+//! Quick settings (ii AndroidQuickPanel; sidebar.html AndroidQuickPanel,
+//! QuickToggle and the cards under a tile): five columns of 56 DIP tiles,
+//! an edit mode (drag to move, click to add / remove, right click for the
+//! size, wheel to swap), and the cards a wide tile opens: Wi-Fi networks,
+//! Ethernet, Bluetooth devices, the output / input device with its volume,
+//! the night light.
+//!
+//! Hardware state comes from the core (`/qs/*`, `--nightlight`, `--mic`,
+//! `scripts\wifi.ps1`) on worker threads; audio and the Wi-Fi name from the
+//! bar's providers.
+
+mod actions;
+mod cards;
+mod defs;
+
+use std::{
+  collections::HashMap,
+  time::{Duration, Instant},
+};
+
+use serde_json::{json, Value};
+use windows::Win32::Graphics::Direct2D::{ID2D1StrokeStyle};
+
+use super::{
+  super::{
+    anim::{Curve, POP_IN, POP_OUT},
+    core_api,
+    gfx::{Rect, Rgba},
+    model::Model,
+    send, Msg, Ui,
+  },
+  kit::{blend, lerp_rect, st, stw, Cx},
+  store::{Tile, Toggle, AVAILABLE},
+  text::{TextField, Typed},
+  Ev, FieldId, Hit, ScrollId,
+};
+use crate::providers::{AudioFunction, ProviderFunction, SetMuteArgs, SetVolumeArgs};
+
+pub(super) const COLUMNS: u8 = 5;
+pub(super) const CELL_H: f32 = 56.0;
+pub(super) const SPACING: f32 = 6.0;
+pub(super) const PADDING: f32 = 6.0;
+/// `--clickBounce`-free tile moves (edit mode): 200 ms, cubic-bezier(.2, .8, .2, 1)
+const MOVE: Curve = Curve(0.2, 0.8, 0.2, 1.0);
+const CARD_IN_MS: f32 = 260.0;
+const CARD_OUT_MS: f32 = 180.0;
+/// the hardware state is read at most this often (each read costs the core
+/// four requests and two processes)
+const REFRESH_EVERY: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum QHit {
+  Tile(Tile),
+  /// the round icon of a wide tile with a card: switches it
+  TileIcon(Tile),
+  Edit,
+  /// the card's background (clicks there keep it open)
+  Card,
+  Net(String),
+  NetSubmit,
+  Scan,
+  More(&'static str),
+  AudioMute,
+  AudioSlider,
+  AudioDev(String),
+  NightToggle,
+  NightMode(&'static str),
+  NightSlider,
+  NightPreset(u32),
+}
+
+/// What a worker read.
+pub(in crate::native_bar) enum QEv {
+  Radios(Value),
+  Eth(Value),
+  Bt(Value),
+  Night(Value),
+  Status(Value),
+  Mic(Option<bool>),
+  Wifi(Option<Value>),
+  WifiConnected(String, Value),
+  EthToggled(Value),
+  AudioDefault(String),
+  ScanDone,
+}
+
+/// The hardware as last read (also kept in the store's cache).
+#[derive(Clone, Default)]
+pub(super) struct Hw {
+  /// {"wifi": "On" | "Off" | null, "bluetooth": ...}
+  pub radios: Value,
+  /// {"state", "desc", "speed", "ip"}
+  pub eth: Value,
+  /// {"adapter", "on", "devices": [{"name", "connected", "kind"}]}
+  pub bt: Value,
+  pub awake: bool,
+  /// the microphone is on (None: not read yet)
+  pub mic: Option<bool>,
+  /// {"on", "active", "level", "mode", "from", "to"}
+  pub night: Value,
+}
+
+struct Press {
+  tile: Toggle,
+  x0: f32,
+  y0: f32,
+  dx: f32,
+  dy: f32,
+  w: f32,
+  h: f32,
+}
+
+pub(super) struct Drag {
+  tile: Toggle,
+  x: f32,
+  y: f32,
+  dx: f32,
+  dy: f32,
+  w: f32,
+  h: f32,
+  to_used: bool,
+  index: usize,
+}
+
+struct CardAnim {
+  tile: Tile,
+  top: f32,
+  at: Instant,
+  closing: bool,
+}
+
+#[derive(Default)]
+pub(super) struct Quick {
+  pub toggles: Vec<Toggle>,
+  pub edit: bool,
+  pub menu: Option<Tile>,
+  card: Option<CardAnim>,
+  pub hw: Hw,
+  last_refresh: Option<Instant>,
+  awake_restarted: bool,
+  press: Option<Press>,
+  pub drag: Option<Drag>,
+  /// a drag just ended: the click that follows does not add / remove
+  dragged: bool,
+  /// where each tile was drawn (cards open under it), and in the edit mode
+  /// the moves under way
+  placed: HashMap<Tile, Rect>,
+  shown: HashMap<Tile, Rect>,
+  moving: HashMap<Tile, (Rect, Rect, Instant)>,
+  /// the tiles' areas in the last paint (drop targets)
+  used_area: Rect,
+  unused_area: Rect,
+  /// the panel's rectangle and the open card's (outside clicks close it)
+  pub area: Rect,
+  pub card_rect: Option<Rect>,
+  // cards
+  wifi: Option<Value>,
+  wifi_scanning: bool,
+  wifi_busy: Option<String>,
+  wifi_ask: Option<String>,
+  wifi_err: String,
+  wifi_scanned: Option<Instant>,
+  scanning: bool,
+  audio_busy: Option<String>,
+  /// volume being dragged: (device id, value, when last sent)
+  audio_drag: Option<(String, u32, Instant)>,
+  audio_track: Rect,
+  night_level: Option<u32>,
+  night_drag: bool,
+  night_track: Rect,
+  night_sent: Option<Instant>,
+}
+
+pub(super) fn rows_for(list: &[Toggle]) -> Vec<Vec<Toggle>> {
+  let mut rows = Vec::new();
+  let mut row: Vec<Toggle> = Vec::new();
+  let mut total = 0u8;
+  for t in list {
+    if total + t.size > COLUMNS {
+      rows.push(std::mem::take(&mut row));
+      total = 0;
+    }
+    row.push(*t);
+    total += t.size;
+  }
+  if !row.is_empty() {
+    rows.push(row);
+  }
+  rows
+}
+
+/// Each tile's place in a `width` wide area (rows of five units, tiles
+/// stretched by their size), as sidebar.html's rectsFor.
+pub(super) fn rects_for(list: &[Toggle], width: f32) -> Vec<(Tile, Rect)> {
+  let mut out = Vec::new();
+  for (ri, row) in rows_for(list).iter().enumerate() {
+    let units: f32 = row.iter().map(|t| t.size as f32).sum();
+    let free = width - SPACING * (row.len() as f32 - 1.0);
+    let mut x = 0.0;
+    for t in row {
+      let w = free * t.size as f32 / units;
+      out.push((t.tile, Rect::new(x, ri as f32 * (CELL_H + SPACING), w, CELL_H)));
+      x += w + SPACING;
+    }
+  }
+  out
+}
+
+/// Where a dragged tile would drop: the place whose centre is nearest the
+/// pointer (`px`, `py` from the area's top left).
+pub(super) fn drop_index(list: &[Toggle], item: Toggle, px: f32, py: f32, width: f32) -> usize {
+  let rest: Vec<Toggle> = list.iter().filter(|t| t.tile != item.tile).copied().collect();
+  let (mut best, mut best_d) = (0, f32::MAX);
+  for i in 0..=rest.len() {
+    let mut l = rest.clone();
+    l.insert(i, item);
+    if let Some((_, r)) = rects_for(&l, width).into_iter().find(|(t, _)| *t == item.tile) {
+      let d = (r.x + r.w / 2.0 - px).powi(2) + (r.y + r.h / 2.0 - py).powi(2);
+      if d < best_d {
+        best_d = d;
+        best = i;
+      }
+    }
+  }
+  best
+}
+
+fn rows_h(n: usize) -> f32 {
+  if n == 0 {
+    0.0
+  } else {
+    n as f32 * CELL_H + (n as f32 - 1.0) * SPACING
+  }
+}
+
+/// What a tile shows and does (sidebar.html `defs`).
+struct Def {
+  name: &'static str,
+  icon: &'static str,
+  toggled: bool,
+  status: String,
+  /// a wide tile with a card keeps its background, only its icon is coloured
+  alt: bool,
+  hidden: bool,
+  menu: bool,
+}
+
+fn s(v: &Value) -> &str {
+  v.as_str().unwrap_or("")
+}
+
+impl Quick {
+  pub fn new(toggles: Vec<Toggle>, cache: &Value) -> Self {
+    let hw = Hw {
+      radios: cache["radios"].clone(),
+      eth: cache["eth"].clone(),
+      bt: cache["bt"].clone(),
+      awake: cache["awake"].as_bool().unwrap_or(false),
+      mic: cache["mic"].as_bool(),
+      night: cache["night"].clone(),
+    };
+    Quick { toggles, hw, ..Default::default() }
+  }
+
+  pub fn cache(&self) -> Value {
+    json!({
+      "radios": self.hw.radios, "eth": self.hw.eth, "bt": self.hw.bt,
+      "awake": self.hw.awake, "mic": self.hw.mic, "night": self.hw.night,
+    })
+  }
+
+  fn wifi_on(&self) -> bool {
+    s(&self.hw.radios["wifi"]) == "On"
+  }
+
+  fn bt_on(&self) -> bool {
+    s(&self.hw.radios["bluetooth"]) == "On"
+  }
+
+  fn bt_no_adapter(&self) -> bool {
+    if self.hw.bt.is_object() {
+      self.hw.bt["adapter"].as_bool() != Some(true)
+    } else {
+      self.hw.radios.is_object() && self.hw.radios["bluetooth"].is_null()
+    }
+  }
+
+  fn visible(&self, m: &Model, tr: &dyn Fn(&str) -> String) -> Vec<Toggle> {
+    self.toggles.iter().filter(|t| self.edit || !self.def(t.tile, m, tr).hidden).copied().collect()
+  }
+
+  fn unused(&self) -> Vec<Toggle> {
+    AVAILABLE.iter().filter(|a| !self.toggles.iter().any(|t| t.tile == **a)).map(|a| Toggle { tile: *a, size: 1 }).collect()
+  }
+
+  /// What the rows show now: while dragging, a gap where the tile would land.
+  fn shown_lists(&self, m: &Model, tr: &dyn Fn(&str) -> String) -> (Vec<(Toggle, bool)>, Vec<(Toggle, bool)>) {
+    let visible = self.visible(m, tr);
+    let unused = self.unused();
+    match &self.drag {
+      None => (visible.into_iter().map(|t| (t, false)).collect(), unused.into_iter().map(|t| (t, false)).collect()),
+      Some(d) => {
+        let mut used: Vec<(Toggle, bool)> = visible.into_iter().filter(|t| t.tile != d.tile.tile).map(|t| (t, false)).collect();
+        let mut rest: Vec<(Toggle, bool)> = unused.into_iter().filter(|t| t.tile != d.tile.tile).map(|t| (t, false)).collect();
+        if d.to_used {
+          let i = d.index.min(used.len());
+          used.insert(i, (d.tile, true));
+        } else {
+          rest.push((Toggle { tile: d.tile.tile, size: 1 }, true));
+        }
+        (used, rest)
+      }
+    }
+  }
+
+  /// The panel's height for its rows (sidebar.css `.quickpanel`).
+  pub fn height(&self, m: &Model, tr: &dyn Fn(&str) -> String) -> f32 {
+    let (used, unused) = self.shown_lists(m, tr);
+    let ur: Vec<Toggle> = used.iter().map(|t| t.0).collect();
+    let nr: Vec<Toggle> = unused.iter().map(|t| t.0).collect();
+    let mut h = PADDING + rows_h(rows_for(&ur).len()) + SPACING;
+    if self.edit {
+      h += 13.0 + SPACING + rows_h(rows_for(&nr).len()) + SPACING;
+    }
+    h + 38.0 + PADDING
+  }
+
+  // ------------------------------------------------------------------ paint
+
+  pub fn paint(&mut self, cx: &mut Cx, m: &Model, area: Rect, animations: bool, dash: Option<&ID2D1StrokeStyle>) -> anyhow::Result<()> {
+    self.area = area;
+    cx.round(area, 17.0, cx.t.layer1)?;
+    let tr = cx.tr;
+    let (used, unused) = self.shown_lists(m, &|s| tr(s));
+    let inner_w = area.w - 2.0 * PADDING;
+    let used_at = Rect::new(area.x + PADDING, area.y + PADDING, inner_w, rows_h(rows_for(&used.iter().map(|t| t.0).collect::<Vec<_>>()).len()));
+    self.used_area = used_at;
+    let mut targets: Vec<(Toggle, bool, Rect, bool)> = Vec::new();
+    for ((tile, r), (t, ph)) in rects_for(&used.iter().map(|t| t.0).collect::<Vec<_>>(), inner_w).into_iter().zip(used.iter()) {
+      debug_assert_eq!(tile, t.tile);
+      targets.push((*t, *ph, Rect::new(used_at.x + r.x, used_at.y + r.y, r.w, r.h), true));
+    }
+    let mut y = used_at.bottom() + SPACING;
+    if self.edit {
+      cx.round(Rect::new(area.x + 28.0, y + 6.0, area.w - 56.0, 1.0), 0.5, cx.t.outline_variant)?;
+      y += 13.0 + SPACING;
+      let ul: Vec<Toggle> = unused.iter().map(|t| t.0).collect();
+      let at = Rect::new(area.x + PADDING, y, inner_w, rows_h(rows_for(&ul).len()));
+      self.unused_area = at;
+      for ((_, r), (t, ph)) in rects_for(&ul, inner_w).into_iter().zip(unused.iter()) {
+        targets.push((*t, *ph, Rect::new(at.x + r.x, at.y + r.y, r.w, r.h), false));
+      }
+      y = at.bottom() + SPACING;
+    } else {
+      self.unused_area = Rect::default();
+    }
+    // edit mode: a tile whose place or size changed slides there (FLIP)
+    let now = cx.now;
+    let mut shown = HashMap::new();
+    for (t, ph, target, in_used) in &targets {
+      let mut r = *target;
+      if self.edit && animations {
+        let moving = self.moving.get(&t.tile).copied();
+        let last = self.shown.get(&t.tile).copied();
+        match moving {
+          Some((from, to, at)) if to == *target => {
+            let k = (now.duration_since(at).as_secs_f32() * 1000.0 / 200.0).min(1.0);
+            r = lerp_rect(from, to, MOVE.at(k));
+            if k < 1.0 {
+              cx.busy = true;
+            }
+          }
+          _ => {
+            if let Some(prev) = last.filter(|l| (l.x - target.x).abs() > 0.5 || (l.y - target.y).abs() > 0.5 || (l.w - target.w).abs() > 0.5) {
+              self.moving.insert(t.tile, (prev, *target, now));
+              cx.busy = true;
+              r = prev;
+            }
+          }
+        }
+      }
+      shown.insert(t.tile, r);
+      self.paint_tile(cx, m, *t, r, *ph, *in_used, dash)?;
+    }
+    self.placed = shown.clone();
+    if self.edit {
+      self.shown = shown;
+    } else {
+      self.shown.clear();
+      self.moving.clear();
+    }
+    // the edit button, bottom right
+    let eb = Rect::new(area.right() - PADDING - 40.0, y - 2.0, 40.0, 40.0);
+    let on = self.edit;
+    let (bg, fg) = if on { (Some(cx.t.sec_container), cx.t.on_sec_container) } else { (None, cx.t.on_layer1) };
+    cx.round_btn(eb, if on { "check" } else { "edit" }, 22.0, false, bg, fg, Hit::Quick(QHit::Edit))?;
+    Ok(())
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn paint_tile(&self, cx: &mut Cx, m: &Model, t: Toggle, r: Rect, placeholder: bool, in_used: bool, dash: Option<&ID2D1StrokeStyle>) -> anyhow::Result<()> {
+    let tr = cx.tr;
+    let def = self.def(t.tile, m, &|s| tr(s));
+    let hit = Hit::Quick(QHit::Tile(t.tile));
+    if placeholder {
+      // the dashed gap the dragged tile would fill
+      dashed(cx, r.inset(1.0, 1.0), 26.0, cx.t.primary.alpha(0.6), 2.0, dash)?;
+      return Ok(());
+    }
+    let expanded = t.size == 2;
+    let alt_look = def.alt && expanded;
+    let hot = cx.hot(&hit) || cx.hot(&Hit::Quick(QHit::TileIcon(t.tile)));
+    let pressed = cx.down(&hit) || cx.down(&Hit::Quick(QHit::TileIcon(t.tile)));
+    let menu_open = self.menu == Some(t.tile);
+    let radius = if pressed || menu_open { 17.0 } else if def.toggled { 23.0 } else { r.h / 2.0 };
+    let a = if def.hidden { 0.45 } else { 1.0 };
+    let filled = def.toggled && !alt_look;
+    let bg = if filled {
+      if hot { blend(cx.t.primary, Rgba(255, 255, 255, 1.0), 0.06) } else { cx.t.primary }
+    } else if hot {
+      cx.c.layer2_hover
+    } else {
+      cx.c.layer2
+    };
+    let fg = if filled { cx.t.on_primary } else { cx.t.on_layer1 };
+    cx.round(r, radius, bg.alpha(bg.3 * a))?;
+    if self.edit {
+      dashed(cx, r.inset(3.0, 3.0), (radius - 3.0).max(4.0), cx.c.outline.alpha(0.8 * a), 1.0, dash)?;
+    }
+    if !expanded {
+      cx.icon(def.icon, r.x + r.w / 2.0, r.y + r.h / 2.0, 24.0, def.toggled, fg.alpha(a))?;
+    } else {
+      let ic = Rect::new(r.x + 6.0, r.y + 6.0, 44.0, 44.0);
+      let (ibg, ifg) = if def.toggled && alt_look {
+        (Some(cx.t.primary), cx.t.on_primary)
+      } else if filled {
+        (None, fg)
+      } else {
+        (Some(cx.c.layer3), fg)
+      };
+      if let Some(c) = ibg {
+        cx.round(ic, if def.toggled { 17.0 } else { 22.0 }, c.alpha(c.3 * a))?;
+      }
+      cx.icon(def.icon, ic.x + 22.0, ic.y + 22.0, 22.0, def.toggled, ifg.alpha(a))?;
+      let tx = ic.right() + 4.0;
+      let arrow = def.menu;
+      let tw = r.right() - tx - if arrow { 30.0 } else { 8.0 };
+      let name_h = if def.status.is_empty() { 0.0 } else { 16.5 };
+      let top = r.y + (r.h - 17.0 - name_h) / 2.0;
+      cx.text(&cx.tr(def.name), Rect::new(tx, top, tw, 17.0), stw(13.0, 600.0), fg.alpha(a))?;
+      if !def.status.is_empty() {
+        cx.text(&def.status, Rect::new(tx, top + 17.0, tw, 16.0), stw(12.0, 300.0), fg.alpha(a))?;
+      }
+      if arrow {
+        cx.icon(if menu_open { "expand_less" } else { "expand_more" }, r.right() - 8.0 - 9.0, r.y + r.h / 2.0, 18.0, false, fg.alpha(0.7 * a))?;
+      }
+    }
+    cx.hit(r, hit);
+    if expanded && def.menu && !self.edit && in_used {
+      cx.hit(Rect::new(r.x + 6.0, r.y + 6.0, 44.0, 44.0), Hit::Quick(QHit::TileIcon(t.tile)));
+    }
+    Ok(())
+  }
+
+  /// The dragged tile under the pointer, a little bigger, with a shadow.
+  pub fn paint_ghost(&self, cx: &mut Cx, m: &Model) -> anyhow::Result<()> {
+    let Some(d) = &self.drag else { return Ok(()) };
+    let r = Rect::new(d.x - d.dx - d.w * 0.02, d.y - d.dy - d.h * 0.02, d.w * 1.04, d.h * 1.04);
+    cx.shadow(r, 23.0, 0.8)?;
+    // drawn as it looks outside the edit mode
+    let me = Quick { edit: false, toggles: Vec::new(), hw: self.hw.clone(), ..Default::default() };
+    me.paint_tile(cx, m, d.tile, r, false, false, None)?;
+    Ok(())
+  }
+
+  // ------------------------------------------------------------------ cards
+
+  /// Starts / ends the card under a tile (`top` in panel DIPs).
+  pub fn set_menu(&mut self, tile: Option<Tile>, top: f32) {
+    if tile == self.menu {
+      return;
+    }
+    self.menu = tile;
+    match tile {
+      Some(t) => {
+        self.card = Some(CardAnim { tile: t, top, at: Instant::now(), closing: false });
+        self.wifi_err.clear();
+        self.wifi_ask = None;
+        self.night_level = None;
+      }
+      None => {
+        if let Some(c) = self.card.as_mut() {
+          if !c.closing {
+            c.closing = true;
+            c.at = Instant::now();
+          }
+        }
+      }
+    }
+  }
+
+  pub fn tile_rect(&self, tile: Tile) -> Option<Rect> {
+    self.placed.get(&tile).copied()
+  }
+
+  // ------------------------------------------------------------------ input
+
+  /// A press on a tile in the edit mode may become a drag.
+  pub fn press(&mut self, tile: Tile, x: f32, y: f32) {
+    if !self.edit {
+      return;
+    }
+    let size = self.toggles.iter().find(|t| t.tile == tile).map_or(1, |t| t.size);
+    let r = self.shown.get(&tile).copied().unwrap_or(Rect::new(x - 20.0, y - 20.0, 40.0, CELL_H));
+    self.press = Some(Press { tile: Toggle { tile, size }, x0: x, y0: y, dx: x - r.x, dy: y - r.y, w: r.w, h: r.h });
+  }
+
+  /// The pointer moved with the button down: true when a drag shows.
+  pub fn drag_move(&mut self, m: &Model, tr: &dyn Fn(&str) -> String, x: f32, y: f32) -> bool {
+    let Some(p) = &self.press else { return false };
+    if self.drag.is_none() && (x - p.x0).hypot(y - p.y0) < 5.0 {
+      return false;
+    }
+    let (tile, dx, dy, w, h) = (p.tile, p.dx, p.dy, p.w, p.h);
+    let (to_used, index) = if self.edit && self.unused_area.h > 0.0 && y > self.unused_area.y - SPACING {
+      (false, 0)
+    } else {
+      let visible = self.visible(m, tr);
+      (true, drop_index(&visible, tile, x - self.used_area.x, y - self.used_area.y, self.used_area.w))
+    };
+    self.drag = Some(Drag { tile, x, y, dx, dy, w, h, to_used, index });
+    self.dragged = true;
+    true
+  }
+
+  /// The button went up: a drag drops (true: the layout changed).
+  pub fn release(&mut self, m: &Model, tr: &dyn Fn(&str) -> String, drop: bool) -> bool {
+    self.press = None;
+    let Some(d) = self.drag.take() else { return false };
+    if !drop {
+      return false;
+    }
+    let rest: Vec<Toggle> = self.toggles.iter().filter(|t| t.tile != d.tile.tile).copied().collect();
+    if !d.to_used {
+      self.toggles = rest;
+    } else {
+      let visible: Vec<Toggle> = self.visible(m, tr).into_iter().filter(|t| t.tile != d.tile.tile).collect();
+      let at = visible.get(d.index).and_then(|b| rest.iter().position(|t| t.tile == b.tile)).unwrap_or(rest.len());
+      let mut n = rest;
+      n.insert(at, d.tile);
+      self.toggles = n;
+    }
+    true
+  }
+
+  /// The click after a press: false when a drag just ended (no add / remove).
+  pub fn take_click(&mut self) -> bool {
+    !std::mem::take(&mut self.dragged)
+  }
+
+  /// Edit mode: add (size 1, at the end) or remove a tile.
+  pub fn edit_click(&mut self, tile: Tile) {
+    if self.toggles.iter().any(|t| t.tile == tile) {
+      self.toggles.retain(|t| t.tile != tile);
+    } else {
+      self.toggles.push(Toggle { tile, size: 1 });
+    }
+  }
+
+  pub fn edit_size(&mut self, tile: Tile) {
+    for t in self.toggles.iter_mut().filter(|t| t.tile == tile) {
+      t.size = 3 - t.size;
+    }
+  }
+
+  pub fn edit_move(&mut self, tile: Tile, off: i32) {
+    let Some(i) = self.toggles.iter().position(|t| t.tile == tile) else { return };
+    let j = i as i32 + off;
+    if j < 0 || j as usize >= self.toggles.len() {
+      return;
+    }
+    self.toggles.swap(i, j as usize);
+  }
+
+  pub fn has_card(&self) -> bool {
+    self.card.as_ref().is_some_and(|c| !c.closing)
+  }
+}
+
+fn audio_devices(m: &Model, out: bool) -> Vec<crate::providers::audio::AudioDevice> {
+  m.audio
+    .as_ref()
+    .map(|a| if out { a.playback_devices.clone() } else { a.recording_devices.clone() })
+    .unwrap_or_default()
+}
+
+/// A dashed rounded outline (`outline: 1px dashed`).
+fn dashed(cx: &mut Cx, r: Rect, radius: f32, c: Rgba, width: f32, dash: Option<&ID2D1StrokeStyle>) -> anyhow::Result<()> {
+  let b = cx.p.brush(c)?;
+  unsafe {
+    cx.p.dc.DrawRoundedRectangle(&r.rounded(radius.min(r.h / 2.0)), &b, width, dash);
+  }
+  Ok(())
+}
+
+// ---------------------------------------------------------------- workers
+
+fn qs(path: &str) -> Option<Value> {
+  match core_api::post(&format!("/qs/{path}")) {
+    Some((200, body)) => serde_json::from_slice(&body).ok(),
+    Some((204, _)) => Some(Value::Null),
+    _ => None,
+  }
+}
+
+fn core_json(args: &[&str]) -> Option<Value> {
+  core_api::run_core_output(args).and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// `lunge.exe --ps <install>\scripts\<script> <args>`
+pub(super) fn ps(script: &str, args: &[&str]) -> Option<Value> {
+  let path = core_api::core_exe()?.parent()?.join("scripts").join(script);
+  let path = path.to_string_lossy().to_string();
+  let mut all = vec!["--ps", path.as_str()];
+  all.extend_from_slice(args);
+  core_json(&all)
+}
+
+fn ev(e: QEv) {
+  send(Msg::Sidebar(Ev::Quick(e)));
+}
+
+fn spawn(f: impl FnOnce() + Send + 'static) {
+  std::thread::spawn(f);
+}
+
+
+/// "7:5" -> "07:05"; None when it is no time of day.
+pub(super) fn valid_time(s: &str) -> Option<String> {
+  let (h, m) = s.trim().split_once(':')?;
+  let (h, m): (u32, u32) = (h.trim().parse().ok()?, m.trim().parse().ok()?);
+  (h < 24 && m < 60).then(|| format!("{h:02}:{m:02}"))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn t(tile: Tile, size: u8) -> Toggle {
+    Toggle { tile, size }
+  }
+
+  #[test]
+  fn rows_hold_five_units() {
+    let list = vec![t(Tile::Wifi, 2), t(Tile::Ethernet, 2), t(Tile::Mic, 1), t(Tile::Audio, 2), t(Tile::DarkMode, 1)];
+    let rows = rows_for(&list);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].len(), 3);
+    assert_eq!(rows[1].len(), 2);
+  }
+
+  #[test]
+  fn tiles_stretch_with_their_size() {
+    let list = vec![t(Tile::Wifi, 2), t(Tile::Mic, 1)];
+    let r = rects_for(&list, 306.0);
+    // 300 free DIP for 3 units
+    assert_eq!(r[0].1.w, 200.0);
+    assert_eq!(r[1].1.x, 206.0);
+    assert_eq!(r[1].1.w, 100.0);
+  }
+
+  #[test]
+  fn a_tile_drops_where_its_centre_is_nearest() {
+    let list = vec![t(Tile::Wifi, 1), t(Tile::Mic, 1), t(Tile::Audio, 1)];
+    let item = t(Tile::Audio, 1);
+    // far left of the first row: first
+    assert_eq!(drop_index(&list, item, 5.0, 20.0, 300.0), 0);
+    // second row: last
+    assert_eq!(drop_index(&list, item, 280.0, 20.0, 300.0), 2);
+  }
+
+  #[test]
+  fn times_are_checked_and_padded() {
+    assert_eq!(valid_time("7:5"), Some("07:05".into()));
+    assert_eq!(valid_time("24:00"), None);
+    assert_eq!(valid_time("ab"), None);
+  }
+}

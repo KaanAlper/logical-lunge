@@ -1678,7 +1678,7 @@ fn overview_monitor(wm: &WmState) -> (RECT, f32) {
   }
 }
 
-fn set_clipboard(hwnd: HWND, text: &str) -> bool {
+pub(super) fn set_clipboard(hwnd: HWND, text: &str) -> bool {
   let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
   unsafe {
     if OpenClipboard(hwnd).is_err() {
@@ -1702,7 +1702,7 @@ fn set_clipboard(hwnd: HWND, text: &str) -> bool {
   }
 }
 
-fn clipboard_text(hwnd: HWND) -> Option<String> {
+pub(super) fn clipboard_text(hwnd: HWND) -> Option<String> {
   unsafe {
     OpenClipboard(hwnd).ok()?;
     let text = (|| {

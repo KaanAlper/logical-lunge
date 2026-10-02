@@ -113,6 +113,36 @@ impl Model {
     s.to_string()
   }
 
+  /// The user's language (`tr-TR`, `en-US` ...).
+  pub fn locale(&self) -> &str {
+    &self.locale
+  }
+
+  /// A day in the user's language (`MMMM yyyy`, `d MMMM`, `ddd` ...).
+  pub fn format_day(&self, year: i32, month: u32, day: u32, pattern: &str) -> String {
+    let st = windows::Win32::Foundation::SYSTEMTIME {
+      wYear: year.clamp(1601, 30827) as u16,
+      wMonth: month.clamp(1, 12) as u16,
+      wDay: day.clamp(1, 31) as u16,
+      ..Default::default()
+    };
+    unsafe {
+      let mut buf = [0u16; 128];
+      let n = GetDateFormatEx(
+        &HSTRING::from(self.locale.as_str()),
+        windows::Win32::Globalization::ENUM_DATE_FORMATS_FLAGS(0),
+        Some(&st),
+        &HSTRING::from(pattern),
+        Some(&mut buf),
+        PCWSTR::null(),
+      );
+      if n <= 0 {
+        return String::new();
+      }
+      String::from_utf16_lossy(&buf[..(n - 1) as usize])
+    }
+  }
+
   /// Updates the time and date strings; true when they changed.
   pub fn tick_clock(&mut self) -> bool {
     let time = format_time(if self.hour12 { "h:mm tt" } else { "HH:mm" });
@@ -391,5 +421,24 @@ fn format_date(locale: &str, pattern: &str) -> String {
       return String::new();
     }
     String::from_utf16_lossy(&buf[..(n - 1) as usize])
+  }
+}
+
+/// The local calendar day (year, month 1-12, day) of a Unix time in ms, or
+/// of now.
+pub fn local_day(unix_ms: Option<i64>) -> (i32, u32, u32) {
+  use windows::Win32::{
+    Foundation::{FILETIME, SYSTEMTIME},
+    System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
+  };
+  let ms = unix_ms.unwrap_or_else(|| SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)).max(0) as u64;
+  let ticks = (ms / 1000 + 11_644_473_600) * 10_000_000 + (ms % 1000) * 10_000;
+  let ft = FILETIME { dwLowDateTime: ticks as u32, dwHighDateTime: (ticks >> 32) as u32 };
+  let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+  unsafe {
+    if FileTimeToSystemTime(&ft, &mut utc).is_err() || SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_err() {
+      return (1970, 1, 1);
+    }
+    (local.wYear as i32, local.wMonth as u32, local.wDay as u32)
   }
 }

@@ -26,6 +26,7 @@ mod osk;
 mod dock;
 mod session;
 mod settings;
+mod sidebar;
 mod toast;
 mod update;
 mod view;
@@ -142,6 +143,14 @@ const TIMER_SETTINGS_COMMIT: usize = 61;
 const TIMER_SETTINGS_HEALTH: usize = 62;
 /// "saved" under the workspace settings goes
 const TIMER_SETTINGS_SAVED: usize = 63;
+/// the right panel: its slide out is over (the window goes), a page slid
+/// back, frames while something on it moves, the clock of its timer and
+/// lists, a touchpad swipe on a notification ended
+const TIMER_SB_CLOSE: usize = 70;
+const TIMER_SB_PAGE: usize = 71;
+const TIMER_SB_FRAME: usize = 72;
+const TIMER_SB_TICK: usize = 73;
+const TIMER_SB_WHEEL: usize = 74;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -184,6 +193,8 @@ enum Msg {
   SettingsToggle,
   /// the settings window's answers from the core
   Settings(settings::Event),
+  /// the right panel: the shell's events and its workers' results
+  Sidebar(sidebar::Ev),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -195,6 +206,8 @@ static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
 static SESSION_PRIMARY: AtomicIsize = AtomicIsize::new(0);
 /// the settings window: it takes the keyboard
 static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
+/// the right panel's window while it is open: it takes the keyboard
+static SIDEBAR_HWND: AtomicIsize = AtomicIsize::new(0);
 /// song recognition: the run whose result counts (a stopped or replaced run
 /// stays quiet) and its `lunge.exe --songrec`, which a second press kills
 static SONGREC_RUN: AtomicU64 = AtomicU64::new(0);
@@ -332,6 +345,18 @@ pub fn settings_toggle() {
 /// native on-screen keyboard.
 pub fn osk_toggle() {
   send(Msg::OskToggle);
+}
+
+/// A widget's `ll:sidebar-right-toggle` (the bar's own toggles go straight
+/// to the panel).
+pub fn sidebar_toggle() {
+  send(Msg::Sidebar(sidebar::Ev::Toggle));
+}
+
+/// `ll:sidebar-open-page` with its page ("keys", "walls", "screensaver", "bug").
+pub fn sidebar_open_page(payload: &str) {
+  let page = serde_json::from_str::<String>(payload).unwrap_or_else(|_| payload.trim_matches('"').to_string());
+  send(Msg::Sidebar(sidebar::Ev::OpenPage(page)));
 }
 
 /// A widget's notification card (`ll:toast`; the bar's own come back the
@@ -597,6 +622,8 @@ struct Ui {
   osk: Option<osk::Osk>,
   /// the Dock's pins, and its window while it is open
   dock: dock::DockState,
+  /// the right panel (its window only while it is open)
+  sidebar: sidebar::Sidebar,
   /// test run: a menu picture to write once the app list is in (text, PNG, asked at)
   snapshot: Option<(String, PathBuf, Instant)>,
 }
@@ -705,6 +732,7 @@ fn ui_thread(
         menu_gone: Default::default(),
         osk: None,
         dock: Default::default(),
+        sidebar: Default::default(),
         snapshot: None,
       })
     });
@@ -787,7 +815,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     // clicking the bar never takes the keyboard from the app; the Super menu does
     let menu = hwnd.0 as isize == OVERVIEW_HWND.load(Ordering::Acquire)
       || hwnd.0 as isize == SESSION_PRIMARY.load(Ordering::Acquire)
-      || hwnd.0 as isize == SETTINGS_HWND.load(Ordering::Acquire);
+      || hwnd.0 as isize == SETTINGS_HWND.load(Ordering::Acquire)
+      || hwnd.0 as isize == SIDEBAR_HWND.load(Ordering::Acquire);
     return LRESULT(if menu { MA_ACTIVATE } else { MA_NOACTIVATE } as isize);
   }
   if msg == WM_ERASEBKGND {
@@ -836,10 +865,14 @@ impl Ui {
     if let Some(r) = self.dock_msg(hwnd, msg, wp, lp) {
       return r;
     }
+    if let Some(r) = self.sidebar_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if self.overview.as_ref().is_some_and(|o| o.hwnd == hwnd) {
-      // the Super menu opening closes the settings (as on the web)
+      // the Super menu opening closes the settings and the panel (as on the web)
       if msg == WM_SHOWWINDOW && wp.0 != 0 {
         self.settings_close();
+        self.sidebar_close();
       }
       return self.overview_msg(msg, wp, lp);
     }
@@ -930,6 +963,7 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_OSK_CLOSE => self.osk_destroy(),
         WM_TIMER if wp.0 == TIMER_DOCK_TICK => self.dock_tick(),
         WM_TIMER if wp.0 == TIMER_DOCK_CLOSE => self.dock_destroy(),
+        WM_TIMER if (TIMER_SB_CLOSE..=TIMER_SB_WHEEL).contains(&wp.0) => self.sidebar_timer(wp.0),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           // frames while the numbers fade in or out; nothing between
           let now = Instant::now();
@@ -1089,6 +1123,7 @@ impl Ui {
         if !toggles {
           (self.emit)("ll:bar-click", serde_json::Value::Null);
           self.dock_close();
+          self.sidebar_close();
           // the native Super menu is no web widget: it closes here (a bar
           // on another monitor is outside its backdrop)
           if self.overview.as_ref().is_some_and(|o| o.shown) {
@@ -1174,7 +1209,12 @@ impl Ui {
             let audio = matches!(output, ProviderOutput::Audio(_));
             let media = matches!(output, ProviderOutput::Media(_));
             let battery = matches!(output, ProviderOutput::Battery(_));
+            let network = matches!(output, ProviderOutput::Network(_));
             self.model.apply(output);
+            // the panel's audio and Wi-Fi tiles and cards
+            if (audio || network) && self.sidebar.open {
+              self.sb_render();
+            }
             if tray {
               self.init_pins();
               if self.model.tray_open {
@@ -1206,6 +1246,7 @@ impl Ui {
         Msg::Settings(e) => self.settings_event(e),
         Msg::OskToggle => self.osk_toggle(),
         Msg::DockPins(pins) => self.dock_pins(pins),
+        Msg::Sidebar(e) => self.sidebar_event(e),
         Msg::Toast(card) => self.toast_add(card),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
         Msg::Update(e) => self.update_event(e),
@@ -1336,6 +1377,8 @@ impl Ui {
   }
 
   fn create_bars(&mut self) {
+    // the panel was made for the old primary monitor
+    self.sidebar_reset();
     self.pops_reset();
     self.toasts_reset();
     self.update_reset();
@@ -1600,6 +1643,7 @@ impl Ui {
         self.toasts_reset();
         self.update_reset();
         self.settings_destroy();
+        self.sidebar_reset();
         // Its surfaces belonged to the lost device. The core's Super key
         // needs a hidden window with this title even before the next open.
         self.overview = None;
@@ -1664,6 +1708,17 @@ impl Ui {
   fn core_event(&mut self, evt: Option<String>) {
     // the web widgets get the core's events through the bar (the toast
     // widget relayed them before the notifications became native)
+    // the right panel is native: its events are handled here (relaying the
+    // toggle would bring it back through the shell's listener a second time)
+    match evt.as_deref() {
+      Some("ll:sidebar-right-toggle") => return self.sidebar_event(sidebar::Ev::Toggle),
+      Some("ll:outside-click") => self.sidebar_close(),
+      Some("ll:notifications") => self.sidebar_event(sidebar::Ev::NotifsChanged),
+      Some(e) if e.starts_with("ll:sidebar-page-") => {
+        return self.sidebar_event(sidebar::Ev::OpenPage(e["ll:sidebar-page-".len()..].to_string()));
+      }
+      _ => {}
+    }
     if let Some(evt) = &evt {
       (self.emit)(evt, serde_json::Value::Null);
     }
@@ -1930,7 +1985,7 @@ impl Ui {
         self.set_light(light);
         core_api::set_pref("theme", if light { "light" } else { "dark" });
       }
-      (HitKind::Indicators, 0) => (self.emit)("ll:sidebar-right-toggle", serde_json::Value::Null),
+      (HitKind::Indicators, 0) => self.sidebar_event(sidebar::Ev::Toggle),
       (HitKind::TrayMore, 0) => self.tray_toggle(i),
       (HitKind::Mixer, 0) => self.mixer_toggle(i),
       (HitKind::TrayIcon(id), b) => self.tray_action(id, b),

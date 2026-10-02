@@ -261,6 +261,10 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
         app.listen_any("ll:session-hide", |_| native_bar::session_hide());
         // the settings window is native: the sidebar's gear opens it
         app.listen_any("ll:settings-toggle", |_| native_bar::settings_toggle());
+        // the right panel is native: the widgets' toggle and the settings'
+        // "edit shortcuts" (a page of it) go to the bar
+        app.listen_any("ll:sidebar-right-toggle", |_| native_bar::sidebar_toggle());
+        app.listen_any("ll:sidebar-open-page", |event| native_bar::sidebar_open_page(event.payload()));
         // the on-screen keyboard is native: the sidebar's keyboard tile opens it
         app.listen_any("ll:osk-toggle", |_| native_bar::osk_toggle());
       }

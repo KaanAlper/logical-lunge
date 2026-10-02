@@ -109,16 +109,8 @@ impl AppSettings {
   fn default_value() -> AppSettingsValue {
     AppSettingsValue {
       schema: None,
-      startup_configs: [
-        "sidebar-right",
-      ]
-      .into_iter()
-      .map(|widget| StartupConfig {
-        pack: SHELL_PACK.into(),
-        widget: widget.into(),
-        preset: "default".into(),
-      })
-      .collect(),
+      // native-ui draws every panel itself: no web widget starts
+      startup_configs: Vec::new(),
     }
   }
 

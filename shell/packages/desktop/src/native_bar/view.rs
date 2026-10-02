@@ -441,7 +441,7 @@ impl Painter<'_> {
   /// A bitmap cut to a circle (`object-fit: cover`). Keep both workspace
   /// states on the same bitmap coordinate path; effect output has different
   /// bounds and can shrink an inactive icon into the upper-left corner.
-  fn image_circle(&mut self, bmp: &ID2D1Bitmap1, cx: f32, cy: f32, d: f32, opacity: f32) -> Result<()> {
+  pub(super) fn image_circle(&mut self, bmp: &ID2D1Bitmap1, cx: f32, cy: f32, d: f32, opacity: f32) -> Result<()> {
     unsafe {
       let size = bmp.GetSize();
       let (bw, bh) = (size.width.max(1.0), size.height.max(1.0));
@@ -473,7 +473,7 @@ impl Painter<'_> {
   }
 
   /// Circular progress (ii CircularProgress): track + value arc from 12 o'clock.
-  fn ring(&mut self, cx: f32, cy: f32, r: f32, stroke: f32, frac: f32, track: Rgba, value: Rgba) -> Result<()> {
+  pub(super) fn ring(&mut self, cx: f32, cy: f32, r: f32, stroke: f32, frac: f32, track: Rgba, value: Rgba) -> Result<()> {
     let tb = self.brush(track)?;
     let vb = self.brush(value)?;
     unsafe {

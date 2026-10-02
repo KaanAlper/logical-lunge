@@ -6,17 +6,17 @@ use serde::Serialize;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
-  enabled: bool,
-  minutes: u32,
-  secure: bool,
-  selected: String,
-  choices: Vec<Choice>,
+  pub enabled: bool,
+  pub minutes: u32,
+  pub secure: bool,
+  pub selected: String,
+  pub choices: Vec<Choice>,
 }
 
 #[derive(Serialize)]
 pub struct Choice {
-  name: String,
-  path: String,
+  pub name: String,
+  pub path: String,
 }
 
 #[cfg(windows)]
