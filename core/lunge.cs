@@ -3119,9 +3119,9 @@ class MouseFocus
             if (msg == 0x204)
             {
                 desktopRight = (m.flags & 1) == 0 && ShellState.Up && DesktopClick.EmptyAt(m.pt.X, m.pt.Y);
+                if (desktopRight) return (IntPtr)1; // dış tıklama değil: menüyü açan tıklama
                 clickX = m.pt.X; clickY = m.pt.Y;
                 clicked.Set();
-                if (desktopRight) return (IntPtr)1;
             }
             else if (desktopRight)
             {

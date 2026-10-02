@@ -21,6 +21,7 @@ use windows::Win32::{
   Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, ValidateRect, MONITORINFO, MONITOR_DEFAULTTONEAREST},
   UI::{
     HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+    Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VIRTUAL_KEY},
     WindowsAndMessaging::*,
   },
 };
@@ -43,6 +44,8 @@ const SUB_COL: f32 = 26.0;
 const MIN_W: f32 = 190.0;
 const MAX_W: f32 = 360.0;
 const LABEL: TextStyle = TextStyle { size: 13.5, weight: 450.0 };
+/// the core's mark on input it sends itself ("LLK1"): its hooks let it pass
+const LL_MARK: usize = 0x4C4C_4B31;
 /// hides a closed menu's windows once their fade is over
 const TIMER_GONE: usize = 0x4D4E;
 
@@ -251,6 +254,14 @@ impl Ui {
           // a menu takes the keys (its windows are created never to)
           let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
           SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex & !(WS_EX_NOACTIVATE.0 as isize));
+          // Windows lets only the process with the last input take the
+          // focus (the desktop's click went to the core's hook): an unused
+          // key, marked for the core's hook, makes it ours, as the core does
+          let key = |flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 { ki: KEYBDINPUT { wVk: VIRTUAL_KEY(0xE8), dwFlags: flags, dwExtraInfo: LL_MARK, ..Default::default() } },
+          };
+          SendInput(&[key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)], std::mem::size_of::<INPUT>() as i32);
           let _ = SetForegroundWindow(hwnd);
         }
       }

@@ -1674,6 +1674,9 @@ impl Ui {
       Some("ll:tray-pins") => return self.reload_pins(),
       Some("ll:ws-numbers") => return self.flash_numbers(),
       Some("ll:desktop-menu") => return self.desktop_menu(),
+      // a click outside the shell: a menu that could not take the focus
+      // (opened for the desktop) closes too
+      Some("ll:outside-click") => return self.menu_close(),
       Some("ll:dock-toggle") => return self.dock_toggle(),
       Some("ll:dock-pins") => return self.dock_pins_changed(),
       None => {
@@ -1889,6 +1892,8 @@ impl Ui {
 
   /// button: 0 left, 1 right, 2 middle, 3 left double
   fn click(&mut self, i: usize, x: i32, y: i32, button: u8) {
+    // a click on the bar closes an open menu (one it opens comes after)
+    self.menu_close();
     let (dx, dy) = self.dip(i, x, y);
     self.tip_click(i);
     let Some(kind) = self.bars[i].frame.hit(dx, dy).map(|h| h.kind.clone()) else {
