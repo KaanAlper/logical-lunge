@@ -467,7 +467,17 @@
           setMsg(ok ? { kind: 'ok', text: 'Tüm kısayollar varsayılana döndü' } : { kind: 'error', text: 'Kısayollar sıfırlanamadı' });
           load();
         };
-        const askReset = () => { if (saved.apps.length) setReset({ apps: false }); else doReset(false); };
+        // Eklenen uygulama varsa kabuğun tek diyaloğunda sorulur (POST /dialog); kabuk soramıyorsa sayfanın kendi kutusu
+        const askReset = async () => {
+          if (!saved.apps.length) return doReset(false);
+          const tr = t => (window.LL_T ? window.LL_T(t) : t);
+          const p = new URLSearchParams({ kind: 'question', title: tr('Kısayollar sıfırlansın mı?'), body: tr('Bütün kısayollar varsayılanlarına döner.'),
+            buttons: [tr('Sıfırla'), tr('Vazgeç')].join('|'), default: '0', cancel: '1', check: tr('Kendi eklediğin uygulamalar da kaldırılsın'), checked: '0' });
+          let a = null;
+          try { a = await (await fetch('http://127.0.0.1:6131/dialog?' + p, { method: 'POST', cache: 'no-store' })).json(); } catch {}
+          if (!a || a.button === -1) return setReset({ apps: false });
+          if (a.button === 0) doReset(!!a.checked);
+        };
         const pickList = pickQ ? apps.filter(a => low(a.name).includes(low(pickQ))) : apps;
 
         return (
