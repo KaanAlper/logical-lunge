@@ -320,29 +320,43 @@ impl ProviderManager {
       function, config_hash
     );
 
-    let provider_refs = self.provider_refs.lock().await;
-    let provider_ref = provider_refs
-      .get(&config_hash)
-      .context("No provider found with config.")?;
+    // Only the sender is taken under the lock: one slow call (a hung app's
+    // media session) held every other provider operation (the volume wheel,
+    // tray clicks, starting a provider) until it answered.
+    enum Input {
+      Async(mpsc::Sender<ProviderInputMsg>),
+      Sync(crossbeam::channel::Sender<ProviderInputMsg>),
+    }
+    let input = {
+      let provider_refs = self.provider_refs.lock().await;
+      let provider_ref = provider_refs
+        .get(&config_hash)
+        .context("No provider found with config.")?;
+      match provider_ref.runtime_type {
+        RuntimeType::Async => Input::Async(provider_ref.async_input_tx.clone()),
+        RuntimeType::Sync => Input::Sync(provider_ref.sync_input_tx.clone()),
+      }
+    };
 
     let (tx, rx) = oneshot::channel();
-    match provider_ref.runtime_type {
-      RuntimeType::Async => {
-        provider_ref
-          .async_input_tx
+    match input {
+      Input::Async(input) => {
+        input
           .send(ProviderInputMsg::Function(function, tx))
           .await
           .context("Failed to send function call to provider.")?;
       }
-      RuntimeType::Sync => {
-        provider_ref
-          .sync_input_tx
+      Input::Sync(input) => {
+        input
           .send(ProviderInputMsg::Function(function, tx))
           .context("Failed to send function call to provider.")?;
       }
     }
 
-    rx.await?.map_err(anyhow::Error::msg)
+    tokio::time::timeout(std::time::Duration::from_secs(10), rx)
+      .await
+      .context("Provider function timed out.")??
+      .map_err(anyhow::Error::msg)
   }
 
   /// Destroys and cleans up the provider with the given config.

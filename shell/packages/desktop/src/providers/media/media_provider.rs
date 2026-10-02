@@ -178,7 +178,8 @@ impl MediaProvider {
               sender,
             )) => {
               let res = self.handle_function(media_function).map_err(|err| err.to_string());
-              sender.send(res).unwrap();
+              // the caller may be gone (a timed-out call): the provider goes on
+              let _ = sender.send(res);
             }
             _ => {}
           }

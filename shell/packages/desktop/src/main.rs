@@ -13,8 +13,10 @@ use tauri::{
 use tokio::{sync::mpsc, task};
 use tracing::{error, info, Level};
 use tracing_subscriber::{
-  fmt::{self, writer::MakeWriterExt},
+  filter::LevelFilter,
+  fmt::{self, MakeWriter},
   layer::SubscriberExt,
+  Layer,
 };
 
 #[cfg(target_os = "windows")]
@@ -331,7 +333,9 @@ fn listen_events(
           Ok(())
         },
         Some(provider_emission) = emit_rx.recv() => {
-          info!("Provider emission: {:?}", provider_emission);
+          // debug: formatting every emission (tray icons as number arrays)
+          // cost time on each update even with nothing to show it
+          tracing::debug!("Provider emission: {:?}", provider_emission);
           #[cfg(windows)]
           native_bar::forward(&provider_emission);
           let _ = app_handle.emit("provider-emit", provider_emission.clone());
@@ -436,6 +440,63 @@ async fn open_widgets_by_cli_command(
 
 /// Initialize logging with the verbosity level specified in the CLI args.
 ///
+/// shell.log, kept small for weeks of uptime: past 4 MB it becomes
+/// shell.log.old (the core and the bug report read it by this name, so it
+/// is not renamed by date).
+struct LogFile {
+  path: std::path::PathBuf,
+  file: std::sync::Mutex<Option<std::fs::File>>,
+}
+
+impl LogFile {
+  const MAX: u64 = 4 * 1024 * 1024;
+
+  fn new(path: std::path::PathBuf) -> Self {
+    Self {
+      path,
+      file: std::sync::Mutex::new(None),
+    }
+  }
+}
+
+impl std::io::Write for &LogFile {
+  fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+    let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+    let full = file
+      .as_ref()
+      .and_then(|f| f.metadata().ok())
+      .is_some_and(|m| m.len() > LogFile::MAX);
+    if full {
+      *file = None;
+      let _ = std::fs::rename(&self.path, self.path.with_extension("log.old"));
+    }
+    if file.is_none() {
+      *file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&self.path)
+        .ok();
+    }
+    match file.as_mut() {
+      Some(f) => f.write(buf),
+      None => Ok(buf.len()),
+    }
+  }
+
+  fn flush(&mut self) -> std::io::Result<()> {
+    let mut file = self.file.lock().unwrap_or_else(|e| e.into_inner());
+    file.as_mut().map_or(Ok(()), |f| f.flush())
+  }
+}
+
+impl<'a> MakeWriter<'a> for LogFile {
+  type Writer = &'a LogFile;
+
+  fn make_writer(&'a self) -> Self::Writer {
+    self
+  }
+}
+
 /// Warnings and errors are saved to `%LOCALAPPDATA%/LogicalLunge/logs/shell.log`.
 fn setup_logging(cli: &Cli, app: &AppHandle) -> anyhow::Result<()> {
   let log_level = match cli.command() {
@@ -449,19 +510,24 @@ fn setup_logging(cli: &Cli, app: &AppHandle) -> anyhow::Result<()> {
     .resolve("LogicalLunge/logs", BaseDirectory::LocalData)
     .context("Unable to resolve the log directory.")?;
 
-  let file_writer = tracing_appender::rolling::never(log_dir, "shell.log");
+  let _ = std::fs::create_dir_all(&log_dir);
+  let file_writer = LogFile::new(log_dir.join("shell.log"));
 
+  // Each layer filters before formatting (a writer's level filter only
+  // drops what was already formatted).
   let subscriber = tracing_subscriber::registry()
     .with(
       // Output to stdout with specified verbosity level.
       fmt::Layer::new()
-        .with_writer(std::io::stdout.with_max_level(log_level)),
+        .with_writer(std::io::stdout)
+        .with_filter(LevelFilter::from_level(log_level)),
     )
     .with(
       // Output to the log file, without terminal colors.
       fmt::Layer::new()
         .with_ansi(false)
-        .with_writer(file_writer.with_max_level(Level::WARN)),
+        .with_writer(file_writer)
+        .with_filter(LevelFilter::WARN),
     );
 
   tracing::subscriber::set_global_default(subscriber)?;
