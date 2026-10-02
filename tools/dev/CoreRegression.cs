@@ -149,6 +149,20 @@ static class CoreRegression
         var single = (List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithVideo", none, "M1", @"C:\v\c.mp4");
         Check(((List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithoutVideo", single, "M1")).Count == 0 && none.Count == 0 && forAll.Count == 1, "The last video off must clear the state, and inputs must stay unchanged");
         Check((string)Call(typeof(LiveWallpaper), "Slug", "a/../b:c") == "a____b_c" && (string)Call(typeof(LiveWallpaper), "Slug", "CON") == "_CON", "Store names must become plain folder names");
+        // The video screen saver plays only videos from the live wallpaper library
+        Func<string, bool> refused = v => { try { SaverVideo.InLibrary(v); return false; } catch (ArgumentException) { return true; } };
+        string saverDir = System.IO.Path.Combine(LiveWallpaper.Dir, "__regression__");
+        System.IO.Directory.CreateDirectory(saverDir);
+        string saverVideo = System.IO.Path.Combine(saverDir, "a.mp4"), saverText = System.IO.Path.Combine(saverDir, "a.txt");
+        System.IO.File.WriteAllText(saverVideo, "x"); System.IO.File.WriteAllText(saverText, "x");
+        try
+        {
+            Check(SaverVideo.InLibrary(saverVideo) == saverVideo, "A library video was not accepted for the screen saver");
+            Check(refused(System.IO.Path.Combine(saverDir, @"..\..\..\a.mp4")), "A path leaving the library was accepted for the screen saver");
+            Check(refused(@"C:\Windows\Media\a.mp4") && refused(saverText) && refused(System.IO.Path.Combine(saverDir, "missing.mp4")) && refused(""), "A file outside the library, not a video or missing was accepted for the screen saver");
+            Check(refused(LiveWallpaper.Dir + "-other\\a.mp4"), "A sibling folder sharing the library's name prefix was accepted");
+        }
+        finally { System.IO.Directory.Delete(saverDir, true); }
         Console.WriteLine("PASS: core routing, origin, method, release selection, settings file updates, Windows notifications and live wallpaper entries");
     }
 }
