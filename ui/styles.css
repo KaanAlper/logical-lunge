@@ -1,6 +1,7 @@
 /* Source attribution: appearance adapted from end-4 illogical-impulse.
    Ölçüler modules/common/Appearance.qml ve modules/ii/bar/*.qml'den alındı. */
 @import url('./fonts.css');
+@import url('./base.css');
 
 :root {
   /* Material You koyu, mor tohum (odak kenarlığıyla aynı ton) */

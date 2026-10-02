@@ -125,6 +125,7 @@
          Pencere odak çalmaz: hep açık ama boşken fare tıklamalarını geçirir. -->
     <style>
       @import url('./fonts.css');
+      @import url('./base.css');
       :root {
         --m3primary: #d0bcff; --m3onPrimary: #381e72;
         --m3primaryContainer: #4f378b; --m3onPrimaryContainer: #eaddff;
@@ -231,8 +232,6 @@
       .body .notes { display: block; margin-top: 6px; max-height: 5.4em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); }
       /* Notlar uzunsa açılır: açıkken maske yok, çok uzunsa kart içinde kayar */
       .card.open .body .notes { max-height: 340px; overflow-y: auto; -webkit-mask-image: none; padding-right: 4px; }
-      .body .notes::-webkit-scrollbar { width: 6px; }
-      .body .notes::-webkit-scrollbar-thumb { background: var(--m3outlineVariant, rgba(255 255 255 / 25%)); border-radius: 999px; }
       .more {
         display: inline-flex; align-items: center; gap: 2px; margin-top: 4px; padding: 2px 8px 2px 4px;
         border: 0; border-radius: 999px; background: transparent; color: var(--m3primary); font: inherit; font-size: 12px; cursor: pointer;

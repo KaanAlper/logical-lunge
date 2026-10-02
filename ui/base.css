@@ -1,0 +1,9 @@
+/* Logical Lunge: rules every widget shares, kept in one place (each widget imports this next to fonts.css). */
+
+/* Scroll bars: standard properties only. WebView2 (Chromium) ignores ::-webkit-scrollbar rules as soon as a
+   standard scrollbar property is set, so mixing the two left Windows' default white bar. A thin thumb in the
+   theme's surface colour on a transparent track; scrollbar-width: none on an element still hides it. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--m3onSurfaceVariant, #cac4d0) 34%, transparent) transparent;
+}
