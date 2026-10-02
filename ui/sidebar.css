@@ -566,6 +566,7 @@ button.sbtn:active { border-radius: 12px; transform: scaleX(1.08); }
 .live-foot { display: flex; flex-direction: column; gap: 10px; padding: 2px 6px 4px; }
 .live-foot > .chip { align-self: flex-start; height: 32px; font-size: 13px; }
 .saver-sec { padding: 14px; gap: 12px; }
+.saver-videos { display: flex; flex-direction: column; gap: 8px; }
 .saver-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .saver-switch input { width: 18px; height: 18px; accent-color: var(--m3primary); cursor: pointer; }
 /* Ekran koruyucu galerisi: duvar kağıdı satırı, simge ortada, ad altta; seçili kart çerçeveli */

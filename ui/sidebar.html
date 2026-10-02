@@ -444,6 +444,24 @@
       const LIVE_ERRORS = { type: 'Bu duvar kağıdı video değil', size: 'Video çok büyük', decode: 'Bu video oynatılamıyor' };
       const liveError = (e, download) => (Object.hasOwn(LIVE_ERRORS, e || '') ? LIVE_ERRORS[e] : download ? 'İndirilemedi' : 'Canlı duvar kağıdı ayarlanamadı');
       const liveCatName = id => (Object.hasOwn(LIVE_CATS, id) ? LIVE_CATS[id] : id);
+      // Kütüphane ('local') ya da mağaza kategorisi: canlı duvar kağıdı ve video ekran koruyucusu aynı listeyi kullanır
+      const fetchLiveItems = async c => {
+        if (c === 'local') {
+          const files = json(await helper(['--live-local']).catch(() => '[]'));
+          const out = [];
+          for (const f of (Array.isArray(files) ? files : []).slice(0, 16)) {
+            const t = f.thumb ? await helper(['--wall-thumb', f.thumb]).catch(() => '') : '';
+            out.push({ key: f.path, path: f.path, name: f.author ? `${f.name} · ${f.author}` : f.name, thumb: t.startsWith('data:') ? t : '' });
+          }
+          return out; // yerel liste önbelleğe alınmaz (yeni eklenenler görünsün)
+        }
+        if (liveCache.has(c)) return liveCache.get(c);
+        const r = json(await helper(['--live-store', c]).catch(() => ''));
+        if (!Array.isArray(r)) return [];
+        const list = r.map(x => ({ key: `${c}/${x.id}`, cat: c, id: x.id, name: x.title, thumb: x.cover, preview: x.preview }));
+        liveCache.set(c, list);
+        return list;
+      };
       function LiveSection({ target, mons, options, onChanged }) {
         const [msg, setMsg] = useState(null);
         const [cats, setCats] = useState([]);
@@ -463,23 +481,7 @@
           }).catch(() => setCats([]));
         }, []);
 
-        const fetchItems = async c => {
-          if (c === 'local') {
-            const files = json(await helper(['--live-local']).catch(() => '[]'));
-            const out = [];
-            for (const f of (Array.isArray(files) ? files : []).slice(0, 16)) {
-              const t = f.thumb ? await helper(['--wall-thumb', f.thumb]).catch(() => '') : '';
-              out.push({ key: f.path, path: f.path, name: f.author ? `${f.name} · ${f.author}` : f.name, thumb: t.startsWith('data:') ? t : '' });
-            }
-            return out; // yerel liste önbelleğe alınmaz (yeni eklenenler görünsün)
-          }
-          if (liveCache.has(c)) return liveCache.get(c);
-          const r = json(await helper(['--live-store', c]).catch(() => ''));
-          if (!Array.isArray(r)) return [];
-          const list = r.map(x => ({ key: `${c}/${x.id}`, cat: c, id: x.id, name: x.title, thumb: x.cover, preview: x.preview }));
-          liveCache.set(c, list);
-          return list;
-        };
+        const fetchItems = fetchLiveItems;
         useEffect(() => {
           let alive = true;
           setItems(null); save('ll.live.cat', cat);
@@ -639,6 +641,66 @@
 
       // Ekran koruyucu: her değişiklik hemen Windows'a yazılır. Panel odak kaybında kapanır; ayrı bir "Uygula" adımı
       // (ve tarayıcının kendi penceresinde açılan <select> listesi) seçimin kaybolmasına yol açıyordu.
+      // ---- Video ekran koruyucusu: canlı duvar kağıdı kütüphanesinden ya da mağazasından bir video (LogicalLunge.scr) ----
+      const SAVER_ERRORS = { library: 'Bu video ekran koruyucu olamaz', video: 'Bu video ekran koruyucu olamaz', scr: 'Video ekran koruyucusu kurulu değil', type: 'Bu duvar kağıdı video değil', size: 'Video çok büyük' };
+      function SaverVideos({ onChanged }) {
+        const [cats, setCats] = useState([]);
+        const [cat, setCat] = useState(load('ll.saver.cat', 'local'));
+        const [items, setItems] = useState(null);
+        const [videos, setVideos] = useState([]);
+        const [busy, setBusy] = useState(null);
+        const [progress, setProgress] = useState('');
+        const [msg, setMsg] = useState(null);
+        const catsRef = useRef(null);
+        const polling = useRef(false);
+        useEffect(() => {
+          helper(['--live-store']).then(s => { const r = json(s); setCats(Array.isArray(r) ? r : []); }).catch(() => setCats([]));
+          helper(['--saver-videos']).then(s => { const r = json(s); if (r && Array.isArray(r.videos)) setVideos(r.videos); }).catch(() => {});
+        }, []);
+        useEffect(() => {
+          let alive = true;
+          setItems(null); save('ll.saver.cat', cat);
+          fetchLiveItems(cat).then(r => alive && setItems(r));
+          return () => { alive = false; };
+        }, [cat]);
+        const pick = async it => {
+          if (busy) return;
+          setBusy(it.key); setProgress(''); setMsg(null);
+          const timer = it.path ? null : setInterval(() => {
+            if (polling.current) return;
+            polling.current = true;
+            helper(['--live-progress']).then(s => {
+              const p = json(s);
+              if (p && p.total > 0) setProgress(`${Math.round((p.got * 100) / p.total)}%`);
+              else if (p && p.got > 0) setProgress(`${Math.round(p.got / 1048576)} MB`);
+            }).catch(() => {}).finally(() => { polling.current = false; });
+          }, 800);
+          const r = json(it.path ? await helper(['--saver-video', 'set', it.path]).catch(() => '')
+            : await helper(['--saver-store-get', it.cat, it.id]).catch(() => '')) || {};
+          clearInterval(timer); setBusy(null); setProgress('');
+          if (Array.isArray(r.videos)) { setVideos(r.videos); setMsg({ kind: 'ok', text: 'Ekran koruyucu videosu ayarlandı' }); onChanged(); }
+          else setMsg({ kind: 'error', text: Object.hasOwn(SAVER_ERRORS, r.error || '') ? SAVER_ERRORS[r.error] : it.path ? 'Ekran koruyucu ayarlanamadı' : 'İndirilemedi' });
+        };
+        const show = () => helper(['--saver-video-run']).then(s => { const r = json(s); if (r && r.error) setMsg({ kind: 'error', text: SAVER_ERRORS[r.error] || 'Ekran koruyucu açılamadı' }); }).catch(() => {});
+        const chosen = items && items.find(it => it.path && videos.some(v => v.toLowerCase() === it.path.toLowerCase()));
+        return (
+          <div className="saver-videos">
+            <div className="kb-gtitle"><Icon name="movie" />Video ekran koruyucusu</div>
+            <div className="kb-hint"><Icon name="info" />Kütüphanendeki ya da mağazadaki canlı duvar kağıtları ekran koruyucu olarak oynar.</div>
+            {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
+            <div className="wall-cats live-cats" ref={catsRef}
+                 onWheel={e => { if (catsRef.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { catsRef.current.scrollLeft += e.deltaY; } }}>
+              <button className={`chip ${cat === 'local' ? 'on' : ''}`} onClick={() => setCat('local')}><Icon name="video_library" />Kütüphanem</button>
+              {cats.map(c => (
+                <button key={c.id} className={`chip ${cat === c.id ? 'on' : ''}`} onClick={() => setCat(c.id)}>{liveCatName(c.id)}</button>
+              ))}
+            </div>
+            <WallRow items={items} busy={busy} busyText={progress} selected={chosen ? chosen.key : null}
+                     customLabel="Şimdi göster" customIcon="play_arrow" onCustom={show} onPick={pick} />
+          </div>
+        );
+      }
+
       function ScreenSaverSection() {
         const [state, setState] = useState(null);
         const [saving, setSaving] = useState(false);
@@ -700,6 +762,7 @@
                        onCustom={importSavers} onPick={it => change({ selected: it.key })}
                        items={state.choices.map(c => ({ key: c.path, name: c.name, label: c.name, thumb: icons[c.path.toLowerCase()] || '' }))} />
               {note && <div className="kb-msg ok"><Icon name="check_circle" />{note}</div>}
+              <SaverVideos onChanged={() => invoke('screensaver_state').then(setState).catch(() => {})} />
               <div className="saver-row">
                 <span>Bekleme süresi</span>
                 <span className="saver-minutes"><input type="number" min="1" max="120" value={state.minutes}
