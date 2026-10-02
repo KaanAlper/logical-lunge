@@ -291,8 +291,8 @@ static class Keymap
                 if (combo != "" && Binds.Canonical(combo) == null) { error = "combo " + combo; return null; }
                 s.Core[kv.Key] = combo == "" ? "" : Binds.Canonical(combo);
             }
-        if (d.TryGetValue("apps", out v) && v is System.Collections.ArrayList)
-            foreach (var o in (System.Collections.ArrayList)v)
+        if (d.TryGetValue("apps", out v) && List(v) != null)
+            foreach (var o in List(v))
             {
                 var a = o as Dictionary<string, object>;
                 if (a == null) { error = "app"; return null; }
@@ -303,8 +303,8 @@ static class Keymap
                 if (s.Apps.Any(x => x.Id == app.Id)) { error = "app id " + app.Id; return null; }
                 s.Apps.Add(app);
             }
-        if (d.TryGetValue("removed", out v) && v is System.Collections.ArrayList)
-            foreach (var o in (System.Collections.ArrayList)v)
+        if (d.TryGetValue("removed", out v) && List(v) != null)
+            foreach (var o in List(v))
             {
                 string id = o as string;
                 if (id == null || !Binds.IsApp(id) || !Binds.IsDefault(id)) { error = "removed " + id; return null; }
@@ -314,7 +314,7 @@ static class Keymap
             foreach (var kv in (Dictionary<string, object>)v)
             {
                 int index;
-                var arr = kv.Value as System.Collections.ArrayList;
+                var arr = List(kv.Value);
                 if (!int.TryParse(kv.Key, out index) || arr == null) { error = "tiling " + kv.Key; return null; }
                 var list = new List<string>();
                 foreach (var b in arr)
@@ -326,6 +326,17 @@ static class Keymap
                 s.Tiling[index] = list;
             }
         return s;
+    }
+
+    // JSON dizisi: DeserializeObject object[], Deserialize<...> ArrayList verir; ikisi de kabul (dizi değilse null)
+    static List<object> List(object v)
+    {
+        if (v == null || v is string) return null;
+        var e = v as System.Collections.IEnumerable;
+        if (e == null || v is Dictionary<string, object>) return null;
+        var list = new List<object>();
+        foreach (var o in e) list.Add(o);
+        return list;
     }
 
     static string Str(Dictionary<string, object> d, string k) { object v; return d.TryGetValue(k, out v) && v is string ? (string)v : ""; }
