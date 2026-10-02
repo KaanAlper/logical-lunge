@@ -153,7 +153,7 @@ impl Ui {
       "folder" => new_folder(&folder),
       "wallpaper" => (ui.emit)("ll:sidebar-open-page", serde_json::json!("walls")),
       "display" => open_uri("ms-settings:display"),
-      "settings" => (ui.emit)("ll:settings-toggle", serde_json::Value::Null),
+      "settings" => ui.settings_toggle(),
       "terminal" => open_terminal(),
       "more" => explorer_menu(at),
       _ => {}
@@ -174,7 +174,7 @@ impl Ui {
       "taskmgr" => {
         let _ = std::process::Command::new("taskmgr.exe").spawn();
       }
-      "settings" => (ui.emit)("ll:settings-toggle", serde_json::Value::Null),
+      "settings" => ui.settings_toggle(),
       "restart" => core_api::run_core(&["--restart-desktop"]),
       _ => {}
     });
