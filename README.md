@@ -71,6 +71,7 @@ A Windows desktop environment with tiling window management, a bar, side panels,
 - **Bar**: workspaces with app icons (any window without a known app shows its own icon), resources (RAM / swap / CPU / **CPU & GPU temperature**), media with album art and seeking, tray with drag-to-pin, clock, battery, scroll-to-change brightness (left edge) and volume (right edge) with an OSD.
 - **Right sidebar**: Android-style quick toggles (Wi-Fi, Ethernet, Bluetooth, keep-awake, mic, audio, night light with schedule + intensity, dark mode, screenshot, on-screen keyboard, do-not-disturb) with slide-down cards, notifications, calendar with month/year picker, to-do and pomodoro timer.
 - **Shortcuts editor** and **wallpaper picker** built into the sidebar (per-monitor or one image spanning all monitors — Superpaper-style *superscreen*).
+- **Live wallpapers**: videos play behind the desktop icons, decoded on the GPU — pick one from a store of safe-for-work video wallpapers or use your own file; they pause for fullscreen apps, a locked or dark screen and (optionally) on battery.
 - **Super overview**: fuzzy app search (localized names + icons), calculator (`sqrt(9)`, `5!`, `2^10`, `50%`), `/actions`, `$shell`, `?web`, **Google Lens** region search, **music recognition** (Shazam), **file search** (`#`, every indexed drive through Everything), workspace previews.
 - **Screenshot tool** (Print): select a region, then annotate — pen, circle, rectangle, colors — copy or save as.
 - **Ctrl+Print**: the whole monitor under the mouse, copied to the clipboard and saved to `Pictures\Screenshots` without asking.
@@ -167,6 +168,7 @@ flowchart TD
   task["Sign-in task (LogicalLunge / Start)"] --> core
   core["lunge.exe (core, C#)<br/>root of the desktop: starts and watches the parts<br/>keys, slides and window animations, focus, rounded corners,<br/>toasts, splash, screenshots, wallpapers, night light, shortcuts"]
   core -- child --> tiling["lunge-tiling.exe (Rust)<br/>tiling (Hyprland dwindle), window borders, IPC"]
+  core -- starts --> live["lunge-wallpaper.exe (Rust)<br/>live wallpaper: videos behind the desktop icons (Media Foundation)"]
   core -- child --> shell["lunge-shell.exe (Rust)<br/>bar (native: Direct2D / DirectComposition)<br/>sidebar, overview, session screen, toasts, keyboard (WebView2, going native)"]
   shell <-- IPC --> tiling
   core <-- IPC --> tiling
@@ -236,6 +238,7 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 - **Bar**: uygulama simgeli workspace'ler (bilinmeyen pencerede pencerenin kendi simgesi), kaynaklar (RAM / swap / CPU / **CPU & GPU sıcaklığı**), kapaklı ve sarılabilir medya, sürükleyerek sabitlenen tepsi, saat, pil, sol kenarda kaydırınca parlaklık, sağ kenarda ses (OSD'li).
 - **Sağ panel**: Android tarzı hızlı ayarlar (Wi-Fi, Ethernet, Bluetooth, uyanık tut, mikrofon, ses, zamanlamalı ve yoğunluk ayarlı gece ışığı, karanlık mod, ekran alıntısı, ekran klavyesi, sessiz) ve alta kayan kartlar; bildirimler; ay/yıl seçicili takvim; yapılacaklar; zamanlayıcı.
 - Panelde **kısayol düzenleyici** ve **duvar kağıdı seçici** (monitör başına ya da tüm monitörlere yayılan tek resim, Superpaper'daki gibi).
+- **Canlı duvar kağıtları**: videolar masaüstü simgelerinin arkasında, ekran kartında çözülerek oynar — güvenli içerikli bir mağazadan ya da kendi dosyandan; tam ekran uygulamada, ekran kilitliyken ya da kapalıyken ve (isteğe bağlı) pille çalışırken durur.
 - **Super menüsü**: bulanık uygulama arama, hesap makinesi, `/eylemler`, `$komut`, `?web`, **Google Lens**, **müzik tanıma** (Shazam), **dosya araması** (`#`, Everything ile indekslenen bütün diskler), workspace önizlemeleri.
 - **Ekran alıntısı** (Print): alan seç, üzerine kalem / çember / dikdörtgen / renkle çiz, kopyala ya da kaydet.
 - **Animasyonlar**: kaygan workspace geçişleri, pencere açma/kapama/taşıma animasyonları, kayarak açılıp kapanan popup'lar. Süreler ve bezier eğrileri config'teki `animations:` bölümünde Hyprland'in `bezier =` / `animation =` satırları gibi ayarlanır (kaydedince geçerli); gizli widget'lar hiç çizmez.
@@ -277,6 +280,8 @@ Windows 10 22H2 üzerinde geliştirildi ve denendi. Windows 11'i tüm bileşenle
 | [Everything](https://www.voidtools.com) (voidtools) | File index behind the Super menu's file search (queried over its IPC; search UI inspired by [srwi/EverythingToolbar](https://github.com/srwi/EverythingToolbar)) | Freeware |
 | [shazamio](https://github.com/shazamio/ShazamIO) · [materialyoucolor](https://github.com/T-Dynamos/materialyoucolor-python) | Music recognition · Material You colors | MIT · MIT |
 | [Wallhaven](https://wallhaven.cc) | Wallpaper suggestions (safe-for-work only) | per image |
+| [Taiizor/Store](https://github.com/Taiizor/Store) | Live wallpaper store (video wallpapers, safe-for-work only); each wallpaper keeps its author's credit | MIT · per wallpaper |
+| [Taiizor/Sucrose](https://github.com/Taiizor/Sucrose) · [rocksdanister/lively](https://github.com/rocksdanister/lively) | Reference for placing the live wallpaper behind the desktop icons | GPL-3.0 |
 
 ## License
 

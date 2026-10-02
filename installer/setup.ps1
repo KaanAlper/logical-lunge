@@ -55,7 +55,7 @@ $LOG = Join-Path $env:TEMP 'logical-lunge-install.log'
 $DL = Join-Path $env:TEMP 'll-downloads'
 $UTF8 = New-Object Text.UTF8Encoding $false
 # Files that come from the package (app\): moved aside before the copy, moved back on rollback
-$OWNED = 'lunge.exe', 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'VERSION', 'EDITION',
+$OWNED = 'lunge.exe', 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'lunge-wallpaper.exe', 'VERSION', 'EDITION',
 'uninstall.ps1', 'ui', 'scripts', 'tools\lunge-media.exe', 'tools\temps\lunge-temps.exe', 'tools\termcolors', 'tools\songrec'
 $TOTAL_STEPS = 12
 
@@ -255,7 +255,7 @@ function Repair-LegacyWindowRules([string]$text) {
     return [regex]::Replace($text, '(?m)^([ \t]*follow_native_border:)[ \t]*true([ \t]*(?:#[^\r\n]*)?)(?=\r?$)', '$1 false$2')
 }
 function Stop-Parts {
-    foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-temps', 'glazewm', 'glazewm-watcher', 'zebar', 'll-helper', 'tacky-borders', 'll-temps') {
+    foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-wallpaper', 'lunge-temps', 'glazewm', 'glazewm-watcher', 'zebar', 'll-helper', 'tacky-borders', 'll-temps') {
         Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
 }
