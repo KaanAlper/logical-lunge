@@ -4906,21 +4906,53 @@ static class Toasts
         s.Flush();
     }
 
+    // Olaylar kuyruğa girer, tek bir yazıcı thread sırayla gönderir: Emit'i çağıran (UI thread'i, klavye kancasının
+    // işleri) takılan bir istemcinin 3 sn'lik yazma süresini beklemez; liste kilidi yazarken tutulmaz (yeni bağlantı
+    // eklenebilir). Kuyruk sınırlı: akış tıkanırsa en eski olaylar düşer, bellek büyümez.
+    static readonly Queue<byte[]> outbox = new Queue<byte[]>();
+    const int OUTBOX_MAX = 512;
+    static Thread writer;
+
     static void Write(string text)
     {
         var bytes = Encoding.UTF8.GetBytes(text);
-        lock (clients)
+        lock (outbox)
         {
-            clients.RemoveAll(s =>
+            if (outbox.Count >= OUTBOX_MAX) outbox.Dequeue();
+            outbox.Enqueue(bytes);
+            if (writer == null)
             {
-                try { s.Write(bytes, 0, bytes.Length); s.Flush(); return false; }
+                writer = new Thread(WriteLoop) { IsBackground = true, Name = "core-events" };
+                writer.Start();
+            }
+            Monitor.Pulse(outbox);
+        }
+    }
+
+    static void WriteLoop()
+    {
+        while (true)
+        {
+            byte[] bytes;
+            lock (outbox)
+            {
+                while (outbox.Count == 0) Monitor.Wait(outbox);
+                bytes = outbox.Dequeue();
+            }
+            List<System.Net.Sockets.NetworkStream> now;
+            lock (clients) now = new List<System.Net.Sockets.NetworkStream>(clients);
+            List<System.Net.Sockets.NetworkStream> dead = null;
+            foreach (var s in now)
+            {
+                try { s.Write(bytes, 0, bytes.Length); s.Flush(); }
                 catch
                 {
-                    // kopan istemcinin soketi hemen kapanır (çöp toplayıcıyı beklemez)
+                    // kopan / takılan istemcinin soketi hemen kapanır (çöp toplayıcıyı beklemez)
                     try { s.Dispose(); } catch { }
-                    return true;
+                    (dead ?? (dead = new List<System.Net.Sockets.NetworkStream>())).Add(s);
                 }
-            });
+            }
+            if (dead != null) lock (clients) clients.RemoveAll(dead.Contains);
         }
     }
 
