@@ -45,7 +45,7 @@ systray-util = { path = "../../crates/systray-util" }
 windows-core = { workspace = true }
 # Urlmon: a notification card's image from the web (through the Windows cache);
 # WinHttp: the issue report's upload
-windows = { workspace = true, features = ["Win32_System_Com_Urlmon", "Win32_Networking_WinHttp"] }
+windows = { workspace = true, features = ["Win32_System_Com_Urlmon", "Win32_Networking_WinHttp", "Win32_UI_Shell_Common"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.25"

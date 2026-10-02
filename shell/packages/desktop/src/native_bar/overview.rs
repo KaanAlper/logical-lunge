@@ -387,8 +387,6 @@ pub struct Overview {
   cell_w: f32,
   cell_h: f32,
   pub shown: bool,
-  /// the Windows context menu of an app is open (its helper has the focus)
-  pub menu_open: bool,
   pub edit: Edit,
   results: Vec<Item>,
   files_query: String,
@@ -511,7 +509,6 @@ impl Overview {
         cell_w,
         cell_h,
         shown: false,
-        menu_open: false,
         edit: Edit::default(),
         results: Vec::new(),
         files_query: String::new(),
@@ -2110,7 +2107,7 @@ impl Ui {
       WM_ACTIVATE => {
         // focus went elsewhere: close (the web menu's blur); not to an app's
         // context menu, which gives it back or runs a command
-        if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE && o.shown && !o.menu_open {
+        if (wp.0 & 0xFFFF) as u32 == WA_INACTIVE && o.shown {
           Do::Hide
         } else {
           Do::Nothing
@@ -2220,15 +2217,8 @@ impl Ui {
     }
   }
 
-  /// An app's Windows context menu (`lunge.exe --shell-menu`, run from this
-  /// unelevated process so what it opens is unelevated too). The helper
-  /// answers `{"invoked":true|false}` as soon as the menu closes; it may live
-  /// on for a window it opened (Properties). A command closes the Super menu,
-  /// a cancel leaves it open (the helper gives the focus back). An app with
-  /// an exe name gets "Keep in Dock" on top (the Dock matches its running
-  /// windows by that name).
   /// Our menu of an app result: open, as administrator, Dock, file
-  /// location, uninstall, and Windows' own menu under "more options".
+  /// location, properties, uninstall (no Windows menu: everything is ours).
   fn overview_app_menu(&mut self, path: String, at: Option<POINT>) {
     let app = self.icons.apps().iter().find(|a| a.path.eq_ignore_ascii_case(&path)).cloned();
     let item = self.overview.as_ref().and_then(|o| o.selected().cloned());
@@ -2248,9 +2238,9 @@ impl Ui {
       MenuItem::new("admin", Some("shield_person"), tr("Yönetici olarak çalıştır")).enabled(exe.is_some()),
       MenuItem::new("dock", Some(if pinned { "keep_off" } else { "keep" }), tr(if pinned { "Dock’tan kaldır" } else { "Dock’ta tut" })).enabled(exe.is_some()),
       MenuItem::new("folder", Some("folder_open"), tr("Dosya konumunu aç")).enabled(file.is_some()),
-      MenuItem::new("uninstall", Some("delete"), tr("Kaldır")),
+      MenuItem::new("props", Some("info"), tr("Özellikler")).enabled(file.is_some()),
       MenuItem::sep(),
-      MenuItem::new("more", Some("more_horiz"), tr("Diğer seçenekler")),
+      MenuItem::new("uninstall", Some("delete"), tr("Kaldır")),
     ];
     self.menu_open(at, MenuFocus::Keep, items, move |ui, id| match id {
       "open" => {
@@ -2278,58 +2268,14 @@ impl Ui {
         ui.overview_hide();
         spawn("explorer.exe", &["ms-settings:appsfeatures"]);
       }
-      "more" => ui.overview_shell_menu(path),
-      _ => {}
-    });
-  }
-
-  /// Windows' own context menu of an app ("more options").
-  fn overview_shell_menu(&mut self, path: String) {
-    let Some(o) = self.overview.as_mut() else { return };
-    if o.menu_open {
-      return;
-    }
-    o.menu_open = true;
-    std::thread::spawn(move || {
-      use std::io::BufRead;
-      let mut invoked = None;
-      if let Some(exe) = core_api::core_exe() {
-        let args = vec!["--shell-menu".to_string(), path];
-        let child = std::process::Command::new(exe)
-          .args(&args)
-          .stdout(std::process::Stdio::piped())
-          .creation_flags(CREATE_NO_WINDOW)
-          .spawn();
-        match child {
-          Ok(mut child) => {
-            if let Some(out) = child.stdout.take() {
-              for line in std::io::BufReader::new(out).lines() {
-                let Ok(line) = line else { break };
-                if line.contains("\"invoked\"") {
-                  let yes = line.contains("true");
-                  invoked = Some(yes);
-                  super::send(Msg::ShellMenu(yes));
-                  break;
-                }
-              }
-            }
-            let _ = child.wait();
-          }
-          Err(err) => tracing::warn!("Super menu: context menu: {:?}", err),
+      "props" => {
+        if let Some(file) = file {
+          ui.overview_hide();
+          super::desktop_shell::properties(&file);
         }
       }
-      if invoked.is_none() {
-        super::send(Msg::ShellMenu(false));
-      }
+      _ => {}
     });
-  }
-
-  pub(super) fn overview_menu_done(&mut self, invoked: bool) {
-    let Some(o) = self.overview.as_mut() else { return };
-    o.menu_open = false;
-    if invoked {
-      self.overview_hide();
-    }
   }
 
   /// The clipboard history, once per opening of the menu (deleting an entry

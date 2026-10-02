@@ -9,6 +9,7 @@ mod anim;
 mod brightness;
 mod core_api;
 mod desktop_menu;
+mod desktop_shell;
 mod drag_drop;
 mod fonts;
 mod gfx;
@@ -172,8 +173,6 @@ enum Msg {
   Files(String, Result<Vec<crate::everything::FileHit>, String>),
   /// song recognition ended
   SongRecDone,
-  /// an app's context menu closed: whether a command was chosen
-  ShellMenu(bool),
   /// a notification card (the core's stream or a widget's `ll:toast`)
   Toast(serde_json::Value),
   /// a card's image, read on another thread
@@ -1240,7 +1239,6 @@ impl Ui {
         Msg::Clips(clips) => self.overview_clips(clips),
         Msg::Files(query, result) => self.overview_files(query, result),
         Msg::SongRecDone => self.songrec_done(),
-        Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
         Msg::OverviewToggle => self.toggle_native_overview(),
         Msg::SessionToggle => self.session_toggle(),
         Msg::SessionHide => self.session_close(),
@@ -1731,6 +1729,7 @@ impl Ui {
       Some("ll:tray-pins") => return self.reload_pins(),
       Some("ll:ws-numbers") => return self.flash_numbers(),
       Some("ll:desktop-menu") => return self.desktop_menu(),
+      Some("ll:desktop-menu-key") => return self.desktop_menu_key(),
       // a click outside the shell: a menu that could not take the focus
       // (opened for the desktop) closes too
       Some("ll:outside-click") => return self.menu_close(),

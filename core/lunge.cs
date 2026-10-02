@@ -3013,67 +3013,27 @@ class Dwindle
 // "üzerine gelince etkinleştir" özelliği fare kıpırdamadan da (pencere kapanıp yerleşim
 // değişince) odak değiştiriyordu; bu da Alt+F4 sonrası odak geçmişini bozuyordu.
 // Düşük seviyeli fare kancası sahte/sentetik hareketleri görmez.
-// Masaüstü simge listesinde (SHELLDLL_DefView içindeki SysListView32) bir noktada simge var mı: Explorer'ın sürecinde
-// LVM_HITTEST. Kancadan çağrılır: her şey kısa süreli, bir şey tutmazsa "boş değil" (Explorer'ın menüsü açılır).
+// Masaüstüne ait bir pencere mi: kök penceresi Explorer'ın masaüstü pencereleri (Progman ya da üst düzey WorkerW).
+// Simgeler, boşluk, gizli simgeler, canlı duvar kağıdı pencereleri: hepsi bu ikisinin altında. Yalnızca pencere sınıfına
+// bakılır (süreçler arası ileti yok): fare kancasında bekletmeden, her durumda aynı karar.
 static class DesktopClick
 {
     [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point p);
-    [DllImport("user32.dll")] static extern IntPtr GetParent(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
-    [DllImport("user32.dll")] static extern bool ScreenToClient(IntPtr h, ref Point p);
-    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
-    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint ms, out IntPtr result);
-    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
-    [DllImport("kernel32.dll")] static extern IntPtr VirtualAllocEx(IntPtr p, IntPtr at, UIntPtr size, uint type, uint protect);
-    [DllImport("kernel32.dll")] static extern bool VirtualFreeEx(IntPtr p, IntPtr at, UIntPtr size, uint type);
-    [DllImport("kernel32.dll")] static extern bool WriteProcessMemory(IntPtr p, IntPtr at, byte[] buf, UIntPtr size, out UIntPtr done);
 
-    static string ClassOf(IntPtr h)
+    public static bool IsDesktopWindow(IntPtr h)
     {
-        var sb = new StringBuilder(32);
-        GetClassName(h, sb, 32);
-        return sb.ToString();
+        if (h == IntPtr.Zero) return false;
+        IntPtr root = GetAncestor(h, 2); // GA_ROOT
+        if (root == IntPtr.Zero) return false;
+        var sb = new StringBuilder(16);
+        GetClassName(root, sb, 16);
+        string c = sb.ToString();
+        return c == "Progman" || c == "WorkerW";
     }
 
-    public static bool EmptyAt(int x, int y)
-    {
-        try
-        {
-            IntPtr list = WindowFromPoint(new Point(x, y));
-            if (list == IntPtr.Zero || ClassOf(list) != "SysListView32") return false;
-            IntPtr view = GetParent(list);
-            if (view == IntPtr.Zero || ClassOf(view) != "SHELLDLL_DefView") return false;
-            string top = ClassOf(GetParent(view));
-            if (top != "Progman" && top != "WorkerW") return false;
-            var pt = new Point(x, y);
-            if (!ScreenToClient(list, ref pt)) return false;
-            uint pid;
-            GetWindowThreadProcessId(list, out pid);
-            IntPtr proc = OpenProcess(0x0008 | 0x0020, false, pid); // VM_OPERATION, VM_WRITE
-            if (proc == IntPtr.Zero) return false;
-            IntPtr mem = IntPtr.Zero;
-            try
-            {
-                // LVHITTESTINFO: pt, flags, iItem, iSubItem, iGroup
-                var info = new byte[24];
-                BitConverter.GetBytes(pt.X).CopyTo(info, 0);
-                BitConverter.GetBytes(pt.Y).CopyTo(info, 4);
-                mem = VirtualAllocEx(proc, IntPtr.Zero, (UIntPtr)24, 0x3000, 0x04); // MEM_COMMIT|RESERVE, READWRITE
-                UIntPtr done;
-                if (mem == IntPtr.Zero || !WriteProcessMemory(proc, mem, info, (UIntPtr)24, out done)) return false;
-                IntPtr item;
-                if (SendMessageTimeout(list, 0x1012 /* LVM_HITTEST */, IntPtr.Zero, mem, 0x2 /* ABORTIFHUNG */, 120, out item) == IntPtr.Zero) return false;
-                return item.ToInt64() == -1;
-            }
-            finally
-            {
-                if (mem != IntPtr.Zero) VirtualFreeEx(proc, mem, UIntPtr.Zero, 0x8000); // MEM_RELEASE
-                CloseHandle(proc);
-            }
-        }
-        catch (Exception) { return false; }
-    }
+    public static bool At(int x, int y) { return IsDesktopWindow(WindowFromPoint(new Point(x, y))); }
 }
 
 class MouseFocus
@@ -3104,9 +3064,10 @@ class MouseFocus
     // Kanca en son ne zaman çağrıldı (kanca bekçisi: Windows geç cevap veren kancayı sessizce söker)
     public static volatile int LastHookTick = Environment.TickCount;
 
-    // Masaüstünün boş yerine sağ tık: Explorer'ın menüsü yerine barın menüsü (menu.rs). Basış ve bırakış yutulur, bar
-    // ll:desktop-menu ile menüyü imlecin yerinde açar. Bir simgenin üstünde Explorer'ın kendi menüsü kalır; bizim
-    // enjekte ettiğimiz (işaretli) tıklama da geçer ("Diğer seçenekler": Explorer'ın masaüstü menüsü).
+    // Masaüstüne sağ tık (simge ya da boşluk): Explorer hiç görmez, barın menüsü açılır (desktop_menu.rs; simge mi
+    // boşluk mu, seçim, hepsi orada masaüstünün kendi görünümünden okunur). Basış ve bırakış yutulur; menü Windows'taki
+    // gibi bırakışta açılır. Eskiden burada süreçler arası bir simge sınaması vardı: yavaşlayınca ya da simgeler gizliyken
+    // tıklama Explorer'a geçiyor ve Windows'un menüsü açılıyordu.
     bool desktopRight;
 
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
@@ -3118,7 +3079,7 @@ class MouseFocus
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
             if (msg == 0x204)
             {
-                desktopRight = (m.flags & 1) == 0 && ShellState.Up && DesktopClick.EmptyAt(m.pt.X, m.pt.Y);
+                desktopRight = ShellState.Up && DesktopClick.At(m.pt.X, m.pt.Y);
                 if (desktopRight) return (IntPtr)1; // dış tıklama değil: menüyü açan tıklama
                 clickX = m.pt.X; clickY = m.pt.Y;
                 clicked.Set();
@@ -6064,6 +6025,15 @@ class Keys2
         if (Switcher.Active || (isDown && vk == 0x09 && altHeld && !winDown))
         {
             if (Switcher.HandleKey(vk, isDown, isUp, Down(VK_SHIFT), altHeld, Down(VK_CONTROL) || winDown)) return (IntPtr)1;
+        }
+
+        // Masaüstü öndeyken menü tuşu / Shift+F10: Explorer'ın menüsü yerine barınki (fare sağ tıkıyla aynı menü, seçili
+        // simgenin yerinde). Basış da bırakış da yutulur.
+        if (isDown && (vk == 0x5D || (vk == 0x79 && Down(VK_SHIFT))) && !winDown && DesktopClick.IsDesktopWindow(Native.GetForegroundWindow()))
+        {
+            if (!held.Contains(vk)) ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu-key"));
+            held.Add(vk);
+            return (IntPtr)1;
         }
 
         // Gerçek Win tuşu Windows'a HİÇ iletilmez: Windows tek başına bir Win basışı görmediği için Başlat
@@ -9049,199 +9019,6 @@ class GraphicsPathHelper : IDisposable
 }
 
 // ---------------- Duvar kağıdı (sağ panel > Duvar kağıtları) ----------------
-// Arama menüsündeki bir uygulamanın Windows sağ tık menüsü (Başlat menüsündekiyle aynı: dosya konumunu aç, yönetici
-// olarak çalıştır, sabitle, kaldır ...): lunge.exe --shell-menu <ayrıştırma adı, ör. shell:AppsFolder\kimlik>.
-// Kabuktan yetkisiz başlatılır: menüden açılanlar da yetkisiz açılsın (çekirdek yönetici haklarıyla çalışır). Fare
-// imlecinin yerinde, LL temasının renginde açılır; Shift basılıysa genişletilmiş komutlarla (Explorer'daki gibi).
-// Sonucu hemen stdout'a tek satır yazar ({"invoked":true|false}); iptal edilirse odağı menüden önceki pencereye
-// (arama menüsü) geri verir. Seçilen komut bu süreçte pencere açtıysa (Özellikler) o kapanana dek süreç yaşar.
-static class ShellMenu
-{
-    [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IShellItem
-    {
-        [PreserveSig] int BindToHandler(IntPtr pbc, [In] ref Guid bhid, [In] ref Guid riid, out IntPtr ppv);
-        void GetParent(out IShellItem ppsi);
-        void GetDisplayName(uint sigdnName, out IntPtr ppszName);
-        void GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
-        void Compare(IShellItem psi, uint hint, out int piOrder);
-    }
-
-    [ComImport, Guid("000214e4-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IContextMenu
-    {
-        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
-        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
-        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
-    }
-
-    [ComImport, Guid("000214f4-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IContextMenu2
-    {
-        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
-        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
-        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
-        [PreserveSig] int HandleMenuMsg(uint uMsg, IntPtr wParam, IntPtr lParam);
-    }
-
-    [ComImport, Guid("bcfce0a0-ec17-11d0-8d10-00a0c90f2719"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    interface IContextMenu3
-    {
-        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
-        [PreserveSig] int InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
-        [PreserveSig] int GetCommandString(UIntPtr idCmd, uint uType, IntPtr reserved, IntPtr pszName, uint cchMax);
-        [PreserveSig] int HandleMenuMsg(uint uMsg, IntPtr wParam, IntPtr lParam);
-        [PreserveSig] int HandleMenuMsg2(uint uMsg, IntPtr wParam, IntPtr lParam, out IntPtr plResult);
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    struct CMINVOKECOMMANDINFOEX
-    {
-        public int cbSize; public uint fMask; public IntPtr hwnd; public IntPtr lpVerb; public IntPtr lpParameters; public IntPtr lpDirectory;
-        public int nShow; public uint dwHotKey; public IntPtr hIcon; public IntPtr lpTitle; public IntPtr lpVerbW; public IntPtr lpParametersW;
-        public IntPtr lpDirectoryW; public IntPtr lpTitleW; public Native.POINT ptInvoke;
-    }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    static extern int SHCreateItemFromParsingName(string path, IntPtr pbc, [In] ref Guid riid, out IShellItem item);
-    [DllImport("user32.dll")] static extern IntPtr CreatePopupMenu();
-    [DllImport("user32.dll")] static extern bool DestroyMenu(IntPtr h);
-    [DllImport("user32.dll")] static extern uint TrackPopupMenuEx(IntPtr hmenu, uint flags, int x, int y, IntPtr hwnd, IntPtr tpm);
-    // Menülerin koyu / aydınlık çizimi (uxtheme, 1903+; adı yok, sıra numarasıyla)
-    [DllImport("uxtheme.dll", EntryPoint = "#135")] static extern int SetPreferredAppMode(int mode);
-    [DllImport("uxtheme.dll", EntryPoint = "#136")] static extern void FlushMenuThemes();
-
-    static readonly Guid BHID_SFUIObject = new Guid("3981e225-f559-11d3-8e3a-00c04f6837d5");
-    const uint First = 1, Last = 0x7fff;
-    // Kabuk menüsünün kimlik aralığının dışında: Super menüsünden Dock'a ekleme
-    const uint DockItem = 0x8001;
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool AppendMenu(IntPtr h, uint flags, UIntPtr id, string text);
-
-    // Alt menüler (Birlikte aç, Gönder) içeriklerini sahip pencereye gelen bu iletilerle doldurur ve çizer
-    sealed class Owner : NativeWindow
-    {
-        public IContextMenu2 Cm2;
-        public IContextMenu3 Cm3;
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == 0x117 || m.Msg == 0x2c || m.Msg == 0x2b || m.Msg == 0x120) // INITMENUPOPUP, MEASUREITEM, DRAWITEM, MENUCHAR
-            {
-                try
-                {
-                    IntPtr res;
-                    if (Cm3 != null && Cm3.HandleMenuMsg2((uint)m.Msg, m.WParam, m.LParam, out res) == 0) { m.Result = res; return; }
-                    if (Cm2 != null && Cm2.HandleMenuMsg((uint)m.Msg, m.WParam, m.LParam) == 0) { m.Result = IntPtr.Zero; return; }
-                }
-                catch { }
-            }
-            base.WndProc(ref m);
-        }
-    }
-
-    // dock: uygulamanın exe adı (Super menüsü apps.json'dan verir); varsa menünün başında "Dock'ta tut / Dock'tan kaldır"
-    public static void Run(string path, string dock)
-    {
-        var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
-        try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
-        IntPtr prev = Native.GetForegroundWindow();
-        bool invoked = false, dockOnly = false;
-        if (dock != null && (dock.Length > 64 || dock.IndexOfAny(new[] { '\\', '/', ':', '"' }) >= 0)) dock = null;
-        Owner owner = null;
-        IntPtr menu = IntPtr.Zero;
-        IContextMenu cm = null;
-        try
-        {
-            object th;
-            try { SetPreferredAppMode(Prefs.Read().TryGetValue("theme", out th) && "light".Equals(th) ? 3 : 2); FlushMenuThemes(); } catch { }
-            Guid iidItem = typeof(IShellItem).GUID, bhid = BHID_SFUIObject, iidCm = typeof(IContextMenu).GUID;
-            IShellItem item;
-            if (SHCreateItemFromParsingName(path, IntPtr.Zero, ref iidItem, out item) != 0 || item == null) return;
-            IntPtr ppv;
-            if (item.BindToHandler(IntPtr.Zero, ref bhid, ref iidCm, out ppv) != 0 || ppv == IntPtr.Zero) return;
-            try { cm = (IContextMenu)Marshal.GetObjectForIUnknown(ppv); } finally { Marshal.Release(ppv); }
-            owner = new Owner { Cm2 = cm as IContextMenu2, Cm3 = cm as IContextMenu3 };
-            owner.CreateHandle(new CreateParams { Caption = "lunge-shell-menu", Style = unchecked((int)0x80000000), ExStyle = 0x80 }); // WS_POPUP, TOOLWINDOW; görünmez
-            menu = CreatePopupMenu();
-            uint at = 0;
-            if (dock != null)
-            {
-                AppendMenu(menu, 0 /*MF_STRING*/, new UIntPtr(DockItem), I18n.T(Pins.Dock.Contains(dock) ? "Dock’tan kaldır" : "Dock’ta tut"));
-                AppendMenu(menu, 0x800 /*MF_SEPARATOR*/, UIntPtr.Zero, null);
-                at = 2;
-            }
-            uint flags = (Control.ModifierKeys & Keys.Shift) != 0 ? 0x100u : 0u; // CMF_EXTENDEDVERBS
-            if (cm.QueryContextMenu(menu, at, First, Last, flags) < 0) return;
-            var pt = Cursor.Position;
-            // Menü dışına tıklanınca kapanması için sahip pencere ön planda olmalı; sonra WM_NULL (TrackPopupMenu belgesi)
-            Native.SetForegroundWindow(owner.Handle);
-            uint cmd = TrackPopupMenuEx(menu, 0x100 | 0x2, pt.X, pt.Y, owner.Handle, IntPtr.Zero); // RETURNCMD, RIGHTBUTTON
-            Native.PostMessage(owner.Handle, 0, IntPtr.Zero, IntPtr.Zero);
-            if (cmd == DockItem)
-            {
-                invoked = true;
-                dockOnly = true;
-                so.WriteLine("{\"invoked\":true}");
-                bool on = !Pins.Dock.Contains(dock);
-                // Çalışan çekirdek yazar ve Dock'a haber verir (ll:dock-pins); çekirdek yoksa dosyaya doğrudan
-                if (Supervisor.PostToCore("/dock-pin?id=" + Uri.EscapeDataString(dock) + "&on=" + (on ? "1" : "0"), 2000) != 204) Pins.Dock.Set(dock, on);
-            }
-            else if (cmd >= First && cmd <= Last)
-            {
-                invoked = true;
-                so.WriteLine("{\"invoked\":true}");
-                var ci = new CMINVOKECOMMANDINFOEX
-                {
-                    cbSize = Marshal.SizeOf(typeof(CMINVOKECOMMANDINFOEX)),
-                    fMask = 0x4000 | 0x20000000 | 0x100, // UNICODE, PTINVOKE, NOASYNC (süreç komut bitmeden çıkmasın)
-                    hwnd = owner.Handle,
-                    lpVerb = new IntPtr(cmd - First),
-                    lpVerbW = new IntPtr(cmd - First),
-                    nShow = 1, // SW_SHOWNORMAL
-                    ptInvoke = new Native.POINT { X = pt.X, Y = pt.Y },
-                };
-                int hr = cm.InvokeCommand(ref ci);
-                if (hr < 0) Slider.Log("sağ tık menüsü: komut çalışmadı (0x" + hr.ToString("x8") + "): " + path);
-            }
-        }
-        catch (Exception ex) { Slider.Log("sağ tık menüsü: " + ex.GetBaseException().Message + ": " + path); }
-        finally
-        {
-            if (!invoked)
-            {
-                try { so.WriteLine("{\"invoked\":false}"); } catch { }
-                if (prev != IntPtr.Zero) Native.SetForegroundWindow(prev);
-            }
-        }
-        try { if (invoked && !dockOnly) WaitForOwnWindows(owner == null ? IntPtr.Zero : owner.Handle); } catch { }
-        if (menu != IntPtr.Zero) DestroyMenu(menu);
-        if (owner != null) owner.DestroyHandle();
-        if (cm != null) Marshal.ReleaseComObject(cm);
-    }
-
-    // Komutun bu süreçte açtığı pencereler (Özellikler) kapanana dek bekle; 3 sn içinde hiç açılmadıysa çık
-    static void WaitForOwnWindows(IntPtr owner)
-    {
-        uint me = (uint)Process.GetCurrentProcess().Id;
-        var start = DateTime.UtcNow;
-        bool seen = false;
-        while (true)
-        {
-            bool any = false;
-            Native.EnumWindows((h, l) =>
-            {
-                uint pid;
-                Native.GetWindowThreadProcessId(h, out pid);
-                if (pid == me && h != owner && Native.IsWindowVisible(h)) { any = true; return false; }
-                return true;
-            }, IntPtr.Zero);
-            if (any) seen = true;
-            else if (seen || (DateTime.UtcNow - start).TotalSeconds > 3) return;
-            Application.DoEvents();
-            Thread.Sleep(100);
-        }
-    }
-}
-
 // Windows'un IDesktopWallpaper API'si: monitör başına ayrı resim ya da tüm masaüstüne yayılan tek resim
 // (Superpaper'ın "span" modu). Hazır öneriler Wallhaven'ın herkese açık API'sinden, yalnızca SFW.
 [ComImport, Guid("B92B56A9-8B55-4E14-9A89-0199BBB6F93B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -11431,12 +11208,6 @@ static class Program
         // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
-        // lunge.exe --shell-menu <ayrıştırma adı> [--dock <exe adı>]
-        if (args.Length >= 2 && args[0] == "--shell-menu" && (args.Length == 2 || (args.Length == 4 && args[2] == "--dock")))
-        {
-            ShellMenu.Run(args[1], args.Length == 4 ? args[3] : null);
-            return;
-        }
         // lunge.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
         if (args.Length == 2 && args[0] == "--audio-default")
         {
