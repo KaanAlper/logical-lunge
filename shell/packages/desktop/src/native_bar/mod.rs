@@ -21,6 +21,7 @@ mod overview;
 mod pops;
 mod search;
 mod osk;
+mod dock;
 mod session;
 mod toast;
 mod update;
@@ -126,6 +127,10 @@ const TIMER_SESSION_CLOSE: usize = 22;
 /// the on-screen keyboard slid out: its window goes (an id of its own:
 /// other panels add timers next to the session's)
 const TIMER_OSK_CLOSE: usize = 40;
+/// the Dock's icons growing toward the pointer
+const TIMER_DOCK_TICK: usize = 50;
+/// the Dock faded out: its window goes
+const TIMER_DOCK_CLOSE: usize = 51;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -162,6 +167,8 @@ enum Msg {
   SessionHide,
   /// `ll:osk-toggle` (the sidebar's keyboard tile)
   OskToggle,
+  /// the Dock's pins as the core keeps them (None: no answer)
+  DockPins(Option<Vec<String>>),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -559,6 +566,8 @@ struct Ui {
   session: Option<session::Session>,
   /// the on-screen keyboard while it is open
   osk: Option<osk::Osk>,
+  /// the Dock's pins, and its window while it is open
+  dock: dock::DockState,
   /// test run: a menu picture to write once the app list is in (text, PNG, asked at)
   snapshot: Option<(String, PathBuf, Instant)>,
 }
@@ -662,6 +671,7 @@ fn ui_thread(
         overview: None,
         session: None,
         osk: None,
+        dock: Default::default(),
         snapshot: None,
       })
     });
@@ -783,6 +793,9 @@ impl Ui {
     if let Some(r) = self.osk_msg(hwnd, msg, wp, lp) {
       return r;
     }
+    if let Some(r) = self.dock_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if self.overview.as_ref().is_some_and(|o| o.hwnd == hwnd) {
       return self.overview_msg(msg, wp, lp);
     }
@@ -807,6 +820,7 @@ impl Ui {
             // the session screen is made for the old monitors
             self.session_destroy();
             self.osk_destroy();
+            self.dock_destroy();
             self.create_bars();
             self.overview_recreate_window();
           }
@@ -866,6 +880,8 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
         WM_TIMER if wp.0 == TIMER_SESSION_CLOSE => self.session_destroy(),
         WM_TIMER if wp.0 == TIMER_OSK_CLOSE => self.osk_destroy(),
+        WM_TIMER if wp.0 == TIMER_DOCK_TICK => self.dock_tick(),
+        WM_TIMER if wp.0 == TIMER_DOCK_CLOSE => self.dock_destroy(),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           // frames while the numbers fade in or out; nothing between
           let now = Instant::now();
@@ -1024,6 +1040,7 @@ impl Ui {
         };
         if !toggles {
           (self.emit)("ll:bar-click", serde_json::Value::Null);
+          self.dock_close();
           // the native Super menu is no web widget: it closes here (a bar
           // on another monitor is outside its backdrop)
           if self.overview.as_ref().is_some_and(|o| o.shown) {
@@ -1138,6 +1155,7 @@ impl Ui {
         Msg::SessionToggle => self.session_toggle(),
         Msg::SessionHide => self.session_close(),
         Msg::OskToggle => self.osk_toggle(),
+        Msg::DockPins(pins) => self.dock_pins(pins),
         Msg::Toast(card) => self.toast_add(card),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
         Msg::Update(e) => self.update_event(e),
@@ -1173,6 +1191,7 @@ impl Ui {
     }
     if overview_dirty {
       self.overview_sync_monitor();
+      self.dock_refresh();
     }
     if overview_dirty && self.overview.as_ref().is_some_and(|o| o.shown) {
       self.overview_render();
@@ -1395,6 +1414,25 @@ impl Ui {
     }
   }
 
+  /// The windows' own icons the painters found missing (Git Bash, game
+  /// clients, installers); asked again a few times, each later, when the
+  /// core has none.
+  fn ask_win_icons(&self, requests: Vec<i64>) {
+    for h in requests {
+      let wait = self.icons.retry_wait(h);
+      std::thread::spawn(move || {
+        let png = match core_api::post(&format!("/winicon?h={}", h)) {
+          Some((200, body)) => icons::data_url_bytes(&String::from_utf8_lossy(&body)),
+          _ => None,
+        };
+        if png.is_none() {
+          std::thread::sleep(wait);
+        }
+        send(Msg::WinIcon(h, png));
+      });
+    }
+  }
+
   fn theme(&self) -> view::Theme {
     if let Some(t) = &self.custom_theme {
       return *t;
@@ -1495,21 +1533,7 @@ impl Ui {
       }
       unsafe { gfx.dcomp.Commit()? };
     }
-    for h in requests {
-      // the window's own icon (Git Bash, game clients, installers); asked
-      // again a few times, each later, when the core has none
-      let wait = self.icons.retry_wait(h);
-      std::thread::spawn(move || {
-        let png = match core_api::post(&format!("/winicon?h={}", h)) {
-          Some((200, body)) => icons::data_url_bytes(&String::from_utf8_lossy(&body)),
-          _ => None,
-        };
-        if png.is_none() {
-          std::thread::sleep(wait);
-        }
-        send(Msg::WinIcon(h, png));
-      });
-    }
+    self.ask_win_icons(requests);
     Ok(())
   }
 
@@ -1598,8 +1622,11 @@ impl Ui {
       Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
       Some("ll:tray-pins") => return self.reload_pins(),
       Some("ll:ws-numbers") => return self.flash_numbers(),
+      Some("ll:dock-toggle") => return self.dock_toggle(),
+      Some("ll:dock-pins") => return self.dock_pins_changed(),
       None => {
         self.reload_pins();
+        self.dock_pins_changed();
         self.reload_custom_theme();
         model::prefs(&self.pack_dir)["theme"].as_str() == Some("light")
       }

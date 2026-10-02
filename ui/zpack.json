@@ -137,36 +137,6 @@
                     }
                 }
             ]
-        },
-        {
-            "name": "dock",
-            "htmlPath": "./dock.html",
-            "zOrder": "top_most",
-            "shownInTaskbar": false,
-            "focused": false,
-            "resizable": false,
-            "transparent": true,
-            "shownOnStart": false,
-            "includeFiles": ["*.html", "*.css", "*.json", "*.js", "lib/*.js", "fonts/*.woff2"],
-            "caching": { "defaultDuration": 604800 },
-            "privileges": {
-                "shellCommands": [
-                    { "program": "explorer", "argsRegex": ".*" },
-                    { "program": "{{INSTALL_ESC}}\\lunge.exe", "argsRegex": ".*" }
-                ]
-            },
-            "presets": [
-                {
-                    "name": "default",
-                    "anchor": "top_left",
-                    "offsetX": "0px",
-                    "offsetY": "0px",
-                    "width": "100%",
-                    "height": "100%",
-                    "monitorSelection": { "type": "primary" },
-                    "dockToEdge": { "edge": null, "windowMargin": "0px", "enabled": false }
-                }
-            ]
         }
     ]
 }
