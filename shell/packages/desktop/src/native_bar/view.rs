@@ -12,7 +12,7 @@ use windows::{
       Common::{D2D_SIZE_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN},
       ID2D1DeviceContext, ID2D1Factory, ID2D1SolidColorBrush, ID2D1StrokeStyle,
       D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
-      D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_STROKE_STYLE_PROPERTIES,
+      D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_STROKE_STYLE_PROPERTIES,
       D2D1_SWEEP_DIRECTION_CLOCKWISE,
     },
     DirectWrite::{
@@ -314,7 +314,21 @@ impl Painter<'_> {
     let w = Self::width_of(&layout).min(r.w);
     let x = if align == Align::Center { r.x + (r.w - w) / 2.0 } else { r.x };
     let b = self.brush(c)?;
-    unsafe { self.dc.DrawTextLayout(pt(x, r.y), &layout, &b, D2D1_DRAW_TEXT_OPTIONS_NONE) };
+    // emoji keep their colours (Segoe UI Emoji is a colour font)
+    unsafe { self.dc.DrawTextLayout(pt(x, r.y), &layout, &b, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT) };
+    Ok(w)
+  }
+
+  /// Left-aligned text in the monospace face (commands, code); Consolas
+  /// comes with every Windows.
+  pub(super) fn text_mono(&mut self, s: &str, r: Rect, style: TextStyle, c: Rgba) -> anyhow::Result<f32> {
+    let layout = self.layout(s, style, r.w, r.h, false)?;
+    unsafe {
+      layout.SetFontFamilyName(windows::core::w!("Consolas"), DWRITE_TEXT_RANGE { startPosition: 0, length: u32::MAX })?;
+    }
+    let w = Self::width_of(&layout).min(r.w);
+    let b = self.brush(c)?;
+    unsafe { self.dc.DrawTextLayout(pt(r.x, r.y), &layout, &b, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT) };
     Ok(w)
   }
 

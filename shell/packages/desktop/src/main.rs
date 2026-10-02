@@ -8,7 +8,7 @@ use anyhow::Context;
 use clap::Parser;
 use tauri::{
   async_runtime::block_on, path::BaseDirectory, AppHandle, Emitter,
-  Manager, RunEvent,
+  Listener, Manager, RunEvent,
 };
 use tokio::{sync::mpsc, task};
 use tracing::{error, info, Level};
@@ -251,6 +251,10 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
         error!("Native bar: first start failed: {:?}", err);
       } else {
         native_overview_active = native_overview_requested && native_bar::overview_ready();
+        if native_overview_active {
+          // the web widgets (the Dock's search button) open the native Super menu
+          app.listen_any("ll:overview-toggle", |event| native_bar::widget_overview_toggle(event.payload()));
+        }
       }
     }
   }

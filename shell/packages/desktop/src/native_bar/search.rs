@@ -768,6 +768,9 @@ pub struct Item {
   pub highlight: Option<String>,
   pub clip_id: Option<String>,
   pub act: Act,
+  /// `name` is one of the menu's own texts (translated when drawn), not an
+  /// app's name or the user's clipboard
+  pub tr_name: bool,
 }
 
 impl Item {
@@ -784,6 +787,7 @@ impl Item {
       highlight: None,
       clip_id: None,
       act,
+      tr_name: false,
     }
   }
 }
@@ -847,6 +851,7 @@ pub fn results(query: &str, apps: &[App], clips: &[Clip], time: &dyn Fn(i64) -> 
         let name = if term.is_empty() { "Pano geçmişi boş" } else { "Eşleşen kayıt yok" };
         let mut it = Item::new("cbnone", "Pano", name, Glyph::Material("content_paste"), "", Act::None);
         it.stay = true;
+        it.tr_name = true;
         out.push(it);
       }
       for c in list.into_iter().take(40) {
@@ -858,6 +863,7 @@ pub fn results(query: &str, apps: &[App], clips: &[Clip], time: &dyn Fn(i64) -> 
           _ => Glyph::Material("content_paste"),
         };
         let mut it = Item::new(format!("cb{}", c.id), "Pano", name, glyph, "Kopyala", Act::ClipSet(c.id.clone()));
+        it.tr_name = image;
         let lines = if c.kind == "text" && c.lines > 1 { format!("{} satır", c.lines) } else { String::new() };
         it.sub = [lines, time(c.time)].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
         it.mono = c.kind == "text" && first.contains(|x: char| "{};=<>".contains(x));
@@ -890,9 +896,12 @@ pub fn results(query: &str, apps: &[App], clips: &[Clip], time: &dyn Fn(i64) -> 
       return out;
     }
     Prefix::File => {
-      if rest.trim().is_empty() {
-        out.push(Item::new("file-hint", "Dosya", "Dosya veya klasör adı yaz…", Glyph::Material("folder_open"), "", Act::None));
-      }
+      // until Everything answers (the overview replaces it with the files)
+      let name = if rest.trim().is_empty() { "Dosya veya klasör adı yaz…" } else { "Dosyalar aranıyor…" };
+      let mut it = Item::new("file-hint", "Dosya", name, Glyph::Material("folder_open"), "", Act::None);
+      it.stay = true;
+      it.tr_name = true;
+      out.push(it);
       return out;
     }
     Prefix::Default | Prefix::App | Prefix::Math => {}
@@ -1045,7 +1054,10 @@ mod tests {
     assert_eq!(file_term("# rapor"), Some("rapor"));
     assert_eq!(file_term("fire"), Some("fire"));
     assert_eq!(file_term("/dark"), None);
-    assert!(results("# rapor", &[], &[], &|_| String::new()).is_empty());
+    // until Everything answers: one row that stays (Enter keeps the menu open)
+    let pending = results("# rapor", &[], &[], &|_| String::new());
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].key == "file-hint" && pending[0].name == "Dosyalar aranıyor…" && pending[0].stay && pending[0].tr_name);
     let hits = vec![FileHit { name: "rapor.txt".into(), path: "C:\\Belgeler".into(), full_path: "C:\\Belgeler\\rapor.txt".into(), is_dir: false }];
     assert_eq!(file_items(&hits)[0].act, Act::OpenPath("C:\\Belgeler\\rapor.txt".into()));
   }

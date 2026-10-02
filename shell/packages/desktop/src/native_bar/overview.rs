@@ -13,7 +13,7 @@ use windows::{
     Graphics::{
       Direct2D::{
         Common::{D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED},
-        ID2D1Bitmap1, ID2D1Factory, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_NONE,
+        ID2D1Bitmap1, ID2D1Factory, D2D1_ANTIALIAS_MODE_ALIASED, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
       },
       DirectComposition::{IDCompositionTarget, IDCompositionVisual2},
       DirectWrite::{DWRITE_HIT_TEST_METRICS, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE},
@@ -26,7 +26,7 @@ use windows::{
     },
     UI::{
       HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
-      Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_SHIFT},
+      Input::KeyboardAndMouse::{GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_MENU, VK_SHIFT},
       WindowsAndMessaging::*,
     },
   },
@@ -242,6 +242,9 @@ pub struct Overview {
   /// first row shown (the list scrolls past 11 rows)
   first: usize,
   clips: Vec<Clip>,
+  /// the clipboard history was asked for since the menu opened (once: not on
+  /// every key typed after ";")
+  clips_asked: bool,
   clip_images: HashMap<String, Option<ID2D1Bitmap1>>,
   pub songrec: bool,
   /// horizontal scroll of the text field (DIPs)
@@ -338,6 +341,7 @@ impl Overview {
         sel: 0,
         first: 0,
         clips: Vec::new(),
+        clips_asked: false,
         clip_images: HashMap::new(),
         songrec: false,
         scroll_x: 0.0,
@@ -682,7 +686,7 @@ impl Overview {
         pt(r.x - self.scroll_x, r.y + (r.h - line_h) / 2.0),
         &layout,
         &brush,
-        D2D1_DRAW_TEXT_OPTIONS_NONE,
+        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
       );
       p.dc.PopAxisAlignedClip();
     }
@@ -727,9 +731,13 @@ impl Overview {
     let kind_c = if selected { Rgba(fg.0, fg.1, fg.2, 0.8) } else { t.on_surface_variant };
     p.text(&kind, Rect::new(tx, r.y + 6.0, tw, 16.0), TextStyle { size: 12.0, weight: 450.0 }, kind_c, Align::Left, false)?;
     let name_r = Rect::new(tx, r.y + 22.0, tw, 20.0);
-    let name = if item.key == "sh" && item.act == Act::None { tr(&item.name) } else { item.name.clone() };
+    let name = if item.tr_name || (item.key == "sh" && item.act == Act::None) { tr(&item.name) } else { item.name.clone() };
     match &item.highlight {
       Some(q) => highlighted(p, &name, q, name_r, fg, if selected { Rgba::hex(0xffffff) } else { t.primary })?,
+      // commands and code: the monospace face (the web menu's .mono)
+      None if item.mono => {
+        p.text_mono(&name, name_r, TextStyle { size: 14.0, weight: 400.0 }, fg)?;
+      }
       None => {
         p.text(&name, name_r, TextStyle { size: 15.0, weight: 450.0 }, fg, Align::Left, false)?;
       }
@@ -800,7 +808,9 @@ fn menu_path(item: &Item) -> Option<String> {
 impl Overview {
   /// WM_KEYDOWN
   pub fn key(&mut self, vk: u16) -> Do {
-    let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
+    // AltGr arrives as Ctrl+Alt: it types a character (@, €, ą), it is no
+    // Ctrl shortcut
+    let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) < 0 && GetKeyState(VK_MENU.0 as i32) >= 0 };
     let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
     match vk {
       0x1B => {
@@ -1030,6 +1040,7 @@ impl Overview {
   /// Opened again: an empty field (or the clipboard prefix for Super+V).
   pub fn reset(&mut self, text: &str) {
     self.edit.set(text);
+    self.clips_asked = false;
     self.results.clear();
     self.sel = 0;
     self.first = 0;
@@ -1090,7 +1101,7 @@ fn highlighted(p: &mut Painter, name: &str, query: &str, r: Rect, fg: Rgba, mark
   }
   let brush = p.brush(fg)?;
   unsafe {
-    p.dc.DrawTextLayout(pt(r.x, r.y), &layout, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+    p.dc.DrawTextLayout(pt(r.x, r.y), &layout, &brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
   }
   Ok(())
 }
@@ -1207,6 +1218,40 @@ fn spawn(program: &str, args: &[&str]) {
   let _ = std::process::Command::new(program).args(args).creation_flags(CREATE_NO_WINDOW).spawn();
 }
 
+/// The song recognition child of `run`, or (None) whichever there is.
+fn take_songrec(run: Option<u64>) -> Option<std::process::Child> {
+  let mut slot = super::SONGREC_CHILD.lock().ok()?;
+  if let (Some((owner, _)), Some(want)) = (slot.as_ref(), run) {
+    if *owner != want {
+      return None;
+    }
+  }
+  slot.take().map(|(_, child)| child)
+}
+
+/// `lunge.exe --songrec ...` kept where a second press finds and kills it
+/// (the recognizer goes with it: the core holds both in one job object).
+fn songrec_listen(run: u64) -> Option<Value> {
+  use std::io::Read;
+  let exe = core_api::core_exe()?;
+  let mut child = std::process::Command::new(exe)
+    .args(["--songrec", "-i", "2", "-t", "30", "-s", "monitor"])
+    .stdout(std::process::Stdio::piped())
+    .creation_flags(CREATE_NO_WINDOW)
+    .spawn()
+    .ok()?;
+  let mut out = child.stdout.take()?;
+  if let Ok(mut slot) = super::SONGREC_CHILD.lock() {
+    *slot = Some((run, child));
+  }
+  let mut text = String::new();
+  let _ = out.read_to_string(&mut text);
+  if let Some(mut child) = take_songrec(Some(run)) {
+    let _ = child.wait();
+  }
+  serde_json::from_str(text.trim().lines().last()?).ok()
+}
+
 /// `lunge.exe <args>`, waited for, its stdout (last line) as JSON.
 fn core_json(args: &[&str]) -> Option<Value> {
   let exe = core_api::core_exe()?;
@@ -1285,9 +1330,7 @@ impl Ui {
     o.reset(text);
     let apps = self.icons.apps().to_vec();
     let clip_mode = o.refresh(&apps, self.model.hour12);
-    if clip_mode {
-      self.overview_load_clips();
-    }
+    self.overview_want_clips(clip_mode);
     self.overview_request_files();
     // drawn before it is shown: no empty frame
     self.overview_render();
@@ -1427,6 +1470,16 @@ impl Ui {
         o.right_click(x, y)
       }
       WM_MOUSEWHEEL => o.wheel(((wp.0 >> 16) & 0xFFFF) as i16 as i32),
+      // closing the menu hides it: the window lives as long as the bar
+      // (another program's WM_CLOSE, e.g. taskkill without /f, would
+      // otherwise destroy it)
+      WM_CLOSE => {
+        if o.shown {
+          Do::Hide
+        } else {
+          Do::Nothing
+        }
+      }
       WM_ACTIVATE => {
         // focus went elsewhere: close (the web menu's blur); not to an app's
         // context menu, which gives it back or runs a command
@@ -1456,9 +1509,7 @@ impl Ui {
         let apps = self.icons.apps().to_vec();
         let hour12 = self.model.hour12;
         let clip_mode = self.overview.as_mut().is_some_and(|o| o.refresh(&apps, hour12));
-        if clip_mode {
-          self.overview_load_clips();
-        }
+        self.overview_want_clips(clip_mode);
         self.overview_request_files();
         self.overview_render();
       }
@@ -1594,6 +1645,16 @@ impl Ui {
     }
   }
 
+  /// The clipboard history, once per opening of the menu (deleting an entry
+  /// reloads it on its own).
+  fn overview_want_clips(&mut self, clip_mode: bool) {
+    let Some(o) = self.overview.as_mut() else { return };
+    if clip_mode && !o.clips_asked {
+      o.clips_asked = true;
+      self.overview_load_clips();
+    }
+  }
+
   fn overview_load_clips(&mut self) {
     std::thread::spawn(|| {
       let clips: Vec<Clip> = core_json(&["--clip-list"]).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
@@ -1694,13 +1755,22 @@ impl Ui {
       "reload" => self.wm_command("command wm-reload-config".into()),
       "apps" => {
         let script = install_dir().join("scripts").join("build-apps.ps1");
+        let emit = self.emit.clone();
         std::thread::spawn(move || {
+          let toast = |v: Value| (emit)("ll:toast", v);
           let script = script.to_string_lossy().to_string();
           let _ = core_json(&["--ps", &script]);
-          if let Some((200, body)) = core_api::post("/apps.json") {
-            if let Ok(apps) = serde_json::from_slice::<Vec<App>>(&body) {
+          let apps = match core_api::post("/apps.json") {
+            Some((200, body)) => serde_json::from_slice::<Vec<App>>(&body).ok(),
+            _ => None,
+          };
+          // as the web menu: how many apps, or why there are none
+          match apps {
+            Some(apps) if !apps.is_empty() => {
+              toast(json!({ "kind": "ok", "title": "Uygulama listesi yenilendi", "body": format!("{} uygulama", apps.len()), "icon": "apps" }));
               super::send(Msg::Apps(apps));
             }
+            _ => toast(json!({ "kind": "error", "title": "Uygulamalar alınamadı", "body": "Uygulama listesi boş.", "icon": "error" })),
           }
         });
       }
@@ -1713,22 +1783,26 @@ impl Ui {
   fn songrec(&mut self) {
     let Some(o) = self.overview.as_mut() else { return };
     if o.songrec {
-      // stop: the helper ends on its own timeout; the result is dropped
+      // stop: no result from this run, and its helper ends now
       o.songrec = false;
-      super::SONGREC_STOPPED.store(true, std::sync::atomic::Ordering::Release);
+      super::SONGREC_RUN.fetch_add(1, Ordering::AcqRel);
+      if let Some(mut child) = take_songrec(None) {
+        let _ = child.kill();
+      }
       self.overview_render();
       return;
     }
     o.songrec = true;
-    super::SONGREC_STOPPED.store(false, std::sync::atomic::Ordering::Release);
+    let run = super::SONGREC_RUN.fetch_add(1, Ordering::AcqRel) + 1;
     self.overview_render();
     let emit = self.emit.clone();
     std::thread::spawn(move || {
-      let res = core_json(&["--songrec", "-i", "2", "-t", "30", "-s", "monitor"]);
-      super::send(Msg::SongRecDone);
-      if super::SONGREC_STOPPED.load(std::sync::atomic::Ordering::Acquire) {
+      let res = songrec_listen(run);
+      // a stopped run, or one a new press replaced, stays quiet
+      if super::SONGREC_RUN.load(Ordering::Acquire) != run {
         return;
       }
+      super::send(Msg::SongRecDone);
       let toast = |v: Value| (emit)("ll:toast", v);
       match res {
         Some(r) if r["title"].is_string() => {

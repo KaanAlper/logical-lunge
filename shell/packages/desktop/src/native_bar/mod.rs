@@ -27,7 +27,7 @@ use std::{
   collections::HashMap,
   path::PathBuf,
   sync::{
-    atomic::{AtomicBool, AtomicIsize, Ordering},
+    atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
   },
   time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -131,6 +131,8 @@ enum Msg {
   SongRecDone,
   /// an app's context menu closed: whether a command was chosen
   ShellMenu(bool),
+  /// a web widget asked for the Super menu (the Dock's search button)
+  OverviewToggle,
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -138,8 +140,10 @@ static WAKE: AtomicIsize = AtomicIsize::new(0);
 static FAILED: AtomicBool = AtomicBool::new(false);
 /// the Super menu's window: it takes the keyboard (the bars never do)
 static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
-/// song recognition was stopped: its result is dropped
-static SONGREC_STOPPED: AtomicBool = AtomicBool::new(false);
+/// song recognition: the run whose result counts (a stopped or replaced run
+/// stays quiet) and its `lunge.exe --songrec`, which a second press kills
+static SONGREC_RUN: AtomicU64 = AtomicU64::new(0);
+static SONGREC_CHILD: Mutex<Option<(u64, std::process::Child)>> = Mutex::new(None);
 
 /// The bar cannot go on (a panic, the graphics device never came back). Its
 /// UI thread ends (its windows go with it) and `start`'s guard builds a new
@@ -214,6 +218,15 @@ fn send(msg: Msg) {
     unsafe {
       let _ = PostMessageW(HWND(h as _), WM_APP_WAKE, WPARAM(0), LPARAM(0));
     }
+  }
+}
+
+/// A web widget's `ll:overview-toggle` (main.rs listens while the native
+/// Super menu is selected): the Dock's search button opens it. The bar's own
+/// toggles carry `"source":"native-bar"` and are not handed back.
+pub fn widget_overview_toggle(payload: &str) {
+  if !payload.contains("\"native-bar\"") {
+    send(Msg::OverviewToggle);
   }
 }
 
@@ -867,6 +880,11 @@ impl Ui {
         };
         if !toggles {
           (self.emit)("ll:bar-click", serde_json::Value::Null);
+          // the native Super menu is no web widget: it closes here (a bar
+          // on another monitor is outside its backdrop)
+          if self.overview.as_ref().is_some_and(|o| o.shown) {
+            self.overview_hide();
+          }
         }
         // a tray icon may be dragged (to pin / unpin it)
         if let (Some(HitKind::TrayIcon(id)), WM_LBUTTONDOWN) = (kind, msg) {
@@ -972,6 +990,7 @@ impl Ui {
         Msg::Files(query, result) => self.overview_files(query, result),
         Msg::SongRecDone => self.songrec_done(),
         Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
+        Msg::OverviewToggle => self.toggle_native_overview(),
         Msg::Wm(state) => {
           self.model.wm = state;
           overview_dirty = true;
@@ -1577,19 +1596,25 @@ impl Ui {
     });
   }
 
-  fn toggle_overview_from_bar(&mut self) {
-    if self.native_overview {
-      if self.overview.as_ref().is_some_and(|o| o.shown) {
-        self.overview_hide();
-      } else {
-        // The core remembers the previously focused window and restores it
-        // when the menu closes, just as it does for the Super shortcut.
-        std::thread::spawn(|| core_api::run_core(&["--overview-show", "plain"]));
-      }
+  fn toggle_native_overview(&mut self) {
+    if !self.native_overview {
+      return;
     }
+    if self.overview.as_ref().is_some_and(|o| o.shown) {
+      self.overview_hide();
+    } else {
+      // The core remembers the previously focused window and restores it
+      // when the menu closes, just as it does for the Super shortcut.
+      std::thread::spawn(|| core_api::run_core(&["--overview-show", "plain"]));
+    }
+  }
+
+  fn toggle_overview_from_bar(&mut self) {
+    self.toggle_native_overview();
     // Other panels close on this event. The web overview also opens on it
-    // when that edition is selected.
-    (self.emit)("ll:overview-toggle", serde_json::Value::Null);
+    // when that edition is selected. The source keeps the shell from handing
+    // it back to this bar (widget_overview_toggle).
+    (self.emit)("ll:overview-toggle", serde_json::json!({ "source": "native-bar" }));
   }
 
   /// button: 0 left, 1 right, 2 middle, 3 left double
