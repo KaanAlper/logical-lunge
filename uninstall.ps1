@@ -31,6 +31,9 @@ if (-not $isAdmin) {
     $core = Join-Path $APP 'lunge.exe'
     $wasRunning = [bool](Get-Process lunge-tiling -ErrorAction SilentlyContinue)
     if (Test-Path $core) { & $core --stop-desktop | Out-Null }
+    # Windows' own notification banners, turned off while Logical Lunge showed notifications as its cards: back to
+    # how they were, in this user's registry (the elevated copy may run as another account)
+    if (Test-Path $core) { & $core --restore-banners | Out-Null }
     # one UAC prompt; the elevated copy needs to know whose settings to restore
     $self = Join-Path $env:TEMP 'logical-lunge-uninstall.ps1'
     Copy-Item $PSCommandPath $self -Force
@@ -55,6 +58,8 @@ if (Test-Path $bf) { $backup = Get-Content $bf -Raw | ConvertFrom-Json }
 Log '==> Stopping Logical Lunge'
 # the core first: its watchdogs would restart the other parts
 foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-temps', 'lunge-songrec', 'lunge-termcolors') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
+# Started elevated by the user themselves: the banners are restored here (see the non-elevated part above)
+if (-not $Elevated -and (Test-Path (Join-Path $APP 'lunge.exe'))) { & (Join-Path $APP 'lunge.exe') --restore-banners | Out-Null }
 Remove-Item (Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue
 
 Log '==> Removing startup tasks'

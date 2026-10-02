@@ -3161,8 +3161,12 @@ static class ShellWatchdog
 // config.yaml değişince (ayarlar penceresi ya da elle) animasyon kenarlıklarının rengi yenilenir.
 static class Prefs
 {
-    static volatile bool animations = true, gestures = true;
+    static volatile bool animations = true, gestures = true, winToasts = true;
     public static bool Animations { get { return animations; } }
+    // Windows bildirimleri Logical Lunge kartı olarak (WinNotifications); Windows'un kendi balonları kapanır
+    public static bool WinToasts { get { return winToasts; } }
+    // Yalnızca çekirdek abone olur: --set-pref ile tercih yazan kısa ömürlü süreç balonlara dokunmaz
+    public static event Action WinToastsChanged;
     // Dokunmatik yüzey hareketleri (3/4 parmak); dokunmatik yüzey yoksa etkisiz
     public static bool Gestures { get { return gestures; } }
     public static string FilePath { get { return System.IO.Path.Combine(Paths.ConfigDir, "prefs.json"); } }
@@ -3215,6 +3219,13 @@ static class Prefs
             object v;
             animations = !(d.TryGetValue("animations", out v) && v is bool && !(bool)v);
             gestures = !(d.TryGetValue("gestures", out v) && v is bool && !(bool)v);
+            bool wt = !(d.TryGetValue("winToasts", out v) && v is bool && !(bool)v);
+            if (wt != winToasts)
+            {
+                winToasts = wt;
+                var changed = WinToastsChanged;
+                if (changed != null) changed();
+            }
             string th = d.TryGetValue("theme", out v) && "light".Equals(v) ? "light" : "dark";
             string was = theme;
             theme = th;
@@ -3230,7 +3241,7 @@ static class Prefs
         return new JavaScriptSerializer().Serialize(Read());
     }
 
-    // key: language | clock | animations | gestures | focusColor | theme | toastInfo | toastError (sn); değer doğrulanır
+    // key: language | clock | animations | gestures | winToasts | focusColor | theme | toastInfo | toastError (sn); değer doğrulanır
     public static bool Set(string key, string value)
     {
         object val;
@@ -3245,6 +3256,7 @@ static class Prefs
                 val = value; break;
             case "animations":
             case "gestures":
+            case "winToasts":
                 if (value != "true" && value != "false") return false;
                 val = value == "true"; break;
             case "focusColor":
@@ -4350,7 +4362,7 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
-            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/brightness?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/brightness?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -4476,6 +4488,20 @@ static class Toasts
                     catch (Exception ex) { body = "{\"value\":null}"; status = "500 Internal Server Error"; Slider.Log("parlaklık okunamadı: " + ex.Message); }
                 }
             }
+            // Windows bildirimleri (sağ panelin listesi): {"items":[...], "icons":{...}}
+            else if (target == "/notifications")
+            {
+                // Yalnızca POST: aynı kökenden GET Origin göndermez
+                if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else { body = WinNotifications.Json(); status = "200 OK"; }
+            }
+            else if (target.StartsWith("/notification-open?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/notification-open\?id=(\d{1,18})$");
+                if (!m.Success) status = "400 Bad Request";
+                else if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else status = WinNotifications.Open(long.Parse(m.Groups[1].Value)) ? "204 No Content" : "404 Not Found";
+            }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {
                 // Super menüsünün uygulama listesi (build-apps.ps1 kullanıcının veri klasörüne yazar)
@@ -4572,8 +4598,13 @@ static class Toasts
 
     public static void Send(string kind, string title, string body, string icon)
     {
-        var d = new Dictionary<string, object> { { "kind", kind }, { "title", title }, { "body", body }, { "icon", icon } };
-        Write("data: " + json.Serialize(d) + "\n\n");
+        Card(new Dictionary<string, object> { { "kind", kind }, { "title", title }, { "body", body }, { "icon", icon } });
+    }
+
+    // Kartın tüm alanları (toast.html show(): app, image, actions, open, timeout ...)
+    public static void Card(Dictionary<string, object> card)
+    {
+        Write("data: " + json.Serialize(card) + "\n\n");
     }
 }
 
@@ -9789,9 +9820,9 @@ static class Program
             }
             return;
         }
-        // lunge.exe --open <https://... | spotify:...>: bağlantıyı varsayılan uygulamada aç. explorer.exe'ye
+        // lunge.exe --open <https://... | spotify:... | ms-actioncenter:>: bağlantıyı varsayılan uygulamada aç. explorer.exe'ye
         // verilen adres "&" içerince klasör açıyordu; ShellExecute doğrudan protokol işleyicisine gider.
-        if (args.Length == 2 && args[0] == "--open" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^(https?|spotify|mailto):", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+        if (args.Length == 2 && args[0] == "--open" && System.Text.RegularExpressions.Regex.IsMatch(args[1], "^(https?|spotify|mailto|ms-actioncenter):", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
         {
             UserLaunch.Start(args[1], "", Paths.Home);
             return;
@@ -10017,6 +10048,8 @@ static class Program
         if (args.Length == 1 && args[0] == "--restart-desktop-now") { Supervisor.RestartDesktop(); return; }
         // lunge.exe --stop-desktop: kurulum / güncelleme / kaldırma öncesi masaüstünü kapatır (bakım işareti kalır)
         if (args.Length == 1 && args[0] == "--stop-desktop") { Supervisor.StopDesktopFromAnywhere(); return; }
+        // lunge.exe --restore-banners: kaldırırken Windows'un bildirim balonlarını eski haline getirir (ToastBanners)
+        if (args.Length == 1 && args[0] == "--restore-banners") { ToastBanners.Restore(); return; }
         // lunge.exe --restart-shell: kabuğu yeniden aç (ayarlar penceresi, tercihler değişince)
         if (args.Length == 1 && args[0] == "--restart-shell") { Supervisor.RequestFromCore("restart-shell"); return; }
         // Ayarlar penceresi: --settings-get | --set-focus-color #rrggbb | --set-pref <anahtar> <değer> | --health |
@@ -10100,6 +10133,7 @@ static class Program
         ClipHistory.StartListener();
         Wallpaper.StartKeeper();
         Toasts.Start();
+        WinNotifications.Start();
         // Windows'a verilen callback'lerin sahibi nesneler canlı kalmalı: aksi halde çöp toplayıcı
         // onları siler ve Windows silinmiş fonksiyonu çağırınca helper sessizce çöker.
         var dialogThread = new Thread(() => { Keep.Dialogs = new DialogCatcher(); Keep.Dialogs.Start(); Application.Run(); });

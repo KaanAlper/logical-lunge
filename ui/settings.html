@@ -661,6 +661,9 @@
             <div className="card">
               <ToastRow icon="notifications" label="Bilgi bildirimleri" k="toastInfo" s={s} update={update} />
               <ToastRow icon="warning" label="Uyarılar ve hatalar" k="toastError" s={s} update={update} />
+              <Row icon="notifications_active" label="Windows bildirimleri" sub="Uygulamaların bildirimleri Logical Lunge kartı olarak çıkar; Windows'un balonları kapanır, Bildirim Merkezi'nde kalırlar">
+                <Switch on={s.winToasts !== false} onChange={v => helper(['--set-pref', 'winToasts', String(v)]).then(() => update({ winToasts: v })).catch(() => {})} />
+              </Row>
               <Row icon="visibility" label="Örnek göster" onClick={sampleToasts}>
                 <Icon name="chevron_right" />
               </Row>

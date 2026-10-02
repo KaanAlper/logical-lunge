@@ -130,7 +130,7 @@
       // ii modules/ii/sidebarRight/SidebarRightContent.qml:
       //   SystemButtonRow, AndroidQuickPanel (quickToggles.style = "android"),
       //   CenterWidgetGroup (NotificationList), BottomWidgetGroup (takvim / yapılacaklar / zamanlayıcı)
-      import React, { useState, useEffect, useRef, useCallback } from 'react';
+      import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
@@ -1113,7 +1113,7 @@
         );
       }
 
-      // ---- NotificationList (Windows Bildirim Merkezi, wpndatabase.db) ----
+      // ---- NotificationList (Windows bildirimleri: çekirdek Bildirim Merkezi'nin veritabanından okur) ----
       function friendlyTime(ms) {
         const diff = (Date.now() - ms) / 1000;
         if (diff < 60) return 'Şimdi';
@@ -1127,15 +1127,18 @@
         const [dismissed, setDismissed] = useState(load('ll.notif.dismissed', []));
         const [dnd, setDnd] = useState(load('ll.dnd', false));
 
+        // Çekirdek listeyi değişince ll:notifications yollar (yoklama yok); simge uygulama başına bir kez gelir
         const refresh = useCallback(() => {
-          psFile('notifications.ps1').then(s => { const r = json(s); if (Array.isArray(r)) setList(r); }).catch(() => {});
+          fetch('http://127.0.0.1:6131/notifications', { method: 'POST', cache: 'no-store' })
+            .then(r => (r.ok ? r.json() : null))
+            .then(r => { if (r && Array.isArray(r.items)) setList(r.items.map(n => ({ ...n, icon: r.icons?.[n.aumid] ?? null }))); })
+            .catch(() => {});
         }, []);
+        useEffect(() => { if (open) refresh(); }, [open]);
         useEffect(() => {
-          if (!open) return;
-          refresh();
-          const t = setInterval(refresh, 5000);
-          return () => clearInterval(t);
-        }, [open]);
+          const off = listen('ll:notifications', refresh);
+          return () => { off.then(f => f()).catch(() => {}); };
+        }, [refresh]);
         useEffect(() => {
           const f = () => setDnd(load('ll.dnd', false));
           window.addEventListener('storage', f);

@@ -206,7 +206,7 @@
       .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
       .head { display: flex; align-items: baseline; gap: 8px; }
       .title { flex: 1; font-size: 15px; font-variation-settings: 'wght' 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .time { font-size: 12px; color: var(--m3outline); }
+      .time { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--m3outline); }
       .body {
         font-size: 13px; color: var(--m3onSurfaceVariant); line-height: 1.35;
         white-space: pre-wrap; word-break: break-word;
@@ -287,11 +287,14 @@
       // (yerleşim zaten eşzamanlı hesaplanır); görünürken bir sonraki karede.
       const fitSoon = () => (document.visibilityState === 'hidden' ? fit() : requestAnimationFrame(fit));
 
-      function esc(s) { return String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]); }
+      // Öznitelik içine de girer (görsel adresi): tırnaklar da kaçışlı
+      function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]); }
 
       // actions: [{ label, url }] -> ii notify-send -A düğmeleri; image: kapak görseli (rozet yerine)
+      // app: gönderen uygulama (Windows bildirimleri); notification: çekirdekteki kimliği, karta tıklayınca uygulaması açılır
       const openUrl = url => lunge.shellExec('{{INSTALL_ESC}}\\lunge.exe', ['--open', url]).catch(() => {});
-      function show({ kind = 'info', title = '', body = '', icon = 'info', mono = false, actions = [], image = '', timeout }) {
+      const openSender = id => fetch(`http://127.0.0.1:6131/notification-open?id=${encodeURIComponent(id)}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
+      function show({ kind = 'info', title = '', body = '', icon = 'info', mono = false, actions = [], image = '', timeout, app = '', notification = 0 }) {
         if (!(timeout > 0)) timeout = timeoutFor(kind);
         // ii Notifications.silent: sessiz moddayken açılır bildirim gösterme
         try { if (JSON.parse(localStorage.getItem('ll.dnd')) === true) return; } catch {}
@@ -301,7 +304,7 @@
         el.innerHTML = `
           ${image ? `<img class="badge art" src="${esc(image)}" alt="">` : `<div class="badge"><span class="icon">${esc(icon)}</span></div>`}
           <div class="txt">
-            <div class="head"><span class="title">${esc(title)}</span><span class="time">${now}</span></div>
+            <div class="head"><span class="title">${esc(title)}</span><span class="time">${app ? `${esc(app)} · ` : ''}${now}</span></div>
             ${body ? `<div class="body ${mono ? 'mono' : ''}">${esc(body)}</div>` : ''}
             ${actions.length ? `<div class="acts">${actions.map((a, i) => `<button data-i="${i}">${esc(a.label)}</button>`).join('')}</div>` : ''}
           </div>
@@ -327,7 +330,7 @@
         // Üzerine gelince bekle (ii'de de fareyle durur)
         el.addEventListener('mouseenter', () => { clearTimeout(t); timer.getAnimations().forEach(a => a.pause()); });
         el.addEventListener('mouseleave', () => { t = setTimeout(close, 2000); timer.getAnimations().forEach(a => a.play()); });
-        el.addEventListener('click', close);
+        el.addEventListener('click', () => { if (notification) openSender(notification); close(); });
         fitSoon();
       }
 
