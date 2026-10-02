@@ -150,6 +150,9 @@
       // Hepsi çekirdek üzerinden: hiç konsol penceresi açılmaz
       const helper = args => lunge.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
       const psFile = (file, args = []) => helper(['--ps', `${LL}\\${file}`, ...args]);
+      // Hızlı ayarlar çekirdekte (eskiden her panel açılışında dört PowerShell betiği): /qs/radios, /qs/eth, /qs/bt ...
+      const qs = path => fetch(`http://127.0.0.1:6131/qs/${path}`, { method: 'POST', cache: 'no-store' })
+        .then(r => (r.ok ? r.text() : Promise.reject(new Error(`qs ${path}: ${r.status}`))));
       const json = s => { try { return JSON.parse(s); } catch { return null; } };
       const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
       const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
@@ -851,23 +854,23 @@
         const panelRef = useRef(null);
 
         const refresh = useCallback(() => {
-          psFile('radios.ps1', ['get']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, radios: r })); }).catch(() => {});
-          psFile('eth.ps1', ['status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, eth: r })); }).catch(() => {});
-          psFile('bt.ps1').then(s => { const r = json(s); if (r) setSt(x => ({ ...x, bt: r })); }).catch(() => {});
+          qs('radios').then(s => { const r = json(s); if (r) setSt(x => ({ ...x, radios: r })); }).catch(() => {});
+          qs('eth').then(s => { const r = json(s); if (r) setSt(x => ({ ...x, eth: r })); }).catch(() => {});
+          qs('bt').then(s => { const r = json(s); if (r) setSt(x => ({ ...x, bt: r })); }).catch(() => {});
           helper(['--nightlight', 'status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, night: r })); }).catch(() => {});
-          psFile('status.ps1').then(s => {
+          qs('status').then(s => {
             const r = json(s); if (!r) return;
             // Yeniden başlatmadan sonra: açık bırakılmışsa uyanık tutmayı yeniden başlat
             if (!r.awake && load('ll.awake.want', false) && !awakeRestarted) {
               awakeRestarted = true;
-              helper(['--ps-bg', `${LL}\\keep-awake.ps1`]).catch(() => {});
+              qs('awake?v=1').catch(() => {});
               r.awake = true;
             }
             setSt(x => ({ ...x, awake: !!r.awake }));
           }).catch(() => {});
           helper(['--mic', 'status']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, mic: !r.muted })); }).catch(() => {});
         }, []);
-        // Açılışta (panel gizliyken) bir kez ve açılınca tazele: her tazeleme dört PowerShell ve iki süreç, art arda açıp
+        // Açılışta (panel gizliyken) bir kez ve açılınca tazele: her tazeleme çekirdeğe dört istek ve iki süreç, art arda açıp
         // kapatınca birikmesin diye en çok 30 sn'de bir (paneldeki anahtarlar durumu zaten hemen günceller)
         const lastRefresh = useRef(0);
         const refreshSoon = () => {
@@ -897,7 +900,7 @@
             action: () => {
               const next = wifiOn ? 'Off' : 'On';
               setSt(x => ({ ...x, radios: { ...x.radios, wifi: next } }));
-              psFile('radios.ps1', ['set', 'wifi', next]).then(refresh).catch(refresh);
+              qs(`radio?kind=wifi&state=${next}`).then(refresh).catch(refresh);
             },
             menu: () => toggleMenu('wifi'),
           },
@@ -908,7 +911,7 @@
             status: eth?.state === 'disabled' ? 'Devre dışı' : eth?.speed ? `Bağlı · ${eth.speed}` : 'Bağlı',
             action: () => {
               setSt(x => ({ ...x, eth: { ...x.eth, state: x.eth?.state === 'disabled' ? 'up' : 'disabled' } }));
-              psFile('eth.ps1', ['toggle']).then(s => {
+              qs('eth-toggle').then(s => {
                 const r = json(s);
                 if (r && !r.ok) emit('ll:toast', { kind: 'error', title: 'Ethernet', body: 'Yönetici görevi bulunamadı: scripts\\setup-eth-tasks.ps1 bir kez yönetici olarak çalıştırılmalı.', icon: 'lan' }).catch(() => {});
                 setTimeout(refresh, 2500);
@@ -929,7 +932,7 @@
                 if (noAdapter) return warn();
                 const next = st.radios.bluetooth === 'On' ? 'Off' : 'On';
                 setSt(x => ({ ...x, radios: { ...x.radios, bluetooth: next } }));
-                psFile('radios.ps1', ['set', 'bluetooth', next]).then(refresh).catch(refresh);
+                qs(`radio?kind=bluetooth&state=${next}`).then(refresh).catch(refresh);
               },
               menu: () => (noAdapter ? warn() : toggleMenu('bluetooth')),
             };
@@ -940,8 +943,7 @@
               const next = !st.awake;
               save('ll.awake.want', next);
               setSt(x => ({ ...x, awake: next }));
-              if (next) helper(['--ps-bg', `${LL}\\keep-awake.ps1`]).catch(() => {});
-              else psFile('status.ps1', ['stop-awake']).catch(() => {});
+              qs(`awake?v=${next ? 1 : 0}`).catch(() => {});
             },
           },
           mic: {
