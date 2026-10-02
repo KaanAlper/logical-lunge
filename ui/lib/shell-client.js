@@ -20,6 +20,11 @@ import {
 import { listen } from '@tauri-apps/api/event';
 import { getTilingClient } from './tiling-client.js';
 
+// Tema başka yerden değişti (native bar, ayarlar): çekirdeğin olayı bar üzerinden gelir. Bildirim widget'ı native
+// olmadan önce bu deponun kopyasını o yazıyordu, diğer widget'lar 'storage' olayıyla değişiyordu.
+listen('ll:theme-light', () => window.llTheme?.set('light')).catch(() => {});
+listen('ll:theme-dark', () => window.llTheme?.set('dark')).catch(() => {});
+
 // ---------------------------------------------------------------- kabuk komutları
 const desktopCommands = {
   listenProvider: args => invoke('listen_provider', args),

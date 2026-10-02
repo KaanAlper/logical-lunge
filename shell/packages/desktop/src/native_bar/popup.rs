@@ -35,7 +35,7 @@ use windows::{
 };
 
 use super::{
-  anim::{Animated, POP_IN, POP_OUT},
+  anim::{Animated, POP_IN, POP_OUT, SPRING_IN},
   fonts::TextStyle,
   gfx::{self, Gfx, Rect, Rgba},
   model::Model,
@@ -104,6 +104,8 @@ pub enum Motion {
   Slide,
   Fade,
   None,
+  /// notification cards: in from the right edge, out to it
+  FromRight,
 }
 
 pub struct PopWin {
@@ -118,6 +120,7 @@ pub struct PopWin {
   /// surface size in physical pixels
   size: (u32, u32),
   off: Animated,
+  off_x: Animated,
   bottom: Animated,
   opacity: Animated,
   pub shown: bool,
@@ -175,6 +178,7 @@ impl PopWin {
         clip,
         size: (1, 1),
         off: Animated::new(0.0),
+        off_x: Animated::new(0.0),
         bottom: Animated::new(0.0),
         opacity: Animated::new(1.0),
         shown: false,
@@ -258,6 +262,22 @@ impl PopWin {
             self.opacity.set(1.0);
             self.fx.SetOpacity2(1.0)?;
           }
+          Motion::FromRight => {
+            // `cardIn`: 500 ms, a slight overshoot as it lands
+            if !self.shown {
+              let away = self.size.0 as f32 * 1.1;
+              self.off_x.set(away);
+              self.opacity.set(0.0);
+              self.root.SetOffsetX2(away)?;
+              self.fx.SetOpacity2(0.0)?;
+            }
+            if let Some(a) = self.off_x.to(&gfx.dcomp, 0.0, 500.0, SPRING_IN)? {
+              self.root.SetOffsetX(&a)?;
+            }
+            if let Some(a) = self.opacity.to(&gfx.dcomp, 1.0, 250.0, POP_IN)? {
+              self.fx.SetOpacity(&a)?;
+            }
+          }
         }
       }
       gfx.dcomp.Commit()?;
@@ -306,6 +326,16 @@ impl PopWin {
           }
         }
         Motion::None => {}
+        Motion::FromRight => {
+          // `cardOut`: 220 ms back out to the right
+          let away = self.size.0 as f32 * 1.1;
+          if let Some(a) = self.off_x.to(&gfx.dcomp, away, 220.0, POP_OUT)? {
+            self.root.SetOffsetX(&a)?;
+          }
+          if let Some(a) = self.opacity.to(&gfx.dcomp, 0.0, 220.0, POP_OUT)? {
+            self.fx.SetOpacity(&a)?;
+          }
+        }
       }
       gfx.dcomp.Commit()?;
     }
@@ -317,7 +347,13 @@ impl PopWin {
       Motion::Slide => 180,
       Motion::Fade => 110,
       Motion::None => 0,
+      Motion::FromRight => 230,
     }
+  }
+
+  /// Puts `visual` above the drawn surface (it moves and fades with it).
+  pub fn add_above(&self, visual: &IDCompositionVisual2) -> Result<()> {
+    unsafe { self.root.AddVisual(visual, true, &self.layer.visual) }
   }
 
   pub fn hide(&mut self) {

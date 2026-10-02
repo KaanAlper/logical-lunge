@@ -252,6 +252,11 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
       if !demo {
         // the widgets (the Dock's search button) open the Super menu
         app.listen_any("ll:overview-toggle", |event| native_bar::widget_overview_toggle(event.payload()));
+        // notification cards are native: the widgets' (and the bar's own)
+        // cards and the update card's height go to the bar
+        app.listen_any("ll:toast", |event| native_bar::toast(event.payload()));
+        app.listen_any("ll:update-card", |event| native_bar::update_card(event.payload()));
+        let _ = app.emit("ll:update-card-query", serde_json::Value::Null);
       }
     }
   }

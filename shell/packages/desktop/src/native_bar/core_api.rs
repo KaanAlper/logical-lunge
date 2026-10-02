@@ -51,13 +51,23 @@ pub fn set_pref(key: &'static str, value: &'static str) {
 /// time the stream (re)connects -- state may have changed while it was down.
 /// Reconnects for as long as the shell runs (the core restarts, or starts
 /// after the shell). Blocks on the socket: no polling.
-pub fn events(on: impl Fn(Option<String>) + Send + 'static) {
+/// What the core's event stream carries.
+pub enum CoreEvent {
+  /// (re)connected: whatever changed meanwhile is read again
+  Connected,
+  /// `ll:*`
+  Emit(String),
+  /// a notification card
+  Card(serde_json::Value),
+}
+
+pub fn events(on: impl Fn(CoreEvent) + Send + 'static) {
   let _ = std::thread::Builder::new().name("core-events".into()).spawn(move || {
     let mut wait = 1;
     loop {
       if let Some(stream) = open_events() {
         wait = 1;
-        on(None);
+        on(CoreEvent::Connected);
         read_events(stream, &on);
       }
       std::thread::sleep(Duration::from_secs(wait));
@@ -76,7 +86,7 @@ fn open_events() -> Option<TcpStream> {
   Some(s)
 }
 
-fn read_events(stream: TcpStream, on: &impl Fn(Option<String>)) {
+fn read_events(stream: TcpStream, on: &impl Fn(CoreEvent)) {
   let mut reader = BufReader::new(stream);
   let mut line = String::new();
   loop {
@@ -85,11 +95,16 @@ fn read_events(stream: TcpStream, on: &impl Fn(Option<String>)) {
       Ok(0) | Err(_) => return,
       Ok(_) => {}
     }
-    // `data: {"emit":"ll:theme-dark"}`; toasts and pings are not ours
+    // `data: {"emit":"ll:theme-dark"}` or a card `data: {"kind":...}`;
+    // pings are comments
     let Some(json) = line.trim_end().strip_prefix("data: ") else { continue };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { continue };
-    if let Some(evt) = v["emit"].as_str().filter(|e| e.starts_with("ll:")) {
-      on(Some(evt.to_string()));
+    if let Some(evt) = v["emit"].as_str() {
+      if evt.starts_with("ll:") {
+        on(CoreEvent::Emit(evt.to_string()));
+      }
+    } else if v.is_object() {
+      on(CoreEvent::Card(v));
     }
   }
 }

@@ -154,6 +154,11 @@
       const json = s => { try { return JSON.parse(s); } catch { return null; } };
       const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
       const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+      // Rahatsız etme: native bildirim kartları çekirdekteki tercihi okur (bu panelin kendi kopyası da kalır)
+      const saveDnd = v => {
+        save('ll.dnd', v);
+        fetch(`http://127.0.0.1:6131/pref?k=dnd&v=${v}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
+      };
 
       function App() {
         const [open, setOpen] = useState(false);
@@ -979,7 +984,7 @@
           notifications: {
             name: 'Bildirimler', icon: st.dnd ? 'notifications_paused' : 'notifications_active', toggled: !st.dnd,
             status: st.dnd ? 'Sessiz' : 'Açık',
-            action: () => { const v = !st.dnd; save('ll.dnd', v); setSt(x => ({ ...x, dnd: v })); },
+            action: () => { const v = !st.dnd; saveDnd(v); setSt(x => ({ ...x, dnd: v })); },
           },
         };
 
@@ -1460,7 +1465,7 @@
             </div>
             <div className="statusrow">
               <button className={`sbtn icon-only ${dnd ? 'on' : ''}`} title="Sessiz"
-                      onClick={() => { save('ll.dnd', !dnd); setDnd(!dnd); }}>
+                      onClick={() => { saveDnd(!dnd); setDnd(!dnd); }}>
                 <Icon name="notifications_paused" />
               </button>
               <div className="sbtn wide">{visible.length} bildirim</div>

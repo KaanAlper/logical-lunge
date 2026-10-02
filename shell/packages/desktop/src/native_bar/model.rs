@@ -42,10 +42,18 @@ pub struct Model {
   /// prefs.json "animations" (on unless turned off): the panels move as the
   /// web ones do
   pub animations: bool,
+  /// prefs.json "dnd": do not disturb, no notification cards
+  pub dnd: bool,
+  /// seconds a notification card stays: information, warnings and errors
+  pub toast_info: u32,
+  pub toast_error: u32,
   /// Language of the date and of `tr()`: prefs.json, else the Windows UI language.
   locale: String,
   /// Turkish source text -> translation (empty for Turkish).
   dict: HashMap<String, String>,
+  /// "$1 uygulama"-style texts: the pattern, its translation, which `$n`
+  /// each group of the pattern is
+  patterns: Vec<(regex::Regex, String, Vec<usize>)>,
 }
 
 impl Model {
@@ -55,20 +63,54 @@ impl Model {
       Some(l) if !l.is_empty() && l != "system" => l.to_string(),
       _ => ui_language(),
     };
+    let (dict, patterns) = load_dict(pack_dir, &locale);
     let mut m = Model {
       hour12: prefs["clock"].as_str() == Some("12"),
       animations: prefs["animations"].as_bool() != Some(false),
       light: prefs["theme"].as_str() == Some("light"),
-      dict: load_dict(pack_dir, &locale),
+      dict,
+      patterns,
       locale,
       ..Default::default()
     };
+    m.read_prefs(&prefs);
     m.tick_clock();
     m
   }
 
+  /// The preferences that apply at once (the core announces a change with
+  /// ll:prefs): do not disturb and how long notification cards stay.
+  pub fn read_prefs(&mut self, prefs: &serde_json::Value) {
+    let secs = |key: &str, default: u32| {
+      prefs[key].as_u64().filter(|n| (1..=60).contains(n)).map_or(default, |n| n as u32)
+    };
+    self.dnd = prefs["dnd"].as_bool() == Some(true);
+    self.toast_info = secs("toastInfo", 3);
+    self.toast_error = secs("toastError", 5);
+  }
+
+  /// A text in the user's language, as the web widgets translate it: the
+  /// exact entry, else a pattern ("$1 uygulama") whose parts are translated
+  /// too. Texts without letters stay as they are.
   pub fn tr(&self, s: &str) -> String {
-    self.dict.get(s).cloned().unwrap_or_else(|| s.to_string())
+    let k = s.trim();
+    if k.is_empty() || !k.chars().any(char::is_alphabetic) {
+      return s.to_string();
+    }
+    if let Some(v) = self.dict.get(k) {
+      return s.replacen(k, v, 1);
+    }
+    for (re, val, order) in &self.patterns {
+      if let Some(m) = re.captures(k) {
+        let mut v = val.clone();
+        for (j, n) in order.iter().enumerate() {
+          let part = m.get(j + 1).map_or("", |g| g.as_str());
+          v = v.replacen(&format!("${n}"), &self.tr(part), 1);
+        }
+        return s.replacen(k, &v, 1);
+      }
+    }
+    s.to_string()
   }
 
   /// Updates the time and date strings; true when they changed.
@@ -244,27 +286,53 @@ fn ui_language() -> String {
   }
 }
 
-/// i18n.json (the web widgets' file): exact matches only; the bar has no patterns.
-fn load_dict(pack_dir: &Path, locale: &str) -> HashMap<String, String> {
+type Patterns = Vec<(regex::Regex, String, Vec<usize>)>;
+
+/// i18n.json (the web widgets' file): exact texts, and the ones with `$1`
+/// as patterns (a text that starts with a variable part is tried last, as
+/// the web widgets do).
+fn load_dict(pack_dir: &Path, locale: &str) -> (HashMap<String, String>, Patterns) {
   let code = locale.get(..2).unwrap_or("en").to_lowercase();
   if code == "tr" {
-    return HashMap::new();
+    return Default::default();
   }
   let Ok(text) = std::fs::read_to_string(pack_dir.join("i18n.json")) else {
-    return HashMap::new();
+    return Default::default();
   };
   let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-    return HashMap::new();
+    return Default::default();
   };
   let langs: Vec<&str> = v["langs"].as_array().into_iter().flatten().filter_map(|l| l.as_str()).collect();
   let code = if langs.contains(&code.as_str()) { code } else { "en".into() };
   let keys = v["keys"].as_array().cloned().unwrap_or_default();
   let vals = v[code.as_str()].as_array().cloned().unwrap_or_default();
-  keys
-    .iter()
-    .zip(vals.iter())
-    .filter_map(|(k, v)| Some((k.as_str()?.to_string(), v.as_str()?.to_string())))
-    .collect()
+  let var = regex::Regex::new(r"\$(\d)").expect("pattern");
+  let mut dict = HashMap::new();
+  let mut patterns: Vec<(bool, (regex::Regex, String, Vec<usize>))> = Vec::new();
+  for (k, v) in keys.iter().zip(vals.iter()) {
+    let (Some(k), Some(v)) = (k.as_str(), v.as_str()) else { continue };
+    if !var.is_match(k) {
+      dict.insert(k.to_string(), v.to_string());
+      continue;
+    }
+    let mut source = String::from("^");
+    let mut order = Vec::new();
+    let mut last = 0;
+    for m in var.captures_iter(k) {
+      let whole = m.get(0).expect("match");
+      source.push_str(&regex::escape(&k[last..whole.start()]));
+      source.push_str("(.+?)");
+      order.push(m[1].parse().unwrap_or(1));
+      last = whole.end();
+    }
+    source.push_str(&regex::escape(&k[last..]));
+    source.push('$');
+    if let Ok(re) = regex::Regex::new(&source) {
+      patterns.push((k.starts_with('$'), (re, v.to_string(), order)));
+    }
+  }
+  patterns.sort_by_key(|(variable_first, _)| *variable_first);
+  (dict, patterns.into_iter().map(|(_, p)| p).collect())
 }
 
 /// Local clock time of a Unix timestamp, in the user's 12 / 24 h setting

@@ -12,12 +12,14 @@ use windows::{
       Common::{D2D_SIZE_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN},
       ID2D1DeviceContext, ID2D1Factory, ID2D1SolidColorBrush, ID2D1StrokeStyle,
       D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL, D2D1_CAP_STYLE_ROUND,
-      D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_STROKE_STYLE_PROPERTIES,
+      D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_DRAW_TEXT_OPTIONS_NONE,
+      D2D1_STROKE_STYLE_PROPERTIES,
       D2D1_SWEEP_DIRECTION_CLOCKWISE,
     },
     DirectWrite::{
       IDWriteTextLayout, IDWriteTypography, DWRITE_FONT_FEATURE,
-      DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE,
+      DWRITE_FONT_FEATURE_TAG_TABULAR_FIGURES, DWRITE_LINE_SPACING_METHOD_UNIFORM, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+      DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_WRAP,
     },
   },
 };
@@ -87,6 +89,9 @@ pub struct Theme {
   pub outline_variant: Rgba,
   /// placeholder, secondary text, tool icons
   pub on_surface_variant: Rgba,
+  /// warning and error notification badges
+  pub error_container: Rgba,
+  pub on_error_container: Rgba,
 }
 
 /// Material You dark, purple seed (styles.css `:root`).
@@ -113,6 +118,8 @@ pub const DARK: Theme = Theme {
   surface_container_high: Rgba::hex(0x2b2930),
   outline_variant: Rgba::hex(0x49454f),
   on_surface_variant: Rgba::hex(0xcac4d0),
+  error_container: Rgba::hex(0x93000a),
+  on_error_container: Rgba::hex(0xffdad6),
 };
 
 /// styles.css `:root[data-theme="light"]`.
@@ -139,6 +146,8 @@ pub const LIGHT: Theme = Theme {
   surface_container_high: Rgba::hex(0xece6f0),
   outline_variant: Rgba::hex(0xcac4d0),
   on_surface_variant: Rgba::hex(0x49454f),
+  error_container: Rgba::hex(0xf9dedc),
+  on_error_container: Rgba::hex(0x410e0b),
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -317,6 +326,52 @@ impl Painter<'_> {
     // emoji keep their colours (Segoe UI Emoji is a colour font)
     unsafe { self.dc.DrawTextLayout(pt(x, r.y), &layout, &b, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT) };
     Ok(w)
+  }
+
+  /// Wrapped text from the top of `r`, at most `r.h` tall (the last line
+  /// that fits ends with an ellipsis), lines 1.35 apart as on the web;
+  /// `mono` in the monospace face. Returns the height it takes.
+  pub(super) fn text_wrapped(&mut self, s: &str, r: Rect, style: TextStyle, c: Rgba, mono: bool) -> anyhow::Result<f32> {
+    let layout = self.wrapped_layout(s, style, r.w, r.h, mono)?;
+    let h = Self::height_of(&layout).min(r.h);
+    let b = self.brush(c)?;
+    unsafe {
+      self.dc.DrawTextLayout(
+        pt(r.x, r.y),
+        &layout,
+        &b,
+        D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT | D2D1_DRAW_TEXT_OPTIONS_CLIP,
+      )
+    };
+    Ok(h)
+  }
+
+  /// The height `text_wrapped` would take.
+  pub(super) fn measure_wrapped(&mut self, s: &str, style: TextStyle, w: f32, max_h: f32, mono: bool) -> anyhow::Result<f32> {
+    let layout = self.wrapped_layout(s, style, w, max_h, mono)?;
+    Ok(Self::height_of(&layout).min(max_h))
+  }
+
+  fn wrapped_layout(&mut self, s: &str, style: TextStyle, w: f32, max_h: f32, mono: bool) -> anyhow::Result<IDWriteTextLayout> {
+    let layout = self.layout(s, style, w, max_h, false)?;
+    unsafe {
+      layout.SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP)?;
+      layout.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
+      let line = style.size * 1.35;
+      layout.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, line, line * 0.8)?;
+      if mono {
+        layout.SetFontFamilyName(windows::core::w!("Consolas"), DWRITE_TEXT_RANGE { startPosition: 0, length: u32::MAX })?;
+      }
+    }
+    Ok(layout)
+  }
+
+  fn height_of(layout: &IDWriteTextLayout) -> f32 {
+    let mut m = DWRITE_TEXT_METRICS::default();
+    unsafe {
+      let _ = layout.GetMetrics(&mut m);
+    }
+    m.height
   }
 
   /// Left-aligned text in the monospace face (commands, code); Consolas

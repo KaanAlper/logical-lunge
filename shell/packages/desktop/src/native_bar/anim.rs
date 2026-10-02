@@ -23,6 +23,11 @@ pub const OUT_SINE: Curve = Curve(0.61, 1.0, 0.88, 1.0);
 pub const POP_IN: Curve = Curve(0.05, 0.7, 0.1, 1.0);
 /// `popUp`: popups going back.
 pub const POP_OUT: Curve = Curve(0.3, 0.0, 0.8, 0.15);
+/// `--expressiveSpatial` (ii expressiveDefaultSpatial): an entrance that
+/// overshoots a little and settles (notification cards).
+pub const SPRING_IN: Curve = Curve(0.38, 1.21, 0.22, 1.0);
+/// constant speed (a notification's remaining time)
+pub const LINEAR: Curve = Curve(0.0, 0.0, 1.0, 1.0);
 
 impl Curve {
   fn bezier(a: f32, b: f32, s: f32) -> f32 {

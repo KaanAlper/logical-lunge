@@ -19,6 +19,7 @@ mod popup;
 mod overview;
 mod pops;
 mod search;
+mod toast;
 mod view;
 mod wm;
 
@@ -108,6 +109,8 @@ const TIMER_WS_NUMBERS: usize = 16;
 /// the volume mixer's levels while it is open
 const TIMER_MIXER_TICK: usize = 17;
 const TIMER_MIXER_HIDE: usize = 18;
+/// notification cards: deadlines, slides out, cards waiting for a game
+const TIMER_TOASTS: usize = 19;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -131,6 +134,12 @@ enum Msg {
   SongRecDone,
   /// an app's context menu closed: whether a command was chosen
   ShellMenu(bool),
+  /// a notification card (the core's stream or a widget's `ll:toast`)
+  Toast(serde_json::Value),
+  /// a card's image, read on another thread
+  ToastImage(u64, Option<Vec<u8>>),
+  /// the update card's height: the notifications go under it
+  UpdateCard(f32),
   /// a web widget asked for the Super menu (the Dock's search button)
   OverviewToggle,
 }
@@ -257,6 +266,25 @@ pub fn widget_overview_toggle(payload: &str) {
   }
 }
 
+/// A widget's notification card (`ll:toast`; the bar's own come back the
+/// same way).
+pub fn toast(payload: &str) {
+  if let Ok(card) = serde_json::from_str::<serde_json::Value>(payload) {
+    if card.is_object() {
+      send(Msg::Toast(card));
+    }
+  }
+}
+
+/// The update card announced its height (`ll:update-card`, 0 when closed).
+pub fn update_card(payload: &str) {
+  let height = serde_json::from_str::<serde_json::Value>(payload)
+    .ok()
+    .and_then(|v| v["height"].as_f64())
+    .unwrap_or(0.0);
+  send(Msg::UpdateCard(height as f32));
+}
+
 /// Every provider emission passes through here (main.rs); ours go to the bar.
 pub fn forward(emission: &ProviderEmission) {
   if emission.config_hash.starts_with(HASH_PREFIX) {
@@ -322,7 +350,11 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
   });
 
   // core -> shell events (the theme changed in a web widget or the settings)
-  core_api::events(|evt| send(Msg::Core(evt)));
+  core_api::events(|evt| match evt {
+    core_api::CoreEvent::Connected => send(Msg::Core(None)),
+    core_api::CoreEvent::Emit(evt) => send(Msg::Core(Some(evt))),
+    core_api::CoreEvent::Card(card) => send(Msg::Toast(card)),
+  });
 
   // The indexer can finish after the shell starts. Ignore its temporary []
   // response, then notice later app installs without restarting the bar.
@@ -477,6 +509,7 @@ struct Ui {
   last_key: u64,
   /// device loss: recovery attempts in a row
   recover_tries: u32,
+  toasts: toast::Toasts,
   pops: pops::PopState,
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
@@ -578,6 +611,7 @@ fn ui_thread(
         last_key: 0,
         recover_tries: 0,
         pops: Default::default(),
+        toasts: Default::default(),
         pack_dir: opts.pack_dir.clone(),
         custom_theme: None,
         emit: opts.emit,
@@ -770,6 +804,7 @@ impl Ui {
             }
           }
         }
+        WM_TIMER if wp.0 == TIMER_TOASTS => self.toasts_tick(),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_WS_NUMBERS) };
           self.numbers_until = None;
@@ -782,6 +817,9 @@ impl Ui {
         _ => return None,
       }
       return Some(LRESULT(0));
+    }
+    if let Some(r) = self.toast_msg(hwnd, msg, wp, lp) {
+      return Some(r);
     }
     let [hover_w, tray_w, tip_w, ghost_w, mixer_w] = self.pop_windows();
     if [hover_w, tray_w, tip_w, ghost_w, mixer_w].contains(&Some(hwnd)) {
@@ -1023,6 +1061,9 @@ impl Ui {
         Msg::SongRecDone => self.songrec_done(),
         Msg::ShellMenu(invoked) => self.overview_menu_done(invoked),
         Msg::OverviewToggle => self.toggle_native_overview(),
+        Msg::Toast(card) => self.toast_add(card),
+        Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
+        Msg::UpdateCard(height) => self.toast_update_card(height),
         Msg::Wm(state) => {
           self.model.wm = state;
           overview_dirty = true;
@@ -1150,6 +1191,7 @@ impl Ui {
 
   fn create_bars(&mut self) {
     self.pops_reset();
+    self.toasts_reset();
     self.drag_hover = None;
     self.drag_activated = None;
     unsafe { let _ = KillTimer(self.msg_hwnd, TIMER_DRAG_DWELL); }
@@ -1402,6 +1444,7 @@ impl Ui {
         self.res = res;
         self.icons.clear_bitmaps();
         self.pops_reset();
+        self.toasts_reset();
         // Its surfaces belonged to the lost device. The core's Super key
         // needs a hidden window with this title even before the next open.
         self.overview = None;
@@ -1442,6 +1485,11 @@ impl Ui {
   /// An event from the core. On (re)connect the theme is read again: it may
   /// have changed while the stream was down.
   fn core_event(&mut self, evt: Option<String>) {
+    // the web widgets get the core's events through the bar (the toast
+    // widget relayed them before the notifications became native)
+    if let Some(evt) = &evt {
+      (self.emit)(evt, serde_json::Value::Null);
+    }
     let light = match evt.as_deref() {
       Some("ll:theme-light") => true,
       Some("ll:theme-dark") => false,
@@ -1460,6 +1508,7 @@ impl Ui {
 
   fn reload_custom_theme(&mut self) {
     let prefs = model::prefs(&self.pack_dir);
+    self.model.read_prefs(&prefs);
     self.custom_theme = Some(palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light));
     self.redraw_all();
     self.pops_repaint();
