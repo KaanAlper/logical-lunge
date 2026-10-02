@@ -5567,7 +5567,12 @@ class Keys2
     {
         // Tuş basılıyken değiştirme (durum karışmasın)
         if (winDown && !force) return;
-        if (force) { winDown = false; winInjected = false; held.Clear(); }
+        if (force)
+        {
+            // enjekte ettiğimiz Win basılı kalmasın (Windows sonraki her tuşu Win+tuş sanar)
+            if (winInjected) { SuppressStart(); Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK); }
+            winDown = false; winInjected = false; held.Clear();
+        }
         IntPtr fresh = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
         if (fresh == IntPtr.Zero) return;
         IntPtr old = hookHandle;
@@ -5576,6 +5581,22 @@ class Keys2
     }
 
     static bool Down(int vk) { return (Native.GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+    // Windows Win'i basılı sanıyor ama biz onu ne basılı tutuyoruz ne de enjekte ettik: kanca zamanında cevap
+    // veremeyince basış sisteme geçmiş, bırakışı biz yutmuşuz. Böyle kalırsa Q arama, A bildirimler, Ctrl Başlat
+    // açar ve hiçbir yere yazı yazılamaz. Bırakış enjekte edilir (sahte tuş: Başlat menüsü açılmasın).
+    // Kanca thread'inde çağrılır (kancayla yarışmaz).
+    public void Unstick()
+    {
+        if (winInjected) return;
+        foreach (int w in new[] { VK_LWIN, VK_RWIN })
+        {
+            if (!Down(w)) continue;
+            SuppressStart();
+            Native.keybd_event((byte)w, 0, 0x2 | 0x1, Native.LL_MARK);
+            ThreadPool.QueueUserWorkItem(_ => Slider.Log("Win tuşu Windows'ta basılı kalmıştı: bırakıldı (0x" + w.ToString("X") + ")"));
+        }
+    }
 
     // Hızlı art arda workspace geçişleri sıraya girip her biri animasyonunu beklemesin:
     // süren animasyon hemen biter, biriken istekler komut olarak uygulanır, yalnızca SONUNCUSU kayar.
@@ -5687,14 +5708,16 @@ class Keys2
                 winDown = false;
                 dockChord = false;
                 dockMasked = false;
-                if (winInjected)
+                // Down(): basış sisteme geçmişse (kanca geç kaldı) Windows Win'i hâlâ basılı sanıyor; o da bırakılır
+                if (winInjected || Down(vk))
                 {
                     winInjected = false;
                     SuppressStart();
-                    Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK); // KEYUP | EXTENDEDKEY
+                    Native.keybd_event((byte)vk, 0, 0x2 | 0x1, Native.LL_MARK); // KEYUP | EXTENDEDKEY
+                    if (winVk != vk) Native.keybd_event((byte)winVk, 0, 0x2 | 0x1, Native.LL_MARK);
                 }
-                // Yalnızca tek başına Super: ll overview
-                else if (toggleDock) ui.BeginInvoke((Action)(() => Toasts.Emit("ll:dock-toggle")));
+                // Yalnızca tek başına Super: ll overview (enjekte edilmiş Win'de başka bir tuş zaten basıldı)
+                if (toggleDock) ui.BeginInvoke((Action)(() => Toasts.Emit("ll:dock-toggle")));
                 else if (!otherKeyWhileWin && !modifierWhileWin && !Binds.Capturing) ui.BeginInvoke((Action)ToggleOverview);
             }
             return (IntPtr)1; // basış, otomatik tekrar ve bırakma: hepsi yutulur
@@ -11151,6 +11174,7 @@ static class Program
             var health = new System.Windows.Forms.Timer { Interval = 1000 };
             health.Tick += (s, e) =>
             {
+                keys.Unstick();
                 var li = new Native.LASTINPUTINFO { cbSize = (uint)Marshal.SizeOf(typeof(Native.LASTINPUTINFO)) };
                 if (!Native.GetLastInputInfo(ref li)) return;
                 int last = (int)li.dwTime, now = Environment.TickCount;
