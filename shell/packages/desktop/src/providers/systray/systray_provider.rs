@@ -33,16 +33,8 @@ pub struct SystrayOutputIcon {
 /// process id (the systray output is rebuilt on every icon change).
 fn process_name(hwnd: Option<isize>) -> String {
   use std::{collections::HashMap, sync::Mutex};
-  use windows::{
-    core::PWSTR,
-    Win32::{
-      Foundation::{CloseHandle, HWND},
-      System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
-      },
-      UI::WindowsAndMessaging::GetWindowThreadProcessId,
-    },
+  use windows::Win32::{
+    Foundation::HWND, UI::WindowsAndMessaging::GetWindowThreadProcessId,
   };
   static CACHE: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
 
@@ -57,28 +49,8 @@ fn process_name(hwnd: Option<isize>) -> String {
   if let Some(name) = map.get(&pid) {
     return name.clone();
   }
-  let path = unsafe {
-    match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
-      Ok(process) => {
-        let mut buf = [0u16; 1024];
-        let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(
-          process,
-          PROCESS_NAME_WIN32,
-          PWSTR(buf.as_mut_ptr()),
-          &mut len,
-        )
-        .is_ok();
-        let _ = CloseHandle(process);
-        if ok {
-          String::from_utf16_lossy(&buf[..len as usize])
-        } else {
-          String::new()
-        }
-      }
-      Err(_) => String::new(),
-    }
-  };
+  let path =
+    crate::common::windows::process_image_path(pid).unwrap_or_default();
   let name = std::path::Path::new(&path)
     .file_stem()
     .map(|s| s.to_string_lossy().to_lowercase())
