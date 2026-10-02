@@ -3416,12 +3416,15 @@ static class ShellWatchdog
 // config.yaml değişince (ayarlar penceresi ya da elle) animasyon kenarlıklarının rengi yenilenir.
 static class Prefs
 {
-    static volatile bool animations = true, gestures = true, winToasts = true;
+    static volatile bool animations = true, gestures = true, winToasts = true, takeover = true;
     public static bool Animations { get { return animations; } }
     // Windows bildirimleri Logical Lunge kartı olarak (WinNotifications); Windows'un kendi balonları kapanır
     public static bool WinToasts { get { return winToasts; } }
     // Yalnızca çekirdek abone olur: --set-pref ile tercih yazan kısa ömürlü süreç balonlara dokunmaz
     public static event Action WinToastsChanged;
+    // Windows'un yerini aldığımız parçaları (görev çubuğu, yerleşim önerileri ...) kaynağında kapat (ShellTakeover)
+    public static bool Takeover { get { return takeover; } }
+    public static event Action TakeoverChanged;
     // Dokunmatik yüzey hareketleri (3/4 parmak); dokunmatik yüzey yoksa etkisiz
     public static bool Gestures { get { return gestures; } }
     public static string FilePath { get { return System.IO.Path.Combine(Paths.ConfigDir, "prefs.json"); } }
@@ -3481,6 +3484,13 @@ static class Prefs
                 var changed = WinToastsChanged;
                 if (changed != null) changed();
             }
+            bool to = !(d.TryGetValue("takeover", out v) && v is bool && !(bool)v);
+            if (to != takeover)
+            {
+                takeover = to;
+                var changed = TakeoverChanged;
+                if (changed != null) changed();
+            }
             string th = d.TryGetValue("theme", out v) && "light".Equals(v) ? "light" : "dark";
             string was = theme;
             theme = th;
@@ -3496,7 +3506,7 @@ static class Prefs
         return new JavaScriptSerializer().Serialize(Read());
     }
 
-    // key: language | clock | animations | gestures | winToasts | focusColor | theme | toastInfo | toastError (sn); değer doğrulanır
+    // key: language | clock | animations | gestures | winToasts | takeover | focusColor | theme | toastInfo | toastError (sn); değer doğrulanır
     public static bool Set(string key, string value)
     {
         object val;
@@ -3512,6 +3522,7 @@ static class Prefs
             case "animations":
             case "gestures":
             case "winToasts":
+            case "takeover":
             // rahatsız etme: native bildirim kartları gösterilmez
             case "dnd":
                 if (value != "true" && value != "false") return false;
@@ -3800,6 +3811,12 @@ static class Settings
             return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(text))).Replace("-", "");
     }
 
+    static bool PrefOn(Dictionary<string, object> p, string key)
+    {
+        object v;
+        return !(p.TryGetValue(key, out v) && v is bool && !(bool)v);
+    }
+
     static Dictionary<string, object> Get()
     {
         var p = Prefs.Read();
@@ -3825,6 +3842,9 @@ static class Settings
             { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
             { "animations", !(p.TryGetValue("animations", out anim) && anim is bool && !(bool)anim) },
             { "gestures", !(p.TryGetValue("gestures", out gest) && gest is bool && !(bool)gest) },
+            // açık/kapalı tercihler: yoksa açık (ayarlar penceresi anahtarın gerçek hâlini göstersin)
+            { "winToasts", PrefOn(p, "winToasts") },
+            { "takeover", PrefOn(p, "takeover") },
             { "toastInfo", Prefs.ToastSeconds(p, "toastInfo") },
             { "toastError", Prefs.ToastSeconds(p, "toastError") },
             { "touchpad", Touchpad.Present() },
@@ -4416,7 +4436,7 @@ static class Supervisor
         Slider.Log("kapanış: " + why);
         Kill(Names.Shell);
         LiveWallpaper.Stop();
-        TaskbarGuard.Release();
+        ShellTakeover.ReleaseAll();
         if (exitSelf) Environment.Exit(0);
     }
 
@@ -4459,6 +4479,8 @@ static class Supervisor
         Kill(LiveWallpaper.Name);
         foreach (var n in LegacyParts) Kill(n);
         Thread.Sleep(300);
+        // Windows'un devredilen parçaları (görev çubuğu, ayarlar, bildirim balonları) geri gelir; yeni çekirdek yeniden alır
+        ShellTakeover.ReleaseAll();
         Slider.Log("masaüstü kapatıldı; geri getirilen pencere: " + Orphans.Uncloak());
     }
 
@@ -4819,7 +4841,7 @@ static class SelfHeal
         try
         {
             if (Maint.Quiet()) { Slider.Log("kendini toparlama atlandı (" + why + "): bakım / oturum kapanışı"); return; }
-            if (!Maint.Allow("helper-restarts")) { Slider.Log("kendini toparlama: son 5 dakikada 3 kez denendi, bırakıldı (" + why + ")"); return; }
+            if (!Maint.Allow("helper-restarts")) { Slider.Log("kendini toparlama: son 5 dakikada 3 kez denendi, bırakıldı (" + why + ")"); ShellTakeover.ReleaseAll(); return; }
             Slider.Log("helper yeniden başlıyor: " + why);
             Process.Start(new ProcessStartInfo(Maint.CoreExe, "--respawn") { UseShellExecute = true, WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory });
         }
@@ -10373,14 +10395,6 @@ static class WarmTerminal
     }
 }
 // ---------------- Açılış perdesi ----------------
-// Windows görev çubuğu, Başlat düğmesi ve ses/parlaklık OSD'si hiç görünmez: işlerini shell'deki bar ve OSD görüyor.
-// Windows 10'da ana görev çubuğunu kaldıran bir registry ayarı yok; yalnızca otomatik gizleme ve diğer monitörlerde
-// kapatma var (kurulum ikisini de yapıyor). Explorer onu kendisi yeniden gösterebiliyor (bir uygulama düğmesini yanıp
-// söndürünce, Explorer yeniden başlayınca...): göründüğü anda (EVENT_OBJECT_SHOW) gizlenir. Eskiden bunu hide-taskbar.ps1
-// 700 ms'lik yoklamayla yapıyordu ve görev çubuğu o arada "yanıp gidiyordu". LL kapanınca show-taskbar.ps1 geri getirir.
-// Bizim kabuk (shell'deki bar) ayakta mı. Bar 20 sn'den uzun yoksa (shell ya da tiling çöktü / açılamadı) helper
-// güvenli tarafa açılır: Windows görev çubuğu ve Win tuşu (Başlat menüsü) geri gelir, kullanıcı hiçbir zaman barsız,
-// görev çubuğusuz ve Başlat'sız kalmaz. Bar dönünce ikisi yine bizim. (Kısa shell yeniden başlatmaları sayılmaz.)
 // Sistem genelindeki olay kancalarının (WinEvent) gecikmesi: olayın üretildiği an (dwmsEventTime) ile bize ulaştığı an
 // arası. Bir uygulama olay seli ürettiğinde (ör. Görev Yöneticisi'nin listesi yeniden sıralanırken) kuyruk birikirse
 // kaydedilir: bir dahaki kasmanın kaynağı tahminle değil kayıtla bulunsun. Ucuz: çağrı başına bir karşılaştırma.
@@ -10397,35 +10411,6 @@ static class EventLag
         int last = lastLog;
         if (now - last < 5000 || Interlocked.CompareExchange(ref lastLog, now, last) != last) return;
         Slider.Log("olay kancası gecikti: " + hook + " " + lag + " ms (son kayıttan beri " + Interlocked.Exchange(ref seen, 0) + " olay)");
-    }
-}
-
-static class ShellState
-{
-    static volatile bool up = true;
-    // Environment.TickCount 24,8 günde eksiye geçer: "-1 = yok" bir işaret olamaz (her çağrıda baştan başlıyordu, bar
-    // ölse de görev çubuğu hiç geri gelmiyordu)
-    static bool missing;
-    static int missingSince;
-    public static bool Up { get { return up; } }
-
-    // Durum değiştiyse true (TaskbarGuard'ın 2 sn'lik zamanlayıcısından)
-    public static bool Update()
-    {
-        bool bar = Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, Names.Bar) != IntPtr.Zero;
-        if (bar)
-        {
-            missing = false;
-            if (up) return false;
-            up = true;
-            Slider.Log("bar geri geldi: görev çubuğu ve Win tuşu yine kabuğun");
-            return true;
-        }
-        if (!missing) { missing = true; missingSince = Environment.TickCount; return false; }
-        if (!up || unchecked(Environment.TickCount - missingSince) < 20000) return false;
-        up = false;
-        Slider.Log("bar 20 sn'dir yok: Windows görev çubuğu ve Başlat menüsü geri açıldı");
-        return true;
     }
 }
 
@@ -10871,95 +10856,6 @@ static class FocusGuard
     }
 }
 
-static class TaskbarGuard
-{
-    static Native.WinEventDelegate cb;
-    static System.Windows.Forms.Timer timer;
-
-    // Mesaj döngüsü olan bir thread'den çağrılır: hook ve zamanlayıcı o thread'de çalışır.
-    // failOpen (asıl helper): bizim bar'ımız yoksa görev çubuğu geri açılır (ShellState). Açılış perdesi her zaman gizler.
-    public static void Install(bool failOpen = false)
-    {
-        if (cb != null) return;
-        FailOpen = failOpen;
-        cb = (hook, ev, h, idObject, idChild, thread, time) => { EventLag.Note("görev çubuğu", time); if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
-        Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
-        Sweep();
-        // Yoğunlukta kaçan olay olursa diye seyrek yedek tarama; bar'ın durumu da burada izlenir
-        timer = new System.Windows.Forms.Timer { Interval = 2000 };
-        timer.Tick += (s, e) =>
-        {
-            if (FailOpen && ShellState.Update() && !ShellState.Up) ShowAll();
-            else Sweep();
-        };
-        timer.Start();
-    }
-
-    static bool FailOpen;
-    static volatile bool released;
-
-    // Logical Lunge kapanıyor: görev çubukları, Başlat düğmesi ve Windows'un ses / parlaklık göstergesi geri gelir,
-    // bundan sonra gizlenmez
-    public static void Release()
-    {
-        released = true;
-        ShowAll();
-        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
-        {
-            if (Cls(h) == "NativeHWNDHost" && Native.FindWindowEx(h, IntPtr.Zero, "DirectUIHWND", null) != IntPtr.Zero)
-                Native.ShowWindowAsync(h, 9); // SW_RESTORE: gizlerken küçültülmüştü
-            return true;
-        }, IntPtr.Zero);
-    }
-
-    // Güvenli tarafa açılma: görev çubukları ve Başlat düğmesi yeniden görünür (otomatik gizlemede kenara gelince açılır)
-    static void ShowAll()
-    {
-        Native.EnumWindows(delegate (IntPtr h, IntPtr l)
-        {
-            string cs = Cls(h);
-            if (cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd" || (cs == "Button" && Cls(Native.GetWindow(h, 4)).StartsWith("Shell_")))
-                Native.ShowWindowAsync(h, 8); // SW_SHOWNA
-            return true;
-        }, IntPtr.Zero);
-    }
-
-    // Yalnızca aranan sınıflar (görev çubukları, Başlat düğmesi, ses göstergesi): önceden 2 sn'de bir tüm pencerelerin sınıf
-    // adı okunuyordu
-    static readonly string[] sweepClasses = { "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "Button", "NativeHWNDHost" };
-    static void Sweep()
-    {
-        foreach (var cls in sweepClasses)
-        {
-            IntPtr h = IntPtr.Zero;
-            while ((h = Native.FindWindowEx(IntPtr.Zero, h, cls, null)) != IntPtr.Zero)
-                if (Native.IsWindowVisible(h)) Hide(h);
-        }
-    }
-
-    static string Cls(IntPtr h)
-    {
-        var c = new StringBuilder(64);
-        Native.GetClassName(h, c, 64);
-        return c.ToString();
-    }
-
-    static void Hide(IntPtr h)
-    {
-        if (released || (FailOpen && !ShellState.Up)) return;
-        // Yalnızca üst düzey pencereler: kanca uygulamaların iç pencerelerinin gösterilişini de getirir; Görev Yöneticisi'nin
-        // içerik paneli de bir NativeHWNDHost > DirectUIHWND ve küçültülünce pencere boş kalıyordu ("TaskManagerMain")
-        if (Native.GetAncestor(h, 2) != h) return; // GA_ROOT
-        string cs = Cls(h);
-        // Başlat düğmesi: görev çubuğunun sahip olduğu ayrı bir üst pencere (Button)
-        if (cs == "Shell_TrayWnd" || cs == "Shell_SecondaryTrayWnd" || (cs == "Button" && Cls(Native.GetWindow(h, 4)).StartsWith("Shell_")))
-            Native.ShowWindowAsync(h, 0); // SW_HIDE; Explorer askıdaysa beklemez
-        // Ses/parlaklık/medya OSD'si (NativeHWNDHost > DirectUIHWND): küçültülmüş host bir daha görünmez (HideVolumeOSD'nin yöntemi)
-        else if (cs == "NativeHWNDHost" && !Native.IsIconic(h) && Native.FindWindowEx(h, IntPtr.Zero, "DirectUIHWND", null) != IntPtr.Zero)
-            Native.ShowWindowAsync(h, 6); // SW_MINIMIZE
-    }
-}
-
 static class Splash
 {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
@@ -11067,7 +10963,7 @@ static class Splash
             var covers = new List<Cover>();
             var virt = SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
             foreach (var s in Screen.AllScreens) { var f = new Cover(s.Bounds, img, virt); f.Show(); covers.Add(f); }
-            TaskbarGuard.Install(); // görev çubuğu açılıştan itibaren görünmesin
+            ShellTakeover.HideTaskbarForSplash(); // görev çubuğu açılıştan itibaren görünmesin
             if (restartMode)
             {
                 foreach (var f in covers) f.Opacity = 0;
@@ -11677,6 +11573,8 @@ static class Program
         if (args.Length == 1 && args[0] == "--stop-desktop") { Supervisor.StopDesktopFromAnywhere(); return; }
         // lunge.exe --restore-banners: kaldırırken Windows'un bildirim balonlarını eski haline getirir (ToastBanners)
         if (args.Length == 1 && args[0] == "--restore-banners") { ToastBanners.Restore(); return; }
+        // kaldırma / kurulumun geri alması: devredilen Windows parçaları asıl değerlerine (state\shell-takeover.json)
+        if (args.Length == 1 && args[0] == "--takeover-restore") { ShellTakeover.ReleaseAll(); return; }
         // lunge.exe --restart-shell: kabuğu yeniden aç (ayarlar penceresi, tercihler değişince)
         if (args.Length == 1 && args[0] == "--restart-shell") { Supervisor.RequestFromCore("restart-shell"); return; }
         // Ayarlar penceresi: --settings-get | --set-focus-color #rrggbb | --set-pref <anahtar> <değer> | --health |
@@ -11814,7 +11712,7 @@ static class Program
         var roundThread = new Thread(() =>
         {
             Keep.Round = new Rounder(); Keep.Round.Start();
-            TaskbarGuard.Install(true);
+            ShellTakeover.Start();
             Application.Run();
         });
         roundThread.SetApartmentState(ApartmentState.STA);

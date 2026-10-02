@@ -365,6 +365,9 @@ static class WinNotifications
         ApplyBanners();
     }
 
+    // Bar geri geldi (ShellTakeover): balonlar yine kapanır
+    public static void ReapplyBanners() { ThreadPool.QueueUserWorkItem(_ => ApplyBanners()); }
+
     static void ApplyBanners()
     {
         try

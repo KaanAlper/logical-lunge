@@ -274,12 +274,14 @@ impl Ui {
           Sw::Animations => s.s["animations"].as_bool() != Some(false),
           Sw::Gestures => s.s["gestures"].as_bool() != Some(false),
           Sw::WinToasts => s.s["winToasts"].as_bool() != Some(false),
+          Sw::Takeover => s.s["takeover"].as_bool() != Some(false),
           Sw::Night => s.night.as_ref().is_some_and(|n| n["on"].as_bool() == Some(true)),
         };
         match sw {
           Sw::Animations => set_pref("animations", json!(!on), false),
           Sw::Gestures => set_pref("gestures", json!(!on), false),
           Sw::WinToasts => set_pref("winToasts", json!(!on), false),
+          Sw::Takeover => set_pref("takeover", json!(!on), false),
           Sw::Night => night(&["--nightlight", "toggle"]),
         }
       }

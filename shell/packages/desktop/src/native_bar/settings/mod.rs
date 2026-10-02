@@ -88,6 +88,7 @@ pub(super) enum Sw {
   Animations,
   Gestures,
   WinToasts,
+  Takeover,
   Night,
 }
 

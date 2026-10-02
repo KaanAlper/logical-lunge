@@ -526,6 +526,11 @@ fn advanced(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Resul
       .click(Hit::Act(Act::WmRedraw)),
   ];
   y += cx.card(x, y, w, &rows, 0.0)?;
+  y = cx.sec_title(x, y, "Windows")?;
+  let rows = [Row::new("desktop_windows", "Windows'un yerini al".into())
+    .sub("Logical Lunge açıkken Windows'un görev çubuğu, yerleşim önerileri ve benzeri parçaları kapanır; kapanınca eski hâline döner".into())
+    .ctrl(Ctrl::Switch(s.s["takeover"].as_bool() != Some(false), Hit::Switch(Sw::Takeover)))];
+  y += cx.card(x, y, w, &rows, 0.0)?;
   Ok(y)
 }
 
