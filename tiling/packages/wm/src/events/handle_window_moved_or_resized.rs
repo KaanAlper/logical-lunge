@@ -16,7 +16,7 @@ use crate::{
   },
   events::handle_window_moved_or_resized_end,
   models::{Monitor, NonTilingWindow, WindowContainer},
-  traits::{CommonGetters, WindowGetters},
+  traits::{CommonGetters, PositionGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -383,6 +383,31 @@ pub fn handle_window_moved_or_resized(
           state.fake_fullscreen.remove(&window.native().hwnd().0);
         }
       }
+      // A tile's size belongs to the layout, as in Hyprland: an app that
+      // moves or resizes itself (a terminal keeping its rows and columns
+      // when its font grows, a window restoring its last position) goes
+      // back into its tile instead of covering its neighbours or spreading
+      // onto the next monitor. Drags and maximizing returned above.
+      #[cfg(target_os = "windows")]
+      WindowState::Tiling
+        if !state.is_paused
+          && window.display_state() == DisplayState::Shown =>
+      {
+        let tile = window
+          .to_rect()?
+          .apply_delta(&window.total_border_delta()?, None);
+        let in_tile = window.native().frame_with_shadows().ok().as_ref()
+          == Some(&tile);
+
+        if !in_tile
+          && allow_self_resize_correction(state, window.native().hwnd().0)
+        {
+          tracing::info!(
+            "Returning self-resized window to its tile: {window}"
+          );
+          state.pending_sync.queue_container_to_redraw(window.clone());
+        }
+      }
       WindowState::Floating(_) => {
         if let WindowContainer::NonTilingWindow(window) = window {
           update_floating_window_position(
@@ -398,6 +423,27 @@ pub fn handle_window_moved_or_resized(
   }
 
   Ok(())
+}
+
+/// Whether a tiled window that moved or resized itself may be corrected
+/// again. A burst allows a few corrections: an app that insists on its own
+/// size (a minimum size bigger than its tile, a terminal snapping to its
+/// character grid) settles after them instead of being fought forever,
+/// and the core then cuts it to its slot. Entries of finished bursts are
+/// dropped, so the map only holds windows resizing right now.
+#[cfg(target_os = "windows")]
+fn allow_self_resize_correction(state: &mut WmState, hwnd: isize) -> bool {
+  const BURST: std::time::Duration = std::time::Duration::from_secs(2);
+  const MAX_CORRECTIONS: u8 = 3;
+
+  let now = std::time::Instant::now();
+  state
+    .self_resizes
+    .retain(|_, (start, _)| now.duration_since(*start) < BURST);
+
+  let (_, count) = state.self_resizes.entry(hwnd).or_insert((now, 0));
+  *count = count.saturating_add(1);
+  *count <= MAX_CORRECTIONS
 }
 
 // TODO: Move to shared location. `handle_window_moved_or_resized_end.rs`

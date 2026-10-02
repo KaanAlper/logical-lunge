@@ -57,6 +57,10 @@ pub struct WmState {
   /// Native handles of apps displaying fullscreen content inside their tile.
   pub fake_fullscreen: std::collections::HashSet<isize>,
 
+  /// Tiled windows that moved or resized themselves: when the current
+  /// burst of corrections started and how many it made.
+  pub self_resizes: std::collections::HashMap<isize, (Instant, u8)>,
+
   /// Passive visual windows awaiting their asynchronous move into a managed tile.
   pub transition_moves: std::collections::HashMap<isize, Rect>,
 
@@ -100,6 +104,7 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       fake_fullscreen: std::collections::HashSet::new(),
+      self_resizes: std::collections::HashMap::new(),
       transition_moves: std::collections::HashMap::new(),
       layout_memory: crate::layout_memory::LayoutMemory::default(),
       binding_modes: Vec::new(),
