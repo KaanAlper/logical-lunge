@@ -3066,12 +3066,30 @@ static class ShellWatchdog
         return new List<Process>(Process.GetProcessesByName(Names.Shell));
     }
 
-    static bool TilingRunning()
+    // 5 sn'de bir iki süreç tablosu taraması (GetProcessesByName bütün süreçleri listeler) yerine bulunan süreç
+    // saklanır; çıkmadığı sürece tutamacına sormak yeter (HasExited: tek bir bekleme çağrısı). Çıkınca yeniden aranır.
+    static readonly Dictionary<string, Process> seen = new Dictionary<string, Process>();
+    static Process Find(string name)
     {
-        var ps = Process.GetProcessesByName(Names.Tiling);
-        foreach (var p in ps) p.Dispose();
-        return ps.Length > 0;
+        Process p;
+        if (seen.TryGetValue(name, out p))
+        {
+            try { if (!p.HasExited) return p; } catch { }
+            p.Dispose();
+            seen.Remove(name);
+        }
+        var ps = Process.GetProcessesByName(name);
+        Process found = null;
+        foreach (var q in ps)
+        {
+            if (found == null) { try { if (!q.HasExited) { found = q; continue; } } catch { } }
+            q.Dispose();
+        }
+        if (found != null) seen[name] = found;
+        return found;
     }
+
+    static bool TilingRunning() { return Find(Names.Tiling) != null; }
 
     // Bar sayfaları yüklenince ve sonra 30 sn'de bir "canlıyım" der (POST /bar-alive?id=<sayfa yüklemesi>). shell ayakta ve
     // sunucusu açık olsa da bir bar hata sayfasında ya da donmuş kalabiliyordu (yenilemede eski shell'in sunucusuna bağlanıp
@@ -3159,10 +3177,8 @@ static class ShellWatchdog
                 {
                     if (!TilingRunning()) { bad = 0; continue; } // tiling kapalıyken (çıkış / yeniden başlatma) karışma
                     if (Maint.Quiet() || TilingWatchdog.Recovering) { bad = 0; continue; }
-                    var zs = Shells();
-                    bool running = zs.Count > 0;
-                    string problem = !running ? "shell çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : SilentBars(zs[0]);
-                    foreach (var p in zs) p.Dispose();
+                    var shell = Find(Names.Shell);
+                    string problem = shell == null ? "shell çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : SilentBars(shell);
                     if (problem != null && problem.StartsWith("bar ")) lock (barAlive) barAlive.Clear(); // yeniden başlayınca sayım sıfırdan
                     if (problem == null) { bad = 0; failures = 0; continue; }
                     if (++bad < 2) continue;
