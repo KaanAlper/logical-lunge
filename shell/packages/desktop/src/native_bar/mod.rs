@@ -625,6 +625,9 @@ impl Ui {
         Some(LRESULT(0))
       }
       WM_DISPLAYCHANGE | WM_DPICHANGED | WM_SETTINGCHANGE => {
+        if msg == WM_SETTINGCHANGE && self.fonts.refresh_text_scale() {
+          self.redraw_all();
+        }
         unsafe {
           let _ = PostMessageW(self.msg_hwnd, WM_APP_REBUILD, WPARAM(0), LPARAM(0));
         }
