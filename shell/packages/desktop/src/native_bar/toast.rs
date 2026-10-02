@@ -38,6 +38,7 @@ use super::{
   fonts::TextStyle,
   gfx::{self, Rect, Rgba},
   icons::data_url_bytes,
+  menu::{Item, MenuFocus},
   model,
   popup::{self, Motion, PopWin},
   view::{Align, Painter, Theme},
@@ -610,10 +611,49 @@ impl Ui {
           }
         }
       }
+      WM_RBUTTONUP => {
+        let id = self.toasts.cards[i].id;
+        let dnd = self.model.dnd;
+        let mut at = POINT::default();
+        unsafe {
+          let _ = GetCursorPos(&mut at);
+        }
+        let items = vec![
+          Item::new("close", Some("close"), self.model.tr("Kapat")),
+          Item::new("all", Some("clear_all"), self.model.tr("Tümünü kapat")),
+          Item::sep(),
+          Item::new("dnd", Some("notifications_off"), self.model.tr("Rahatsız etme")).checked(dnd),
+        ];
+        self.menu_open(at, MenuFocus::Take, items, move |ui, choice| match choice {
+          "close" => ui.toast_close(Some(id)),
+          "all" => ui.toast_close(None),
+          "dnd" => {
+            ui.model.dnd = !dnd;
+            core_api::set_pref("dnd", if dnd { "false" } else { "true" });
+            if !dnd {
+              ui.toast_close(None);
+            }
+          }
+          _ => {}
+        });
+      }
       WM_MOUSEACTIVATE => return Some(LRESULT(MA_NOACTIVATE as isize)),
       _ => return None,
     }
     Some(LRESULT(0))
+  }
+
+  /// Slides out the card `id` (None: every card).
+  fn toast_close(&mut self, id: Option<u64>) {
+    let gfx = &self.gfx;
+    for c in self.toasts.cards.iter_mut().filter(|c| id.is_none_or(|id| c.id == id)) {
+      if c.closing.is_none() {
+        c.closing = Some(Instant::now());
+        if let Some(w) = c.win.as_mut() {
+          let _ = w.close(gfx);
+        }
+      }
+    }
   }
 
   /// The mouse position in card DIPs.
