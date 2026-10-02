@@ -1,0 +1,107 @@
+name: Build
+
+# Builds and tests an edition from any branch without publishing anything: the
+# package is kept as a workflow artifact (install it with LL_SOURCE). Same steps
+# as the Release workflow up to the package and its regression checks.
+on:
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: "Interface to build"
+        type: choice
+        options: [native-ui, web-ui]
+        default: native-ui
+        required: true
+      ref:
+        description: "Branch or commit to build (empty: the edition branch)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ inputs.edition }} (${{ inputs.ref || inputs.edition }})
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout the source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || inputs.edition }}
+          fetch-depth: 0
+
+      - name: Verify edition and compute the version a release would get
+        id: v
+        shell: pwsh
+        env:
+          EDITION: ${{ inputs.edition }}
+        run: |
+          if ((Get-Content EDITION -Raw).Trim() -ne $env:EDITION) { throw 'Source edition mismatch' }
+          $tags = @(git tag --list "v*-$env:EDITION")
+          $ver = & ./tools/release-version.ps1 -Edition $env:EDITION -BaseVersion (Get-Content VERSION -Raw).Trim() -Tags $tags
+          Set-Content VERSION $ver -NoNewline -Encoding ascii
+          "ver=$ver" >> $env:GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Check application-independent overlay policy
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force build/tests | Out-Null
+          rustc --edition 2021 --test tools/dev/window-policy-tests.rs -o build/tests/window-policy-tests.exe
+          if ($LASTEXITCODE) { throw 'Window policy tests did not compile' }
+          ./build/tests/window-policy-tests.exe
+          if ($LASTEXITCODE) { throw 'Window policy regression failed' }
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ inputs.edition }}
+          workspaces: |
+            tiling
+            shell
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Checkout the shared installer from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: shared-installer
+          sparse-checkout: installer/setup.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Put the shared installer into the edition package
+        shell: pwsh
+        run: |
+          if (-not (Test-Path shared-installer/installer/setup.ps1)) { throw 'Shared installer missing on main' }
+          New-Item -ItemType Directory -Force installer | Out-Null
+          Copy-Item shared-installer/installer/setup.ps1 installer/setup.ps1 -Force
+
+      - name: Build package
+        shell: pwsh
+        env:
+          EDITION: ${{ inputs.edition }}
+        run: ./build.ps1 -Edition $env:EDITION
+
+      - name: Check theme, media and core regressions
+        shell: powershell
+        run: |
+          node ./tools/dev/theme-tests.mjs
+          if ($LASTEXITCODE) { throw 'Theme regression failed' }
+          node ./tools/dev/bar-data-tests.mjs
+          if ($LASTEXITCODE) { throw 'Bar data regression failed' }
+          ./tools/dev/core-tests.ps1
+
+      - name: Keep the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LogicalLunge-${{ inputs.edition }}-${{ steps.v.outputs.ver }}-build
+          path: |
+            dist/LogicalLunge-${{ inputs.edition }}-${{ steps.v.outputs.ver }}.zip
+            dist/LogicalLunge-${{ inputs.edition }}-${{ steps.v.outputs.ver }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
