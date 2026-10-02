@@ -61,8 +61,31 @@ static class CoreRegression
         Check(ShellTakeover.TryParse(withAh, out saved, out autoHide) && autoHide == 3, "Auto-hide state did not survive the record");
     }
 
+    static void DialogTests() {
+        string err;
+        var d = Dialogs.Parse("kind=question&title=Silinsin%20mi%3F&body=a+b&buttons=Sil|Vazge%C3%A7&default=1&cancel=1&check=Bir%20daha%20sorma&checked=1", out err);
+        Check(d != null && d.Title == "Silinsin mi?" && d.Body == "a b" && d.Buttons.Length == 2 && d.Buttons[1] == "Vazgeç" && d.Default == 1 && d.Cancel == 1 && d.Check == "Bir daha sorma" && d.Checked, "Dialog question was misread: " + err);
+        d = Dialogs.Parse("kind=error&title=x&buttons=Tamam", out err);
+        Check(d != null && d.Cancel == 0 && d.Default == 0, "A one-button dialog must cancel with that button");
+        d = Dialogs.Parse("title=x&buttons=a|b&default=9&cancel=-1", out err);
+        Check(d != null && d.Default == 0 && d.Cancel == -1 && d.Kind == "question", "Out-of-range dialog indexes must fall back");
+        Check(Dialogs.Parse("title=x&buttons=", out err) == null && Dialogs.Parse("title=x&buttons=a|b|c|d", out err) == null, "Dialogs need one to three buttons");
+        Check(Dialogs.Parse("kind=shout&title=x&buttons=a", out err) == null && Dialogs.Parse("buttons=a", out err) == null, "Dialog kind and text must be checked");
+        Check(Dialogs.Parse("title=x&buttons=" + new string('a', 41), out err) == null, "Dialog button labels have a length limit");
+        Check(Request("GET", "/dialog?title=x&buttons=a", "http://127.0.0.1:6124").Contains("405"), "Dialogs must require POST");
+        Check(Request("POST", "/dialog?title=x&buttons=a", "https://example.invalid").Contains("403"), "Dialogs accepted a foreign origin");
+        Check(Request("POST", "/dialog?title=x&buttons=", "http://127.0.0.1:6124").Contains("400"), "An invalid dialog must be refused");
+        Check(Request("POST", "/dialog-answer?id=987654&b=0&c=0", "http://127.0.0.1:6124").Contains("404"), "An answer to an unknown dialog must be refused");
+        Check(Request("POST", "/dialog-shown?id=x", "http://127.0.0.1:6124").Contains("400") && Request("POST", "/dialog-answer?id=1", "http://127.0.0.1:6124").Contains("400"), "Malformed dialog answers must be refused");
+        // no shell in the test: the question comes back unanswered instead of waiting
+        Dialogs.ShowWaitMs = 300;
+        string r = Request("POST", "/dialog?kind=info&title=x&buttons=Tamam", "http://127.0.0.1:6124");
+        Check(r.Contains("\"button\":-1") && r.Contains("no-ui"), "A dialog without a shell must answer no-ui: " + r);
+    }
+
     static void Main() {
         TakeoverTests();
+        DialogTests();
         string response = Request("POST", "/focus-color?v=invalid", "http://127.0.0.1:6124");
         Check(!response.Contains("text/event-stream") && response.Contains("\"ok\":false"), "Focus-color request was routed into SSE instead of returning a JSON result");
         Check(Request("GET", "/focus-color?v=invalid", "http://127.0.0.1:6124").Contains("405"), "Color writes must require POST");
