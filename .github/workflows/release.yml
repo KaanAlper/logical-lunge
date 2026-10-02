@@ -11,6 +11,12 @@ on:
         options: [native-ui, web-ui, both]
         default: native-ui
         required: true
+      bump:
+        description: "Version step: auto reads the commits (feat: minor, fix: patch, type!: or BREAKING CHANGE: major)"
+        type: choice
+        options: [auto, patch, minor, major]
+        default: auto
+        required: true
       notes:
         description: "Release notes (optional)"
         type: string
@@ -59,11 +65,18 @@ jobs:
         shell: pwsh
         env:
           EDITION: ${{ matrix.edition }}
+          BUMP: ${{ inputs.bump || 'auto' }}
         run: |
           if ((Get-Content EDITION -Raw).Trim() -ne $env:EDITION) { throw 'Source edition mismatch' }
           # Reserve versions used by any tag, including failed/draft attempts.
           $tags = @(git tag --list "v*-$env:EDITION")
-          $ver = & ./tools/release-version.ps1 -Edition $env:EDITION -BaseVersion (Get-Content VERSION -Raw).Trim() -Tags $tags
+          # the commits since this edition's latest release decide the step (semantic versioning)
+          $last = $tags | Where-Object { $_ -match '^v\d+\.\d+\.\d+-' } |
+            Sort-Object { [version]($_ -replace '^v|-.*$', '') } -Descending | Select-Object -First 1
+          $commits = @()
+          if ($last) { $commits = @((git log "$last..HEAD" --format='%s%n%b%x1e') -join "`n" -split [char]0x1e) }
+          $ver = & ./tools/release-version.ps1 -Edition $env:EDITION -BaseVersion (Get-Content VERSION -Raw).Trim() -Tags $tags -Commits $commits -Bump $env:BUMP
+          Write-Host "Last release: $last, step: $env:BUMP -> $ver"
           $sha = git rev-parse HEAD
           Set-Content VERSION $ver -NoNewline -Encoding ascii
           "ver=$ver" >> $env:GITHUB_OUTPUT
