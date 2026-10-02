@@ -800,7 +800,8 @@
         useEffect(() => {
           if (!open) return;
           load();
-          const t = setInterval(load, 3000);
+          // Ayarlar odak kaybında kapanmaz: yalnızca bakılırken yenilenir (her yenileme bir süreç)
+          const t = setInterval(() => { if (document.hasFocus()) load(); }, 3000);
           return () => clearInterval(t);
         }, [open]);
         if (!h) return null;
