@@ -251,9 +251,12 @@ pub struct Overview {
   /// hover moves the selection only when the pointer really moved
   last_mouse: POINT,
   hover_tool: Option<Tool>,
+  hover_chip: Option<&'static str>,
   // layout of the last paint, in DIPs from the window's top-left
   box_rect: Rect,
   tools: [(Rect, Tool); 2],
+  /// prefix chips in the empty field (`;` clipboard, `#` files...)
+  chips: Vec<(Rect, &'static str)>,
   rows: Vec<(Rect, usize)>,
   workspaces: Vec<(Rect, String)>,
   windows: Vec<(Rect, String, String)>,
@@ -341,8 +344,10 @@ impl Overview {
         surrogate: None,
         last_mouse: POINT::default(),
         hover_tool: None,
+        hover_chip: None,
         box_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
         tools: [(Rect::new(0.0, 0.0, 0.0, 0.0), Tool::Lens), (Rect::new(0.0, 0.0, 0.0, 0.0), Tool::SongRec)],
+        chips: Vec::new(),
         rows: Vec::new(),
         workspaces: Vec::new(),
         windows: Vec::new(),
@@ -508,6 +513,7 @@ impl Overview {
 
     let field = Rect::new(bx.x + 10.0 + 40.0 + 6.0, bx.y + (BAR - 40.0) / 2.0, lens.x - 6.0 - (bx.x + 56.0), 40.0);
     self.paint_field(p, t, field, tr)?;
+    self.paint_chips(p, t, field, left, top, tr)?;
 
     // results
     self.rows.clear();
@@ -586,6 +592,43 @@ impl Overview {
         }
         self.windows.push((Rect::new(left + wr.x, top + wr.y, wr.w, wr.h), name.clone(), win.id.clone()));
       }
+    }
+    Ok(())
+  }
+
+  /// The search modes a prefix opens, as chips at the end of the empty field:
+  /// typing `#` is not something to know beforehand. A click types it.
+  fn paint_chips(&mut self, p: &mut Painter, t: &Theme, field: Rect, left: f32, top: f32, tr: &dyn Fn(&str) -> String) -> anyhow::Result<()> {
+    const CHIPS: [(&str, &str); 4] = [(";", "Pano"), ("#", "Dosyalar"), ("=", "Hesap"), ("?", "Web")];
+    self.chips.clear();
+    if !self.edit.chars.is_empty() {
+      return Ok(());
+    }
+    let style = TextStyle { size: 12.5, weight: 450.0 };
+    let key = TextStyle { size: 13.0, weight: 650.0 };
+    let placeholder = p.measure(&tr("Ara, hesapla veya çalıştır"), TextStyle { size: 15.0, weight: 450.0 })?;
+    let mut right = field.right();
+    let mut placed = Vec::new();
+    for (prefix, label) in CHIPS {
+      let text = tr(label);
+      let (kw, lw) = (p.measure(prefix, key)?, p.measure(&text, style)?);
+      let w = 12.0 + kw + 6.0 + lw + 12.0;
+      // only what fits after the placeholder, the first ones first
+      if right - w < field.x + placeholder + 16.0 {
+        break;
+      }
+      placed.push((prefix, text, kw, lw, w));
+      right -= w + 6.0;
+    }
+    let mut x = right + 6.0;
+    for (prefix, text, kw, lw, w) in placed.into_iter().rev() {
+      let r = Rect::new(x, field.y + (field.h - 28.0) / 2.0, w, 28.0);
+      let hot = self.hover_chip == Some(prefix);
+      p.fill_round(r, 14.0, if hot { t.surface_container_high } else { t.surface_container_high.alpha(0.55) })?;
+      p.text(prefix, Rect::new(r.x + 12.0, r.y, kw + 1.0, r.h), key, t.primary, Align::Left, false)?;
+      p.text(&text, Rect::new(r.x + 12.0 + kw + 6.0, r.y, lw + 1.0, r.h), style, t.on_surface_variant, Align::Left, false)?;
+      self.chips.push((Rect::new(left + r.x, top + r.y, r.w, r.h), prefix));
+      x += w + 6.0;
     }
     Ok(())
   }
@@ -707,6 +750,10 @@ impl Overview {
 
   pub fn hit_tool(&self, x: f32, y: f32) -> Option<Tool> {
     self.tools.iter().find(|(r, _)| r.contains(x, y)).map(|(_, t)| *t)
+  }
+
+  fn hit_chip(&self, x: f32, y: f32) -> Option<&'static str> {
+    self.chips.iter().find(|(r, _)| r.contains(x, y)).map(|(_, prefix)| *prefix)
   }
 
   pub fn in_box(&self, x: f32, y: f32) -> bool {
@@ -875,8 +922,10 @@ impl Overview {
     let moved = screen.x != self.last_mouse.x || screen.y != self.last_mouse.y;
     self.last_mouse = screen;
     let tool = self.hit_tool(x, y);
-    let mut redraw = tool != self.hover_tool;
+    let chip = self.hit_chip(x, y);
+    let mut redraw = tool != self.hover_tool || chip != self.hover_chip;
     self.hover_tool = tool;
+    self.hover_chip = chip;
     let hover_workspace = self.hit_workspace(x, y);
     let hover_window = self.hit_window(x, y).map(|(_, id)| id);
     redraw |= hover_workspace != self.hover_workspace || hover_window != self.hover_window;
@@ -906,6 +955,11 @@ impl Overview {
   pub fn click(&mut self, x: f32, y: f32) -> Do {
     if let Some(tool) = self.hit_tool(x, y) {
       return Do::Tool(tool);
+    }
+    if let Some(prefix) = self.hit_chip(x, y) {
+      self.edit.set(prefix);
+      self.hover_chip = None;
+      return Do::Search;
     }
     if let Some(i) = self.hit_row(x, y) {
       self.sel = i;
@@ -982,6 +1036,7 @@ impl Overview {
     self.scroll_x = 0.0;
     self.surrogate = None;
     self.hover_tool = None;
+    self.hover_chip = None;
     self.hover_workspace = None;
     self.hover_window = None;
     self.pressed_window = None;
