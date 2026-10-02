@@ -1,5 +1,5 @@
 ﻿# Logical Lunge - first-install wizard
-#   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/native-ui/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 # Asks for the focus color, the interface language and the clock, downloads the latest release (with a progress bar)
 # and runs installer\setup.ps1 elevated (one UAC prompt) while showing its steps. On an error or Ctrl+C the installer
 # puts everything back the way it was. Nothing is left behind in %TEMP%.
