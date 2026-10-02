@@ -3,7 +3,7 @@
 //! web edition's overview.css, results from `search.rs`, the
 //! responsibility map in docs/native-overview.md.
 
-use std::{collections::HashMap, os::windows::process::CommandExt, path::PathBuf, sync::atomic::{AtomicU64, Ordering}, time::Duration};
+use std::{collections::HashMap, os::windows::process::CommandExt, sync::atomic::{AtomicU64, Ordering}, time::Duration};
 
 use serde_json::{json, Value};
 use windows::{
@@ -1209,11 +1209,6 @@ fn clipboard_text(hwnd: HWND) -> Option<String> {
   }
 }
 
-/// The install folder (next to lunge-shell.exe): lunge.exe, scripts\.
-fn install_dir() -> PathBuf {
-  std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_default()
-}
-
 fn spawn(program: &str, args: &[&str]) {
   let _ = std::process::Command::new(program).args(args).creation_flags(CREATE_NO_WINDOW).spawn();
 }
@@ -1730,10 +1725,8 @@ impl Ui {
         });
       }
       Act::Script(mode, text) => {
-        let script = install_dir().join("scripts").join("run.ps1");
         std::thread::spawn(move || {
-          let script = script.to_string_lossy().to_string();
-          match core_json(&["--ps", &script, mode, &text]) {
+          match core_json(&["--run", mode, &text]) {
             Some(mut res) => {
               let mono = res["kind"] == "ok" && res["icon"] == "terminal";
               res["mono"] = json!(mono);
@@ -1779,12 +1772,10 @@ impl Ui {
       "shutdown" => spawn("shutdown", &["/s", "/t", "0"]),
       "reload" => self.wm_command("command wm-reload-config".into()),
       "apps" => {
-        let script = install_dir().join("scripts").join("build-apps.ps1");
         let emit = self.emit.clone();
         std::thread::spawn(move || {
           let toast = |v: Value| (emit)("ll:toast", v);
-          let script = script.to_string_lossy().to_string();
-          let _ = core_json(&["--ps", &script]);
+          let _ = core_json(&["--build-apps"]);
           let apps = match core_api::post("/apps.json") {
             Some((200, body)) => serde_json::from_slice::<Vec<App>>(&body).ok(),
             _ => None,
