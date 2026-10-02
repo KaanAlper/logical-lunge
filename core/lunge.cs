@@ -4904,8 +4904,11 @@ class DialogCatcher
         safety = new System.Windows.Forms.Timer { Interval = 500 };
         safety.Tick += (s, e) =>
         {
+            // karar verilmiş / kapanmış kutunun zamanı kalmasın (gün boyu açık çekirdekte sözlük büyüyordu)
+            if (createdAt.Count > pending.Count)
+                foreach (var h in new List<IntPtr>(createdAt.Keys)) if (!pending.ContainsKey(h)) createdAt.Remove(h);
             foreach (var kv in new List<KeyValuePair<IntPtr, int>>(pending))
-                if (!Native.IsWindow(kv.Key)) pending.Remove(kv.Key);
+                if (!Native.IsWindow(kv.Key)) { pending.Remove(kv.Key); createdAt.Remove(kv.Key); }
                 else if (Environment.TickCount - Created(kv.Key) > 2000) { Restore(kv.Key, kv.Value); Slider.Log("dialog: karar verilemedi, geri gösterildi"); }
         };
         safety.Start();
@@ -8303,6 +8306,16 @@ class Switcher : Form
         return list;
     }
 
+    // Simge önbelleği uygulama yoluna göre; gün boyu açılan her yeni uygulama bir girdi ekliyordu. Sınırı aşınca
+    // (kartlar bırakılmışken, açılışın başında) tamamen boşalır, gösterilenler yeniden okunur.
+    const int ICON_CACHE_MAX = 96;
+    static void TrimIcons()
+    {
+        if (iconCache.Count <= ICON_CACHE_MAX) return;
+        foreach (var img in iconCache.Values) { try { img.Dispose(); } catch { } }
+        iconCache.Clear();
+    }
+
     static Image IconFor(IntPtr h)
     {
         try
@@ -8327,6 +8340,7 @@ class Switcher : Form
             committed = false;
             Release();
             cards.Clear();
+            TrimIcons();
             cards.AddRange(Collect());
             Slider.Log("switcher: " + cards.Count + " pencere" + (reverse ? " (geri)" : ""));
             if (cards.Count == 0) { Active = false; return; }
