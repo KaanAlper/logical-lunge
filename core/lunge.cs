@@ -804,7 +804,7 @@ class Slider
     static int Adaptive(ref long last, int full)
     {
         long now = Environment.TickCount;
-        long since = now - last;
+        long since = unchecked((int)(now - last)); // TickCount'un 49,7 günlük dönüşünde de doğru fark
         last = now;
         return since > 0 && since < full ? (int)Math.Max(MIN_MS, since) : full;
     }
@@ -1741,12 +1741,28 @@ class Slider
     {
         try
         {
+            // Aynı satır art arda gelirse (pencere yöneticisi yokken her denemede "ipc error") bir dakika boyunca tek satır
+            // kalır, sonra kaç kez tekrarlandığı yazılır: kesintinin başı birkaç saatte dosyadan atılmıyordu
+            string repeated = null;
+            lock (logLock)
+            {
+                if (s == lastLine && logClock.ElapsedMilliseconds - lastLineAt < 60000) { repeats++; return; }
+                if (repeats > 0) repeated = "  (önceki satır " + repeats + " kez daha)";
+                lastLine = s; lastLineAt = logClock.ElapsedMilliseconds; repeats = 0;
+            }
+            if (repeated != null) s = repeated + Environment.NewLine + DateTime.Now.ToString("HH:mm:ss.fff ") + s;
             string path = System.IO.Path.Combine(Paths.LogsDir, "core.log");
-            // 4 MB'yi geçince eskisi .old olur (animasyon başına satır yazılıyor; sınırsız büyümesin)
+            // 4 MB'yi geçince eskisi .old olur (animasyon başına satır yazılıyor; sınırsız büyümesin). Bir okuyucu dosyayı
+            // silinemez tutuyorsa taşınamaz: o zaman 8 MB'de baştan başlar
             var fi = new System.IO.FileInfo(path);
             if (fi.Exists && fi.Length > 4 * 1024 * 1024)
             {
-                try { System.IO.File.Delete(path + ".old"); System.IO.File.Move(path, path + ".old"); } catch { }
+                try { System.IO.File.Delete(path + ".old"); System.IO.File.Move(path, path + ".old"); }
+                catch
+                {
+                    if (fi.Length > 8 * 1024 * 1024)
+                        try { using (new System.IO.FileStream(path, System.IO.FileMode.Truncate, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete)) { } } catch { }
+                }
             }
             // Aynı anda birden çok thread / süreç yazabiliyor (ör. iki HTTP isteği): paylaşımlı aç, kısa yeniden dene;
             // yoksa satırlar sessizce kayboluyordu
@@ -1771,6 +1787,10 @@ class Slider
     }
     static readonly object logLock = new object();
     static DateTime logDay = DateTime.MinValue;
+    static readonly Stopwatch logClock = Stopwatch.StartNew();
+    static string lastLine;
+    static long lastLineAt;
+    static int repeats;
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
@@ -2698,7 +2718,7 @@ class Dwindle
         var keep = new List<KeyValuePair<string, long>>();
         foreach (var p in pending)
         {
-            if (now - p.Value > AUTO_MS) { mru.Remove(p.Key); mru.Insert(0, p.Key); }
+            if (unchecked((int)(now - p.Value)) > AUTO_MS) { mru.Remove(p.Key); mru.Insert(0, p.Key); }
             else keep.Add(p);
         }
         pending.Clear(); pending.AddRange(keep);
@@ -3033,6 +3053,8 @@ static class ShellWatchdog
                 var ar = c.BeginConnect("127.0.0.1", PORT, null, null);
                 bool ok = ar.AsyncWaitHandle.WaitOne(700) && c.Connected;
                 try { c.EndConnect(ar); } catch { ok = false; }
+                // bekleme tutamacı çöp toplayıcıya kalmasın (5 sn'de bir çağrılıyor)
+                try { ar.AsyncWaitHandle.Close(); } catch { }
                 return ok;
             }
         }
@@ -3054,18 +3076,20 @@ static class ShellWatchdog
     // Bar sayfaları yüklenince ve sonra 30 sn'de bir "canlıyım" der (POST /bar-alive?id=<sayfa yüklemesi>). shell ayakta ve
     // sunucusu açık olsa da bir bar hata sayfasında ya da donmuş kalabiliyordu (yenilemede eski shell'in sunucusuna bağlanıp
     // boş kalan bar gibi): son 150 sn'de canlı diyen bar sayısı bar penceresi sayısından azsa shell yeniden başlatılır.
-    static readonly Dictionary<string, DateTime> barAlive = new Dictionary<string, DateTime>();
-    static readonly DateTime helperStart = DateTime.Now;
+    // Süreler tek yönlü saatle: duvar saati yaz saatinde ya da NTP düzeltmesinde atlar, bütün barlar bir anda "sessiz"
+    // sayılıp kabuk boşuna yeniden başlıyordu. Saat çekirdekle başlar: çekirdeğin ne zamandır açık olduğu da ondan.
+    static readonly Dictionary<string, long> barAlive = new Dictionary<string, long>();
+    static readonly Stopwatch aliveClock = Stopwatch.StartNew();
     public static void BarAlive(string id)
     {
         lock (barAlive)
         {
             if (!barAlive.ContainsKey(id)) Slider.Log("bar canlı: " + (id.Length > 8 ? id.Substring(0, 8) : id));
-            barAlive[id] = DateTime.Now;
+            barAlive[id] = aliveClock.ElapsedMilliseconds;
             if (barAlive.Count > 50)
             {
                 var old = new List<string>();
-                foreach (var kv in barAlive) if ((DateTime.Now - kv.Value).TotalSeconds > 300) old.Add(kv.Key);
+                foreach (var kv in barAlive) if (aliveClock.ElapsedMilliseconds - kv.Value > 300000) old.Add(kv.Key);
                 foreach (var k in old) barAlive.Remove(k);
             }
         }
@@ -3073,7 +3097,7 @@ static class ShellWatchdog
     static int AliveBars()
     {
         int n = 0;
-        lock (barAlive) foreach (var kv in barAlive) if ((DateTime.Now - kv.Value).TotalSeconds <= 150) n++;
+        lock (barAlive) foreach (var kv in barAlive) if (aliveClock.ElapsedMilliseconds - kv.Value <= 150000) n++;
         return n;
     }
     static int BarWindows(int pid)
@@ -3093,7 +3117,7 @@ static class ShellWatchdog
     // Bar'ların sessiz kalması bir sorun mu: shell ve helper yeterince uzun süredir açık, ekran kilitli değil
     static string SilentBars(Process shell)
     {
-        if ((DateTime.Now - helperStart).TotalSeconds < 160) return null; // helper yeni: bar'ların bir sonraki bildirimini bekle
+        if (aliveClock.ElapsedMilliseconds < 160000) return null; // helper yeni: bar'ların bir sonraki bildirimini bekle
         DateTime started;
         try { started = shell.StartTime; } catch { return null; }
         if ((DateTime.Now - started).TotalSeconds < 40) return null;
@@ -4330,12 +4354,23 @@ static class TilingWatchdog
         }
     }
 
+    // Monitor ile bekler: çekirdek nesnesi yok (her çağrıda bir olay nesnesi çöp toplayıcıya kalıyordu; kapatmak da olmazdı,
+    // geç cevap veren iş parçacığı kapanmış nesneye yazar)
     static bool PingWithTimeout(TilingClient g, int ms)
     {
-        var done = new ManualResetEvent(false);
-        bool ok = false;
-        ThreadPool.QueueUserWorkItem(_ => { try { ok = g.Ping(); } catch { } done.Set(); });
-        return done.WaitOne(ms) && ok;
+        var gate = new object();
+        bool ok = false, done = false;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            bool r = false;
+            try { r = g.Ping(); } catch { }
+            lock (gate) { ok = r; done = true; Monitor.Pulse(gate); }
+        });
+        lock (gate)
+        {
+            if (!done) Monitor.Wait(gate, ms);
+            return done && ok;
+        }
     }
 
     // tiling'i kurulum klasöründen, çekirdeğin alt süreci olarak başlatır (Görev Yöneticisi'nde tek uygulama).
@@ -4432,35 +4467,63 @@ static class Toasts
 
     public static void Start()
     {
-        var t = new Thread(() =>
-        {
-            try
-            {
-                var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, PORT);
-                l.Start();
-                while (true)
-                {
-                    var c = l.AcceptTcpClient();
-                    ThreadPool.QueueUserWorkItem(_ => Accept(c));
-                }
-            }
-            catch (Exception ex) { Slider.Log("toast server: " + ex.GetBaseException().Message); }
-        }) { IsBackground = true };
+        var t = new Thread(Serve) { IsBackground = true, Name = "core-http" };
         t.Start();
         var ping = new Thread(() => { while (true) { Thread.Sleep(20000); Write(": ping\n\n"); } }) { IsBackground = true };
         ping.Start();
+    }
+
+    // Bir bağlantının hatası (karşı taraf vazgeçti, kısa süreli kaynak darlığı) yalnızca onu düşürür; dinleyici bozulursa
+    // beklenip yeniden açılır. Önceden tek bir try/catch bütün döngüyü sarıyordu: ilk hatada /cmd, olay akışı ve barın kalp
+    // atışı bir daha hiç cevap vermiyordu.
+    static void Serve()
+    {
+        int wait = 500;
+        while (true)
+        {
+            System.Net.Sockets.TcpListener l = null;
+            try
+            {
+                l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, PORT);
+                l.Start();
+                if (wait > 500) Slider.Log("toast server: yeniden dinliyor");
+                wait = 500;
+                int errors = 0;
+                while (errors < 20)
+                {
+                    try
+                    {
+                        var c = l.AcceptTcpClient();
+                        errors = 0;
+                        ThreadPool.QueueUserWorkItem(_ => Accept(c));
+                    }
+                    catch (System.Net.Sockets.SocketException ex)
+                    {
+                        if (errors++ == 0) Slider.Log("toast server: bağlantı alınamadı (" + ex.SocketErrorCode + ")");
+                        Thread.Sleep(100);
+                    }
+                }
+                Slider.Log("toast server: üst üste hata; dinleyici yeniden açılıyor");
+            }
+            catch (Exception ex) { Slider.Log("toast server: " + ex.GetBaseException().Message); }
+            finally { try { if (l != null) l.Stop(); } catch { } }
+            Thread.Sleep(wait);
+            wait = Math.Min(wait * 2, 30000);
+        }
     }
 
     static void Accept(System.Net.Sockets.TcpClient c)
     {
         try
         {
+            // yarım bırakılan ya da bitmeyen bir istek bir iş parçacığını tutmasın (olay akışı istekten sonra okumaz)
+            c.ReceiveTimeout = 5000;
             var s = c.GetStream();
             var buf = new byte[4096]; var req = new StringBuilder();
             while (!req.ToString().Contains("\r\n\r\n"))
             {
                 int n = s.Read(buf, 0, buf.Length);
-                if (n <= 0) { c.Close(); return; }
+                if (n <= 0 || req.Length > 65536) { c.Close(); return; }
                 req.Append(Encoding.ASCII.GetString(buf, 0, n));
             }
             string cors = "Access-Control-Allow-Origin: " + SHELL_ORIGIN + "\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Allow-Headers: *\r\n";
@@ -4737,7 +4800,12 @@ static class Toasts
             clients.RemoveAll(s =>
             {
                 try { s.Write(bytes, 0, bytes.Length); s.Flush(); return false; }
-                catch { return true; }
+                catch
+                {
+                    // kopan istemcinin soketi hemen kapanır (çöp toplayıcıyı beklemez)
+                    try { s.Dispose(); } catch { }
+                    return true;
+                }
             });
         }
     }
@@ -5109,7 +5177,7 @@ class Rounder
             List<long> hits;
             if (!resets.TryGetValue(h, out hits)) resets[h] = hits = new List<long>();
             hits.Add(now);
-            hits.RemoveAll(x => now - x > 3000);
+            hits.RemoveAll(x => unchecked((int)(now - x)) > 3000);
             // Vazgeçerken bizim koyduğumuz bölge de kalkar: eski (belki küçük) bir bölge pencereyi kesik bırakıyordu
             if (hits.Count > 4) { giveUp.Add(h); applied.Remove(h); Native.SetWindowRgn(h, IntPtr.Zero, true); Slider.Log("gave up rounding " + ProcName(h)); return; }
         }
@@ -5961,6 +6029,7 @@ static class Touchpad
     static Sink sink;
     static Slider slider;
     static System.Windows.Forms.Timer lift;
+    static int lastReport;
     static int failures;
 
     static void Fail(Exception ex)
@@ -6010,9 +6079,14 @@ static class Touchpad
                 Slider.Log("dokunmatik yüzey: kayıt olmadı (" + Marshal.GetLastWin32Error() + ")");
                 return;
             }
-            // Parmaklar kalkarken son rapor gelmezse (cihaz sessizce keser) hareket takılı kalmasın
-            lift = new System.Windows.Forms.Timer { Interval = 180 };
-            lift.Tick += (o, e) => { lift.Stop(); Frame(0, 0, 0, Environment.TickCount); };
+            // Parmaklar kalkarken son rapor gelmezse (cihaz sessizce keser) hareket takılı kalmasın: 180 ms rapor yoksa kalktı
+            lift = new System.Windows.Forms.Timer { Interval = 90 };
+            lift.Tick += (o, e) =>
+            {
+                if (unchecked(Environment.TickCount - lastReport) < 180) return;
+                lift.Stop();
+                Frame(0, 0, 0, Environment.TickCount);
+            };
             Slider.Log("dokunmatik yüzey: " + (Present() ? "bulundu, hareketler hazır" : "yok (takılırsa hareketler çalışır)"));
         }
         catch (Exception ex) { Slider.Log("dokunmatik yüzey: " + ex.Message); }
@@ -6162,7 +6236,13 @@ static class Touchpad
 
     public static void Frame(int n, double cx, double cy, long t)
     {
-        if (lift != null) { lift.Stop(); if (n > 0) lift.Start(); }
+        // Zamanlayıcı parmaklar değdiği sürece çalışır; her raporda durdurup başlatmak saniyede ~100 kez gizli pencere
+        // açıp kapatıyordu
+        if (lift != null)
+        {
+            if (n > 0) { lastReport = Environment.TickCount; if (!lift.Enabled) lift.Start(); }
+            else if (lift.Enabled) lift.Stop();
+        }
         if (n > 0) { lastX = cx; lastY = cy; }
         if (!Prefs.Gestures && st != St.Swipe) { st = n == 0 ? St.Idle : St.Done; return; }
         switch (st)
@@ -7434,6 +7514,8 @@ static class SnipTool
 static class ClipHistory
 {
     const int MAX = 100, MAX_TEXT = 200000;
+    // tek görüntü ve bütün görüntüler: 100 büyük ekran görüntüsü gigabaytlar tutuyordu
+    const long MAX_IMAGE = 25L << 20, MAX_IMAGES = 300L << 20;
     static readonly object gate = new object();
     static readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
 
@@ -7557,6 +7639,8 @@ static class ClipHistory
         lock (gate)
         {
             var l = Load();
+            // en üstteki zaten bu: bütün dosyayı yeniden yazmaya gerek yok (panoyu sık yazan araçlar)
+            if (l.Count > 0 && l[0].kind == "text" && l[0].text == text) return;
             var same = l.FindAll(x => x.kind == "text" && x.text == text);
             foreach (var s in same) l.Remove(s);
             l.Insert(0, new Item { id = DateTime.UtcNow.Ticks, kind = "text", text = text, time = DateTimeOffset.UtcNow.ToUnixTimeSeconds() });
@@ -7580,12 +7664,14 @@ static class ClipHistory
         if (hasText && (!hasImage || !LinkLike(text))) { AddText(text); return; }
         byte[] png = hasImage ? ClipboardPng() : null;
         if (png == null) { Slider.Log("pano: görüntü okunamadı, biçimler=[" + Formats() + "]"); if (hasText) AddText(text); return; }
+        if (png.Length > MAX_IMAGE) { Slider.Log("pano: görüntü geçmişe alınmadı (" + (png.Length >> 20) + " MB)"); if (hasText) AddText(text); return; }
         string hash;
         using (var sha = System.Security.Cryptography.SHA1.Create()) hash = BitConverter.ToString(sha.ComputeHash(png)).Replace("-", "").Substring(0, 16);
         string file = "img-" + hash + ".png";
         lock (gate)
         {
             var l = Load();
+            if (l.Count > 0 && l[0].kind == "image" && l[0].file == file) return;
             var same = l.FindAll(x => x.kind == "image" && x.file == file);
             foreach (var s in same) l.Remove(s);
             if (!System.IO.File.Exists(System.IO.Path.Combine(Dir, file))) System.IO.File.WriteAllBytes(System.IO.Path.Combine(Dir, file), png);
@@ -7598,6 +7684,14 @@ static class ClipHistory
     static void Trim(List<Item> l)
     {
         while (l.Count > MAX) { var last = l[l.Count - 1]; l.RemoveAt(l.Count - 1); DropFile(last); }
+        // görüntülerin toplamı sınırı aşarsa en eskileri gider
+        long total = 0;
+        for (int i = 0; i < l.Count; i++)
+        {
+            if (l[i].kind != "image") continue;
+            try { total += new System.IO.FileInfo(System.IO.Path.Combine(Dir, l[i].file)).Length; } catch { }
+            if (total > MAX_IMAGES) { DropFile(l[i]); l.RemoveAt(i); i--; }
+        }
     }
 
     // ---- CLI ----
@@ -9585,7 +9679,10 @@ static class EventLag
 static class ShellState
 {
     static volatile bool up = true;
-    static int missingSince = -1;
+    // Environment.TickCount 24,8 günde eksiye geçer: "-1 = yok" bir işaret olamaz (her çağrıda baştan başlıyordu, bar
+    // ölse de görev çubuğu hiç geri gelmiyordu)
+    static bool missing;
+    static int missingSince;
     public static bool Up { get { return up; } }
 
     // Durum değiştiyse true (TaskbarGuard'ın 2 sn'lik zamanlayıcısından)
@@ -9594,14 +9691,14 @@ static class ShellState
         bool bar = Native.FindWindowEx(IntPtr.Zero, IntPtr.Zero, null, Names.Bar) != IntPtr.Zero;
         if (bar)
         {
-            missingSince = -1;
+            missing = false;
             if (up) return false;
             up = true;
             Slider.Log("bar geri geldi: görev çubuğu ve Win tuşu yine kabuğun");
             return true;
         }
-        if (missingSince < 0) { missingSince = Environment.TickCount; return false; }
-        if (!up || Environment.TickCount - missingSince < 20000) return false;
+        if (!missing) { missing = true; missingSince = Environment.TickCount; return false; }
+        if (!up || unchecked(Environment.TickCount - missingSince) < 20000) return false;
         up = false;
         Slider.Log("bar 20 sn'dir yok: Windows görev çubuğu ve Başlat menüsü geri açıldı");
         return true;
@@ -9913,19 +10010,21 @@ static class FocusGuard
 
     static void Loop()
     {
-        int lostSince = -1, fails = 0, waitUntil = Environment.TickCount;
+        // "kayıp" ayrı bir işaret: TickCount 24,8 günde eksiye geçer, "-1 = yok" orada bekçiyi susturuyordu
+        int lostSince = 0, fails = 0, waitUntil = Environment.TickCount;
+        bool lost = false;
         while (true)
         {
             Thread.Sleep(250);
             try
             {
                 string why = Lost();
-                if (why == null) { lostSince = -1; fails = 0; continue; }
+                if (why == null) { lost = false; fails = 0; continue; }
                 int now = Environment.TickCount;
-                if (lostSince < 0) { lostSince = now; continue; }
+                if (!lost) { lost = true; lostSince = now; continue; }
                 if (now - lostSince < 750 || now - waitUntil < 0) continue;
                 int r = Refocus(why);
-                if (r > 0) { lostSince = -1; fails = 0; }
+                if (r > 0) { lost = false; fails = 0; }
                 else if (r == 0) waitUntil = now + (why == SinkReason ? 5000 : 1500); // boş workspace: arada bir bak
                 else if (++fails >= 3) { waitUntil = now + 15000; fails = 0; Slider.Log("odak bekçisi: odak verilemedi, 15 sn bekleniyor"); }
                 else lostSince = now;
@@ -10976,18 +11075,24 @@ static class Program
         { int w, io; ThreadPool.GetMinThreads(out w, out io); ThreadPool.SetMinThreads(Math.Max(w, 32), io); }
         var prioThread = new Thread(() =>
         {
+            // Yakalanmayan bir hata (süreç listesi alınamadı) bu iş parçacığında bütün çekirdeği kapatırdı; süreç tablosunu
+            // taramak da ucuz değil: 30 sn'de bir yeter (yeniden başlayan parça önceliğini en geç o zaman alır)
             while (true)
             {
-                foreach (var name in new[] { Names.Tiling, Names.Shell })
-                    foreach (var pr in Process.GetProcessesByName(name))
-                        try
-                        {
-                            var want = name == Names.Tiling ? ProcessPriorityClass.High : ProcessPriorityClass.AboveNormal;
-                            if (pr.PriorityClass != want) pr.PriorityClass = want;
-                        }
-                        catch { }
-                        finally { pr.Dispose(); }
-                Thread.Sleep(10000);
+                try
+                {
+                    foreach (var name in new[] { Names.Tiling, Names.Shell })
+                        foreach (var pr in Process.GetProcessesByName(name))
+                            try
+                            {
+                                var want = name == Names.Tiling ? ProcessPriorityClass.High : ProcessPriorityClass.AboveNormal;
+                                if (pr.PriorityClass != want) pr.PriorityClass = want;
+                            }
+                            catch { }
+                            finally { pr.Dispose(); }
+                }
+                catch (Exception ex) { Slider.Log("öncelik: " + ex.GetBaseException().Message); }
+                Thread.Sleep(30000);
             }
         }) { IsBackground = true, Priority = ThreadPriority.Lowest };
         prioThread.Start();
