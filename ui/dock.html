@@ -25,6 +25,8 @@
       win.setTitle('Logical Lunge · dock').catch(() => {});
       const providers = lunge.createProviderGroup({ tiling: { type: 'tiling' } });
       const pinKey = 'll.dock.pins';
+      // Balıkgözü ölçüleri: dinlenme boyu, aralık, en büyük ölçek ve kaç komşuya yayıldığı (simge cinsinden)
+      const TILE = 50, GAP = 6, MAGNIFY = 1.55, SPREAD = 1.1;
       const key = s => String(s || '').toLocaleLowerCase('en-US').replace(/\.exe$/, '');
 
       function readPins() {
@@ -59,7 +61,10 @@
         const [tiling, setTiling] = useState(providers.outputMap.tiling);
         const [apps, setApps] = useState([]);
         const [pins, setPins] = useState(readPins);
-        const [hovered, setHovered] = useState(-1);
+        // Balıkgözü: imlecin x konumu (öğe şeridine göre); null: imleç Dock'ta değil
+        const [pointer, setPointer] = useState(null);
+        const itemsRef = useRef(null);
+        const frame = useRef(0);
         const [menu, setMenu] = useState(null);
         const [, iconRefresh] = useState(0);
         const closeTimer = useRef(null);
@@ -140,29 +145,44 @@
           setMenu(null);
         };
 
+        // Dinlenme boyu: çok uygulama varsa simgeler sığacak kadar küçülür (36..50 px)
+        const base = Math.max(36, Math.min(TILE, (Math.min(window.innerWidth * 0.92, 1400) - 120) / Math.max(1, items.length) - GAP));
+        // Büyütme imlece olan uzaklıkla (dinlenme yerleşiminde ölçülür: büyüyen simgeler hedefi kaydırmaz)
+        const scaleAt = index => {
+          if (pointer === null) return 1;
+          const d = (pointer - (index * (base + GAP) + base / 2)) / (base + GAP);
+          return 1 + (MAGNIFY - 1) * Math.exp(-(d * d) / (2 * SPREAD * SPREAD));
+        };
+        const under = pointer === null ? -1 : Math.floor(pointer / (base + GAP));
+        const track = e => {
+          const box = itemsRef.current?.getBoundingClientRect();
+          if (!box) return;
+          const x = e.clientX - box.left;
+          cancelAnimationFrame(frame.current);
+          frame.current = requestAnimationFrame(() => setPointer(x));
+        };
+        const leave = () => { cancelAnimationFrame(frame.current); setPointer(null); };
+
         return <div className={`dock-screen ${open ? 'visible' : ''}`} onMouseDown={e => { if (e.target === e.currentTarget) hide(); }}>
-          <nav className="dock" aria-label="Uygulama Dock’u" onMouseLeave={() => setHovered(-1)}>
+          <nav className="dock" aria-label="Uygulama Dock’u" onMouseLeave={leave}>
             <button className="tile launcher" title="Uygulama ara" aria-label="Uygulama ara" onClick={async () => { hide(); await lunge.hideWindow(win).catch(() => {}); emit('ll:overview-toggle').catch(() => {}); }}>
               <span className="material">apps</span>
             </button>
             {!!items.length && <span className="divider" />}
-            <div className="items">
+            <div className="items" ref={itemsRef} style={{ '--base': `${base}px` }} onMouseMove={track}>
               {items.map((item, index) => {
                 const first = item.active?.windows[0];
                 const icon = appIconFor(apps, item.active?.processName ?? item.app?.exe) ?? item.app?.icon ?? (first && winIconOf(first.handle, () => iconRefresh(x => x + 1)));
-                const distance = Math.abs(index - hovered);
-                const lift = hovered < 0 ? 0 : distance === 0 ? 14 : distance === 1 ? 7 : 0;
-                const scale = hovered < 0 ? 1 : distance === 0 ? 1.19 : distance === 1 ? 1.08 : 1;
-                return <button key={item.id} className="tile" title={item.name} aria-label={item.name}
-                  style={{ transform: `translateY(${-lift}px) scale(${scale})` }}
-                  onMouseEnter={() => setHovered(index)} onClick={() => focus(item)}
+                return <button key={item.id} className="tile" aria-label={item.name}
+                  style={{ '--s': scaleAt(index) }} onClick={() => focus(item)}
                   onContextMenu={e => { e.preventDefault(); setMenu({ id: item.id, index }); }}>
                   {icon ? <img src={icon} alt="" /> : <span className="material">web_asset</span>}
                   {item.active && <span className="running" />}
+                  {index === under && <span className="label">{item.name}</span>}
                 </button>;
               })}
             </div>
-            {menu && <div className="menu" style={{ left: `min(${74 + menu.index * 63}px, calc(100% - 140px))` }}>
+            {menu && <div className="menu" style={{ left: `min(${(itemsRef.current?.offsetLeft ?? 74) + menu.index * (base + GAP)}px, calc(100% - 150px))` }}>
               <button onClick={() => pin(menu.id)} disabled={!pins.includes(menu.id) && !catalog.has(menu.id)}>
                 {pins.includes(menu.id) ? "Dock’tan kaldır" : "Dock’ta tut"}
               </button>
