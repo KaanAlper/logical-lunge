@@ -93,6 +93,8 @@ const PAGE_OUT_MS: f32 = 260.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum FieldId {
   KeysSearch,
+  /// the shortcut editor's app picker
+  KeysApp,
   Todo,
   WifiPw,
   NightFrom,
@@ -110,6 +112,8 @@ enum ScrollId {
   Card,
   Card2,
   Page,
+  /// the shortcut editor's app picker
+  KeysApps,
   /// a horizontal gallery row or chip row of a page
   Row(u8),
 }

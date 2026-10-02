@@ -438,6 +438,7 @@ impl Ui {
       FieldId::Todo => self.sb_todo_key(t),
       FieldId::WifiPw | FieldId::NightFrom | FieldId::NightTo => self.sb_quick_key(id, t),
       FieldId::KeysSearch => self.sb_keys_typed(t),
+      FieldId::KeysApp => self.sb_keys_app_typed(t),
       FieldId::SaverMinutes => self.sb_walls_typed(id, t),
       FieldId::BugStart | FieldId::BugEnd | FieldId::BugText => self.sb_bug_typed(id, t),
     }
@@ -503,9 +504,14 @@ impl Ui {
     false
   }
 
-  /// Esc on a page: nothing of its own to close first (confirmations are
-  /// the shared dialog, which takes its own Esc).
+  /// Esc on a page: the shortcut editor's app picker first (confirmations
+  /// are the shared dialog, which takes its own Esc).
   pub(in crate::native_bar::sidebar) fn sb_page_escape(&mut self) -> bool {
+    // the shortcut editor's app picker is ours (not the shared dialog)
+    if self.sb_keys_escape() {
+      self.sb_render();
+      return true;
+    }
     false
   }
 }

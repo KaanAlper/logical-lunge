@@ -124,7 +124,9 @@ pub(super) fn paint_page(cx: &mut Cx, sb: &mut Sidebar, m: &crate::native_bar::m
   if page == Page::Keys {
     keys::paint_actions(cx, &sb.keys, actions_right, head_y + 4.0)?;
   }
-  let body = Rect::new(panel.x, head_y + 40.0 + 6.0, panel.w, panel.bottom() - (head_y + 46.0));
+  // the shortcut editor keeps its save bar under the scrolling body
+  let footer = if page == Page::Keys { sb.keys.footer_h() } else { 0.0 };
+  let body = Rect::new(panel.x, head_y + 40.0 + 6.0, panel.w, panel.bottom() - footer - (head_y + 46.0));
   let off = sb.scroll.get(&ScrollId::Page).copied().unwrap_or(0.0);
   cx.push_clip(body);
   let content = match page {
@@ -145,6 +147,15 @@ pub(super) fn paint_page(cx: &mut Cx, sb: &mut Sidebar, m: &crate::native_bar::m
   let max = (content + 16.0 - body.h).max(0.0);
   sb.scroll.insert(ScrollId::Page, off.clamp(0.0, max));
   cx.region(body, ScrollId::Page, content + 16.0, false);
+  if page == Page::Keys {
+    keys::paint_footer(cx, &sb.keys, Rect::new(panel.x, body.bottom(), panel.w, footer))?;
+    let mut f = sb.fields.remove(&FieldId::KeysApp).unwrap_or_else(|| TextField::new(false));
+    let off = sb.scroll.get(&ScrollId::KeysApps).copied().unwrap_or(0.0);
+    let r = keys::paint_overlay(cx, &mut sb.keys, &mut f, off, panel);
+    sb.fields.insert(FieldId::KeysApp, f);
+    let max = r?;
+    sb.scroll.insert(ScrollId::KeysApps, off.clamp(0.0, max));
+  }
   cx.pop_clip();
   Ok(())
 }
