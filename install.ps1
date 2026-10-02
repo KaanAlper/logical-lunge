@@ -106,6 +106,16 @@ $STEP_IDS = 'check', 'runtimes', 'stop', 'files', 'config', 'migrate', 'tools', 
 $C = @{ accent = '#b69df8'; text = '#e6e0e9'; dim = '#938f99'; ok = '#a8dab5'; err = '#f2b8b5'; warn = '#ffb77c' }
 function Fg([string]$hex) { $h = $hex.TrimStart('#'); "$E[38;2;$([Convert]::ToInt32($h.Substring(0, 2), 16));$([Convert]::ToInt32($h.Substring(2, 2), 16));$([Convert]::ToInt32($h.Substring(4, 2), 16))m" }
 $R = "$E[0m"
+# Glyphs: Windows Terminal (and other modern terminals) fill in any glyph from fallback fonts; the classic console
+# draws only what its font has (Consolas, Lucida Console: the WGL4 set) and prints "?" for the rest. Pick a set
+# the window can draw.
+$GL = if ($env:WT_SESSION -or $env:TERM_PROGRAM) {
+    @{ ok = '✓'; fail = '✗'; cursor = '❯'; wait = '◌'; on = '◆'; off = '◇'; fill = '━'; tl = '╭'; tr = '╮'; bl = '╰'; br = '╯'
+       spin = '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏' }
+} else {
+    @{ ok = '√'; fail = 'x'; cursor = '►'; wait = '○'; on = '■'; off = '□'; fill = '─'; tl = '┌'; tr = '┐'; bl = '└'; br = '┘'
+       spin = '|', '/', '-', '\' }
+}
 function Paint([string]$hex, [string]$s) { (Fg $hex) + $s + $R }
 function Width { try { [Math]::Max(40, [Math]::Min(76, [Console]::WindowWidth - 4)) } catch { 72 } }
 # Word-wrapped text lines for a box of inner width w
@@ -130,13 +140,13 @@ function Box([string]$color, [string]$title, [string]$body) {
     $w = Width; $in = $w - 4
     $b = Fg $color
     Write-Host ''
-    Write-Host ("  $b╭" + ('─' * ($w - 2)) + "╮$R")
+    Write-Host ("  $b$($GL.tl)" + ('─' * ($w - 2)) + "$($GL.tr)$R")
     if ($title) {
         Write-Host ("  $b│$R " + "$E[1m" + (Fg $color) + $title.PadRight($in) + "$R $b│$R")
         Write-Host ("  $b│$R " + (' ' * $in) + " $b│$R")
     }
     foreach ($l in (Wrap $body $in)) { Write-Host ("  $b│$R " + (Fg $C.text) + $l.PadRight($in) + "$R $b│$R") }
-    Write-Host ("  $b╰" + ('─' * ($w - 2)) + "╯$R")
+    Write-Host ("  $b$($GL.bl)" + ('─' * ($w - 2)) + "$($GL.br)$R")
 }
 function Banner {
     if (-not $env:LL_PLAIN -and -not [Console]::IsOutputRedirected) { Clear-Host }
@@ -154,14 +164,14 @@ function Banner {
 function Say([string]$sym, [string]$color, [string]$text) { Write-Host ('  ' + (Paint $color $sym) + ' ' + (Paint $C.text $text)) }
 
 # Spinner line redrawn in place while $work runs as a job-free polling loop
-$SPIN = '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'
+$SPIN = $GL.spin
 function Human([double]$b) { if ($b -ge 1MB) { '{0:0.0} MB' -f ($b / 1MB) } else { '{0:0} KB' -f ($b / 1KB) } }
 # Animated bar: a soft highlight runs along the filled part
 function Bar([double]$frac, [int]$width, [int]$tick) {
     $fill = [int][Math]::Floor($frac * $width)
     $s = ''
     for ($i = 0; $i -lt $width; $i++) {
-        if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + '━' }
+        if ($i -lt $fill) { $s += $(if ((($i - $tick) % 24 + 24) % 24 -lt 3) { (Fg '#e8ddff') } else { (Fg $C.accent) }) + $GL.fill }
         elseif ($i -eq $fill) { $s += (Fg $C.accent) + '╸' }
         else { $s += (Fg '#49454f') + '─' }
     }
@@ -207,8 +217,8 @@ function Show-Menu([string]$Header, [object[]]$Items, [string]$Default, [bool]$M
 
         for ($i = 0; $i -lt $Items.Count; $i++) {
             $isSel = ($i -eq $sel)
-            $prefix = if ($Multi) { if ($selected -contains $Items[$i][1]) { "◆ " } else { "◇ " } } else { "  " }
-            $cur = if ($isSel) { Paint $accent "❯ " } else { "  " }
+            $prefix = if ($Multi) { if ($selected -contains $Items[$i][1]) { "$($GL.on) " } else { "$($GL.off) " } } else { "  " }
+            $cur = if ($isSel) { Paint $accent "$($GL.cursor) " } else { "  " }
             $text = if ($isSel) { Paint $accent $Items[$i][0] } else { $Items[$i][0] }
             
             if ($IsColor -and $Items[$i][1] -ne 'custom') {
@@ -248,7 +258,7 @@ function Confirm([string]$prompt, [string]$yes, [string]$no, [bool]$default = $t
 function Is-Confirmed($answer) { return ($answer -is [bool] -and $answer) }
 function Ask([string]$header, [string]$placeholder, [string]$value) {
     Write-Host ('  ' + (Paint $C.accent $header))
-    Write-Host -NoNewline ('  ' + (Paint $C.accent '❯ '))
+    Write-Host -NoNewline ('  ' + (Paint $C.accent "$($GL.cursor) "))
     $ans = Read-Host
     if ($ans -eq '') { $ans = if ($value) { $value } else { $placeholder } }
     return $ans.Trim()
@@ -317,7 +327,7 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
             }
             finally { $res.Dispose() }
             if ($total -gt 0 -and $done -lt $total) { throw "the connection closed at $(Human $done) of $(Human $total)" }
-            Write-Host ("`r  " + (Paint $C.ok '✓') + ' ' + $label + '  ' + (Paint $C.dim (Human (Get-Item $dst).Length)) + "$E[K")
+            Write-Host ("`r  " + (Paint $C.ok $GL.ok) + ' ' + $label + '  ' + (Paint $C.dim (Human (Get-Item $dst).Length)) + "$E[K")
             return
         }
         catch [OperationCanceledException] { throw }
@@ -341,10 +351,10 @@ function Get-WithBar([string]$url, [string]$dst, [string]$label, [long]$sizeHint
 }
 # A short step: "◌ label" while it runs, then ✓ / ✗ in place
 function With-Spinner([string]$label, [scriptblock]$sb) {
-    Write-Host -NoNewline ('  ' + (Paint $C.accent '◌') + ' ' + $label)
+    Write-Host -NoNewline ('  ' + (Paint $C.accent $GL.wait) + ' ' + $label)
     # (not $r: variable names ignore case, and $R is the colour reset Paint appends)
-    try { $result = & $sb; Write-Host ("`r  " + (Paint $C.ok '✓') + ' ' + $label + "$E[K"); return $result }
-    catch { Write-Host ("`r  " + (Paint $C.err '✗') + ' ' + $label + "$E[K"); throw }
+    try { $result = & $sb; Write-Host ("`r  " + (Paint $C.ok $GL.ok) + ' ' + $label + "$E[K"); return $result }
+    catch { Write-Host ("`r  " + (Paint $C.err $GL.fail) + ' ' + $label + "$E[K"); throw }
 }
 # Ctrl+C while we draw: treated as input so that it can be confirmed instead of killing the install half-way
 function Poll-CtrlC {
@@ -467,7 +477,7 @@ try {
         $sha = $rel.assets | Where-Object { $_.name -eq "$($asset.name).sha256" } | Select-Object -First 1
         $zipUrl = $asset.browser_download_url; $zipSize = [long]$asset.size; $shaUrl = $sha.browser_download_url
     }
-    Say '✓' $C.accent "$($T.version): $ver ($($choice.edition))"
+    Say $GL.ok $C.accent "$($T.version): $ver ($($choice.edition))"
 
     # ------------------------------------------------------------ package
     # no console input (redirected, LL_DEFAULTS in a pipeline): Ctrl+C then simply ends the script
@@ -577,11 +587,11 @@ if ($FailAt -eq 'terminal') { P @{ state = 'done'; step = 'finish'; n = 12; warn
         $progressRow = $false
         for ($i = 0; $i -lt $STEP_IDS.Count; $i++) {
             $label = $T.steps[$STEP_IDS[$i]]
-            if ($i + 1 -lt $n -or ($state -eq 'done')) { $row = (Paint $C.ok '✓') + ' ' + (Paint $C.dim $label) }
+            if ($i + 1 -lt $n -or ($state -eq 'done')) { $row = (Paint $C.ok $GL.ok) + ' ' + (Paint $C.dim $label) }
             elseif ($i + 1 -eq $n -and $state -eq 'running') {
                 $row = (Paint $C.accent $SPIN[$tick % $SPIN.Count]) + ' ' + (Paint $C.text $label)
             }
-            elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err '✗') + ' ' + (Paint $C.text $label) }
+            elseif ($i + 1 -eq $n -and $state -eq 'error') { $row = (Paint $C.err $GL.fail) + ' ' + (Paint $C.text $label) }
             else { $row = (Paint '#49454f' '·') + ' ' + (Paint '#6f6a75' $label) }
             $out += "`r  $row$E[K`n"
             if ($i + 1 -eq $n -and $state -eq 'running') {
