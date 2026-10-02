@@ -258,10 +258,25 @@ function Repair-LegacyWindowRules([string]$text) {
     # Managed tiled windows keep their outline when browser fullscreen drops its caption.
     return [regex]::Replace($text, '(?m)^([ \t]*follow_native_border:)[ \t]*true([ \t]*(?:#[^\r\n]*)?)(?=\r?$)', '$1 false$2')
 }
+# Every process running from the files this installer owns ($OWNED in this install, and the whole 0.1.x layout and the
+# stack it replaced): which programs are ours is decided by where they run from, never by their names, so another program
+# with the same name (a GlazeWM of the user's own, say) is left alone, and so is the terminal the user opened from our
+# tools folder. Covers the video screen saver (LogicalLunge.scr) while it is on screen.
 function Stop-Parts {
-    # LogicalLunge: the video screen saver (LogicalLunge.scr) while it is on screen
-    foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-wallpaper', 'LogicalLunge', 'lunge-temps', 'glazewm', 'glazewm-watcher', 'zebar', 'll-helper', 'tacky-borders', 'll-temps') {
-        Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    $dirs = @($OLD_APP, $OLD_LL, $OLD_ZB, $OLD_GW)
+    $files = @($OWNED | ForEach-Object { Join-Path $APP $_ })
+    # the upstream GlazeWM / Zebar an older version installed (recorded in its backup), not ones the user installed
+    $mine = if (Get-Variable backup -Scope Script -ErrorAction SilentlyContinue) { @($script:backup.installed) } else { @() }
+    if ($mine -contains 'glazewm') { $dirs += Join-Path $env:ProgramFiles 'glzr.io\GlazeWM' }
+    if ($mine -contains 'zebar') { $dirs += Join-Path $env:ProgramFiles 'glzr.io\Zebar' }
+    $roots = $dirs | Where-Object { $_ } | ForEach-Object { $_.TrimEnd('\') + '\' }
+    foreach ($p in Get-CimInstance Win32_Process) {
+        $exe = $p.ExecutablePath
+        if (-not $exe -or $p.ProcessId -eq $PID) { continue }
+        $owned = ($files | Where-Object { $exe -ieq $_ -or $exe.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) }) -or
+            ($roots | Where-Object { $exe.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })
+        if (-not $owned) { continue }
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 
