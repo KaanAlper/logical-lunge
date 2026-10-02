@@ -3338,6 +3338,58 @@ static class Prefs
     }
 }
 
+// Artık dosya süpürücüsü: çökme / güç kesintisi yarım kalan geçici dosyaları bırakabiliyor (Windows bildirim veritabanı
+// kopyaları ll-wpn-*, Google Lens sayfaları lunge-lens-*, atomik yazmanın *.tmp'leri). Açılıştan 2 dk sonra ve günde bir
+// kez bir günden eski olanlar silinir. Bağlantı (junction) klasörlerin içine girilmez: yalnızca bağlantının kendisi gider.
+static class TempSweep
+{
+    static readonly TimeSpan AGE = TimeSpan.FromDays(1);
+
+    public static void Start()
+    {
+        new Thread(() =>
+        {
+            Thread.Sleep(120000);
+            while (true)
+            {
+                try { Run(); } catch (Exception ex) { Slider.Log("geçici dosya süpürme: " + ex.Message); }
+                Thread.Sleep(TimeSpan.FromHours(24));
+            }
+        }) { IsBackground = true, Priority = ThreadPriority.Lowest, Name = "temp-sweep" }.Start();
+    }
+
+    static bool Old(System.IO.FileSystemInfo f) { return DateTime.UtcNow - f.LastWriteTimeUtc > AGE; }
+
+    static int OldFiles(string dir, string pattern)
+    {
+        int n = 0;
+        if (!System.IO.Directory.Exists(dir)) return 0;
+        foreach (var f in new System.IO.DirectoryInfo(dir).GetFiles(pattern))
+            if (Old(f)) { try { f.Delete(); n++; } catch { } }
+        return n;
+    }
+
+    public static void Run()
+    {
+        string temp = System.IO.Path.GetTempPath();
+        int n = OldFiles(temp, "lunge-lens-*.html");
+        foreach (var d in new System.IO.DirectoryInfo(temp).GetDirectories("ll-wpn-*"))
+        {
+            if (!Old(d)) continue;
+            try
+            {
+                if ((d.Attributes & System.IO.FileAttributes.ReparsePoint) == 0)
+                    foreach (var f in d.GetFiles()) f.Delete();
+                d.Delete(false);
+                n++;
+            }
+            catch { }
+        }
+        foreach (string dir in new[] { Paths.StateDir, Paths.ConfigDir, Paths.DataDir("cache") }) n += OldFiles(dir, "*.tmp");
+        if (n > 0) Slider.Log("geçici dosya süpürme: " + n + " artık silindi");
+    }
+}
+
 static class Files
 {
     // Atomik yazma: okuyan (dosya izleyici, kabuk, native bar) yarım yazılmış dosya görmez
@@ -11541,6 +11593,7 @@ static class Program
         prioThread.Start();
 
         ShellWatchdog.Start();
+        TempSweep.Start();
         TilingWatchdog.Start();
         FocusSink.Start();
         FocusGuard.Start();
