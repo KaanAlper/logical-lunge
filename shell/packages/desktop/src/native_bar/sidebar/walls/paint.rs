@@ -22,10 +22,10 @@ pub(in crate::native_bar::sidebar) fn paint(cx: &mut Cx, sb: &mut Sidebar, m: &M
     y += cx.message(x, y, width, ok, &text)? + 10.0;
   }
   match w.tab {
-    0 => y = paint_walls(cx, sb, x, y, width)?,
-    1 => y = paint_live(cx, sb, x, y, width)?,
-    2 => y = paint_store(cx, sb, x, y, width, G::Store)?,
-    _ => y = paint_saver(cx, sb, m, minutes, x, y, width)?,
+    TAB_WALL => y = paint_walls(cx, sb, x, y, width)?,
+    TAB_LIVE => y = paint_live(cx, sb, x, y, width)?,
+    TAB_SAVER => y = paint_saver(cx, sb, m, minutes, x, y, width)?,
+    _ => y = paint_store(cx, sb, x, y, width)?,
   }
   cx.pop_clip();
   let content = y + off - r.y;
@@ -76,6 +76,70 @@ fn chips_wrap(cx: &mut Cx, x: f32, y: f32, w: f32, chips: &[(String, Option<&str
     cx_ += cw + 6.0;
   }
   Ok(cy + 32.0 - y)
+}
+
+/// A row of chips that scrolls sideways (every category row of the page):
+/// the wheel (either way) and a drag move it, arrows and faded edges show
+/// what is hidden, and the selected chip is brought into view when it
+/// changes. Returns its height.
+fn chip_row(cx: &mut Cx, sb: &mut Sidebar, row: u8, x: f32, y: f32, w: f32, chips: &[(String, Option<&str>, bool, Hit)]) -> anyhow::Result<f32> {
+  const H: f32 = 32.0;
+  const GAP: f32 = 6.0;
+  const ARROW: f32 = 28.0;
+  const FADE: f32 = 36.0;
+  let id = ScrollId::Row(row);
+  // the chips' places first: the offset can then keep the selected in view
+  let mut spots = Vec::with_capacity(chips.len());
+  let mut at = 0.0f32;
+  for (label, icon, _, _) in chips {
+    let cw = cx.chip_w(label, *icon)?;
+    spots.push((at, cw));
+    at += cw + GAP;
+  }
+  let content = (at - GAP).max(0.0);
+  let max = (content - w).max(0.0);
+  let mut off = sb.scroll.get(&id).copied().unwrap_or(0.0).clamp(0.0, max);
+  if sb.walls.reveal == Some(row) {
+    sb.walls.reveal = None;
+    if let Some(&(cx0, cw)) = chips.iter().position(|c| c.2).and_then(|i| spots.get(i)) {
+      // clear of the arrows on both sides
+      if cx0 - ARROW < off {
+        off = (cx0 - ARROW).max(0.0);
+      } else if cx0 + cw + ARROW > off + w {
+        off = (cx0 + cw + ARROW - w).min(max);
+      }
+    }
+  }
+  sb.scroll.insert(id, off);
+  let band = Rect::new(x, y - 2.0, w, H + 4.0);
+  cx.push_clip(band);
+  for ((label, icon, on, hit), &(cx0, cw)) in chips.iter().zip(&spots) {
+    let cxx = x + cx0 - off;
+    if cxx > x + w || cxx + cw < x {
+      continue;
+    }
+    cx.chip(cxx, y, H, label, *icon, *on, true, hit.clone())?;
+  }
+  // faded edges and arrows where chips are hidden
+  let bg = cx.t.layer0;
+  let clear = Rgba(bg.0, bg.1, bg.2, 0.0);
+  for (left, hidden) in [(true, off > 0.5), (false, off < max - 0.5)] {
+    if !hidden {
+      continue;
+    }
+    let fade = if left { Rect::new(x, band.y, FADE, band.h) } else { Rect::new(x + w - FADE, band.y, FADE, band.h) };
+    let stops = if left { [(0.0, bg), (0.55, bg), (1.0, clear)] } else { [(0.0, clear), (0.45, bg), (1.0, bg)] };
+    cx.gradient(fade, 0.0, &stops)?;
+    let hit = Hit::Walls(WHit::RowStep(row, if left { -1 } else { 1 }));
+    let b = Rect::new(if left { x } else { x + w - ARROW }, y + (H - ARROW) / 2.0, ARROW, ARROW);
+    let fill = if cx.hot(&hit) { cx.t.layer1_hover } else { cx.t.layer1 };
+    cx.p.fill_circle(b.x + ARROW / 2.0, b.y + ARROW / 2.0, ARROW / 2.0, fill)?;
+    cx.icon(if left { "chevron_left" } else { "chevron_right" }, b.x + ARROW / 2.0, b.y + ARROW / 2.0, 20.0, false, cx.t.on_layer1)?;
+    cx.hit(b, hit);
+  }
+  cx.pop_clip();
+  cx.region(Rect::new(x, y, w, H), id, content, true);
+  Ok(H)
 }
 
 /// Monitors as on Windows' display settings, and the target chips.
@@ -161,11 +225,16 @@ fn gallery(cx: &mut Cx, sb: &mut Sidebar, g: G, x: f32, y: f32, w: f32, custom: 
       Some(_) if !cx.visible(r) => {}
       Some(t) => {
         let hit = Hit::Walls(WHit::Tile(g, t.key.clone()));
-        let hot = cx.hot(&hit);
+        let actions = Walls::tile_actions(g);
+        let on_action = actions.iter().any(|(_, id, _)| cx.hot(&Hit::Walls(WHit::TileAct(g, t.key.clone(), id))));
+        let hot = cx.hot(&hit) || on_action;
         let sel = selected.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&t.key)) || (g == G::Videos && sb.walls.in_videos(&t.path));
         let is_busy = busy.as_deref() == Some(t.key.as_str());
         paint_tile(cx, sb, g, r, t, hot, sel, is_busy, &progress, hover.as_ref())?;
         cx.hit(r, hit);
+        if hot && !is_busy {
+          tile_actions(cx, g, r, &t.key, actions)?;
+        }
       }
     }
     i += 1;
@@ -183,6 +252,31 @@ fn gallery(cx: &mut Cx, sb: &mut Sidebar, g: G, x: f32, y: f32, w: f32, custom: 
     h = ey + 30.0 - y;
   }
   Ok(h.max(0.0))
+}
+
+/// An item's main actions on hover: round buttons at its top right, each
+/// running the right-click menu's item of the same id.
+fn tile_actions(cx: &mut Cx, g: G, r: Rect, key: &str, actions: &[(&str, &'static str, &str)]) -> anyhow::Result<()> {
+  const B: f32 = 30.0;
+  let mut bx = r.right() - 6.0 - B;
+  for (icon, id, label) in actions.iter().rev() {
+    let hit = Hit::Walls(WHit::TileAct(g, key.to_string(), id));
+    let hot = cx.hot(&hit);
+    let c = Rect::new(bx, r.y + 6.0, B, B);
+    cx.p.fill_circle(c.x + B / 2.0, c.y + B / 2.0, B / 2.0, if hot { cx.t.primary } else { Rgba(0, 0, 0, 0.6) })?;
+    cx.icon(icon, c.x + B / 2.0, c.y + B / 2.0, 18.0, hot, if hot { cx.t.on_primary } else { Rgba(255, 255, 255, 1.0) })?;
+    if hot {
+      // what it does, under the button
+      let text = cx.tr(label);
+      let tw = cx.measure(&text, st(11.0))?.ceil() + 14.0;
+      let tip = Rect::new((c.right() - tw).max(r.x + 4.0), c.bottom() + 4.0, tw, 20.0);
+      cx.round(tip, 10.0, Rgba(0, 0, 0, 0.75))?;
+      cx.text_center(&text, tip, st(11.0), Rgba(255, 255, 255, 1.0))?;
+    }
+    cx.hit(c, hit);
+    bx -= B + 6.0;
+  }
+  Ok(())
 }
 
 fn grow(r: Rect, k: f32) -> Rect {
@@ -278,7 +372,7 @@ fn paint_walls(cx: &mut Cx, sb: &mut Sidebar, x: f32, mut y: f32, w: f32) -> any
   for (k, label, icon) in WALL_CATS {
     chips.push((cx.tr(label), Some(icon), sb.walls.cat == k, Hit::Walls(WHit::Cat(k))));
   }
-  y += chips_wrap(cx, x, y, w, &chips)? + 10.0;
+  y += chip_row(cx, sb, ROW_WALL, x, y, w, &chips)? + 10.0;
   let custom = cx.tr("Dosyadan seç");
   y += gallery(cx, sb, G::Wall, x, y, w, Some((&custom, "add_photo_alternate")), None)? + 14.0;
   if sb.walls.monitors().len() > 1 {
@@ -321,8 +415,8 @@ fn switch_row(cx: &mut Cx, x: f32, y: f32, w: f32, label: &str, on: bool, hit: H
   Ok(40.0)
 }
 
-fn paint_store(cx: &mut Cx, sb: &mut Sidebar, x: f32, mut y: f32, w: f32, g: G) -> anyhow::Result<f32> {
-  // categories in one row that scrolls sideways (the store has dozens)
+fn paint_store(cx: &mut Cx, sb: &mut Sidebar, x: f32, mut y: f32, w: f32) -> anyhow::Result<f32> {
+  y += cx.hint(x, y, w, &cx.tr("Mağazadaki her video canlı duvar kâğıdı ya da ekran koruyucu olabilir; indirilen video iki yerde de kütüphanende durur."))? + 10.0;
   match sb.walls.store_cats.clone() {
     None if sb.walls.store_failed => {
       y += cx.message(x, y, w, false, &cx.tr("Mağazaya ulaşılamadı"))? + 10.0;
@@ -333,24 +427,12 @@ fn paint_store(cx: &mut Cx, sb: &mut Sidebar, x: f32, mut y: f32, w: f32, g: G) 
       return Ok(y + 40.0);
     }
     Some(cats) => {
-      let row = Rect::new(x, y, w, 36.0);
-      let off = sb.scroll.get(&ScrollId::Row(2)).copied().unwrap_or(0.0);
-      cx.push_clip(Rect::new(row.x, row.y - 2.0, row.w, row.h + 4.0));
-      let mut cx_ = x - off;
-      for c in &cats {
-        let label = cx.tr(live_cat_name(c));
-        cx_ += cx.chip(cx_, y, 32.0, &label, None, sb.walls.store_cat == *c, true, Hit::Walls(WHit::StoreCat(c.clone())))? + 6.0;
-      }
-      cx.pop_clip();
-      let content = cx_ + off - x;
-      let max = (content - w).max(0.0);
-      sb.scroll.insert(ScrollId::Row(2), off.min(max));
-      cx.region(row, ScrollId::Row(2), content, true);
-      y += 36.0 + 10.0;
+      let chips: Vec<_> = cats.iter().map(|c| (cx.tr(live_cat_name(c)), None, sb.walls.store_cat == *c, Hit::Walls(WHit::StoreCat(c.clone())))).collect();
+      y += chip_row(cx, sb, ROW_STORE, x, y, w, &chips)? + 10.0;
     }
   }
-  y += gallery(cx, sb, g, x, y, w, None, None)? + 14.0;
-  cx.text_center(&cx.tr("Canlı duvar kağıtları: Sucrose Store (yalnızca güvenli içerik)"), Rect::new(x, y, w, 16.0), st(11.0), cx.c.outline)?;
+  y += gallery(cx, sb, G::Store, x, y, w, None, None)? + 14.0;
+  cx.text_center(&cx.tr("Videolar: Sucrose Store (yalnızca güvenli içerik)"), Rect::new(x, y, w, 16.0), st(11.0), cx.c.outline)?;
   Ok(y + 20.0)
 }
 
@@ -408,10 +490,11 @@ fn paint_saver(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, minutes: &mut TextFiel
   }
   y = iy + 14.0 + 10.0;
   // the galleries: screen savers, our videos, the store for them
-  let sub_w = (w - 2.0 * 4.0) / 3.0;
+  let n = SAVER_SUBS.len();
+  let sub_w = (w - (n - 1) as f32 * 4.0) / n as f32;
   for (i, (label, icon)) in SAVER_SUBS.iter().enumerate() {
     let b = Rect::new(x + i as f32 * (sub_w + 4.0), y, sub_w, 36.0);
-    seg(cx, b, &cx.tr(label), icon, sb.walls.sub == i, Hit::Walls(WHit::Sub(i)), i == 0, i == 2)?;
+    seg(cx, b, &cx.tr(label), icon, sb.walls.sub == i, Hit::Walls(WHit::Sub(i)), i == 0, i == n - 1)?;
   }
   y += 36.0 + 10.0;
   match sb.walls.sub {
@@ -420,8 +503,8 @@ fn paint_saver(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, minutes: &mut TextFiel
       let selected = saver.as_ref().map(|s_| s(&s_["selected"]).to_string());
       y += gallery(cx, sb, G::Savers, x, y, w, Some((&import, "upload_file")), selected)? + 10.0;
     }
-    1 => {
-      y += cx.hint(x, y, w, &cx.tr("Canlı duvar kâğıdı kütüphanendeki videolar ekran koruyucu olarak oynar. Birden çoksa karışık oynatılabilir."))? + 8.0;
+    _ => {
+      y += cx.hint(x, y, w, &cx.tr("Canlı duvar kâğıdı kütüphanendeki videolar ekran koruyucu olarak oynar. Yenilerini Mağaza'dan indirebilirsin; birden çoksa karışık oynatılabilir."))? + 8.0;
       let n = sb.walls.videos["videos"].as_array().map_or(0, |a| a.len());
       if n > 1 {
         let shuffle = sb.walls.videos["shuffle"].as_bool() == Some(true);
@@ -429,7 +512,6 @@ fn paint_saver(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, minutes: &mut TextFiel
       }
       y += gallery(cx, sb, G::Videos, x, y, w, None, None)? + 10.0;
     }
-    _ => y = paint_store(cx, sb, x, y, w, G::SaverStore)?,
   }
   Ok(y)
 }

@@ -81,6 +81,10 @@ const INSET: f32 = 5.0;
 const PANEL_R: f32 = 19.0;
 /// focus that leaves this soon after opening is Windows settling
 const BLUR_GRACE: Duration = Duration::from_millis(300);
+/// Opened again within this time, the panel comes back as it was left: the
+/// page that was open, its scroll, what was typed (it closes whenever the
+/// focus goes elsewhere, e.g. to look something up for an issue report).
+const RESUME: Duration = Duration::from_secs(180);
 const OPEN_MS: f32 = 350.0;
 const CLOSE_MS: f32 = 250.0;
 const PAGE_IN_MS: f32 = 340.0;
@@ -191,6 +195,8 @@ enum Drag {
   Tile,
   Notif,
   Page(Hit),
+  /// a sideways row followed the pointer (`moved`) or may (a press on it)
+  Row { id: ScrollId, x0: f32, off0: f32, moved: bool },
 }
 
 pub(super) struct Sidebar {
@@ -217,6 +223,8 @@ pub(super) struct Sidebar {
   keys: Keys,
   walls: Walls,
   bug: Option<Bug>,
+  /// the page open when the panel last closed, and when
+  resume: Option<(Page, Instant)>,
   images: Images,
   /// a file dialog of the core is open: losing the focus to it does not close
   modal: u32,
@@ -253,6 +261,7 @@ impl Default for Sidebar {
       keys: Keys::default(),
       walls: Walls::new(&store),
       bug: None,
+      resume: None,
       images: Images::default(),
       modal: 0,
       shown_at: None,
@@ -403,8 +412,9 @@ impl Ui {
         };
         if name == "screensaver" {
           // Windows' "Settings" of our video screen saver: its tab
-          self.sidebar.walls.tab = 3;
-          self.sidebar.store.wall_tab = 3;
+          self.sidebar.walls.tab = walls::TAB_SAVER;
+          self.sidebar.walls.sub = 1;
+          self.sidebar.store.wall_page_tab = walls::TAB_SAVER;
         }
         if self.sidebar.open {
           if let Some(p) = page {
@@ -463,6 +473,11 @@ impl Ui {
     if self.sidebar.dash.is_none() {
       self.sidebar.dash = dash_style(&self.gfx);
     }
+    let resumed = match page {
+      None => self.sidebar.resume.take().filter(|(_, at)| at.elapsed() < RESUME).map(|(p, _)| p),
+      Some(_) => None,
+    };
+    let page = page.or(resumed);
     let sb = &mut self.sidebar;
     sb.open = true;
     sb.page = page;
@@ -479,7 +494,7 @@ impl Ui {
     self.sb_qs_refresh(false);
     self.sb_notifs_load();
     if let Some(p) = page {
-      self.sb_page_started(p);
+      self.sb_page_started(p, resumed.is_some());
     }
     self.sb_render();
     if let Err(err) = self.sb_slide(true) {
@@ -507,7 +522,16 @@ impl Ui {
       return;
     }
     self.menu_close();
+    // the issue report's text survives a restart too
+    if let Some(f) = self.sidebar.fields.get(&FieldId::BugText) {
+      let text = f.text();
+      if self.sidebar.store.bug_draft != text && self.sidebar.bug.as_ref().is_some_and(|b| !b.sent) {
+        self.sidebar.store.bug_draft = text;
+        self.sidebar.save_soon();
+      }
+    }
     let sb = &mut self.sidebar;
+    sb.resume = sb.page.filter(|_| !sb.page_closing).map(|p| (p, Instant::now()));
     sb.open = false;
     sb.focus = None;
     sb.drag = None;
@@ -608,8 +632,10 @@ impl Ui {
     }
   }
 
-  fn sb_page_started(&mut self, p: Page) {
-    self.sidebar.scroll.remove(&ScrollId::Page);
+  fn sb_page_started(&mut self, p: Page, resumed: bool) {
+    if !resumed {
+      self.sidebar.scroll.remove(&ScrollId::Page);
+    }
     match p {
       Page::Keys => self.sb_keys_open(),
       Page::Walls => self.sb_walls_open(),
@@ -625,7 +651,7 @@ impl Ui {
     self.sidebar.page = Some(p);
     self.sidebar.page_closing = false;
     self.sidebar.focus = None;
-    self.sb_page_started(p);
+    self.sb_page_started(p, false);
     self.sb_render();
     let _ = self.sb_page_slide(true);
   }
@@ -650,6 +676,13 @@ impl Ui {
       let _ = KillTimer(self.msg_hwnd, TIMER_SB_PAGE);
     }
     if self.sidebar.page == Some(Page::Bug) {
+      // left with Back: the text stays a draft unless it was sent
+      if self.sidebar.bug.as_ref().is_some_and(|b| !b.sent) {
+        if let Some(f) = self.sidebar.fields.get(&FieldId::BugText) {
+          self.sidebar.store.bug_draft = f.text();
+          self.sidebar.save_soon();
+        }
+      }
       self.sidebar.bug = None;
     }
     self.sidebar.page = None;

@@ -16,7 +16,7 @@ impl Ui {
   fn sb_walls_load_tab(&mut self) {
     let w = &mut self.sidebar.walls;
     match w.tab {
-      0 => {
+      TAB_WALL => {
         load_info();
         if w.cat == "local" || !w.items.contains_key(&w.cat) {
           w.items.insert(w.cat.clone(), None);
@@ -27,23 +27,23 @@ impl Ui {
           load_cat("span".into());
         }
       }
-      1 => {
+      TAB_LIVE => {
         load_info();
         w.live = None;
         load_live();
       }
-      2 => self.sb_walls_store(),
-      _ => {
+      TAB_SAVER => {
         w.saver_err.clear();
         load_saver();
-        match w.sub {
-          1 => {
-            w.live = None;
-            load_live();
-          }
-          2 => self.sb_walls_store(),
-          _ => {}
+        if w.sub == 1 {
+          w.live = None;
+          load_live();
         }
+      }
+      _ => {
+        // what the store's items become depends on the monitors too
+        load_info();
+        self.sb_walls_store();
       }
     }
   }
@@ -204,7 +204,7 @@ impl Ui {
           WEv::Done(false, tr_err.iter().find(|(k, _)| *k == e).map_or(tr_err[3].1.clone(), |x| x.1.clone()), false)
         }
       }),
-      G::Store | G::SaverStore => job(move || {
+      G::Store => job(move || {
         let r = core_json(&["--live-get", &t.cat, &t.id, &mode]);
         if r["ok"].as_bool() == Some(true) {
           WEv::Done(true, ok_live, true)
@@ -356,7 +356,7 @@ impl Ui {
         if w.tab != i {
           w.tab = i;
           w.msg = None;
-          self.sidebar.store.wall_tab = i;
+          self.sidebar.store.wall_page_tab = i;
           self.sidebar.save_soon();
           self.sidebar.scroll.remove(&ScrollId::Page);
           self.sb_walls_load_tab();
@@ -377,12 +377,14 @@ impl Ui {
             w.items.insert(c.to_string(), None);
             load_cat(c.to_string());
           }
+          w.reveal = Some(ROW_WALL);
           self.sidebar.store.wall_cat = Some(c.to_string());
           self.sidebar.save_soon();
         }
       }
       WHit::StoreCat(c) => {
         w.store_cat = c.clone();
+        w.reveal = Some(ROW_STORE);
         self.sidebar.store.live_cat = Some(c);
         self.sidebar.save_soon();
         self.sb_walls_store();
@@ -392,8 +394,19 @@ impl Ui {
         match g {
           G::Savers => self.sb_saver_set(Some(true), None, None, Some(t.path)),
           G::Videos => self.sb_saver_video("set", t.path),
-          G::SaverStore => self.sb_saver_store(t),
           _ => self.sb_walls_apply(g, t, None),
+        }
+      }
+      WHit::TileAct(g, key, id) => {
+        let Some(t) = w.tile(g, &key) else { return };
+        return self.sb_walls_menu_pick(g, t, id);
+      }
+      WHit::RowStep(row, dir) => {
+        // most of a row's width per press, never past either end
+        let id = ScrollId::Row(row);
+        if let Some(r) = self.sidebar.regions.iter().find(|r| r.id == id).copied() {
+          let off = self.sidebar.scroll.entry(id).or_insert(0.0);
+          *off = (*off + dir as f32 * r.rect.w * 0.7).clamp(0.0, r.max);
         }
       }
       WHit::Custom(g) => self.sb_walls_pick(g),
@@ -490,7 +503,7 @@ impl Ui {
           items.push(MenuItem::new("remove", Some("delete"), tr("Kütüphaneden kaldır")));
         }
       }
-      G::Store | G::SaverStore => {
+      G::Store => {
         items.push(MenuItem::new("download", Some("download"), tr("İndir")));
         items.push(MenuItem::new("apply", Some("check"), tr("Uygula (tüm monitörler)")));
         if mons.len() > 1 {
@@ -612,7 +625,7 @@ impl Ui {
   /// Hover over a tile: when it changed (moving previews start from their first frame).
   pub(in crate::native_bar::sidebar) fn sb_walls_hover(&mut self, hit: Option<&Hit>) {
     let key = match hit {
-      Some(Hit::Walls(WHit::Tile(_, k))) => Some(k.clone()),
+      Some(Hit::Walls(WHit::Tile(_, k) | WHit::TileAct(_, k, _))) => Some(k.clone()),
       _ => None,
     };
     let w = &mut self.sidebar.walls;

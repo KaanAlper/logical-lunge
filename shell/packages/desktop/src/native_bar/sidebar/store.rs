@@ -152,8 +152,10 @@ pub(super) struct Store {
   pub notif_dismissed: Vec<String>,
   pub live_cat: Option<String>,
   pub wall_cat: Option<String>,
-  /// the wallpaper page's tab
-  pub wall_tab: usize,
+  /// the wallpaper page's tab (a new key: the tabs were reordered)
+  pub wall_page_tab: usize,
+  /// the issue report's text while it is not sent
+  pub bug_draft: String,
   /// keep-awake was on: turned on again after a restart
   pub awake_want: bool,
   /// the last hardware state the quick settings saw

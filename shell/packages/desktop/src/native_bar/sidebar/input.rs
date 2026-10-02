@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// How far a press on a sideways row moves before it drags the row.
+const ROW_DRAG_SLOP: f32 = 6.0;
+
 impl Ui {
   /// A message for the panel's window (None: not its window).
   pub(in crate::native_bar) fn sidebar_msg(&mut self, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Option<Option<LRESULT>> {
@@ -161,6 +164,16 @@ impl Ui {
           return;
         }
       }
+      Some(Drag::Row { id, x0, off0, moved }) => {
+        // past a few DIPs the press scrolls the row instead of clicking
+        if moved || (x - x0).abs() > ROW_DRAG_SLOP {
+          self.sidebar.drag = Some(Drag::Row { id, x0, off0, moved: true });
+          if let Some(r) = self.sidebar.regions.iter().find(|r| r.id == id).copied() {
+            self.sidebar.scroll.insert(id, (off0 - (x - x0)).clamp(0.0, r.max));
+          }
+          return self.sb_render();
+        }
+      }
       None => {}
     }
     let hit = self.sidebar.hit_at(x, y);
@@ -232,6 +245,13 @@ impl Ui {
       }
       _ => {}
     }
+    // a sideways row: a press may become a drag of the row
+    if self.sidebar.drag.is_none() {
+      if let Some(r) = self.sidebar.region_at(x, y, true) {
+        let off0 = self.sidebar.scroll.get(&r.id).copied().unwrap_or(0.0);
+        self.sidebar.drag = Some(Drag::Row { id: r.id, x0: x, off0, moved: false });
+      }
+    }
     self.sb_render();
   }
 
@@ -268,7 +288,8 @@ impl Ui {
           return;
         }
       }
-      None => {}
+      Some(Drag::Row { moved: true, .. }) => return self.sb_render(),
+      Some(Drag::Row { .. }) | None => {}
     }
     let hit = self.sidebar.hit_at(x, y);
     if let (Some(h), Some(p)) = (hit, pressed) {
@@ -331,7 +352,9 @@ impl Ui {
       return self.sb_render();
     }
     // a scrolling area: vertical ones by the wheel, rows also by a vertical wheel
-    let region = self.sidebar.region_at(x, y, horizontal).or_else(|| if !horizontal { self.sidebar.region_at(x, y, true) } else { None });
+    // a sideways row under the pointer takes a vertical wheel too (before the
+    // page around it)
+    let region = self.sidebar.region_at(x, y, true).or_else(|| if horizontal { None } else { self.sidebar.region_at(x, y, false) });
     let Some(r) = region else { return };
     let step = delta as f32 / 120.0 * if r.horizontal { 90.0 } else { 60.0 };
     let off = self.sidebar.scroll.entry(r.id).or_insert(0.0);

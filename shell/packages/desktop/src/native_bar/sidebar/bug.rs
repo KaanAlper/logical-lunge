@@ -67,7 +67,7 @@ pub(super) struct Bug {
   device_error: bool,
   sending: bool,
   progress: Option<u32>,
-  sent: bool,
+  pub(super) sent: bool,
   confirm_missing: bool,
   error: String,
 }
@@ -516,6 +516,11 @@ fn upload(base: Value, logs: [(String, Option<String>); 3], english: bool) -> Re
 
 impl Ui {
   pub(super) fn sb_bug_open(&mut self) {
+    // an unsent report (the panel closed while it was written) is kept
+    if self.sidebar.bug.as_ref().is_some_and(|b| !b.sent) {
+      self.sidebar.focus = Some(FieldId::BugText);
+      return;
+    }
     let english = !self.model.locale().to_lowercase().starts_with("tr");
     self.sidebar.bug = Some(Bug {
       english,
@@ -533,7 +538,8 @@ impl Ui {
     let now = now_local();
     self.sidebar.field(FieldId::BugStart).set(&now);
     self.sidebar.field(FieldId::BugEnd).set(&now);
-    self.sidebar.field(FieldId::BugText).set("");
+    let draft = self.sidebar.store.bug_draft.clone();
+    self.sidebar.field(FieldId::BugText).set(&draft);
     self.sidebar.focus = Some(FieldId::BugText);
     std::thread::spawn(move || {
       let device = core_api::run_core_output(&["--bug-report-device"]).and_then(|s| serde_json::from_str::<Value>(&s).ok()).filter(Value::is_object);
@@ -578,6 +584,8 @@ impl Ui {
           Ok(()) => {
             b.sent = true;
             let (title, body) = (b.t("Rapor gönderildi", "Report sent"), b.t("Hata raporu kaydedildi.", "The issue report was saved."));
+            self.sidebar.store.bug_draft.clear();
+            self.sidebar.save_soon();
             self.toast_add(json!({ "kind": "ok", "title": title, "body": body, "icon": "check_circle" }));
           }
           Err(e) => b.error = format!("{}{}", b.t("Gönderilemedi: ", "Could not send: "), e),

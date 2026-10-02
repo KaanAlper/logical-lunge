@@ -2,12 +2,14 @@
 //! ScreenSaverSection), split into tabs so one gallery shows at a time:
 //! - Duvar kâğıdı: the monitors, wallhaven.cc's suggestions by category and
 //!   the library ("Kütüphanem"), Superscreen across monitors;
-//! - Canlı: the live wallpaper library, import, pause rules;
-//! - Mağaza: Sucrose Store's live wallpapers (moving preview on hover);
-//! - Ekran koruyucu: Windows' settings, the screen savers, our video screen
-//!   saver's videos and its store.
-//! Every gallery item has our right-click menu (apply here or on one
-//! monitor, download, open its folder, remove from the library...).
+//! - Canlı: the video library, import, pause rules;
+//! - Ekran koruyucu: Windows' settings, the screen savers and our video
+//!   screen saver's videos (the same video library);
+//! - Mağaza: Sucrose Store's videos (moving preview on hover), one store
+//!   for both: an item becomes a live wallpaper or the screen saver.
+//! Every tab is the same parts: a category row that scrolls sideways
+//! (`chip_row`) and one gallery (`gallery`); every item has our right-click
+//! menu and, on hover, its main actions.
 //!
 //! The core does the work (`--wall-*`, `--live-*`, `--saver-*`,
 //! `/library-remove`); Windows' screen saver settings are the shell's
@@ -38,7 +40,14 @@ use super::{
   Ev, FieldId, Hit, ScrollId, Sidebar,
 };
 
-const TABS: [(&str, &str); 4] = [("Duvar kâğıdı", "wallpaper"), ("Canlı", "motion_photos_on"), ("Mağaza", "storefront"), ("Ekran koruyucu", "ambient_screen")];
+const TABS: [(&str, &str); 4] = [("Duvar kâğıdı", "wallpaper"), ("Canlı", "motion_photos_on"), ("Ekran koruyucu", "ambient_screen"), ("Mağaza", "storefront")];
+pub(in crate::native_bar::sidebar) const TAB_WALL: usize = 0;
+pub(in crate::native_bar::sidebar) const TAB_LIVE: usize = 1;
+pub(in crate::native_bar::sidebar) const TAB_SAVER: usize = 2;
+pub(in crate::native_bar::sidebar) const TAB_STORE: usize = 3;
+/// the scrolling category rows
+const ROW_WALL: u8 = 1;
+const ROW_STORE: u8 = 2;
 const WALL_CATS: [(&str, &str, &str); 6] = [
   ("anime", "Anime", "animation"),
   ("nature", "Doğa", "forest"),
@@ -47,7 +56,7 @@ const WALL_CATS: [(&str, &str, &str); 6] = [
   ("minimal", "Minimal", "crop_square"),
   ("local", "Kütüphanem", "photo_library"),
 ];
-const SAVER_SUBS: [(&str, &str); 3] = [("Ekran koruyucular", "ambient_screen"), ("Videolar", "video_library"), ("Mağaza", "storefront")];
+const SAVER_SUBS: [(&str, &str); 2] = [("Ekran koruyucular", "ambient_screen"), ("Videolar", "video_library")];
 
 /// The galleries of the page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -58,7 +67,6 @@ pub(in crate::native_bar) enum G {
   Store,
   Savers,
   Videos,
-  SaverStore,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +78,10 @@ pub(super) enum WHit {
   Cat(&'static str),
   StoreCat(String),
   Tile(G, String),
+  /// a hover action of an item: (gallery, item, menu id)
+  TileAct(G, String, &'static str),
+  /// an arrow of a category row: (row, direction)
+  RowStep(u8, i8),
   Custom(G),
   LiveClear,
   LiveOpt(bool),
@@ -123,7 +135,9 @@ struct Confirm {
 #[derive(Default)]
 pub(super) struct Walls {
   pub tab: usize,
-  sub: usize,
+  pub sub: usize,
+  /// a category row whose selected chip must be brought into view
+  reveal: Option<u8>,
   info: Option<Value>,
   target: String,
   cat: String,
@@ -201,7 +215,8 @@ fn live_error(e: &str, download: bool) -> &'static str {
 impl Walls {
   pub fn new(store: &Store) -> Self {
     Walls {
-      tab: store.wall_tab.min(3),
+      tab: store.wall_page_tab.min(TAB_STORE),
+      reveal: Some(ROW_WALL),
       target: "all".into(),
       cat: store.wall_cat.clone().unwrap_or_else(|| "anime".into()),
       store_cat: store.live_cat.clone().filter(|c| c != "local").unwrap_or_else(|| "Anime".into()),
@@ -224,7 +239,7 @@ impl Walls {
       G::Wall => self.items.get(&self.cat).cloned().flatten(),
       G::Span => self.items.get("span").cloned().flatten(),
       G::Live | G::Videos => self.live.clone(),
-      G::Store | G::SaverStore => self.store.get(&self.store_cat).cloned().flatten(),
+      G::Store => self.store.get(&self.store_cat).cloned().flatten(),
       G::Savers => self.saver.as_ref().map(|st| {
         st["choices"]
           .as_array()
@@ -238,6 +253,16 @@ impl Walls {
           })
           .unwrap_or_default()
       }),
+    }
+  }
+
+  /// The actions shown on an item under the pointer (the menu's main ones:
+  /// (icon, menu id, label)).
+  pub(super) fn tile_actions(g: G) -> &'static [(&'static str, &'static str, &'static str)] {
+    match g {
+      G::Store => &[("motion_photos_on", "apply", "Duvar kâğıdı yap"), ("ambient_screen", "saver", "Ekran koruyucu yap")],
+      G::Live => &[("ambient_screen", "saver", "Ekran koruyucu yap")],
+      _ => &[],
     }
   }
 
