@@ -9507,6 +9507,139 @@ static class ScreenSavers
     }
 }
 
+// ---------------- Video ekran koruyucusu (LogicalLunge.scr) ----------------
+// lunge-wallpaper.exe'nin .scr adlı kopyası (paket yapar). Oynattığı videolar state\screensaver-video.json'da:
+// {"videos":[yollar],"shuffle":bool} (birden çoksa her açılışta biri). Videolar canlı duvar kağıdı kütüphanesinden gelir
+// (içe aktarılan ya da mağazadan inen); kütüphane dışındaki bir dosya seçilmez. Seçmek Windows'un ekran koruyucusunu
+// LogicalLunge.scr yapar (HKCU, kullanıcının kendi ayarı; bekleme süresi ve kilit ayarına dokunulmaz).
+static class SaverVideo
+{
+    [DllImport("user32.dll", SetLastError = true)] static extern bool SystemParametersInfo(uint action, uint param, IntPtr pv, uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint size);
+    const uint SPI_SETSCREENSAVEACTIVE = 0x0011, SPIF_UPDATEINIFILE = 0x1, SPIF_SENDCHANGE = 0x2;
+    const string DESKTOP = @"HKEY_CURRENT_USER\Control Panel\Desktop";
+    static readonly string[] VIDEO = { ".mp4", ".m4v", ".mov", ".wmv", ".webm", ".mkv" };
+    static readonly JavaScriptSerializer json = new JavaScriptSerializer();
+
+    static string StatePath { get { return Paths.State("screensaver-video.json"); } }
+    public static string Scr { get { return Paths.In("LogicalLunge.scr"); } }
+
+    sealed class Settings { public List<string> Videos = new List<string>(); public bool Shuffle = true; }
+
+    static Settings Load()
+    {
+        var s = new Settings();
+        try
+        {
+            if (!System.IO.File.Exists(StatePath)) return s;
+            var d = json.Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(StatePath));
+            object v;
+            if (d.TryGetValue("videos", out v) && v is System.Collections.ArrayList)
+                foreach (var o in (System.Collections.ArrayList)v) if (o is string && ((string)o).Length > 0) s.Videos.Add((string)o);
+            if (d.TryGetValue("shuffle", out v) && v is bool) s.Shuffle = (bool)v;
+        }
+        catch (Exception ex) { Slider.Log("ekran koruyucu videosu ayarı okunamadı: " + ex.Message); }
+        return s;
+    }
+
+    static void Save(Settings s)
+    {
+        string tmp = StatePath + ".tmp";
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(StatePath));
+        System.IO.File.WriteAllText(tmp, json.Serialize(new Dictionary<string, object> { { "videos", s.Videos }, { "shuffle", s.Shuffle } }), new UTF8Encoding(false));
+        if (System.IO.File.Exists(StatePath)) System.IO.File.Replace(tmp, StatePath, null);
+        else System.IO.File.Move(tmp, StatePath);
+    }
+
+    // Yalnızca kütüphanedeki bir video (ekran koruyucu, gösterdiği dosyayı kullanıcının seçtiği yerden okur)
+    public static string InLibrary(string video)
+    {
+        if (string.IsNullOrEmpty(video)) throw new ArgumentException("video");
+        string full = System.IO.Path.GetFullPath(video);
+        string root = System.IO.Path.GetFullPath(LiveWallpaper.Dir).TrimEnd('\\') + "\\";
+        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException("library");
+        if (Array.IndexOf(VIDEO, System.IO.Path.GetExtension(full).ToLowerInvariant()) < 0 || !System.IO.File.Exists(full)) throw new ArgumentException("video");
+        return full;
+    }
+
+    // Windows SCRNSAVE.EXE'de boşluklu yolu her yerde okuyamıyor (Program Files): kısa yol yazılır
+    static string ShortPath(string path)
+    {
+        var sb = new StringBuilder(520);
+        uint n = GetShortPathName(path, sb, (uint)sb.Capacity);
+        return n > 0 && n < sb.Capacity ? sb.ToString() : path;
+    }
+
+    static bool Selected()
+    {
+        string cur = Microsoft.Win32.Registry.GetValue(DESKTOP, "SCRNSAVE.EXE", "") as string;
+        if (string.IsNullOrEmpty(cur) || !System.IO.File.Exists(Scr)) return false;
+        return string.Equals(cur, Scr, StringComparison.OrdinalIgnoreCase) || string.Equals(cur, ShortPath(Scr), StringComparison.OrdinalIgnoreCase);
+    }
+
+    static void Activate(bool on)
+    {
+        if (on)
+        {
+            if (!System.IO.File.Exists(Scr)) throw new InvalidOperationException("scr");
+            Microsoft.Win32.Registry.SetValue(DESKTOP, "SCRNSAVE.EXE", ShortPath(Scr));
+        }
+        if (on || Selected()) SystemParametersInfo(SPI_SETSCREENSAVEACTIVE, on ? 1u : 0u, IntPtr.Zero, SPIF_UPDATEINIFILE | SPIF_SENDCHANGE);
+    }
+
+    // --saver-videos -> {"videos":[var olanlar],"shuffle":bool,"scr":yol,"installed":bool,"active":bool}
+    public static string List()
+    {
+        var s = Load();
+        return json.Serialize(new Dictionary<string, object>
+        {
+            { "videos", s.Videos.FindAll(System.IO.File.Exists) }, { "shuffle", s.Shuffle },
+            { "scr", Scr }, { "installed", System.IO.File.Exists(Scr) }, { "active", Selected() },
+        });
+    }
+
+    // --saver-video <set|add|remove> <video>: set tek video yapar ve LogicalLunge.scr'yi seçer, add listeye ekler
+    // (karışık oynatılır), remove çıkarır (liste boşalırsa ekran koruyucumuz seçiliyse kapatılır)
+    public static string Change(string op, string video)
+    {
+        var s = Load();
+        if (op == "remove")
+        {
+            string full = System.IO.Path.GetFullPath(video);
+            s.Videos.RemoveAll(v => string.Equals(v, full, StringComparison.OrdinalIgnoreCase));
+            Save(s);
+            if (s.Videos.Count == 0) Activate(false);
+            return List();
+        }
+        string path = InLibrary(video);
+        if (op == "set") s.Videos = new List<string> { path };
+        else if (op == "add") { if (!s.Videos.Exists(v => string.Equals(v, path, StringComparison.OrdinalIgnoreCase))) s.Videos.Add(path); }
+        else throw new ArgumentException("op");
+        Save(s);
+        Activate(true);
+        return List();
+    }
+
+    // --saver-shuffle <1|0>
+    public static string Shuffle(bool on) { var s = Load(); s.Shuffle = on; Save(s); return List(); }
+
+    // --saver-store-get <kategori> <ad>: canlı duvar kağıdı mağazasından indir (duvar kağıdı yapmadan), ekran koruyucu yap
+    public static string StoreGet(string category, string id)
+    {
+        var got = json.Deserialize<Dictionary<string, object>>(LiveWallpaper.Get(category, id, "none"));
+        object p;
+        if (!got.TryGetValue("path", out p) || !(p is string)) throw new InvalidOperationException("store");
+        return Change("set", (string)p);
+    }
+
+    // --saver-video-run: şimdi göster (önizleme düğmesi)
+    public static void Run()
+    {
+        if (!System.IO.File.Exists(Scr)) throw new InvalidOperationException("scr");
+        Process.Start(new ProcessStartInfo(Scr, "/s") { UseShellExecute = false });
+    }
+}
+
 static class LiveWallpaper
 {
     public const string Name = "lunge-wallpaper";
@@ -10084,7 +10217,7 @@ static class LiveWallpaper
         return json.Serialize(list);
     }
 
-    // --live-get <kategori> <ad> <mod>: mağazadan indir (bir kez), uygula -> {"ok":true,"path"}
+    // --live-get <kategori> <ad> <mod>: mağazadan indir (bir kez), uygula (mod "none": uygulamaz) -> {"ok":true,"path"}
     // Klasör: kategori + ad (aynı ad birden çok kategoride başka videolarla geçiyor)
     public static string Get(string category, string id, string mode)
     {
@@ -10114,7 +10247,8 @@ static class LiveWallpaper
         // atıf: yapan, lisans, kaynak (kütüphane gösterir)
         info["Store"] = "https://github.com/Taiizor/Store/tree/develop/" + source + "/" + Uri.EscapeDataString(id);
         System.IO.File.WriteAllText(System.IO.Path.Combine(dir, "info.json"), json.Serialize(info), new UTF8Encoding(false));
-        Set(video, mode);
+        // "none": yalnızca indir (ekran koruyucu için)
+        if (mode != "none") Set(video, mode);
         return json.Serialize(new Dictionary<string, object> { { "ok", true }, { "path", video } });
     }
 
@@ -11174,7 +11308,8 @@ static class Program
         }
         // Canlı duvar kağıdı: --live-store [kategori] | --live-get <kategori> <ad> <mod> | --live-progress | --live-local
         //                     --live-set <video> <mod> | --live-pick <mod> | --live-clear <mod> | --live-options <0|1> <0|1>
-        // Ekran koruyucu: --saver-pick | --saver-icons (aynı çıktı biçimi)
+        // Ekran koruyucu: --saver-pick | --saver-icons | --saver-videos | --saver-video <set|add|remove> <video> |
+        //   --saver-shuffle <1|0> | --saver-store-get <kategori> <ad> | --saver-video-run (aynı çıktı biçimi)
         if (args.Length >= 1 && (args[0].StartsWith("--live-") || args[0].StartsWith("--saver-")))
         {
             string outText, ok = "{\"ok\":true}";
@@ -11192,6 +11327,11 @@ static class Program
                     case "--live-options": LiveWallpaper.SetOptions(args[1] == "1", args[2] == "1"); outText = ok; break;
                     case "--saver-pick": outText = ScreenSavers.Pick(); break;
                     case "--saver-icons": outText = ScreenSavers.Icons(); break;
+                    case "--saver-videos": outText = SaverVideo.List(); break;
+                    case "--saver-video": outText = SaverVideo.Change(args[1], args[2]); break;
+                    case "--saver-shuffle": outText = SaverVideo.Shuffle(args[1] == "1"); break;
+                    case "--saver-store-get": outText = SaverVideo.StoreGet(args[1], args[2]); break;
+                    case "--saver-video-run": SaverVideo.Run(); outText = ok; break;
                     default: outText = "{\"error\":\"unknown\"}"; break;
                 }
             }
