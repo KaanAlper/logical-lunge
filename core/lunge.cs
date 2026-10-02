@@ -5817,9 +5817,7 @@ class Keys2
     readonly Control ui;
     readonly Slider slider;
     Native.LowLevelKeyboardProc proc;
-    bool winDown, otherKeyWhileWin, swallowedWithWin, modifierWhileWin, dockChord, dockMasked;
-    // masaüstü değişti (kilit ekranı, UAC): basılı tuş bilgisi o masaüstünde kaldı, bırakmalar bize hiç gelmedi
-    volatile bool desktopSwitched;
+    bool winDown, otherKeyWhileWin, modifierWhileWin, dockChord, dockMasked;
     int winVk = VK_LWIN, lastWinEvent;
 
     public static Keys2 Instance;
@@ -6010,7 +6008,7 @@ class Keys2
             if (isDown && fresh)
             {
                 winDown = true; winVk = vk;
-                otherKeyWhileWin = false; swallowedWithWin = false;
+                otherKeyWhileWin = false;
                 // Win'den önce basılı tutulan Ctrl/Shift/Alt da "kombinasyon" sayılır
                 modifierWhileWin = Down(VK_CONTROL) || Down(VK_SHIFT) || Down(VK_MENU);
                 dockChord = Down(VK_MENU) && !Down(VK_CONTROL) && !Down(VK_SHIFT);
@@ -6071,8 +6069,7 @@ class Keys2
                 if (repeat || RunAction(act))
                 {
                     held.Add(vk);
-                    if (winDown) swallowedWithWin = true;
-                    // Ctrl+Super (+Shift) ile gezinme: bar noktaların yerine numaraları kısa süre gösterir (kanca beklemesin)
+                    if (winDown)                    // Ctrl+Super (+Shift) ile gezinme: bar noktaların yerine numaraları kısa süre gösterir (kanca beklemesin)
                     if (!repeat && (act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-")))
                         ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:ws-numbers"));
                     return (IntPtr)1;
@@ -6084,7 +6081,6 @@ class Keys2
         {
             int mods = Binds.SUPER | (Down(VK_CONTROL) ? Binds.CTRL : 0) | (Down(VK_SHIFT) ? Binds.SHIFT : 0) | (Down(VK_MENU) ? Binds.ALT : 0);
             held.Add(vk);
-            swallowedWithWin = true;
             // Windows'un kilidi (Super+L): Win Windows'a ulaşmadığı için kilidi çekirdek ister
             string reserved = Reserved.Action(mods, vk);
             if (reserved != null) { if (reserved.Length > 0) RunAction(reserved); return (IntPtr)1; }
