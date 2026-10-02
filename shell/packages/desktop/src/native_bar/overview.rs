@@ -410,10 +410,11 @@ impl Overview {
           self.results.push(item);
         }
       }
-      Err(_) => {
+      Err(error) => {
+        // the reason (not installed, did not open, not responding) is shown as is
         if Prefix::of(&self.files_query) == Prefix::File {
           self.results = search::results("#", &[], &[], &|_| String::new());
-          self.results[0].name = "Everything çalışmıyor".into();
+          self.results[0].name = error.clone();
         }
       }
     }

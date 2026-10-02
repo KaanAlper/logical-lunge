@@ -29,13 +29,27 @@ fn is_ipc_class(name: &str) -> bool {
       .is_some_and(|rest| rest.starts_with("_(") && rest.ends_with(')'))
 }
 
+/// The program of a command line as Windows stores it in a sign-in entry, an
+/// App Paths key or an uninstall icon: `"C:\…\Everything.exe" -startup`,
+/// `C:\…\Everything.exe,0`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn exe_of(command: &str) -> Option<std::path::PathBuf> {
+  let command = command.trim();
+  let path = match command.strip_prefix('"') {
+    Some(rest) => rest.split('"').next()?,
+    None => &command[..command.to_ascii_lowercase().find(".exe")? + 4],
+  };
+  (!path.is_empty()).then(|| std::path::PathBuf::from(path))
+}
+
 #[cfg(windows)]
 mod windows_ipc {
-  use super::{is_ipc_class, FileHit};
+  use super::{exe_of, is_ipc_class, FileHit};
+  use crate::common::windows::read_reg_string;
   use std::{
     ffi::c_void,
     mem::size_of,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -44,7 +58,11 @@ mod windows_ipc {
     core::w,
     Win32::{
       Foundation::{BOOL, FALSE, HWND, LPARAM, LRESULT, TRUE, WPARAM},
-      System::{DataExchange::COPYDATASTRUCT, LibraryLoader::GetModuleHandleW},
+      System::{
+        DataExchange::COPYDATASTRUCT,
+        LibraryLoader::GetModuleHandleW,
+        Registry::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
+      },
       UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EnumWindows, FindWindowW,
         GetClassNameW, GetMessageW, GetWindowLongPtrW, PostMessageW, RegisterClassW, SendMessageTimeoutW, SetTimer,
@@ -67,41 +85,57 @@ mod windows_ipc {
     (!found.is_invalid()).then_some(found)
   }
 
+  fn unix_secs() -> u64 {
+    SystemTime::now()
+      .duration_since(UNIX_EPOCH)
+      .map(|d| d.as_secs())
+      .unwrap_or(0)
+  }
+
+  /// Why the file search cannot reach Everything, in the shell log; at most
+  /// once a minute (every keystroke searches again).
+  fn log_once(why: &str) {
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = unix_secs();
+    if now.saturating_sub(LAST.load(Ordering::Relaxed)) >= 60 {
+      LAST.store(now, Ordering::Relaxed);
+      tracing::warn!("Everything: {}", why);
+    }
+  }
+
   /// The IPC window, after starting an installed Everything when none runs
   /// (the user quit it, or the installer only just put it in place). The
   /// shell runs unelevated, so Everything started from here does too, which
   /// its IPC needs: Windows drops messages from the shell to an elevated
   /// window.
-  fn ipc_window_or_start() -> Option<HWND> {
+  fn ipc_window_or_start() -> Result<HWND, String> {
     if let Some(hwnd) = ipc_window() {
-      return Some(hwnd);
+      return Ok(hwnd);
     }
-    if !start_installed() {
-      return None;
-    }
+    let Some(exe) = installed_exe() else {
+      log_once("no running instance and no installation found");
+      return Err("Everything kurulu değil".into());
+    };
+    start_installed(&exe)?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
       std::thread::sleep(Duration::from_millis(100));
       if let Some(hwnd) = ipc_window() {
-        return Some(hwnd);
+        return Ok(hwnd);
       }
     }
-    None
+    log_once(&format!("started {} but no IPC window appeared", exe.display()));
+    Err("Everything açılamadı".into())
   }
 
-  /// Starts Everything from the shell's own tools folder or its standard
-  /// install folder. At most once every 10 s however many searches ask;
-  /// within that window the caller just waits for the IPC window.
-  fn start_installed() -> bool {
+  /// At most once every 10 s however many searches ask; within that window
+  /// the caller just waits for the IPC window of the start under way.
+  fn start_installed(exe: &Path) -> Result<(), String> {
     static LAST_START: AtomicU64 = AtomicU64::new(0);
-    let now = SystemTime::now()
-      .duration_since(UNIX_EPOCH)
-      .map(|d| d.as_secs())
-      .unwrap_or(0);
+    let now = unix_secs();
     if now.saturating_sub(LAST_START.load(Ordering::Relaxed)) < 10 {
-      return true;
+      return Ok(());
     }
-    let Some(exe) = installed_exe() else { return false };
     LAST_START.store(now, Ordering::Relaxed);
     // No inherited stdio: a long-lived Everything must not hold the shell's
     // output pipes open after the shell itself exits.
@@ -111,9 +145,16 @@ mod windows_ipc {
       .stdout(Stdio::null())
       .stderr(Stdio::null())
       .spawn()
-      .is_ok()
+      .map(|_| ())
+      .map_err(|err| {
+        log_once(&format!("could not start {}: {}", exe.display(), err));
+        "Everything başlatılamadı".to_string()
+      })
   }
 
+  /// Where an installed Everything is: our tools folder, what Windows knows
+  /// about it (sign-in entry, App Paths, uninstall entry), its standard
+  /// folders, then the PATH (package managers put shims there).
   fn installed_exe() -> Option<PathBuf> {
     let own = std::env::current_exe().ok().and_then(|exe| {
       exe.parent().map(|dir| dir.join(r"tools\everything\Everything.exe"))
@@ -122,7 +163,36 @@ mod windows_ipc {
       .into_iter()
       .filter_map(std::env::var_os)
       .map(|dir| PathBuf::from(dir).join(r"Everything\Everything.exe"));
-    own.into_iter().chain(standard).find(|exe| exe.is_file())
+    let on_path = std::env::var_os("PATH")
+      .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+      .unwrap_or_default()
+      .into_iter()
+      .map(|dir| dir.join("everything.exe"));
+    own
+      .into_iter()
+      .chain(registered_exes())
+      .chain(standard)
+      .chain(on_path)
+      .find(|exe| exe.is_file())
+  }
+
+  fn registered_exes() -> Vec<PathBuf> {
+    const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+    const APP: &str =
+      r"Software\Microsoft\Windows\CurrentVersion\App Paths\Everything.exe";
+    const UNINSTALL: &str =
+      r"Software\Microsoft\Windows\CurrentVersion\Uninstall\Everything";
+    [
+      (HKEY_CURRENT_USER, RUN, "Everything"),
+      (HKEY_LOCAL_MACHINE, RUN, "Everything"),
+      (HKEY_CURRENT_USER, APP, ""),
+      (HKEY_LOCAL_MACHINE, APP, ""),
+      (HKEY_LOCAL_MACHINE, UNINSTALL, "DisplayIcon"),
+    ]
+    .into_iter()
+    .filter_map(|(root, path, name)| read_reg_string(root, path, name).ok().flatten())
+    .filter_map(|command| exe_of(&command))
+    .collect()
   }
 
   unsafe extern "system" fn match_ipc_window(hwnd: HWND, found: LPARAM) -> BOOL {
@@ -149,7 +219,7 @@ mod windows_ipc {
     if search.encode_utf16().count() > 512 || search.contains('\0') {
       return Err("Arama çok uzun veya geçersiz".into());
     }
-    let everything = ipc_window_or_start().ok_or_else(|| "Everything çalışmıyor".to_string())?;
+    let everything = ipc_window_or_start()?;
     let hinst = unsafe { GetModuleHandleW(None) }.map_err(|e| e.to_string())?;
     let class = w!("LogicalLungeEverythingIPC");
     unsafe {
@@ -190,7 +260,7 @@ mod windows_ipc {
       SendMessageTimeoutW(everything, WM_COPYDATA, WPARAM(hwnd.0 as usize),
         LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, WAIT_MS, Some(&mut accepted))
     };
-    if sent.0 == 0 || accepted == 0 { return Err("Everything IPC yanıt vermiyor".into()); }
+    if sent.0 == 0 || accepted == 0 { return Err("Everything yanıt vermiyor".into()); }
     if let Some(result) = reply.result.take() { return result; }
     unsafe { SetTimer(hwnd, 1, WAIT_MS, None); }
     loop {
@@ -268,6 +338,23 @@ pub fn query(search: &str, limit: u32) -> Result<Vec<FileHit>, String> { windows
 
 #[cfg(not(windows))]
 pub fn query(_search: &str, _limit: u32) -> Result<Vec<FileHit>, String> { Err("Everything yalnızca Windows'ta kullanılabilir".into()) }
+
+#[cfg(test)]
+mod exe_tests {
+  use super::exe_of;
+  use std::path::PathBuf;
+
+  #[test]
+  fn takes_the_program_out_of_stored_command_lines() {
+    let quoted = r#""C:\Program Files\Everything\Everything.exe" -startup"#;
+    assert_eq!(exe_of(quoted), Some(PathBuf::from(r"C:\Program Files\Everything\Everything.exe")));
+    let icon = r"C:\Users\Öykü\scoop\apps\everything\current\Everything.exe,0";
+    assert_eq!(exe_of(icon), Some(PathBuf::from(r"C:\Users\Öykü\scoop\apps\everything\current\Everything.exe")));
+    assert_eq!(exe_of(r"C:\Tools\EVERYTHING.EXE -startup"), Some(PathBuf::from(r"C:\Tools\EVERYTHING.EXE")));
+    assert_eq!(exe_of(""), None);
+    assert_eq!(exe_of("not a program"), None);
+  }
+}
 
 #[cfg(test)]
 mod class_tests {
