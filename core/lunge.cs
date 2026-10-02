@@ -4341,8 +4341,12 @@ static class Toasts
                 if (n <= 0) { c.Close(); return; }
                 req.Append(Encoding.ASCII.GetString(buf, 0, n));
             }
-            string cors = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Allow-Headers: *\r\n";
+            string cors = "Access-Control-Allow-Origin: " + SHELL_ORIGIN + "\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Allow-Headers: *\r\n";
             string reqs = req.ToString();
+            // Yalnızca yerel ad: DNS yeniden bağlamayla (rebinding) 127.0.0.1'e yönlenen bir sitenin isteği Host'unda
+            // kendi adını taşır; tarayıcı Host'u her zaman gönderir
+            string host = Header(reqs, "Host");
+            if (host != null && !LocalHost(host)) { Refuse(s); c.Close(); return; }
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
@@ -4352,11 +4356,38 @@ static class Toasts
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
                 s.Write(ok, 0, ok.Length); c.Close(); return;
             }
-            var head = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n" + cors + "\r\n: hazır\n\n");
+            // Olay akışı yalnızca yerel istemcilere (kabuğun --toast-stream kopyası, native bar; ikisi de Origin göndermez).
+            // Tarayıcı her zaman Origin gönderir: Windows bildirimlerinin metni (doğrulama kodları, mesajlar) bir siteye akmaz.
+            if (Header(reqs, "Origin") != null) { Refuse(s); c.Close(); return; }
+            // Takılan istemci (dolu boru) çekirdeği kilitlemesin: yazma 3 sn'de düşer, istemci listeden çıkar
+            c.SendTimeout = 3000;
+            var head = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n: hazır\n\n");
             s.Write(head, 0, head.Length);
             lock (clients) clients.Add(s);
         }
         catch { try { c.Close(); } catch { } }
+    }
+
+    // İstek başlığının değeri; yoksa null
+    static string Header(string req, string name)
+    {
+        foreach (var line in req.Split(new[] { "\r\n" }, StringSplitOptions.None))
+            if (line.Length > name.Length && line[name.Length] == ':' && line.StartsWith(name, StringComparison.OrdinalIgnoreCase))
+                return line.Substring(name.Length + 1).Trim();
+        return null;
+    }
+
+    static bool LocalHost(string host)
+    {
+        foreach (var name in new[] { "127.0.0.1", "localhost" })
+            if (host.Equals(name, StringComparison.OrdinalIgnoreCase) || host.Equals(name + ":" + PORT, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    static void Refuse(System.Net.Sockets.NetworkStream s)
+    {
+        var no = Encoding.ASCII.GetBytes("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        try { s.Write(no, 0, no.Length); } catch { }
     }
 
     // Bar ve overview'dan anında komut (her tıklamada yeni helper süreci başlatmak ~100-300 ms sürüyordu).
