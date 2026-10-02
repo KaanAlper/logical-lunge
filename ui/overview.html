@@ -603,7 +603,7 @@
           if (fileOnly) {
             if (fileItems.length) return fileItems;
             return [{ key: 'file-hint', type: 'Dosya', name: !q.slice(1).trim() ? 'Dosya veya klasör adı yaz…'
-              : fileSearch.query !== q ? 'Dosyalar aranıyor…' : fileSearch.error ? 'Everything çalışmıyor' : 'Dosya bulunamadı',
+              : fileSearch.query !== q ? 'Dosyalar aranıyor…' : fileSearch.error ? fileSearch.error : 'Dosya bulunamadı',
               material: 'folder_open', verb: '', stay: true, exec: () => {} }];
           }
 

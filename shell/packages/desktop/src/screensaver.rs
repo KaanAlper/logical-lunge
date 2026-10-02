@@ -22,12 +22,13 @@ pub struct Choice {
 #[cfg(windows)]
 mod win {
   use super::{Choice, State};
+  use crate::common::windows::read_reg_string;
   use std::{ffi::c_void, path::{Path, PathBuf}};
   use windows::{
     core::w,
     Win32::{
-      Foundation::{BOOL, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS},
-      System::Registry::{RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ},
+      Foundation::{BOOL, ERROR_SUCCESS},
+      System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ},
       UI::WindowsAndMessaging::{
         SystemParametersInfoW, SPI_GETSCREENSAVEACTIVE, SPI_GETSCREENSAVESECURE,
         SPI_GETSCREENSAVETIMEOUT, SPI_SETSCREENSAVEACTIVE, SPI_SETSCREENSAVESECURE,
@@ -37,15 +38,9 @@ mod win {
   };
 
   fn selected() -> Result<String, String> {
-    let mut bytes = 0u32;
-    let status = unsafe { RegGetValueW(HKEY_CURRENT_USER, w!("Control Panel\\Desktop"), w!("SCRNSAVE.EXE"), RRF_RT_REG_SZ, None, None, Some(&mut bytes)) };
-    if status == ERROR_FILE_NOT_FOUND { return Ok(String::new()); }
-    if status != ERROR_SUCCESS { return Err(format!("Ekran koruyucu okunamadı: {}", status.0)); }
-    let mut data = vec![0u16; (bytes as usize).div_ceil(2)];
-    let status = unsafe { RegGetValueW(HKEY_CURRENT_USER, w!("Control Panel\\Desktop"), w!("SCRNSAVE.EXE"), RRF_RT_REG_SZ, None, Some(data.as_mut_ptr().cast::<c_void>()), Some(&mut bytes)) };
-    if status != ERROR_SUCCESS { return Err(format!("Ekran koruyucu okunamadı: {}", status.0)); }
-    let end = data.iter().position(|&c| c == 0).unwrap_or(data.len());
-    Ok(String::from_utf16_lossy(&data[..end]))
+    read_reg_string(HKEY_CURRENT_USER, "Control Panel\\Desktop", "SCRNSAVE.EXE")
+      .map(Option::unwrap_or_default)
+      .map_err(|code| format!("Ekran koruyucu okunamadı: {}", code))
   }
 
   fn system_choices(current: &str) -> Vec<Choice> {
