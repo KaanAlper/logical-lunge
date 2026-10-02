@@ -274,6 +274,7 @@ impl Ui {
       Item::new("pastelink", Some("shortcut"), tr("Kısayol yapıştır")).enabled(!files.is_empty() && !cut),
       Item::new("new", Some("add"), tr("Yeni")).submenu(new),
       Item::sep(),
+      Item::new("widgets", Some("widgets"), tr("Widget ekle")).submenu(self.widgets_add_menu()),
       Item::new("wallpaper", Some("wallpaper"), tr("Duvar kâğıdını değiştir")),
       Item::new("display", Some("desktop_windows"), tr("Görüntü ayarları")),
       Item::new("settings", Some("settings"), tr("Logical Lunge ayarları")),
@@ -292,6 +293,9 @@ impl Ui {
         "terminal" => open_terminal(d),
         "pastelink" => paste_shortcuts(&files, &link_suffix),
         "new:text" => new_text_document(&text_name),
+        w if w.starts_with("widget:") => {
+          ui.widgets_pick(w, at);
+        }
         _ => {
           let Some(d) = d else { return };
           match id {

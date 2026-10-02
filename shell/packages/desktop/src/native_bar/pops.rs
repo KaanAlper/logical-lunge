@@ -580,8 +580,14 @@ impl Ui {
     }
   }
 
+  /// The current song's cover, when it is in (the desktop media widget).
+  pub(super) fn media_art(&self) -> Option<&ID2D1Bitmap1> {
+    let title = self.model.media.as_ref()?.current_session.as_ref()?.title.as_ref()?;
+    self.pops.art.get(title)?.as_ref()
+  }
+
   /// (position, end, playing) now.
-  fn media_now(&self) -> (f64, f64, bool) {
+  pub(super) fn media_now(&self) -> (f64, f64, bool) {
     let Some(s) = self.model.media.as_ref().and_then(|m| m.current_session.as_ref()) else { return (0.0, 0.0, false) };
     let end = s.end_time as f64;
     let since = self.pops.clock.2.map_or(0.0, |t| t.elapsed().as_secs_f64());

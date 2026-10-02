@@ -225,8 +225,22 @@ impl Edit {
 
   /// Types or pastes `s` over the selection. Line breaks become spaces.
   pub fn insert(&mut self, s: &str) {
+    self.insert_with(s, false);
+  }
+
+  /// Like `insert`, keeping line breaks (a multi-line text: the desktop
+  /// note widget).
+  pub fn insert_lines(&mut self, s: &str) {
+    self.insert_with(s, true);
+  }
+
+  fn insert_with(&mut self, s: &str, lines: bool) {
     let (a, b) = self.selection();
-    let add: Vec<char> = s.chars().map(|c| if c == '\n' || c == '\r' || c == '\t' { ' ' } else { c }).collect();
+    let add: Vec<char> = s
+      .chars()
+      .filter(|&c| !(lines && c == '\r'))
+      .map(|c| if (c == '\n' && !lines) || c == '\r' || c == '\t' { ' ' } else { c })
+      .collect();
     if add.is_empty() && a == b {
       return;
     }

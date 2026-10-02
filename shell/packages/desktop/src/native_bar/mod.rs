@@ -33,6 +33,7 @@ mod sidebar;
 mod toast;
 mod update;
 mod view;
+mod widgets;
 mod wm;
 
 use std::{
@@ -156,6 +157,11 @@ const TIMER_SB_PAGE: usize = 71;
 const TIMER_SB_FRAME: usize = 72;
 const TIMER_SB_TICK: usize = 73;
 const TIMER_SB_WHEEL: usize = 74;
+/// desktop widgets: their clock (each second or minute), a save after a
+/// move, the weather's half-hourly read
+const TIMER_WIDGETS_TICK: usize = 80;
+const TIMER_WIDGETS_SAVE: usize = 81;
+const TIMER_WIDGETS_WEATHER: usize = 82;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -200,6 +206,8 @@ enum Msg {
   Settings(settings::Event),
   /// the right panel: the shell's events and its workers' results
   Sidebar(sidebar::Ev),
+  /// the desktop widgets' workers (weather, temperatures)
+  Widgets(widgets::Ev),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -634,6 +642,8 @@ struct Ui {
   dock: dock::DockState,
   /// the right panel (its window only while it is open)
   sidebar: sidebar::Sidebar,
+  /// the desktop widgets and their windows
+  widgets: widgets::Widgets,
   /// test run: a menu picture to write once the app list is in (text, PNG, asked at)
   snapshot: Option<(String, PathBuf, Instant)>,
 }
@@ -743,6 +753,7 @@ fn ui_thread(
         dialogs: Default::default(),
         osk: None,
         dock: Default::default(),
+        widgets: Default::default(),
         sidebar: Default::default(),
         snapshot: None,
       })
@@ -880,6 +891,9 @@ impl Ui {
     if let Some(r) = self.dock_msg(hwnd, msg, wp, lp) {
       return r;
     }
+    if let Some(r) = self.widgets_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if let Some(r) = self.sidebar_msg(hwnd, msg, wp, lp) {
       return r;
     }
@@ -981,6 +995,7 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_DOCK_TICK => self.dock_tick(),
         WM_TIMER if wp.0 == TIMER_DOCK_CLOSE => self.dock_destroy(),
         WM_TIMER if (TIMER_SB_CLOSE..=TIMER_SB_WHEEL).contains(&wp.0) => self.sidebar_timer(wp.0),
+        WM_TIMER if (TIMER_WIDGETS_TICK..=TIMER_WIDGETS_WEATHER).contains(&wp.0) => self.widgets_timer(wp.0),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           // frames while the numbers fade in or out; nothing between
           let now = Instant::now();
@@ -1265,6 +1280,7 @@ impl Ui {
         Msg::OskToggle => self.osk_toggle(),
         Msg::DockPins(pins) => self.dock_pins(pins),
         Msg::Sidebar(e) => self.sidebar_event(e),
+        Msg::Widgets(e) => self.widgets_event(e),
         Msg::Toast(card) => self.toast_add(card),
         Msg::Dialog(d) => self.core_dialog(d),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
@@ -1303,6 +1319,8 @@ impl Ui {
       self.overview_sync_monitor();
       self.dock_refresh();
     }
+    // the desktop widgets draw only what changed (media, gauges, covers)
+    self.widgets_refresh();
     if overview_dirty && self.overview.as_ref().is_some_and(|o| o.shown) {
       self.overview_render();
     }
@@ -1435,6 +1453,9 @@ impl Ui {
       }
     }
     self.redraw_all();
+    // new monitors or a new graphics device: the desktop widgets are made
+    // again where they belong (the first time: they come back)
+    self.widgets_after_bars();
   }
 
   fn create_bar(&mut self, mon: HMONITOR, rc: RECT, title: &str) -> anyhow::Result<Bar> {
@@ -1793,6 +1814,8 @@ impl Ui {
         tracing::warn!("Keyboard: paint: {:?}", err);
       }
     }
+    // and the desktop widgets (they draw only when their look changed)
+    self.widgets_refresh();
   }
 
   fn show_osd(&mut self, device: Option<String>, kind: OsdKind, value: i32) {
