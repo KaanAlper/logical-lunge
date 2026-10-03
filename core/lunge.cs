@@ -6273,7 +6273,7 @@ class Keys2
     // Kısayol eylemleri. false: işlenmedi (tuş normal yoluna devam eder)
     // Aynı işi gören kısayollar (Windows'un kendi kombinasyonlarının karşılıkları): tablo, eylem kodu değil
     static readonly Dictionary<string, string> aliases = new Dictionary<string, string> {
-        { "overview-alt", "overview" }, { "run", "overview" }, { "search", "overview" }, { "workspaces", "overview" },
+        { "overview-alt", "overview" }, { "search", "overview" }, { "workspaces", "overview" },
         { "notifications", "sidebar" }, { "screenshot-alt", "screenshot" },
     };
 
@@ -6297,6 +6297,8 @@ class Keys2
         if (act == "settings") { ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:settings-toggle")); return true; }
         if (act == "lock") { LockWorkStation(); return true; }
         if (act == "task-manager") { LaunchQueue.Enqueue("taskmgr.exe"); return true; }
+        // Win+R: Windows'un Çalıştır penceresi, uygulamalar gibi kullanıcı olarak (yönetici değil) açılır
+        if (act == "run") { LaunchQueue.Enqueue(AppIndex.RunDialog); return true; }
         if (act.StartsWith("app:"))
         {
             string path = Binds.AppPath(act);

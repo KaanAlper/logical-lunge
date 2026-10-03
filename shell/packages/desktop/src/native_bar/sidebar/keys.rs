@@ -152,7 +152,7 @@ fn ll_label(id: &str) -> String {
     "clipboard" => "Pano geçmişi",
     "file-search" => "Dosya araması",
     "overview-alt" => "Super menüsü",
-    "run" => "Çalıştır (Super menüsü)",
+    "run" => "Çalıştır",
     "search" => "Ara (Super menüsü)",
     "workspaces" => "Workspace'ler (Super menüsü)",
     "settings" => "Ayarlar",
