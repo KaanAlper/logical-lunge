@@ -1,51 +1,65 @@
 # Roadmap
 
-Logical Lunge is **one app**: one install, one uninstall, one autostart, one entry in Settings → Apps, one config
-folder, one log folder, and Task Manager shows a single *lunge*. Under the hood it is a small family of cooperating
-processes, so a crash in one part never takes the others down:
+Logical Lunge is one install, one uninstall, one autostart and one entry in Settings → Apps. Under the hood it
+runs a few cooperating processes, so a crash in one part never takes the others down:
 
-| Process | Source | Language | Role |
-|---|---|---|---|
-| `lunge.exe` | `core/` | C# (.NET Framework 4.8, built with the in-box `csc`) | Root of the desktop: starts the other parts as its children and restarts them if they crash or hang. Keyboard/mouse hooks, workspace slides and window animations, focus-follows-mouse, rounded corners, toasts, splash, screenshot/Lens tools, wallpapers, gamma / night light, shortcuts |
-| `lunge-tiling.exe` | `tiling/` | Rust | Tiling window manager (Hyprland dwindle), window borders, IPC server (ws://127.0.0.1:6123) |
-| `lunge-shell.exe` | `shell/` | Rust + Tauri (WebView2) | Hosts the widgets in `ui/`: bar, sidebar, overview, session screen, toasts, on-screen keyboard |
+| Process | Language | Role |
+|---|---|---|
+| `lunge.exe` | C# (.NET Framework 4.8) | Root of the desktop: starts and watches the parts; keyboard and mouse hooks, workspace slides and window animations, focus, rounded corners, notifications and dialogs, Windows parts takeover, wallpapers, night light, shortcuts, updates |
+| `lunge-tiling.exe` | Rust | Tiling window manager (Hyprland-style dwindle), window borders, IPC |
+| `lunge-shell.exe` | Rust | The shell: every surface native (Direct2D / DirectComposition, plain Win32) in `native-ui`; WebView2 widgets in `web-ui` |
+| `lunge-wallpaper.exe` / `LogicalLunge.scr` | Rust | Live wallpaper player and video screen saver (Media Foundation, GPU decoding) |
+
+## Two editions
+
+- **native-ui** — the fastest, most stable line. Every panel is native; WebView2 and Tauri are gone. No web
+  fallbacks.
+- **web-ui** — every panel in WebView2; keeps the web widgets.
+
+Both are built and released from their own branches; `main` holds the shared installer, the setup app and the
+release workflows. Releases follow semantic versioning per edition (feat → MINOR, fix → PATCH, breaking → MAJOR).
 
 ## Done
 
-- **Single installer** with a first-install wizard (focus color, language, clock, extras), one UAC prompt,
-  every Windows setting backed up, automatic rollback on an error or Ctrl+C, clean uninstaller, no Python needed
-  on the target (PyInstaller-packed tools).
-- **One repository, own names** (0.2): the window manager and the widget host live in this repo as `tiling/` and
-  `shell/`, stripped to what the desktop uses (no tray icons, settings windows, marketplace, update checks or
-  packaging of their own). Borders are drawn inside the window manager (`wm-borders`).
-- **The core is the root** (0.2): the sign-in task starts only `lunge.exe`; it opens the splash, the window
-  manager and the shell. *Reload desktop* (`lunge.exe --restart-desktop`) restarts everything cleanly; an
-  intentional exit hands the desktop back to Windows (taskbar and Start menu).
-- **Self-healing**: crashed or hung parts are restarted; while the bar is missing the Windows taskbar and Start
-  menu come back; a black box logs what the machine was doing when the desktop slows down.
-- **Vendored UI runtime** (0.2): the widgets load their libraries and fonts from the app itself (no CDN, no
-  Babel); faster start, works offline, safe to run elevated.
-- **Elevated core and window manager** (0.2): hotkeys and window management keep working while an administrator
-  window such as Task Manager or an installer is focused; everything the user opens still starts unelevated.
-- **Settings window** (0.2, gear in the sidebar): focus color, language, clock, animations, touchpad gestures,
-  shortcuts, night light, health.
-- **Hyprland behaviour** (0.2): a real binary dwindle tree (movewindow, swap with the split partner,
-  `togglesplit`), config-defined animation curves, touchpad gestures (1:1 workspace swipe, overview, sidebar,
-  moving windows), hidden widgets that draw nothing.
+- Single installer and setup app (x64 / x86): one UAC prompt, every Windows setting backed up, rollback on failure,
+  clean uninstaller, in-place updates that ask for permission before the desktop closes.
+- Self-healing desktop: the core restarts a crashed or hung part; Windows' taskbar comes back while the bar is
+  missing.
+- Native ports (`native-ui`): bar, Super menu, notification cards, right panel, settings, Dock, on-screen keyboard,
+  session screen, update card, shared menu and dialog; then Tauri and WebView2 removed from the shell.
+- Super menu text box: mouse selection, undo/redo, IME, cursors, right-to-left text, width and shape animations;
+  app list with Steam / Epic / itch shortcuts and live refresh on installs.
+- Desktop: our own right-click menu everywhere (desktop, icons, apps, bar, cards), desktop widgets (`native-ui`),
+  Windows parts switched off at their source while running (taskbar, banners, Snap, Win-key shell) and restored.
+- Keyboard ownership (no Win combination reaches Windows' shell) and the shortcut editor (custom apps, conflicts,
+  staged save).
+- Errors at the source: our programs show cards and dialogs instead of Windows' boxes; one launch helper.
+- Live wallpapers and video screen saver with one store and one gallery, imports (video, Lively, Wallpaper Engine
+  video), screen saver gallery with bulk import.
+- Interface scale (85–150 %) and Windows' Text size followed by native text.
+- Core readings (radios, Wi-Fi, Ethernet, Bluetooth, status, keep-awake) and the Super menu's run / app list moved
+  from PowerShell into the core; Everything rescans for non-NTFS locations.
+- 24/7 hardening: bounded caches and logs, stuck-animation recovery, non-blocking event stream, timeouts on
+  window manager calls, temp file sweep.
+- Legacy 0.1.x stack removed.
 
 ## Next
 
-1. **Long-uptime smoothness**: animations slow down after 10–15 minutes and a desktop reload fixes it; find and
-   remove the cause (the black box and a resource log per part are in place).
-2. **Core split into domain files** (input, animation, windows, shell, health) and dead code removed.
-3. **Maybe — one executable.** Weighed against crash isolation.
-4. **Screenshots + clean-machine tests** on Windows 10 and Windows 11 for every release.
+1. The same installer, setup app and semantic-versioned release workflow for the author's other Windows projects.
+2. Screenshots and clean-machine tests on Windows 10 and Windows 11 for every release.
+3. Web demo kept in sync with `web-ui` automatically (workflow added; needs the `DEMO_PUSH_TOKEN` secret and mocks
+   for the newer panels).
+
+## Later
+
+- Desktop widgets for `web-ui`.
+- Accessibility (UI Automation) for the native surfaces.
+- Downloadable extras.
+- ARM64 builds.
 
 ## Compatibility notes
 
-- **Windows 11**: the window manager, WebView2, the DWM thumbnail animations, `IDesktopWallpaper` and the
-  low-level hooks all work the same. Windows 11 adds snap layouts (maximize-button flyout, drag-to-top bar)
-  — the installer turns them off. Windows 11 draws its own rounded corners; ours are applied on top and
-  look the same.
-- **Multiple monitors / DPI**: every part is per-monitor DPI aware (v2).
-- **ARM64**: the Rust parts build for ARM64; the core and the packaged tools would need ARM64 builds too.
+- **Windows 10 / 11**: both supported. Windows 11 24H2 changed the desktop's window layout; the live wallpaper
+  player handles the old and the new one.
+- **Multiple monitors / DPI**: every part is per-monitor DPI aware (v2); the interface scale multiplies on top.
+- **ARM64**: not built yet; every part would need an ARM64 build.
