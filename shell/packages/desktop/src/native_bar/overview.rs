@@ -2207,7 +2207,7 @@ impl Ui {
       MenuItem::new("folder", Some("folder_open"), tr("Dosya konumunu aç")).enabled(file.is_some()),
       MenuItem::new("props", Some("info"), tr("Özellikler")).enabled(file.is_some()),
       MenuItem::sep(),
-      MenuItem::new("uninstall", Some("delete"), tr("Kaldır")),
+      MenuItem::new("uninstall", Some("delete"), tr("Uygulamayı kaldır")),
     ];
     self.menu_open(at, MenuFocus::Keep, items, move |ui, id| match id {
       "open" => {
