@@ -24,7 +24,7 @@ export function invoke(command,args){if(command!=='everything_search_page')retur
 window.__requests.push(args);return new Promise(resolve=>window.__pending.push(resolve));}`);
 const html = fs.readFileSync(path.join(root, 'ui/overview.html'), 'utf8').replace(/\r\n/g, '\n');
 const modulePattern = /<script type="module">\n([\s\S]*?)\n\s*<\/script>/;
-await esbuild.build({stdin:{contents:html.match(modulePattern)[1],loader:'jsx',resolveDir:out},bundle:true,format:'esm',outfile:path.join(out,'overview.js'),
+await esbuild.build({stdin:{contents:html.match(modulePattern)[1],loader:'jsx',resolveDir:path.join(root,'ui/.build')},bundle:true,format:'esm',outfile:path.join(out,'overview.js'),
   alias:{'lunge/shell':shell,'@tauri-apps/api/event':events,'@tauri-apps/api/core':core,'lunge/apps':path.join(root,'ui/lib/app-icons.js')},nodePaths:[path.join(root,'ui/node_modules')],define:{'process.env.NODE_ENV':'"production"'}});
 fs.writeFileSync(path.join(out,'overview.html'), html.replace(modulePattern,'<script type="module" src="./overview.js"></script>'));
 const server=http.createServer((req,res)=>{

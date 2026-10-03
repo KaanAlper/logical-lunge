@@ -541,6 +541,136 @@
                     "dockToEdge": { "edge": null, "windowMargin": "0px", "enabled": false }
                 }
             ]
+        },
+        {
+            "name": "desktop-menu",
+            "htmlPath": "./desktop-menu.html",
+            "zOrder": "top_most",
+            "shownInTaskbar": false,
+            "focused": false,
+            "resizable": false,
+            "transparent": true,
+            "shownOnStart": false,
+            "includeFiles": [
+                "*.html",
+                "*.css",
+                "*.json",
+                "*.js",
+                "lib/*.js",
+                "fonts/*.woff2"
+            ],
+            "caching": {
+                "rules": [
+                    {
+                        "urlRegex": "apps\\.json",
+                        "duration": 0
+                    }
+                ],
+                "defaultDuration": 604800
+            },
+            "privileges": {
+                "shellCommands": [
+                    {
+                        "program": "explorer",
+                        "argsRegex": ".*"
+                    },
+                    {
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
+                        "argsRegex": ".*"
+                    }
+                ]
+            },
+            "presets": [
+                {
+                    "name": "default",
+                    "anchor": "top_left",
+                    "offsetX": "0px",
+                    "offsetY": "0px",
+                    "width": "310px",
+                    "height": "490px",
+                    "monitorSelection": {
+                        "type": "primary"
+                    },
+                    "dockToEdge": {
+                        "edge": null,
+                        "windowMargin": "0px",
+                        "enabled": false
+                    }
+                }
+            ]
+        },
+        {
+            "name": "desktop-widgets",
+            "htmlPath": "./desktop-widgets.html",
+            "zOrder": "bottom_most",
+            "shownInTaskbar": false,
+            "focused": false,
+            "resizable": false,
+            "transparent": true,
+            "shownOnStart": false,
+            "includeFiles": [
+                "*.html",
+                "*.css",
+                "*.json",
+                "*.js",
+                "lib/*.js",
+                "fonts/*.woff2"
+            ],
+            "caching": {
+                "rules": [
+                    {
+                        "urlRegex": "apps\\.json",
+                        "duration": 0
+                    }
+                ],
+                "defaultDuration": 604800
+            },
+            "privileges": {
+                "shellCommands": [
+                    {
+                        "program": "explorer",
+                        "argsRegex": ".*"
+                    },
+                    {
+                        "program": "powershell",
+                        "argsRegex": ".*"
+                    },
+                    {
+                        "program": "cmd",
+                        "argsRegex": ".*"
+                    },
+                    {
+                        "program": "rundll32",
+                        "argsRegex": ".*"
+                    },
+                    {
+                        "program": "shutdown",
+                        "argsRegex": ".*"
+                    },
+                    {
+                        "program": "{{INSTALL_ESC}}\\lunge.exe",
+                        "argsRegex": ".*"
+                    }
+                ]
+            },
+            "presets": [
+                {
+                    "name": "default",
+                    "anchor": "top_left",
+                    "offsetX": "0px",
+                    "offsetY": "0px",
+                    "width": "100%",
+                    "height": "100%",
+                    "monitorSelection": {
+                        "type": "all"
+                    },
+                    "dockToEdge": {
+                        "edge": null,
+                        "windowMargin": "0px",
+                        "enabled": false
+                    }
+                }
+            ]
         }
     ]
 }

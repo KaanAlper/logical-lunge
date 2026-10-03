@@ -123,6 +123,18 @@
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" type="text/css" href="./sidebar.css" />
+    <link rel="stylesheet" type="text/css" href="./menu.css" />
+    <style>
+      .parity-report { font-size: 13px; }
+      .parity-report input[type="datetime-local"], .parity-report textarea {
+        box-sizing: border-box; padding: 10px; border: 1px solid var(--m3outlineVariant);
+        border-radius: 12px; background: var(--colLayer1); color: var(--m3onSurface);
+        font: inherit; color-scheme: dark;
+      }
+      .parity-report textarea::placeholder { color: var(--m3onSurfaceVariant); }
+      .parity-report input:focus-visible, .parity-report textarea:focus-visible { outline: 2px solid var(--m3primary); outline-offset: 1px; }
+      :root[data-theme="light"] .parity-report input[type="datetime-local"] { color-scheme: light; }
+    </style>
   </head>
   <body>
     <div id="root"></div>
@@ -135,6 +147,8 @@
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
       import { invoke } from '@tauri-apps/api/core';
+      import { expandedToggle, importedSaver } from '../parity-sidebar.mjs';
+      import { IssueReport, GalleryMenu } from '../parity-sidebar-components.jsx';
 
       const win = lunge.currentWidget().tauriWindow;
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
@@ -158,7 +172,8 @@
 
       function App() {
         const [open, setOpen] = useState(false);
-        const [page, setPage] = useState(null); // 'keys' | 'walls'
+        const [page, setPage] = useState(null); // 'keys' | 'walls' | 'bug'
+        const [bugSending, setBugSending] = useState(false);
         // Kapanınca açık sayfa bir süre kalır: panel odak gidince kapanır (bir şeye bakmak için başka pencereye
         // geçmek gibi); birkaç dakika içinde yeniden açılınca bırakıldığı gibi gelir.
         const closedAt = useRef(0);
@@ -208,7 +223,7 @@
           // Bar'a basıldı (native bar odak almaz: blur gelmez)
           const un5 = listen('ll:bar-click', () => { if (open) hide(); });
           const onBlur = () => { if (open) hide(); };
-          const onKey = e => { if (e.key === 'Escape') hide(); };
+          const onKey = e => { if (e.key === 'Escape' && !window.__llSidebarModal) hide(); };
           window.addEventListener('blur', onBlur);
           window.addEventListener('keydown', onKey);
           return () => { un1.then(f => f()); un2.then(f => f()); un3.then(f => f()); un4.then(f => f()); un5.then(f => f()); window.removeEventListener('blur', onBlur); window.removeEventListener('keydown', onKey); };
@@ -229,25 +244,26 @@
             <BottomWidgetGroup />
             {page === 'keys' && <ShortcutsPage onClose={() => setPage(null)} />}
             {page === 'walls' && <WallpaperPage onClose={() => setPage(null)} />}
+            {page === 'bug' && <Page title="Hata raporu" icon="bug_report" onClose={() => setPage(null)} canClose={!bugSending}><IssueReport helper={helper} load={load} save={save} host={o.host} onSending={setBugSending} /></Page>}
           </div>
         );
       }
 
       // ======================= Sayfalar: Kısayollar / Duvar kağıtları =======================
       // Panelin üstüne sağdan kayarak açılan tam sayfalar (ii WindowDialog hissi, panel içinde).
-      function Page({ title, icon, onClose, actions, children }) {
+      function Page({ title, icon, onClose, actions, children, canClose = true }) {
         const [shown, setShown] = useState(false);
         useEffect(() => { requestAnimationFrame(() => setShown(true)); }, []);
-        const close = () => { setShown(false); setTimeout(onClose, 260); };
+        const close = () => { if (canClose) { setShown(false); setTimeout(onClose, 260); } };
         useEffect(() => {
-          const k = e => { if (e.key === 'Escape' && !window.__llCapturing) { e.stopPropagation(); close(); } };
+          const k = e => { if (e.key === 'Escape' && !window.__llCapturing && !window.__llSidebarModal) { e.stopPropagation(); close(); } };
           window.addEventListener('keydown', k, true);
           return () => window.removeEventListener('keydown', k, true);
-        }, []);
+        }, [canClose]);
         return (
           <div className={`page ${shown ? 'shown' : ''}`}>
             <div className="page-head">
-              <button className="qbtn" onClick={close} title="Geri"><Icon name="arrow_back" /></button>
+              <button className="qbtn" disabled={!canClose} onClick={close} title="Geri"><Icon name="arrow_back" /></button>
               <Icon name={icon} />
               <span className="page-title">{title}</span>
               <div className="page-actions">{actions}</div>
@@ -626,9 +642,11 @@
 
       // preview: üzerine gelince oynayan önizleme (canlı duvar kağıtları); busyText: indirme ilerlemesi
       // actions: öğenin üzerine gelince görünen düğmeler [{ icon, label, run(it) }]
-      function WallRow({ items, busy, busyText, onPick, onCustom, customLabel, customIcon, wide, selected, fallbackIcon, cls, actions }) {
+      function WallRow({ items, busy, busyText, onPick, onCustom, customLabel, customIcon, wide, selected, fallbackIcon, cls, actions, libraryKind, onRemoved, menuActions }) {
         const ref = useRef(null);
         const [hover, setHover] = useState(null);
+        const [context, setContext] = useState(null);
+        const openMenu = (e, it) => { e.preventDefault(); e.stopPropagation(); if (busy) return; const r = e.currentTarget.getBoundingClientRect(); setContext({ item: it, point: { x: e.clientX || r.left, y: e.clientY || r.bottom } }); };
         return (
           <div className={`wall-row ${wide ? 'wide' : ''} ${cls || ''}`} ref={ref}
                onWheel={e => { if (ref.current && Math.abs(e.deltaY) > Math.abs(e.deltaX)) { ref.current.scrollLeft += e.deltaY; } }}>
@@ -639,6 +657,7 @@
             {items && items.length === 0 && <div className="wall-empty">Bir şey bulunamadı</div>}
             {items && items.map(it => (
               <button key={it.key} className={`wall-tile ${busy === it.key ? 'busy' : ''} ${selected === it.key ? 'sel' : ''}`} onClick={() => onPick(it)} title={it.res || it.name || ''}
+                      onContextMenu={e => openMenu(e, it)} onKeyDown={e => { if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) openMenu(e, it); }}
                       onMouseEnter={it.preview ? () => setHover(it.key) : undefined} onMouseLeave={it.preview ? () => setHover(null) : undefined}>
                 {it.thumb ? <img src={hover === it.key ? it.preview : it.thumb} alt="" loading="lazy" /> : <Icon name={fallbackIcon || 'movie'} />}
                 {it.res && <span className="wall-res">{it.res}</span>}
@@ -654,6 +673,9 @@
                 )}
               </button>
             ))}
+            {context && <GalleryMenu item={context.item} point={context.point} kind={libraryKind === 'saver' && !importedSaver(context.item.path) ? null : libraryKind}
+              actions={menuActions ? menuActions(context.item) : [{ icon: 'check', label: 'Uygula', run: onPick }, ...(actions || []), ...(context.item.path ? [{ icon: 'folder_open', label: 'Dosya konumunu aç', run: it => lunge.shellSpawn('explorer', [`/select,${it.path}`]) }] : [])]}
+              onClose={() => setContext(null)} onRemoved={onRemoved} />}
           </div>
         );
       }
@@ -675,7 +697,7 @@
         if (c === 'local') {
           const files = json(await helper(['--live-local']).catch(() => '[]'));
           const out = [];
-          for (const f of (Array.isArray(files) ? files : []).slice(0, 16)) {
+          for (const f of (Array.isArray(files) ? files : [])) {
             const t = f.thumb ? await helper(['--wall-thumb', f.thumb]).catch(() => '') : '';
             out.push({ key: f.path, path: f.path, name: f.author ? `${f.name} · ${f.author}` : f.name, thumb: t.startsWith('data:') ? t : '' });
           }
@@ -717,7 +739,7 @@
         const done = text => { setMsg({ kind: 'ok', text }); onChanged(); };
         // Mağazadan indirirken ilerleme: çekirdek Live\.progress'e yazar
         // bir seferde bir indirme; ilerleme sorusu bir öncekinin cevabını bekler (her biri bir süreç)
-        const apply = async it => {
+        const apply = async (it, mode = target) => {
           if (busy) return;
           setBusy(it.key); setProgress(''); setMsg(null);
           const timer = it.path ? null : setInterval(() => {
@@ -729,8 +751,8 @@
               else if (p && p.got > 0) setProgress(`${Math.round(p.got / 1048576)} MB`);
             }).catch(() => {}).finally(() => { polling.current = false; });
           }, 800);
-          const r = json(it.path ? await helper(['--live-set', it.path, target]).catch(() => '')
-            : await helper(['--live-get', it.cat, it.id, target]).catch(() => '')) || {};
+          const r = json(it.path ? await helper(['--live-set', it.path, mode]).catch(() => '')
+            : await helper(['--live-get', it.cat, it.id, mode]).catch(() => '')) || {};
           clearInterval(timer); setBusy(null); setProgress('');
           if (r.ok) done('Canlı duvar kağıdı ayarlandı'); else setMsg({ kind: 'error', text: liveError(r.error, !it.path) });
         };
@@ -782,7 +804,15 @@
                 <button key={c.id} className={`chip ${cat === c.id ? 'on' : ''}`} onClick={() => setCat(c.id)}>{liveCatName(c.id)}</button>
               ))}
             </CatRow>
-            <WallRow items={items} busy={busy} busyText={progress} customLabel="Video ya da paket içe aktar" customIcon="video_file" onCustom={pick} onPick={apply} actions={actions} />
+            <WallRow items={items} busy={busy} busyText={progress} customLabel="Video ya da paket içe aktar" customIcon="video_file" onCustom={pick} onPick={apply} actions={actions} libraryKind="live"
+              menuActions={it => [
+                ...(!it.path ? [{ icon: 'download', label: 'İndir', run: async () => { const r = json(await helper(['--live-get', it.cat, it.id, 'none'])); if (!r?.ok) throw new Error(liveError(r?.error, true)); } }] : []),
+                { icon: 'check', label: 'Uygula (tüm monitörler)', run: () => apply(it, 'all') },
+                ...(mons.length > 1 ? [{ icon: 'desktop_windows', label: 'Bu monitöre uygula', children: mons.map((m, i) => ({ icon: 'desktop_windows', label: `Monitör ${i + 1}`, run: () => apply(it, m.id) })) }] : []),
+                ...actions,
+                ...(it.path ? [{ icon: 'folder_open', label: 'Dosya konumunu aç', run: () => lunge.shellSpawn('explorer', [`/select,${it.path}`]) }] : []),
+              ]}
+              onRemoved={async it => { await helper(['--saver-video', 'remove', it.path]); setItems(await fetchItems(cat)); onChanged(); window.dispatchEvent(new Event('ll-saver-videos')); }} />
             <div className="kb-hint"><Icon name="info" />İndirdiğin videoyu, Lively (.zip) ya da Wallpaper Engine video paketini (.zip ya da project.json) içe aktarabilirsin.</div>
             <div className="live-foot">
               {on && <button className="chip" onClick={clear}><Icon name="stop_circle" />Canlı duvar kağıdını kapat</button>}
@@ -811,9 +841,9 @@
           if (c === 'local') {
             const files = json(await helper(['--wall-local']).catch(() => '[]')) || [];
             const out = [];
-            for (const f of files.slice(0, 16)) {
+            for (const f of files) {
               const t = await helper(['--wall-thumb', f.path]).catch(() => '');
-              if (t.startsWith('data:')) out.push({ key: f.path, thumb: t, path: f.path, name: f.name });
+              out.push({ key: f.path, thumb: t.startsWith('data:') ? t : '', path: f.path, name: f.name });
             }
             return out; // yerel liste önbelleğe alınmaz (yeni eklenenler görünsün)
           }
@@ -831,6 +861,12 @@
           if (r.error) setMsg({ kind: 'error', text: r.error }); else { setMsg({ kind: 'ok', text: 'Duvar kağıdı ayarlandı' }); loadInfo(); }
         };
         const custom = mode => helper(['--wall-pick', mode]).then(() => loadInfo()).catch(() => {});
+        const wallMenu = (it, span = false) => [
+          ...(!it.path ? [{ icon: 'download', label: 'İndir', run: async () => { const r = json(await helper(['--wall-download', it.full])); if (!r?.ok) throw new Error(r?.error || 'İndirilemedi'); } }] : []),
+          { icon: 'check', label: span ? 'Uygula' : 'Uygula (tüm monitörler)', run: () => applyItem(it, span ? 'span' : 'all') },
+          ...(!span && info?.monitors?.length > 1 ? [{ icon: 'desktop_windows', label: 'Bu monitöre uygula', children: info.monitors.map((m, i) => ({ icon: 'desktop_windows', label: `Monitör ${i + 1}`, run: () => applyItem(it, m.id) })) }] : []),
+          ...(it.path ? [{ icon: 'folder_open', label: 'Dosya konumunu aç', run: () => lunge.shellSpawn('explorer', [`/select,${it.path}`]) }] : []),
+        ];
 
         // Monitör yerleşimi (Windows ekran ayarları gibi küçük harita)
         const mons = info?.monitors || [];
@@ -865,14 +901,14 @@
                   <button key={k} className={`chip ${cat === k ? 'on' : ''}`} onClick={() => setCat(k)}><Icon name={icon} />{label}</button>
                 ))}
               </CatRow>
-              <WallRow items={items} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom(target)} onPick={it => applyItem(it, target)} />
+              <WallRow items={items} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom(target)} onPick={it => applyItem(it, target)} libraryKind="wall" menuActions={wallMenu} onRemoved={async () => { setItems(await fetchCat(cat)); loadInfo(); }} />
             </div>
             <LiveSection target={target} mons={mons} options={info?.liveOptions} onChanged={loadInfo} />
             {multi && (
               <div className="wall-sec">
                 <div className="kb-gtitle"><Icon name="panorama_wide_angle" />Superscreen · tüm monitörlere yayılan tek resim</div>
                 <div className="kb-hint"><Icon name="info" />Ultra geniş (32:9) öneriler; resim monitörlerin gerçek yerleşimine göre bölünür.</div>
-                <WallRow wide items={spanItems} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom('span')} onPick={it => applyItem(it, 'span')} />
+                <WallRow wide items={spanItems} busy={busy} customLabel="Dosyadan seç" onCustom={() => custom('span')} onPick={it => applyItem(it, 'span')} menuActions={it => wallMenu(it, true)} />
               </div>
             )}
             <ScreenSaverSection />
@@ -912,12 +948,23 @@
         };
         const show = () => helper(['--saver-video-run']).then(s => { const r = json(s); if (r && r.error) setMsg({ kind: 'error', text: SAVER_ERRORS[r.error] || 'Ekran koruyucu açılamadı' }); }).catch(() => {});
         const chosen = items && items.find(it => it.path && videos.some(v => v.toLowerCase() === it.path.toLowerCase()));
+        const playlist = async (op, it) => {
+          const r = json(await helper(['--saver-video', op, it.path]));
+          if (!Array.isArray(r?.videos)) throw new Error(SAVER_ERRORS[r?.error] || 'Ekran koruyucu ayarlanamadı');
+          setVideos(r.videos); onChanged(); window.dispatchEvent(new Event('ll-saver-videos'));
+        };
         return (
           <div className="saver-videos">
             <div className="kb-gtitle"><Icon name="movie" />Video ekran koruyucusu</div>
             <div className="kb-hint"><Icon name="info" />Canlı duvar kâğıdı kütüphanendeki videolar ekran koruyucu olarak oynar. Yenilerini Mağaza'dan indirebilirsin; birden çoksa karışık oynatılabilir.</div>
             {msg && <div className={`kb-msg ${msg.kind}`}><Icon name={msg.kind === 'ok' ? 'check_circle' : 'error'} />{msg.text}</div>}
             <WallRow items={items} busy={busy} selected={chosen ? chosen.key : null}
+                     menuActions={it => { const listed = videos.some(v => v.toLowerCase() === it.path.toLowerCase()); return [
+                       { icon: 'ambient_screen', label: 'Ekran koruyucu yap', run: () => playlist('set', it) },
+                       { icon: 'playlist_add', label: 'Listeye ekle', disabled: listed, run: () => playlist('add', it) },
+                       { icon: 'playlist_remove', label: 'Listeden çıkar', disabled: !listed, run: () => playlist('remove', it) },
+                       { icon: 'play_arrow', label: 'Şimdi göster', run: async () => { const r = json(await helper(['--saver-video-run'])); if (!r?.ok) throw new Error(SAVER_ERRORS[r?.error] || 'Ekran koruyucu açılamadı'); } },
+                     ]; }}
                      customLabel="Şimdi göster" customIcon="play_arrow" onCustom={show} onPick={pick} />
           </div>
         );
@@ -981,8 +1028,10 @@
               <label className="saver-switch"><span>Etkin</span><input type="checkbox" checked={state.enabled}
                 onChange={e => change({ enabled: e.target.checked, selected: state.selected || state.choices[0]?.path || '' })} /></label>
               <WallRow cls="saver-row-tiles" fallbackIcon="screensaver" selected={state.selected} customLabel="İçe aktar" customIcon="upload_file"
-                       onCustom={importSavers} onPick={it => change({ selected: it.key })}
-                       items={state.choices.map(c => ({ key: c.path, name: c.name, label: c.name, thumb: icons[c.path.toLowerCase()] || '' }))} />
+                       onCustom={importSavers} onPick={it => change({ selected: it.key })} libraryKind="saver"
+                       menuActions={() => [{ icon: 'play_arrow', label: 'Önizle', run: it => invoke('screensaver_run', { path: it.path, configure: false }) }, { icon: 'tune', label: 'Ayarlar', run: it => invoke('screensaver_run', { path: it.path, configure: true }) }, { icon: 'check', label: 'Seç', run: it => change({ enabled: true, selected: it.path }) }]}
+                       onRemoved={async it => { if (state.selected.toLowerCase() === it.path.toLowerCase()) await invoke('screensaver_set', { enabled: false, minutes: Number(state.minutes), secure: state.secure, selected: '' }); setState(await invoke('screensaver_state')); loadIcons(); }}
+                       items={state.choices.map(c => ({ key: c.path, path: c.path, name: c.name, label: c.name, thumb: icons[c.path.toLowerCase()] || '' }))} />
               {note && <div className="kb-msg ok"><Icon name="check_circle" />{note}</div>}
               <SaverVideos onChanged={() => invoke('screensaver_state').then(setState).catch(() => {})} />
               <div className="saver-row">
@@ -1032,6 +1081,7 @@
                 <button className="qbtn" title="Kısayollar" onClick={() => onPage('keys')}>
                   <Icon name="keyboard" />
                 </button>
+                <button className="qbtn" title="Hata raporu" onClick={() => onPage('bug')}><Icon name="bug_report" /></button>
                 <button className="qbtn" title="Ayarlar" onClick={() => { emit('ll:sidebar-right-toggle').catch(() => {}); setTimeout(() => emit('ll:settings-toggle').catch(() => {}), 150); }}>
                   <Icon name="settings" />
                 </button>
@@ -1679,13 +1729,22 @@
       // ii AndroidQuickToggleButton.qml (GroupButton): basınca yaylanarak genişler, köşe küçülür.
       // Geniş ve menülü kutucukta: soldaki yuvarlak ikon = aç/kapa, sağdaki yazı alanı = alta kayan bölüm.
       function QuickToggle({ type, def, size, edit, active, placeholder, onPress, onEditClick, onEditSize, onEditWheel }) {
+        const ref = useRef(null);
+        const [expanded, setExpanded] = useState(false);
+        useLayoutEffect(() => {
+          const el = ref.current;
+          if (!el) return;
+          const measure = () => setExpanded(expandedToggle(el.offsetWidth));
+          measure();
+          const observer = new ResizeObserver(measure); observer.observe(el);
+          return () => observer.disconnect();
+        }, [!!def]);
         if (!def) return null;
-        const expanded = size === 2;
         const altLook = def.alt && expanded; // ii: altAction varken geniş kutucuğun zemini koyu kalır, ikon dairesi renklenir
         const available = def.available !== false;
         const cls = ['qt', expanded ? 'expanded' : 'single', def.toggled ? 'toggled' : '', altLook ? 'alt' : '', edit ? 'editing' : '', available ? '' : 'disabled', active ? 'menu-open' : '', def.hidden ? 'ghosted' : '', placeholder ? 'placeholder' : ''].join(' ');
         return (
-          <button className={cls} style={{ flex: `${size} 1 0`, minWidth: 0, height: CELL_H }} title={def.name} data-qt={type}
+          <button ref={ref} className={cls} style={{ flex: `${size} 1 0`, minWidth: 0, height: CELL_H }} title={def.name} data-qt={type}
             onPointerDown={edit ? onPress : undefined}
             onClick={() => (edit ? onEditClick() : !available ? null : (expanded && def.menu) ? def.menu() : def.action())}
             onContextMenu={e => { e.preventDefault(); if (edit) onEditSize(); else if (def.menu) def.menu(); }}

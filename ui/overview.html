@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="tr">
   <head>
+    <link rel="stylesheet" href="./menu.css">
     <meta charset="utf-8" />
     <script>
 // Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
@@ -135,6 +136,7 @@
       import { appIconFor, winIconOf } from 'lunge/apps';
       import { listen, emit } from '@tauri-apps/api/event';
       import { invoke } from '@tauri-apps/api/core';
+      import { ContextMenu } from '../lib/context-menu.jsx';
 
       // Super menüsünün uygulama listesi çekirdekten (kullanıcının veri klasöründe; kurulum klasörü korumalı).
       // Çekirdek o an başlıyorsa birkaç kez yeniden denenir.
@@ -367,6 +369,7 @@
         const [query, setQuery] = useState('');
         const [sel, setSel] = useState(0);
         const [apps, setApps] = useState([]);
+        const [appMenu, setAppMenu] = useState(null);
         const [tiling, setTiling] = useState(providers.outputMap.tiling);
         // ii "overviewClipboardToggle" / cliphist: ";" öneki pano geçmişini listeler (Super+V)
         const [clips, setClips] = useState([]);
@@ -469,7 +472,7 @@
         // vermeden kapanırsa (çökme) iptal sayılır.
         const menuOpen = useRef(false);
         // dock: uygulamanın exe adı; varsa menünün başında "Dock'ta tut" (Dock çalışan pencereyi bu adla eşler)
-        const shellMenu = (path, dock) => {
+        const legacyShellMenu = (path, dock) => {
           if (menuOpen.current) return;
           menuOpen.current = true;
           let done = false;
@@ -483,6 +486,34 @@
             p.onStdout(c => { buf += c; const m = /"invoked":(true|false)/.exec(buf); if (m) finish(m[1] === 'true'); });
             p.onExit(() => finish(false));
           }).catch(() => finish(false));
+        };
+
+        const closeAppMenu = () => { menuOpen.current = false; setAppMenu(null); inputRef.current?.focus(); };
+        const shellMenu = async (path, dock, position) => {
+          if (menuOpen.current) return;
+          const sequence = openSeq.current;
+          const app = apps.find(a => a.path === path);
+          if (!app) return legacyShellMenu(path, dock);
+          menuOpen.current = true;
+          let pinned = false;
+          try { const response=await fetch('http://127.0.0.1:6131/dock-pins',{method:'POST'}); const pins=await response.json(); pinned=Array.isArray(pins)&&pins.some(p=>String(p).toLowerCase()===String(dock).toLowerCase()); } catch {}
+          if (sequence !== openSeq.current || !openRef.current) { menuOpen.current = false; return; }
+          const row=(id,label,icon,enabled=true)=>({id,label,icon,enabled});
+          setAppMenu({path,dock,file:app.file,pinned,position:position || {x:window.innerWidth/2,y:window.innerHeight/3},items:[
+            row('open','Aç','open_in_new'),row('admin','Yönetici olarak çalıştır','shield_person',!!dock),
+            row('dock',pinned?'Dock’tan kaldır':'Dock’ta tut',pinned?'keep_off':'keep',!!dock),
+            row('folder','Dosya konumunu aç','folder_open',!!app.file),row('props','Özellikler','info',!!app.file),
+            row('uninstall','Uygulamayı kaldır','delete'),
+          ]});
+        };
+        const appMenuAction = async id => {
+          const post=async route=>{const r=await fetch('http://127.0.0.1:6131'+route,{method:'POST'});if(!r.ok)throw new Error('İşlem tamamlanamadı');};
+          if(id==='dock')return post(`/dock-pin?id=${encodeURIComponent(appMenu.dock)}&on=${appMenu.pinned?0:1}`);
+          if(id==='props')await invoke('app_properties',{path:appMenu.file});
+          else if(id==='folder')await post(`/launch?file=explorer.exe&args=${encodeURIComponent('/select,"'+appMenu.file+'"')}`);
+          else if(id==='uninstall')await post('/launch?file=ms-settings%3Aappsfeatures');
+          else await post(`/launch?file=${encodeURIComponent(appMenu.path)}${id==='admin'?'&verb=runas':''}`);
+          hide('uygulama menüsü');
         };
 
         // Helper pencereyi Win32 ile gizleyip gösterir (Super / Super+V): bu, sayfaya blur/focus olayı göndermez ve
@@ -715,7 +746,7 @@
                       {results.map((r, i) => (
                         <div key={r.key} className={`item ${i === sel ? 'selected' : ''} ${r.key.startsWith('file:') ? 'file-result' : ''}`}
                              onMouseEnter={() => setSel(i)} onClick={() => exec(r)}
-                             onContextMenu={e => { e.preventDefault(); if (r.menu) { setSel(i); shellMenu(r.menu, r.dock); } }}>
+                             onContextMenu={e => { e.preventDefault(); if (r.menu) { setSel(i); shellMenu(r.menu, r.dock, {x:e.clientX,y:e.clientY}); } }}>
                           <div className="ico">
                             {r.img ? <img src={r.img} alt="" />
                               : r.bigText ? <span className="big">{r.bigText}</span>
@@ -739,6 +770,7 @@
               </div>
               {!query && <WorkspaceOverview tiling={tiling} apps={apps} onDone={hide} />}
             </div>
+            {appMenu && <ContextMenu items={appMenu.items} position={appMenu.position} onAction={appMenuAction} onClose={closeAppMenu} />}
           </>
         );
       }

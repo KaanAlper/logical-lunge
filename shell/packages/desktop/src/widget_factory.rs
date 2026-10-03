@@ -340,6 +340,8 @@ impl WidgetFactory {
       )
       .build()?;
 
+      window.set_zoom(crate::web_scale::factor() as f64)?;
+
       // Widget coordinates might be modified when docked to an edge.
       let (size, position) = match placement.dock_to_edge.enabled {
         false => (coordinates.size, coordinates.position),
@@ -627,12 +629,13 @@ impl WidgetFactory {
     state: &WidgetState,
   ) -> anyhow::Result<String> {
     // Read by the widgets' client library (ui/lib/shell-client.js).
+    let scale_script = format!("window.__LL_UI_SCALE={};", crate::web_scale::factor());
     let state_script =
       format!("window.__LUNGE_STATE={};", serde_json::to_string(state)?);
 
     let sw_script = include_str!("../resources/initialization-script.js");
 
-    Ok(format!("{state_script}\n{sw_script}"))
+    Ok(format!("{state_script}\n{scale_script}\n{sw_script}"))
   }
 
   /// Registers window events for a given widget.
@@ -690,19 +693,18 @@ impl WidgetFactory {
       .await;
 
     for monitor in monitors {
+      let interface_scale = crate::web_scale::factor();
       let monitor_width = monitor.width as i32;
       let monitor_height = monitor.height as i32;
 
       // Pixel values should be scaled by the monitor's scale factor,
       // whereas percentage values are left as-is. This is because the
       // percentage values are already relative to the monitor's size.
-      let window_width = placement
-        .width
-        .to_px_scaled(monitor_width, monitor.scale_factor);
+      let window_width = crate::web_scale::length(&placement.width, monitor_width, monitor.scale_factor, interface_scale)
+        .clamp(1, monitor_width.max(1));
 
-      let window_height = placement
-        .height
-        .to_px_scaled(monitor_height, monitor.scale_factor);
+      let window_height = crate::web_scale::length(&placement.height, monitor_height, monitor.scale_factor, interface_scale)
+        .clamp(1, monitor_height.max(1));
 
       let window_size = PhysicalSize::new(window_width, window_height);
 
@@ -740,16 +742,13 @@ impl WidgetFactory {
         ),
       };
 
-      let offset_x = placement
-        .offset_x
-        .to_px_scaled(monitor_width, monitor.scale_factor);
+      let offset_x = crate::web_scale::length(&placement.offset_x, monitor_width, monitor.scale_factor, interface_scale);
 
-      let offset_y = placement
-        .offset_y
-        .to_px_scaled(monitor_height, monitor.scale_factor);
+      let offset_y = crate::web_scale::length(&placement.offset_y, monitor_height, monitor.scale_factor, interface_scale);
 
-      let window_position =
-        PhysicalPosition::new(anchor_x + offset_x, anchor_y + offset_y);
+      let window_position = PhysicalPosition::new(
+        (anchor_x + offset_x).clamp(monitor.x, monitor.x + monitor_width - window_width),
+        (anchor_y + offset_y).clamp(monitor.y, monitor.y + monitor_height - window_height));
 
       coordinates.push(WidgetCoordinates {
         size: window_size,
@@ -878,6 +877,30 @@ impl WidgetFactory {
   /// Returns widget states by their widget ID's.
   pub async fn states(&self) -> HashMap<String, WidgetState> {
     self.widget_states.lock().await.clone()
+  }
+
+  /// Resize existing surfaces without reopening a hidden panel or losing its draft.
+  pub async fn apply_interface_scale(&self, scale: f32) {
+    for state in self.states().await.into_values() {
+      if state.name == "desktop-widgets" { continue; }
+      let Some(window) = self.app_handle.get_webview_window(&state.id) else { continue };
+      let placement = match &state.open_options {
+        WidgetOpenOptions::Standalone(p) => Some(p),
+        WidgetOpenOptions::Preset(name) => state.config.presets.iter().find(|p| &p.name == name).map(|p| &p.placement),
+      };
+      if let Some(placement) = placement {
+        let position = window.outer_position().unwrap_or_default();
+        let coordinates = self.widget_coordinates(placement).await;
+        if let Some(c) = coordinates.iter().min_by_key(|c| {
+          (c.monitor.x as i64 - position.x as i64).abs() + (c.monitor.y as i64 - position.y as i64).abs()
+        }) {
+          let _ = window.set_size(c.size);
+          let _ = window.set_position(c.position);
+        }
+      }
+      let _ = window.set_zoom(scale as f64);
+      let _ = window.eval(&format!("window.__LL_UI_SCALE={scale};window.dispatchEvent(new Event('ll:scale'));"));
+    }
   }
 
   /// Returns a widget state by its widget ID.

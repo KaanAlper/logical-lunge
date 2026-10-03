@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı
+// build.mjs replaces this block with the shared, local i18n implementation.
+window.LL_T = s => s;
+window.LL_LOCALE = navigator.language;
+window.LL_PREFS = {};
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Logical Lunge · widget</title>
+    <link rel="stylesheet" href="./desktop-widgets.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+import '../desktop-widgets-app.mjs';
+    </script>
+  </body>
+</html>

@@ -208,7 +208,18 @@ function getWidgetState() {
 
 export function currentWidget() {
   const state = getWidgetState();
-  const tauriWindow = getCurrentWindow();
+  const rawWindow = getCurrentWindow();
+  const tauriWindow = new Proxy(rawWindow, {
+    get(target, key) {
+      if (key === 'setSize') return size => {
+        const scale = Number(window.__LL_UI_SCALE) || 1;
+        const next = size?.type === 'Logical' ? new size.constructor(size.width * scale, size.height * scale) : size;
+        return target.setSize(next);
+      };
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
   const setZOrder = async zOrder => {
     if (zOrder === 'bottom_most') await tauriWindow.setAlwaysOnBottom(true);
     else if (zOrder === 'top_most') await desktopCommands.setAlwaysOnTop();

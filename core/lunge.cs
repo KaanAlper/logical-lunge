@@ -1138,7 +1138,7 @@ class Slider
     internal static bool DesktopWidgetEligible(string title, string cls, string process, bool visible, bool cloaked, bool topmost)
     {
         return visible && !cloaked && !topmost && title == Names.DesktopWidget &&
-            cls == "LungeNativeBar" && string.Equals(process, Names.Shell, StringComparison.OrdinalIgnoreCase);
+            (cls == "LungeNativeBar" || cls == "Tauri Window") && string.Equals(process, Names.Shell, StringComparison.OrdinalIgnoreCase);
     }
     internal static void AddDesktopThumbnails(List<Thumb> scene, List<KeyValuePair<IntPtr, Native.RECT>> sources,
         int ox, int oy, Func<IntPtr, Native.RECT, Thumb> register)
@@ -3057,6 +3057,45 @@ class Dwindle
 // "üzerine gelince etkinleştir" özelliği fare kıpırdamadan da (pencere kapanıp yerleşim
 // değişince) odak değiştiriyordu; bu da Alt+F4 sonrası odak geçmişini bozuyordu.
 // Düşük seviyeli fare kancası sahte/sentetik hareketleri görmez.
+static class DesktopClick
+{
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(Point p);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr h, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+
+    public static bool IsDesktopWindow(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return false;
+        IntPtr root = GetAncestor(h, 2); // GA_ROOT
+        if (root == IntPtr.Zero) return false;
+        var sb = new StringBuilder(16);
+        GetClassName(root, sb, 16);
+        string c = sb.ToString();
+        return c == "Progman" || c == "WorkerW";
+    }
+
+    public static bool At(int x, int y) { return IsDesktopWindow(WindowFromPoint(new Point(x, y))); }
+}
+
+// A captured menu chord keeps its repeats/release even after focus or shell
+// liveness changes. The hook's secure-desktop reset explicitly clears it.
+sealed class DesktopMenuKeyState
+{
+    readonly HashSet<int> held = new HashSet<int>();
+    public bool Contains(int vk) { return held.Contains(vk); }
+    public void Clear() { held.Clear(); }
+    public bool Handle(int vk, bool down, bool up, bool eligible, out bool open)
+    {
+        open = false;
+        if (up && held.Remove(vk)) return true;
+        if (!down) return false;
+        if (held.Contains(vk)) return true;
+        if (!eligible) return false;
+        held.Add(vk); open = true;
+        return true;
+    }
+}
+
 class MouseFocus
 {
     readonly TilingClient tiling;
@@ -3085,10 +3124,30 @@ class MouseFocus
     // Kanca en son ne zaman çağrıldı (kanca bekçisi: Windows geç cevap veren kancayı sessizce söker)
     public static volatile int LastHookTick = Environment.TickCount;
 
+    bool desktopRight;
+
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         LastHookTick = Environment.TickCount;
         int msg = wParam.ToInt32();
+        if (nCode >= 0 && (msg == 0x204 || msg == 0x205)) // WM_RBUTTONDOWN / UP
+        {
+            var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
+            if (msg == 0x204)
+            {
+                desktopRight = ShellState.Up && DesktopClick.At(m.pt.X, m.pt.Y);
+                if (desktopRight) return (IntPtr)1; // dış tıklama değil: menüyü açan tıklama
+                clickX = m.pt.X; clickY = m.pt.Y;
+                clicked.Set();
+            }
+            else if (desktopRight)
+            {
+                desktopRight = false;
+                ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu"));
+                return (IntPtr)1;
+            }
+            return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        }
         if (nCode >= 0 && msg == 0x200) // WM_MOUSEMOVE
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
@@ -3098,7 +3157,7 @@ class MouseFocus
                 moved.Set();
             }
         }
-        else if (nCode >= 0 && (msg == 0x201 || msg == 0x204 || msg == 0x207)) // sol / sağ / orta basış
+        else if (nCode >= 0 && (msg == 0x201 || msg == 0x207)) // sol / orta basış (sağ: yukarıda)
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
             clickX = m.pt.X; clickY = m.pt.Y;
@@ -3194,6 +3253,13 @@ class MouseFocus
 // pencerelerini geri getirir (tiling'in kendi kullandığı arayüzle). Askıya alınmış UWP pencerelerine dokunmaz.
 static class Orphans
 {
+    // WM tags only the companion HWNDs it hides. Properties live with the HWND,
+    // survive a WM crash and disappear on window destruction (no handle reuse).
+    const string CompanionTag = "LogicalLunge.HiddenCompanion";
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetProp(IntPtr h, string name);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr RemoveProp(IntPtr h, string name);
+    [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int how);
+    static bool HasCompanionTag(IntPtr h) { return GetProp(h, CompanionTag) != IntPtr.Zero; }
     [ComImport, Guid("6D5140C1-7436-11CE-8034-00AA006009FA"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     interface IServiceProviderLL { [return: MarshalAs(UnmanagedType.IUnknown)] object QueryService(ref Guid service, ref Guid riid); }
     [ComImport, Guid("372E1D3B-38D3-42E4-A15B-8AB2B178F513"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -3207,8 +3273,10 @@ static class Orphans
     {
         if (!listOnly && Process.GetProcessesByName(Names.Tiling).Length > 0) { Slider.Log("uncloak: tiling çalışıyor, atlandı"); return -1; }
         var targets = new List<IntPtr>();
+        var companions = new List<IntPtr>();
         Native.EnumWindows(delegate (IntPtr h, IntPtr l)
         {
+            if (HasCompanionTag(h)) { companions.Add(h); return true; }
             if (!Native.IsWindowVisible(h)) return true;
             int cl;
             if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cl, 4) != 0 || cl != 2) return true; // 2 = kabuk gizlemiş
@@ -3225,11 +3293,14 @@ static class Orphans
         }, IntPtr.Zero);
         if (listOnly)
         {
+            targets.AddRange(companions);
             foreach (var h in targets) { var t = new StringBuilder(120); Native.GetWindowText(h, t, 120); Console.WriteLine(h.ToInt64() + " " + t); }
             return targets.Count;
         }
-        if (targets.Count == 0) return 0;
         int n = 0;
+        foreach (var h in companions)
+            if (ShowWindowAsync(h, 8 /* SW_SHOWNA: never take focus */)) { RemoveProp(h, CompanionTag); n++; }
+        if (targets.Count == 0) return n;
         try
         {
             var shell = (IServiceProviderLL)Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("C2F03A33-21F5-47FA-B4BB-156362A2F239")));
@@ -3535,6 +3606,9 @@ static class Prefs
             case "toastError":
                 if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) || n < 1 || n > ToastMax) return false;
                 val = n; break;
+            case "uiScale":
+                if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) || !UiScale.Valid(n)) return false;
+                val = n; break;
             default: return false;
         }
         lock (gate)
@@ -3558,7 +3632,50 @@ static class Prefs
             if (!Files.WriteAtomic(FilePath, new JavaScriptSerializer().Serialize(d))) return false;
         }
         Load();
+        if (key == "uiScale") UiScale.Apply((int)val);
         return true;
+    }
+}
+
+static class UiScale
+{
+    public static readonly int[] Steps = { 85, 90, 100, 110, 125, 150 };
+    const double BarDip = 40, Margin = 5;
+
+    public static bool Valid(int pct) { return Array.IndexOf(Steps, pct) >= 0; }
+
+    public static int Percent(Dictionary<string, object> prefs)
+    {
+        object v;
+        return prefs.TryGetValue("uiScale", out v) && v is int && Valid((int)v) ? (int)v : 100;
+    }
+
+    // barın yüksekliği + kenar boşluğu (DIP)
+    public static int TopGap(int pct) { return (int)Math.Round(BarDip * pct / 100.0 + Margin); }
+
+    static readonly System.Text.RegularExpressions.Regex topLine = new System.Text.RegularExpressions.Regex(
+        @"(^[ \t]*outer_gap:[ \t]*\r?\n(?:[ \t]+(?:right|bottom|left):.*\r?\n)*[ \t]+top:[ \t]*)'?\d+px'?",
+        System.Text.RegularExpressions.RegexOptions.Multiline);
+
+    // config.yaml metninde outer_gap'in top değeri; bulunamazsa metin olduğu gibi döner
+    public static string WithTopGap(string yaml, int px)
+    {
+        return topLine.Replace(yaml, m => m.Groups[1].Value + "'" + px + "px'", 1);
+    }
+
+    public static void Apply(int pct)
+    {
+        try
+        {
+            string path = Paths.ConfigFile;
+            if (!System.IO.File.Exists(path)) return;
+            string text = System.IO.File.ReadAllText(path);
+            string next = WithTopGap(text, TopGap(pct));
+            if (next == text) return;
+            if (!Files.WriteAtomic(path, next)) { Slider.Log("arayüz ölçeği: config.yaml yazılamadı"); return; }
+            try { new TilingClient().Command("wm-reload-config"); } catch (Exception ex) { Slider.Log("arayüz ölçeği: " + ex.Message); }
+        }
+        catch (Exception ex) { Slider.Log("arayüz ölçeği: " + ex.Message); }
     }
 }
 
@@ -4037,6 +4154,123 @@ static class Settings
     }
 }
 
+static class BugReports
+{
+    static readonly JavaScriptSerializer Js = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+    const int MaxLogBytes = 192 * 1024;
+
+    public static string File(string kind)
+    {
+        var result = new Dictionary<string, object> { { "ok", false }, { "kind", kind } };
+        try
+        {
+            string text;
+            if (kind == "blackbox")
+            {
+                string path = System.IO.Path.Combine(Paths.LogsDir, "core.log");
+                long before = System.IO.File.Exists(path) ? new System.IO.FileInfo(path).Length : 0;
+                PerfGuard.DumpNow("hata raporu istendi");
+                text = ReadFrom(path, before, MaxLogBytes);
+                int start = text.LastIndexOf("KARA KUTU: hata raporu istendi", StringComparison.Ordinal);
+                if (start < 0) throw new System.IO.IOException("Yeni kara kutu kaydı oluşturulamadı.");
+                text = text.Substring(start);
+            }
+            else
+            {
+                string filename;
+                switch (kind)
+                {
+                    case "core": filename = "core.log"; break;
+                    case "shell": filename = "shell.log"; break;
+                    case "tiling": filename = "tiling.log"; break;
+                    default: throw new ArgumentException("Bilinmeyen günlük türü.");
+                }
+                text = ReadFrom(System.IO.Path.Combine(Paths.LogsDir, filename), -1, MaxLogBytes);
+            }
+            if (string.IsNullOrWhiteSpace(text)) throw new System.IO.IOException("Günlük boş veya erişilemiyor.");
+            result["ok"] = true;
+            result["text"] = text;
+            result["bytes"] = Encoding.UTF8.GetByteCount(text);
+        }
+        catch (Exception ex) { result["error"] = ex.GetBaseException().Message; }
+        return Js.Serialize(result);
+    }
+
+    static string ReadFrom(string path, long start, int limit)
+    {
+        if (limit <= 0) throw new ArgumentOutOfRangeException("limit");
+        using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Open, System.IO.FileAccess.Read,
+            System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+        {
+            long end = fs.Length;
+            long offset = start < 0 ? Math.Max(0, end - limit) : start;
+            if (offset > end) throw new System.IO.IOException("Günlük toplama sırasında değişti.");
+            fs.Seek(offset, System.IO.SeekOrigin.Begin);
+            // Snapshot the length and cap bytes, even while a writer appends.
+            var bytes = new byte[(int)Math.Min(limit, end - offset)];
+            int count = 0, read;
+            while (count < bytes.Length && (read = fs.Read(bytes, count, bytes.Length - count)) > 0) count += read;
+            var chars = new char[Encoding.UTF8.GetMaxCharCount(count)];
+            int usedBytes, usedChars; bool completed;
+            // Do not flush a truncated final UTF-8 character into a replacement.
+            Encoding.UTF8.GetDecoder().Convert(bytes, 0, count, chars, 0, chars.Length, false, out usedBytes, out usedChars, out completed);
+            string text = new string(chars, 0, usedChars);
+            if (offset == 0) text = text.TrimStart('\uFEFF');
+            // A tail may begin midway through a UTF-8 line.
+            if (start < 0 && offset > 0) { int line = text.IndexOf('\n'); text = line < 0 ? "" : text.Substring(line + 1); }
+            return text;
+        }
+    }
+
+    static string WmiName(string query)
+    {
+        try
+        {
+            using (var search = new System.Management.ManagementObjectSearcher(query))
+            {
+                var names = new List<string>();
+                foreach (System.Management.ManagementObject item in search.Get())
+                {
+                    using (item)
+                    {
+                        string name = Convert.ToString(item["Name"]);
+                        if (!string.IsNullOrWhiteSpace(name) && !names.Contains(name)) names.Add(name);
+                    }
+                }
+                return string.Join(", ", names.ToArray());
+            }
+        }
+        catch { return ""; }
+    }
+
+    public static string Device()
+    {
+        string os = Environment.OSVersion.VersionString;
+        try
+        {
+            using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
+            {
+                if (key != null) os = Convert.ToString(key.GetValue("ProductName")) + " "
+                    + Convert.ToString(key.GetValue("DisplayVersion")) + " (" + Convert.ToString(key.GetValue("CurrentBuild")) + ")";
+            }
+        }
+        catch { }
+        string ram = "";
+        try
+        {
+            using (var search = new System.Management.ManagementObjectSearcher("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem"))
+                foreach (System.Management.ManagementObject item in search.Get())
+                    using (item) { ram = Math.Round(Convert.ToDouble(item["TotalPhysicalMemory"]) / (1024 * 1024 * 1024), 1) + " GB"; break; }
+        }
+        catch { }
+        return Js.Serialize(new Dictionary<string, object> {
+            { "os", os }, { "cpu", WmiName("SELECT Name FROM Win32_Processor") },
+            { "gpu", WmiName("SELECT Name FROM Win32_VideoController") }, { "ram", ram },
+            { "appVersion", Updater.Installed() }
+        });
+    }
+}
+
 static class ConfigWatch
 {
     static System.IO.FileSystemWatcher watcher;
@@ -4046,6 +4280,7 @@ static class ConfigWatch
     {
         Prefs.Load();
         Anims.Load();
+        ThreadPool.QueueUserWorkItem(_ => UiScale.Apply(UiScale.Percent(Prefs.Read())));
         try
         {
             watcher = new System.IO.FileSystemWatcher(Paths.ConfigDir) { NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.Size };
@@ -4054,11 +4289,16 @@ static class ConfigWatch
             {
                 BorderStyle.Load();
                 Anims.Load();
+                UiScale.Apply(UiScale.Percent(Prefs.Read()));
                 try { ui.BeginInvoke((Action)Slider.RepaintRings); } catch { }
             }, null, Timeout.Infinite, Timeout.Infinite);
             System.IO.FileSystemEventHandler on = (s, e) =>
             {
-                if (e.Name.Equals("prefs.json", StringComparison.OrdinalIgnoreCase)) Prefs.Load();
+                if (e.Name.Equals("prefs.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    Prefs.Load();
+                    configTimer.Change(300, Timeout.Infinite);
+                }
                 else if (e.Name.Equals("config.yaml", StringComparison.OrdinalIgnoreCase)) configTimer.Change(300, Timeout.Infinite);
             };
             watcher.Changed += on; watcher.Created += on;
@@ -5393,7 +5633,7 @@ static class Toasts
                 new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
                 return;
             }
-            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -5585,6 +5825,19 @@ static class Toasts
             }
             // Sağ panelin hızlı ayarları (radyolar, Ethernet, Bluetooth, uyanık tut): okumalar da cihaz bilgisi verdiği için
             // yalnızca POST (aynı kökenden GET Origin göndermez)
+            else if (target.StartsWith("/library-remove?"))
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(target, @"^/library-remove\?kind=(wall|live|saver)&path=([^&\s]{1,2048})$");
+                if (!m.Success) status = "400 Bad Request";
+                else if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else
+                {
+                    string err;
+                    try { err = Library.Remove(m.Groups[1].Value, Uri.UnescapeDataString(m.Groups[2].Value)); }
+                    catch (Exception ex) { err = "io"; Slider.Log("kütüphaneden silinemedi: " + ex.Message); }
+                    status = err == null ? "204 No Content" : err == "missing" ? "404 Not Found" : err == "io" ? "500 Internal Server Error" : "400 Bad Request";
+                }
+            }
             else if (target.StartsWith("/qs/"))
             {
                 if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
@@ -6485,6 +6738,7 @@ static class Binds
 // ---------------- Klavye ----------------
 class Keys2
 {
+    readonly DesktopMenuKeyState desktopMenuKeys = new DesktopMenuKeyState();
     const int VK_LWIN = 0x5B, VK_RWIN = 0x5C, VK_CONTROL = 0x11, VK_SHIFT = 0x10, VK_MENU = 0x12;
     const int VK_LEFT = 0x25, VK_UP = 0x26, VK_RIGHT = 0x27, VK_DOWN = 0x28;
     const byte VK_DUMMY = 0xE8; // atanmamış tuş: Başlat menüsünü bastırmak için
@@ -6563,6 +6817,7 @@ class Keys2
     void ForgetKeys()
     {
         winDown = false; dockChord = false; dockMasked = false; held.Clear();
+        desktopMenuKeys.Clear();
     }
 
     // Kilit ekranı / UAC / güvenli masaüstü: o sırada basılan ve bırakılan tuşlar bize gelmez. Kanca thread'inde çalışır.
@@ -6657,7 +6912,7 @@ class Keys2
         if ((k.flags & Native.LLKHF_INJECTED) != 0 && (UIntPtr)(ulong)k.extra.ToInt64() == Native.LL_MARK) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
         // Kabuk (bar) çökmüş / açılamamışsa tuşlar olduğu gibi Windows'a: Win tuşu Başlat menüsünü açar (ShellState).
         // Basılı bir Win ya da açık değiştirici varsa önce o biter.
-        if (!ShellState.Up && !winDown && !Switcher.Active) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+        if (!ShellState.Up && !winDown && !Switcher.Active && !held.Contains((int)k.vkCode) && !desktopMenuKeys.Contains((int)k.vkCode)) return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
 
         int msg = wParam.ToInt32();
         bool isDown = msg == Native.WM_KEYDOWN || msg == Native.WM_SYSKEYDOWN;
@@ -6668,6 +6923,18 @@ class Keys2
         if (Switcher.Active || (isDown && vk == 0x09 && altHeld && !winDown))
         {
             if (Switcher.HandleKey(vk, isDown, isUp, Down(VK_SHIFT), altHeld, Down(VK_CONTROL) || winDown)) return (IntPtr)1;
+        }
+
+        // Masaüstü öndeyken menü tuşu / Shift+F10: Explorer'ın menüsü yerine barınki (fare sağ tıkıyla aynı menü, seçili
+        // simgenin yerinde). Basış da bırakış da yutulur.
+        bool desktopMenuOpen;
+        bool desktopMenuEligible = isDown && ShellState.Up && !Binds.Capturing
+            && (vk == 0x5D || (vk == 0x79 && Down(VK_SHIFT))) && !winDown
+            && DesktopClick.IsDesktopWindow(Native.GetForegroundWindow());
+        if (desktopMenuKeys.Handle(vk, isDown, isUp, desktopMenuEligible, out desktopMenuOpen))
+        {
+            if (desktopMenuOpen) ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu-key"));
+            return (IntPtr)1;
         }
 
         // Gerçek Win tuşu Windows'a HİÇ iletilmez ve hiç enjekte edilmez: Windows bir Win basışı görmediği için Başlat
@@ -10356,6 +10623,83 @@ static class SaverVideo
     }
 }
 
+static class Library
+{
+    static string Root(string dir) { return System.IO.Path.GetFullPath(dir).TrimEnd('\\'); }
+
+    static bool Under(string root, string full)
+    {
+        return full.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Lexical containment alone is insufficient: junctions can point outside
+    // the library. Never follow a reparse point on the path or in a package.
+    static bool PlainPath(string full)
+    {
+        for (string p = full; !string.IsNullOrEmpty(p); p = System.IO.Path.GetDirectoryName(p))
+            if ((System.IO.File.Exists(p) || System.IO.Directory.Exists(p))
+                && (System.IO.File.GetAttributes(p) & System.IO.FileAttributes.ReparsePoint) != 0) return false;
+        return true;
+    }
+
+    static bool PlainTree(string folder)
+    {
+        foreach (string entry in System.IO.Directory.GetFileSystemEntries(folder))
+        {
+            var attr = System.IO.File.GetAttributes(entry);
+            if ((attr & System.IO.FileAttributes.ReparsePoint) != 0) return false;
+            if ((attr & System.IO.FileAttributes.Directory) != 0 && !PlainTree(entry)) return false;
+        }
+        return true;
+    }
+
+    // null: silindi; "path" (kütüphane dışı / geçersiz), "missing", "kind"
+    public static string Remove(string kind, string path)
+    {
+        if (string.IsNullOrEmpty(path) || path.IndexOfAny(System.IO.Path.GetInvalidPathChars()) >= 0 || !System.IO.Path.IsPathRooted(path)) return "path";
+        string full;
+        try { full = System.IO.Path.GetFullPath(path); } catch { return "path"; }
+        if (full.IndexOf(':', 2) >= 0 || !PlainPath(full)) return "path";
+        switch (kind)
+        {
+            case "wall":
+            {
+                string root = Root(Wallpaper.Dir);
+                if (!string.Equals(System.IO.Path.GetDirectoryName(full), root, StringComparison.OrdinalIgnoreCase)) return "path";
+                if (!System.IO.File.Exists(full)) return "missing";
+                System.IO.File.Delete(full);
+                return null;
+            }
+            case "live":
+            {
+                string root = Root(LiveWallpaper.Dir);
+                string folder = System.IO.Path.GetDirectoryName(full);
+                if (folder == null || !Under(root, full) || !string.Equals(System.IO.Path.GetDirectoryName(folder), root, StringComparison.OrdinalIgnoreCase)) return "path";
+                if (!System.IO.File.Exists(full)) return "missing";
+                if (!PlainTree(folder)) return "path";
+                LiveWallpaper.Forget(full);
+                System.IO.Directory.Delete(folder, true);
+                return null;
+            }
+            case "saver":
+            {
+                string root = Root(ScreenSavers.Dir);
+                if (!Under(root, full) || !full.EndsWith(".scr", StringComparison.OrdinalIgnoreCase)) return "path";
+                if (!System.IO.File.Exists(full)) return "missing";
+                string folder = System.IO.Path.GetDirectoryName(full);
+                if (!string.Equals(folder, root, StringComparison.OrdinalIgnoreCase) && !PlainTree(folder)) return "path";
+                System.IO.File.Delete(full);
+                // bir paketten açılmış klasör: içinde başka ekran koruyucu kalmadıysa o da gider
+                if (!string.Equals(folder, root, StringComparison.OrdinalIgnoreCase) && Under(root, folder)
+                    && System.IO.Directory.GetFiles(folder, "*.scr", System.IO.SearchOption.AllDirectories).Length == 0)
+                    System.IO.Directory.Delete(folder, true);
+                return null;
+            }
+        }
+        return "kind";
+    }
+}
+
 static class LiveWallpaper
 {
     public const string Name = "lunge-wallpaper";
@@ -10566,6 +10910,31 @@ static class LiveWallpaper
             var s = Load(true);
             if (!s.Active) return false;
             var next = WithoutVideo(s.Entries, mode);
+            if (Same(next, s.Entries)) return false;
+            s.Entries = next;
+            Save(s);
+            return true;
+        });
+        if (changed) Notify();
+    }
+
+    // Remove a default video without discarding other monitors' overrides;
+    // removing an override must keep that monitor off instead of revealing '*'.
+    static List<KeyValuePair<string, string>> WithoutFile(List<KeyValuePair<string, string>> entries, string video)
+    {
+        var next = entries.FindAll(e => e.Key != "*" || !string.Equals(e.Value, video, StringComparison.OrdinalIgnoreCase));
+        foreach (var e in entries)
+            if (e.Key != "*" && string.Equals(e.Value, video, StringComparison.OrdinalIgnoreCase))
+                next = WithoutVideo(next, e.Key);
+        return next.Exists(e => e.Value.Length > 0) ? next : new List<KeyValuePair<string, string>>();
+    }
+
+    public static void Forget(string video)
+    {
+        bool changed = Locked(() =>
+        {
+            var s = Load(true);
+            var next = WithoutFile(s.Entries, video);
             if (Same(next, s.Entries)) return false;
             s.Entries = next;
             Save(s);
@@ -11885,7 +12254,7 @@ static class Program
             var so = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
             so.Write(res); so.Flush();
             return;
-        }        // Duvar kağıdı: --wall-info | --wall-local | --wall-browse <tür> [sayfa] | --wall-get <url> <mod>
+        }        // Duvar kağıdı: --wall-info | --wall-local | --wall-browse <tür> [sayfa] | --wall-get <url> <mod> | --wall-download <url>
         //               --wall-set <dosya> <mod> | --wall-thumb <dosya> | --wall-pick <mod>   (mod: all | span | monitör kimliği)
         if (args.Length >= 1 && args[0].StartsWith("--wall-"))
         {
@@ -11899,6 +12268,8 @@ static class Program
                     case "--wall-browse": { int pg = 1; if (args.Length > 2) int.TryParse(args[2], out pg); outText = Wallpaper.Browse(args.Length > 1 ? args[1] : "top", pg); break; }
                     case "--wall-get": { string f = Wallpaper.Download(args[1]); Wallpaper.Apply(f, args.Length > 2 ? args[2] : "all"); outText = "{\"ok\":true}"; break; }
                     case "--wall-set": Wallpaper.Apply(args[1], args.Length > 2 ? args[2] : "all"); outText = "{\"ok\":true}"; break;
+                    // Gallery download: save in the library and return the path.
+                    case "--wall-download": outText = new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "ok", true }, { "path", Wallpaper.Download(args[1]) } }); break;
                     case "--wall-thumb": outText = Wallpaper.Thumb(args[1]); break;
                     case "--wall-pick": outText = new JavaScriptSerializer().Serialize(Wallpaper.Pick(args.Length > 1 ? args[1] : "all")); break;
                     default: outText = "{\"error\":\"unknown\"}"; break;
@@ -12012,6 +12383,15 @@ static class Program
         }
         // lunge.exe --black-box: o anki performans durumunu (işlemci / GPU / parçalar) log'a yaz
         if (args.Length == 1 && args[0] == "--black-box") { PerfGuard.DumpNow("elle istendi"); return; }
+        // UTF-8 JSON attachment/device contracts; native spellings remain aliases.
+        if ((args.Length == 2 && (args[0] == "--bug-file" || args[0] == "--bug-report-file"))
+            || (args.Length == 1 && (args[0] == "--bug-device" || args[0] == "--bug-report-device")))
+        {
+            string report = args.Length == 1 ? BugReports.Device() : BugReports.File(args[1]);
+            var output = new System.IO.StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false));
+            output.Write(report); output.Flush();
+            return;
+        }
         // lunge.exe --switcher-demo: Alt+Tab menüsünü 6 sn göster (sınama; kısayolsuz)
         if (args.Length == 1 && args[0] == "--switcher-demo") { Switcher.Demo(); return; }
         // lunge.exe --log <metin>: widget'ların hata ayıklama günlüğü (%LOCALAPPDATA%\LogicalLunge\logs\core.log)

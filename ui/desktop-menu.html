@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="./fonts.css"><link rel="stylesheet" href="./menu.css">
+<style>html,body,#root{margin:0;background:transparent}*{box-sizing:border-box}</style>
+    <script>
+// Logical Lunge dil katmanı
+    </script>
+</head><body><div id="root"></div>
+    <script type="module">
+import React,{useState,useEffect} from 'react';
+import {createRoot} from 'react-dom/client';
+import {invoke} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
+import * as lunge from 'lunge/shell';
+import 'lunge/theme';
+import {ContextMenu} from '../lib/context-menu.jsx';
+const win=lunge.currentWidget().tauriWindow;
+async function theme(){try{const r=await fetch('http://127.0.0.1:6131/prefs.json',{method:'POST'});const p=await r.json();document.documentElement.dataset.theme=p.theme==='light'?'light':'dark';}catch{}}
+theme();listen('ll:prefs',theme);listen('ll:theme-light',()=>document.documentElement.dataset.theme='light');listen('ll:theme-dark',()=>document.documentElement.dataset.theme='dark');
+function App(){
+  const [model,setModel]=useState({items:[]});
+  const close=()=>lunge.hideWindow(win).catch(()=>{});
+  useEffect(()=>{
+    let alive=true; const refresh=()=>invoke('desktop_menu_current').then(m=>{if(alive)setModel(m);}).catch(close);
+    const events=[listen('ll:desktop-menu-model',e=>setModel(e.payload)),win.onFocusChanged(e=>{if(e.payload) {lunge.setWebviewVisible(true);refresh();} else close();})];
+    refresh(); return()=>{alive=false;events.forEach(p=>p.then(off=>off()));};
+  },[]);
+  return <ContextMenu items={model.items} embedded onAction={id=>invoke('desktop_menu_action',{id})} onClose={close}/>;
+}
+createRoot(document.getElementById('root')).render(<App/>);
+    </script>
+</body></html>

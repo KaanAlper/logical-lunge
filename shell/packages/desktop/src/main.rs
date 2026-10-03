@@ -46,6 +46,12 @@ mod providers;
 mod shell_state;
 mod widget_factory;
 mod widget_pack;
+mod web_scale;
+mod desktop_widgets;
+#[cfg(windows)]
+mod desktop_shell;
+#[cfg(windows)]
+mod web_menu;
 
 #[macro_use]
 extern crate rocket;
@@ -122,6 +128,15 @@ async fn main() -> anyhow::Result<()> {
       commands::screensaver_state,
       commands::screensaver_set,
       commands::screensaver_run,
+      web_menu::desktop_menu_current,
+      web_menu::desktop_menu_action,
+      web_menu::app_properties,
+      desktop_widgets::desktop_widgets_load,
+      desktop_widgets::desktop_widgets_update,
+      desktop_widgets::desktop_widgets_bootstrap,
+      desktop_widgets::desktop_widgets_regions,
+      desktop_widgets::desktop_widgets_editing,
+      desktop_widgets::desktop_widgets_cursor,
     ])
     .build(tauri::generate_context!())?;
 
@@ -206,6 +221,21 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
     monitor_state.clone(),
   ));
   app.manage(widget_factory.clone());
+  {
+    let factory = widget_factory.clone();
+    task::spawn(async move {
+      let mut last = web_scale::factor();
+      let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+      loop {
+        interval.tick().await;
+        let current = web_scale::factor();
+        if current != last {
+          factory.apply_interface_scale(current).await;
+          last = current;
+        }
+      }
+    });
+  }
 
   // Logical Lunge: `LL_NATIVE_BAR=demo` runs only the native bar, as a
   // second instance next to the running shell (for testing): no single
@@ -233,6 +263,8 @@ async fn start_app(app: &mut tauri::App, cli: Cli) -> anyhow::Result<()> {
     .allow_directory(&app_settings.config_dir, true)?;
 
   app.manage(ShellState::new(app.handle(), widget_factory.clone()));
+  web_menu::listen(app.handle());
+  desktop_widgets::start(app.handle());
   app.handle().plugin(tauri_plugin_dialog::init())?;
   app.handle().plugin(tauri_plugin_shell::init())?;
 

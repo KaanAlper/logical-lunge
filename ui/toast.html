@@ -344,7 +344,7 @@
         try {
           const pos = await win.outerPosition();
           if (baseY === null) baseY = pos.y;
-          const off = updateH > 0 ? Math.round((updateH - 12) * (await win.scaleFactor())) : 0;
+          const off = updateH > 0 ? Math.round((updateH - 12) * (await win.scaleFactor()) * (Number(window.__LL_UI_SCALE) || 1)) : 0;
           if (pos.y !== baseY + off) await win.setPosition(new PhysicalPosition(pos.x, baseY + off));
         } catch (e) { console.error(e); }
       }

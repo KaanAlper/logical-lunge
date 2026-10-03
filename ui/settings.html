@@ -136,6 +136,7 @@
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
+      import { UI_SCALES, saveUiScale } from '../parity-sidebar.mjs';
 
       const win = lunge.currentWidget().tauriWindow;
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
@@ -596,6 +597,14 @@
         const [bad, setBad] = useState(false);
         const [saving, setSaving] = useState(false);
         const [colorError, setColorError] = useState('');
+        const [scaleSaving, setScaleSaving] = useState(false), [scaleError, setScaleError] = useState('');
+        const setScale = async value => {
+          if (scaleSaving) return;
+          setScaleSaving(true); setScaleError('');
+          try { await saveUiScale(value); update({ uiScale: value }); }
+          catch (e) { setScaleError(`Arayüz ölçeği kaydedilemedi: ${e.message}`); }
+          finally { setScaleSaving(false); }
+        };
         useEffect(() => {
           const observer = new MutationObserver(() => setTheme(window.llTheme?.get?.() ?? 'dark'));
           observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -644,6 +653,14 @@
                 {bad && <span className="err">Renk kodu #rrggbb biçiminde olmalı</span>}
               </div>
               {colorError && <div className="note" role="alert">{colorError}</div>}
+            </div>
+            <div className="sec-title">Arayüz ölçeği</div>
+            <div className="card">
+              <Row icon="zoom_in" label="Arayüz ölçeği" sub="Bar, paneller ve ayarlar birlikte ölçeklenir" />
+              <div className="seg" role="group" aria-label="Arayüz ölçeği" style={{ flexWrap: 'wrap', margin: '8px 16px 16px' }}>
+                {UI_SCALES.map(value => <button key={value} className={(s.uiScale ?? 100) === value ? 'sel' : ''} aria-pressed={(s.uiScale ?? 100) === value} disabled={scaleSaving} onClick={() => setScale(value)}>{value}%</button>)}
+              </div>
+              {scaleError && <div className="note" role="alert">{scaleError}</div>}
             </div>
             <div className="sec-title">Hareket</div>
             <div className="card">

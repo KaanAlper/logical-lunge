@@ -10,6 +10,132 @@ using System.Web.Script.Serialization;
 
 static class CoreRegression
 {
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern bool SetProp(IntPtr hwnd, string name, IntPtr value);
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern IntPtr RemoveProp(IntPtr hwnd, string name);
+    // Reflection keeps this suite compilable before the parity classes are ported.
+    static Type ParityType(string name) {
+        var type = typeof(Program).Assembly.GetType(name);
+        Check(type != null, "Missing parity backend: " + name);
+        return type;
+    }
+    static object ParityCall(Type type, string method, params object[] args) {
+        return type.GetMethod(method, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, args);
+    }
+    static void ParityTests() {
+        var keyState = ParityType("DesktopMenuKeyState");
+        var keys = Activator.CreateInstance(keyState);
+        Func<int, bool, bool, bool, bool[]> key = (vk, down, up, eligible) => {
+            var a = new object[] { vk, down, up, eligible, false };
+            bool consumed = (bool)keyState.GetMethod("Handle").Invoke(keys, a);
+            return new[] { consumed, (bool)a[4] };
+        };
+        Check(key(0x5D, true, false, true).SequenceEqual(new[] { true, true }), "Desktop Menu did not open once");
+        Check(key(0x5D, true, false, false).SequenceEqual(new[] { true, false }), "Menu repeat leaked after foreground changed");
+        Check(key(0x5D, false, true, false).SequenceEqual(new[] { true, false }), "Menu release leaked after shell loss");
+        Check(key(0x79, true, false, false).SequenceEqual(new[] { false, false }), "Ineligible F10 was intercepted");
+        Check(key(0x79, true, false, true).SequenceEqual(new[] { true, true }), "Shift+F10 did not open");
+        keyState.GetMethod("Clear").Invoke(keys, null);
+        Check(key(0x79, false, true, false).SequenceEqual(new[] { false, false }), "Desktop switch kept stale key state");
+        // An invisible HWND only: no desktop focus or showing a test window.
+        var hidden = new System.Windows.Forms.NativeWindow();
+        hidden.CreateHandle(new System.Windows.Forms.CreateParams { Caption = "ll-companion-fixture", Style = unchecked((int)0x80000000), ExStyle = 0x80 });
+        try {
+            Check(!Native.IsWindowVisible(hidden.Handle), "Companion fixture must remain invisible");
+            Check(SetProp(hidden.Handle, "LogicalLunge.HiddenCompanion", (IntPtr)1), "Companion tag fixture failed");
+            Check((bool)Call(typeof(Orphans), "HasCompanionTag", hidden.Handle), "Hidden companion is invisible to crash recovery");
+            RemoveProp(hidden.Handle, "LogicalLunge.HiddenCompanion");
+            Check(!(bool)Call(typeof(Orphans), "HasCompanionTag", hidden.Handle), "An untagged window was classified as a companion");
+        } finally { hidden.DestroyHandle(); }
+        var scale = ParityType("UiScale");
+        foreach (int pct in new[] { 85, 90, 100, 110, 125, 150 })
+            Check((bool)ParityCall(scale, "Valid", pct), "Valid scale refused: " + pct);
+        Check(!(bool)ParityCall(scale, "Valid", 101), "Arbitrary UI scale accepted");
+        Check((int)ParityCall(scale, "TopGap", 85) == 39 && (int)ParityCall(scale, "TopGap", 125) == 55, "Bar gap is out of sync");
+        string yaml = "gaps:\n  scale_with_dpi: true\n  inner_gap: '8px'\n  outer_gap:\n    top: '45px'\n    right: '5px'\n";
+        string next = (string)ParityCall(scale, "WithTopGap", yaml, 55);
+        Check(next == yaml.Replace("top: '45px'", "top: '55px'"), "Scale changed unrelated config");
+        Check((string)ParityCall(scale, "WithTopGap", next, 55) == next, "Scale sync is not idempotent");
+        string reordered = "  outer_gap:\r\n    left: '5px'\r\n    top: 45px\r\n";
+        Check(((string)ParityCall(scale, "WithTopGap", reordered, 60)).Contains("top: '60px'"), "CRLF/reordered gap missed");
+        string none = "gaps:\n  inner_gap: '8px'\n";
+        Check((string)ParityCall(scale, "WithTopGap", none, 60) == none, "Missing gap was invented");
+        foreach (object bad in new object[] { 7, "125", 125.0, null })
+            Check((int)ParityCall(scale, "Percent", new Dictionary<string, object> { { "uiScale", bad } }) == 100, "Invalid persisted scale accepted");
+        Check((int)ParityCall(scale, "Percent", new Dictionary<string, object> { { "uiScale", 125 } }) == 125, "Persisted scale missed");
+        Check(!Prefs.Set("uiScale", "101"), "Invalid scale preference accepted");
+
+        var library = ParityType("Library");
+        const string shell = "http://127.0.0.1:6124";
+        Func<string, string, string> remove = (kind, path) => "/library-remove?kind=" + kind + "&path=" + Uri.EscapeDataString(path);
+        Check(Request("GET", remove("wall", @"C:\x.png"), shell).Contains("405"), "Library removal requires POST");
+        Check(Request("POST", remove("wall", @"C:\x.png"), "https://example.invalid").Contains("403"), "Library accepted foreign Origin");
+        Check(Request("POST", "/library-remove?kind=nope&path=x", shell).Contains("400"), "Unknown library accepted");
+        Check(Request("POST", remove("wall", "relative.png"), shell).Contains("400"), "Relative library path accepted");
+        Check(Request("POST", remove("live", LiveWallpaper.Dir + @"\..\..\x.mp4"), shell).Contains("400"), "Library traversal accepted");
+        Check(Request("POST", remove("saver", Environment.GetFolderPath(Environment.SpecialFolder.System) + @"\scrnsave.scr"), shell).Contains("400"), "Windows saver removal accepted");
+        string wall = System.IO.Path.Combine(Wallpaper.Dir, "ll-parity-" + Guid.NewGuid().ToString("N") + ".png");
+        string saverFolder = System.IO.Path.Combine(ScreenSavers.Dir, "ll-parity-" + Guid.NewGuid().ToString("N"));
+        string scratch = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ll-parity-" + Guid.NewGuid().ToString("N"));
+        System.IO.Directory.CreateDirectory(saverFolder);
+        System.IO.Directory.CreateDirectory(scratch);
+        try {
+            System.IO.File.WriteAllText(wall, "fixture");
+            Check(Request("POST", remove("wall", wall), shell).Contains("204") && !System.IO.File.Exists(wall), "Wall was not removed");
+            Check(Request("POST", remove("wall", wall), shell).Contains("404"), "Missing wall was not reported");
+            string saverA = System.IO.Path.Combine(saverFolder, "a.scr"), saverB = System.IO.Path.Combine(saverFolder, "b.scr");
+            System.IO.File.WriteAllText(saverA, "fixture"); System.IO.File.WriteAllText(saverB, "fixture");
+            Check((string)ParityCall(library, "Remove", "saver", saverA) == null && System.IO.File.Exists(saverB), "Removing one saver deleted the other");
+            Check((string)ParityCall(library, "Remove", "saver", saverB) == null && !System.IO.Directory.Exists(saverFolder), "Empty saver package stayed behind");
+            string link = System.IO.Path.Combine(ScreenSavers.Dir, "ll-parity-link-" + Guid.NewGuid().ToString("N"));
+            string victim = System.IO.Path.Combine(scratch, "outside.scr");
+            System.IO.File.WriteAllText(victim, "outside the library");
+            var mklink = new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c mklink /J \"" + link + "\" \"" + scratch + "\"") {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            using (var process = System.Diagnostics.Process.Start(mklink)) {
+                process.StandardOutput.ReadToEnd(); process.StandardError.ReadToEnd(); process.WaitForExit();
+                Check(process.ExitCode == 0, "Junction fixture could not be created");
+            }
+            try {
+                Check(Request("POST", remove("saver", System.IO.Path.Combine(link, "outside.scr")), shell).Contains("400")
+                    && System.IO.File.Exists(victim), "Library deletion crossed a junction");
+            } finally {
+                if (System.IO.Directory.Exists(link)) System.IO.Directory.Delete(link, false);
+            }
+            var bug = ParityType("BugReports");
+            var js = new JavaScriptSerializer();
+            var error = js.Deserialize<Dictionary<string, object>>((string)ParityCall(bug, "File", "../core"));
+            Check(!(bool)error["ok"] && error.ContainsKey("error"), "Invalid bug attachment returned success");
+            string log = System.IO.Path.Combine(scratch, "log.txt");
+            System.IO.File.WriteAllText(log, "old line\n" + new string('x', 100) + "\nYeni: şarkı 🎵\n", new UTF8Encoding(false));
+            string tail = (string)ParityCall(bug, "ReadFrom", log, -1L, 40);
+            Check(tail == "Yeni: şarkı 🎵\n", "UTF-8 log tail was split: " + tail);
+            long offset = new System.IO.FileInfo(log).Length;
+            System.IO.File.AppendAllText(log, "fresh dump\n", new UTF8Encoding(false));
+            Check((string)ParityCall(bug, "ReadFrom", log, offset, 40) == "fresh dump\n", "Fresh dump includes stale log text");
+            System.IO.File.WriteAllText(log, string.Concat(Enumerable.Repeat("界", 30)), new UTF8Encoding(false));
+            string bounded = (string)ParityCall(bug, "ReadFrom", log, 0L, 40);
+            Check(Encoding.UTF8.GetByteCount(bounded) <= 40 && !bounded.Contains("\uFFFD"), "Bug log exceeded its UTF-8 byte limit or split a character");
+        } finally {
+            if (System.IO.File.Exists(wall)) System.IO.File.Delete(wall);
+            if (System.IO.Directory.Exists(saverFolder)) System.IO.Directory.Delete(saverFolder, true);
+            System.IO.Directory.Delete(scratch, true);
+        }
+        var entries = new List<KeyValuePair<string, string>> {
+            new KeyValuePair<string, string>("*", @"C:\v\a.mp4"),
+            new KeyValuePair<string, string>("M1", @"C:\v\b.mp4"),
+            new KeyValuePair<string, string>("M2", @"C:\v\a.mp4")
+        };
+        var retained = (List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithoutFile", entries, @"c:\V\A.mp4");
+        Check((string)Call(typeof(LiveWallpaper), "FileFor", retained, "M1") == @"C:\v\b.mp4"
+            && (string)Call(typeof(LiveWallpaper), "FileFor", retained, "M2") == "", "Forgetting the default video lost another monitor's override");
+        retained = (List<KeyValuePair<string, string>>)Call(typeof(LiveWallpaper), "WithoutFile", entries, @"C:\v\b.mp4");
+        Check((string)Call(typeof(LiveWallpaper), "FileFor", retained, "M1") == ""
+            && (string)Call(typeof(LiveWallpaper), "FileFor", retained, "M2") == @"C:\v\a.mp4" && entries.Count == 3, "Forgetting an override revealed the default or mutated the input");
+        Console.WriteLine("PASS: scale config, library authorization/deletion, UTF-8 bug log tails");
+    }
     static void Check(bool ok, string message) { if (!ok) throw new Exception(message); }
     static object Call(Type type, string name, params object[] args) {
         return type.GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, args);
@@ -341,13 +467,14 @@ static class CoreRegression
         var eligible = typeof(Slider).GetMethod("DesktopWidgetEligible", BindingFlags.NonPublic | BindingFlags.Static);
         var attach = typeof(Slider).GetMethod("AddDesktopThumbnails", BindingFlags.NonPublic | BindingFlags.Static);
         Check(eligible != null && attach != null, "Desktop widgets have no stationary layer in the animation scene");
+        foreach (string hostClass in new[] { "LungeNativeBar", "Tauri Window" })
         for (int bits = 0; bits < 64; bits++) {
             bool identity = (bits & 7) == 7, visible = (bits & 8) != 0, cloaked = (bits & 16) != 0, topmost = (bits & 32) != 0;
             bool actual = (bool)eligible.Invoke(null, new object[] {
                 (bits & 1) != 0 ? "Logical Lunge · widget" : "another surface",
-                (bits & 2) != 0 ? "LungeNativeBar" : "another class",
+                (bits & 2) != 0 ? hostClass : "another class",
                 (bits & 4) != 0 ? Names.Shell : "another process", visible, cloaked, topmost });
-            Check(actual == (identity && visible && !cloaked && !topmost), "Wrong desktop thumbnail eligibility at " + bits);
+            Check(actual == (identity && visible && !cloaked && !topmost), "Wrong desktop thumbnail eligibility for " + hostClass + " at " + bits);
         }
         var background = new Slider.Thumb { Src = new IntPtr(1) };
         var scene = new List<Slider.Thumb> { background };
@@ -369,6 +496,8 @@ static class CoreRegression
     }
 
     static void Main(string[] args) {
+        ParityTests();
+        if (args.Length == 1 && args[0] == "--parity-only") return;
         DesktopWidgetTests();
         RestartTests();
         if (args.Length == 1 && args[0] == "--restart-only") return;
