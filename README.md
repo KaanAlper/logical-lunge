@@ -81,7 +81,7 @@ Windows desktop integration requires handling these cases:
 irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
 ```
 
-A short wizard asks for the interface edition, accent color, language and 12/24-hour clock and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the WebView2 and Visual C++ runtimes, and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
+A short wizard asks for the interface edition, accent color, language and 12/24-hour clock and which extras you want. Windows asks for permission **once**. The installer downloads whatever is missing — the Visual C++ runtime (and WebView2 for the web edition), and pinned, tested versions of WezTerm, the Nerd Font, fish (MSYS2), starship, eza and LibreHardwareMonitor, installs the shell, backs up and applies the Windows settings, and starts the desktop.
 
 | Option (set before running) | Effect |
 |---|---|
@@ -129,7 +129,7 @@ All of them can be changed in **sidebar → ⌨ Shortcuts** (read-only until you
 | | Status |
 |---|---|
 | Windows 10 22H2 (19045) | Developed and tested here |
-| Windows 11 | Supported by every component (window manager, WebView2, IDesktopWallpaper); Windows-11-only snap layouts are switched off by the installer. First clean-machine test pending. |
+| Windows 11 | Supported by every component (window manager, Direct2D / DirectComposition, IDesktopWallpaper); Windows-11-only snap layouts are switched off while the desktop runs. First clean-machine test pending. |
 | ARM64 | Not yet (the app is built for x64) |
 
 ### Languages
@@ -144,7 +144,7 @@ flowchart TD
   core["lunge.exe (core, C#)<br/>root of the desktop: starts and watches the parts<br/>keys, slides and window animations, focus, rounded corners,<br/>toasts, splash, screenshots, wallpapers, night light, shortcuts"]
   core -- child --> tiling["lunge-tiling.exe (Rust)<br/>tiling (Hyprland dwindle), window borders, IPC"]
   core -- starts --> live["lunge-wallpaper.exe (Rust)<br/>live wallpaper: videos behind the desktop icons (Media Foundation)"]
-  core -- child --> shell["lunge-shell.exe (Rust)<br/>bar, Super menu and notifications (native: Direct2D / DirectComposition)<br/>sidebar, settings, session screen, keyboard, Dock (WebView2, going native)"]
+  core -- child --> shell["lunge-shell.exe (Rust)<br/>bar, Super menu, panels, settings, cards, Dock, keyboard, session screen, desktop widgets<br/>(native: Direct2D / DirectComposition, no WebView)"]
   shell <-- IPC --> tiling
   core <-- IPC --> tiling
 ```

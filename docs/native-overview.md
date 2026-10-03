@@ -1,6 +1,6 @@
 # Native Super menu
 
-The Super menu (ii's overview: search on top, workspace grid below) is the most used panel, so it should open without a
+The Super menu (search on top, workspace grid below) is the most used panel, so it should open without a
 frame of delay and cost nothing while closed. In the native edition it is drawn with Direct2D / DirectComposition on the
 native bar's UI thread, sharing its device, fonts, icons, theme and app list; it is the only Super menu there (the web
 page `ui/overview.html` is gone from this edition and lives on in the web edition).

@@ -1,10 +1,11 @@
 # Native bar
 
-The bar is the only widget that is always on screen, yet today it costs a whole browser tab: every widget is a
-WebView2 page (one renderer each, ~88 MB), plus the shared browser and GPU processes (~230 MB). The native bar draws
-the same ii bar with Direct2D + DirectWrite into DirectComposition surfaces, inside `lunge-shell`, with no WebView.
+The bar is always on screen. As a WebView2 page it cost a renderer (~88 MB) plus the shared browser and GPU
+processes (~230 MB). The native bar draws it with Direct2D + DirectWrite into DirectComposition surfaces, inside
+`lunge-shell`. In the native edition everything else is native too (Super menu, panels, settings, cards, Dock,
+keyboard, session screen, desktop widgets): `lunge-shell` is a plain Win32 program with no WebView and no Tauri.
 
-Goals: same look and behaviour as `ui/bar.html` (nothing lost, see the map below); a few MB instead of ~100; animations
+Goals: the web bar's look and behaviour (nothing lost, see the map below); a few MB instead of ~100; animations
 that cost no CPU per frame; works on machines without a GPU driver (WARP) and without Explorer (shell mode).
 
 ## Where it lives
@@ -14,13 +15,13 @@ that cost no CPU per frame; works on machines without a GPU driver (WARP) and wi
 - **Data**: the shell's providers (cpu, memory, battery, network, audio, media, systray) are created through
   `ProviderManager` like a widget would, and their emissions are also forwarded to the bar thread. No second copy of
   any provider.
-- **Window manager**: WebSocket client to `ws://127.0.0.1:6123` (same protocol as `ui/lib/tiling-client.js`):
+- **Window manager**: WebSocket client to `ws://127.0.0.1:6123`:
   `sub -e all` plus `query monitors / workspaces / focused / paused / binding-modes`, and `command` for actions.
 - **Core**: HTTP to `127.0.0.1:6131`: `/cmd?a=ws-N` for the slide, `/bar-alive`, `/apps.json`, `/winicon`,
-  `/pref?k=theme&v=...` and `/tray-pins`. The core's event stream (`/events`, the same one the web widgets get through
-  the toast widget) brings `ll:theme-*` and `ll:tray-pins`; the bar reconnects to it on its own.
-- **Web widgets**: the buttons that open them (search, active window, OSK, indicators, right click on the workspaces)
-  and a press anywhere else on the bar (`ll:bar-click`) emit the same Tauri events as the web bar, in process.
+  `/pref?k=theme&v=...` and `/tray-pins`. The core's event stream (`/events`) brings `ll:theme-*`, `ll:tray-pins` and the other `ll:*` events; the bar
+  reconnects to it on its own.
+- **The shell's own events** (a card from the Super menu, a panel page, the keyboard tile) go over the in-process
+  event bus (`src/bus.rs`: typed events, subscribers), not through a web layer.
 
 ## Rendering
 
@@ -57,7 +58,7 @@ that cost no CPU per frame; works on machines without a GPU driver (WARP) and wi
 | 14 | Right: indicators (muted, mic off, network type / Wi-Fi strength) → right sidebar; tray (pinned in bar, rest in the ▾ panel, drag to pin with ghost, first 4 pinned, key = first tooltip word; left / double / middle / right click) | same; pins live in `state\tray-pins.json` (core `/tray-pins`, used by both bars; the old localStorage layout is moved over once). Without a tooltip the key is the owner's exe name |
 | 15 | Shorten levels by width (≤1100 / ≤1440) | same |
 | 16 | `ll:bar-click` on mouse down (other popups close) | same event, except on the presses that toggle a panel; the sidebar listens too (this bar never takes focus, so it gets no blur) |
-| 17 | `ll:overview-toggle`, `ll:sidebar-right-toggle`, `ll:sidebar-left-toggle`, `ll:osk-toggle`, `ll:osd-wheel` | same Tauri events (the OSD is the bar's own) |
+| 17 | `ll:overview-toggle`, `ll:sidebar-right-toggle`, `ll:sidebar-left-toggle`, `ll:osk-toggle`, `ll:osd-wheel` | handled in the bar itself or over the shell's event bus (the OSD is the bar's own; there is no left sidebar) |
 
 Kept as they are: the WM reserves the bar area through `gaps.outer_gap.top` in config.yaml; the core's
 integration points all key on the window title.
@@ -94,5 +95,4 @@ bar is removed. Phase 5 is superseded: the other panels become native too (docs/
 3. Popups (resources, media, tray panel with drag to pin) and all animations in the compositor.
 4. Integration: config switch and fallback, theme / pins / i18n / prefs, heartbeat, DPI and monitor changes,
    measurements against the web bar (memory, CPU at idle, frame times of the slide).
-5. Web widgets only while open (low-memory mode): the shell creates sidebar / overview / settings on demand and closes
-   them after use, so no WebView2 process runs while nothing web is on screen.
+5. Every panel native and the web layer gone: no WebView2 process, no Tauri runtime in the native edition.
