@@ -1,4 +1,4 @@
-//! The on-screen keyboard (ii onScreenKeyboard; the web edition's osk.html):
+//! The on-screen keyboard:
 //! a Turkish Q keyboard that slides up from the bottom of the primary
 //! monitor and types into the focused window.
 //!
@@ -182,7 +182,7 @@ fn hit_at(x: f32, y: f32) -> Option<Hit> {
   key_rects().into_iter().find(|(_, r)| x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h).map(|(h, _)| h)
 }
 
-/// Shift, Caps Lock and the latched modifiers (one press each, as in ii).
+/// Shift, Caps Lock and the latched modifiers (one press each).
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
 struct Mods {
   shift: bool,
@@ -268,7 +268,7 @@ fn press(mods: &mut Mods, k: &Key) -> Vec<Out> {
       v
     }
   };
-  mods.shift = false; // one Shift per key (as in ii)
+  mods.shift = false; // one Shift per key
   out
 }
 

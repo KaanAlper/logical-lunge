@@ -201,7 +201,8 @@ impl AudioProvider {
           }
           recv(self.common.input.sync_rx) -> input => {
             match input {
-              Ok(ProviderInputMsg::Stop) => {
+              // the manager is gone: the provider ends with it
+              Err(_) => {
                 break;
               }
               Ok(ProviderInputMsg::Function(

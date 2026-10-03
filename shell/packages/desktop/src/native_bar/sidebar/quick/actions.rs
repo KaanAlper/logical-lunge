@@ -214,7 +214,7 @@ impl Ui {
         self.sidebar_close();
         core_api::run_core(&["--snip", "350"]);
       }
-      Tile::OnScreenKeyboard => (self.emit)("ll:osk-toggle", Value::Null),
+      Tile::OnScreenKeyboard => crate::bus::publish(crate::bus::Event::OskToggle),
       Tile::Notifications => self.sb_set_dnd(!self.model.dnd),
     }
     self.sb_render();

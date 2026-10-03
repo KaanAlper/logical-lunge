@@ -9,7 +9,7 @@ use super::{
 use crate::{
   common::{to_iec_bytes, to_si_bytes, SyncInterval},
   providers::{
-    CommonProviderState, Provider, ProviderInputMsg, RuntimeType,
+    CommonProviderState, Provider, RuntimeType,
   },
 };
 
@@ -210,7 +210,8 @@ impl Provider for NetworkProvider {
           self.common.emitter.emit_output(output);
         }
         recv(self.common.input.sync_rx) -> input => {
-          if let Ok(ProviderInputMsg::Stop) = input {
+          // the manager is gone: the provider ends with it
+          if input.is_err() {
             break;
           }
         }

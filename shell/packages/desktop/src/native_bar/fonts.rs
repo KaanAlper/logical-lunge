@@ -181,7 +181,7 @@ impl Fonts {
     true
   }
 
-  /// Text format for Material Symbols icons (`fill` = ii's filled variant).
+  /// Text format for Material Symbols icons (`fill`: the filled variant).
   pub fn icon(&mut self, size: f32, fill: bool) -> anyhow::Result<IDWriteTextFormat> {
     let weight = if fill { 600.0 } else { 400.0 };
     let axes = [

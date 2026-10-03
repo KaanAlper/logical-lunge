@@ -1,13 +1,12 @@
-//! The Super menu's search, ported from the web edition's menu
-//! (the web menu's overview.html there): prefixes, fuzzy app matching (ii Fuzzy.qml),
-//! match highlighting, the calculator (ii qalc), actions and the result
+//! The Super menu's search: prefixes, fuzzy app matching, match
+//! highlighting, the calculator, actions and the result
 //! list. No drawing and no side effects here: an `Act` says what a result
 //! does.
 
 use super::icons::App;
 use crate::everything::FileHit;
 
-/// ii Config.options.search.prefix
+/// The search prefixes (`;` clipboard, `#` files, `=` calculator ...)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Prefix {
   Default,
@@ -81,7 +80,7 @@ fn is_word_break(c: char) -> bool {
   c.is_whitespace() || matches!(c, '-' | '_' | '.' | '(' | ')')
 }
 
-/// ii Fuzzy.qml: exact > prefix > every query word starts a word > substring
+/// Ranking: exact > prefix > every query word starts a word > substring
 /// (better at a word start) > initials ("vsc") > letters in order, mostly
 /// adjacent. -1: no match.
 pub fn fuzzy_score(text: &str, query: &str) -> f64 {
@@ -154,7 +153,7 @@ pub fn highlight(content: &str, query: &str) -> Vec<bool> {
 
 // ------------------------------------------------------------ calculator
 
-/// ii's qalc on Windows: numbers, + - * / ^ ** % ! ( ), functions and
+/// The calculator: numbers, + - * / ^ ** % ! ( ), functions and
 /// constants. "9" alone is a result too; a lone "e" is an app search. The
 /// input is rewritten into a small expression language exactly as
 /// the web menu's overview.html rewrites it into JavaScript, then evaluated with the
@@ -690,7 +689,7 @@ pub fn format_number(v: f64) -> String {
 
 // ------------------------------------------------------------ results
 
-/// ii's /actions (Config.options.search.actions).
+/// The menu's /actions.
 pub const ACTIONS: &[(&str, &str)] = &[
   ("dark", "Karanlık/aydınlık tema"),
   ("lock", "Ekranı kilitle"),

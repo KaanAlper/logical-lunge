@@ -1,5 +1,4 @@
-//! Quick settings (ii AndroidQuickPanel; sidebar.html AndroidQuickPanel,
-//! QuickToggle and the cards under a tile): five columns of 56 DIP tiles,
+//! Quick settings (tiles and the cards under a tile): five columns of 56 DIP tiles,
 //! an edit mode (drag to move, click to add / remove, right click for the
 //! size, wheel to swap), and the cards a wide tile opens: Wi-Fi networks,
 //! Ethernet, Bluetooth devices, the output / input device with its volume,

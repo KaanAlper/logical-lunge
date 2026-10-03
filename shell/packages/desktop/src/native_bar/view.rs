@@ -1,7 +1,4 @@
-//! Layout and drawing of one bar, in DIPs, with the sizes of ii
-//! Appearance.qml. Ported from the web bar (`ui/bar.html` + `ui/styles.css`,
-//! kept in the `web-ui` branch); the "styles.css ..." notes in this module
-//! and the others name the rule a value came from.
+//! Layout and drawing of one bar, in DIPs.
 
 use std::collections::HashMap;
 
@@ -47,7 +44,7 @@ const SCREEN_ROUNDING: f32 = 23.0;
 const GROUP_H: f32 = 32.0;
 const GROUP_R: f32 = 12.0;
 
-/// ii thresholds 1200 / 1000, raised a little for Windows' wider tray + title.
+/// width thresholds (1200 / 1000), raised a little for Windows' wider tray + title.
 pub fn shorten_level(width: f32) -> usize {
   if width <= 1100.0 {
     2
@@ -73,7 +70,7 @@ pub struct Theme {
   pub subtext: Rgba,
   pub inactive: Rgba,
   pub occupied: Rgba,
-  /// ii StyledToolTip: inverse surface
+  /// tooltip: inverse surface
   pub tip_bg: Rgba,
   pub tip_fg: Rgba,
   /// popups: `border: 1px solid rgba(73 69 79 / 60%)`
@@ -472,7 +469,7 @@ impl Painter<'_> {
     Ok(())
   }
 
-  /// Circular progress (ii CircularProgress): track + value arc from 12 o'clock.
+  /// Circular progress: track + value arc from 12 o'clock.
   pub(super) fn ring(&mut self, cx: f32, cy: f32, r: f32, stroke: f32, frac: f32, track: Rgba, value: Rgba) -> Result<()> {
     let tb = self.brush(track)?;
     let vb = self.brush(value)?;
@@ -716,7 +713,7 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
     tray_right = mixer.x;
   }
 
-  // ii SysTray.qml: pinned icons in the bar, the rest under the arrow
+  // pinned icons in the bar, the rest under the arrow
   if level == 0 && m.tray_count() > 0 {
     let pinned = m.pinned_icons();
     let items_w = pinned.len() as f32 * 26.0 + (pinned.len().max(1) as f32 - 1.0) * 2.0;
@@ -747,7 +744,7 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
   Ok(f)
 }
 
-/// ii ScrollHint.qml: three stacked icons, faint until the edge zone is hovered.
+/// Scroll hint: three stacked icons, faint until the edge zone is hovered.
 fn scroll_hint(p: &mut Painter, t: &Theme, x: f32, icon: &str, hot: bool) -> anyhow::Result<()> {
   let c = t.subtext.alpha(if hot { 1.0 } else { 0.45 });
   let cx = x + 7.0;
@@ -758,7 +755,7 @@ fn scroll_hint(p: &mut Painter, t: &Theme, x: f32, icon: &str, hot: bool) -> any
   Ok(())
 }
 
-/// ii Media.qml: progress ring with play state + "title • artist".
+/// Media: progress ring with play state + "title • artist".
 fn media(p: &mut Painter, m: &Model, t: &Theme, r: Rect) -> anyhow::Result<()> {
   let x = r.x + 4.0;
   let cy = BAR_H / 2.0;
@@ -799,7 +796,7 @@ fn occupied(m: &Model, base: u32) -> Vec<bool> {
     .collect()
 }
 
-/// ii Workspaces.qml, bottom layer: the merged "occupied" background. The
+/// Workspaces, bottom layer: the merged "occupied" background. The
 /// active pill is its own visual (animated in the compositor) and the icons /
 /// dots are a layer above it (`paint_ws`).
 fn workspaces(p: &mut Painter, m: &Model, t: &Theme, track: Rect, f: &mut Frame) -> anyhow::Result<()> {
@@ -856,7 +853,7 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, 
     } else {
       t.inactive
     };
-    // ii showAppIcons: the biggest window's icon (workspaceIconSize 26 * 0.69)
+    // the biggest window's icon (26 * 0.69 DIP)
     let big = m.wm.all_workspaces().find(|w| w.name == n.to_string()).and_then(|w| w.biggest.as_ref());
     let mut icon = None;
     if let Some(win) = big {
@@ -889,7 +886,7 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, 
   Ok(())
 }
 
-/// ii BatteryIndicator.qml (ClippedProgressBar).
+/// Battery: a clipped progress bar with the percentage.
 fn battery(p: &mut Painter, t: &Theme, r: Rect, percent: f32, charging: bool) -> anyhow::Result<()> {
   let pct = percent.round().clamp(0.0, 100.0);
   let low = pct <= 20.0 && !charging;
@@ -945,7 +942,7 @@ pub const OSD_H: f32 = 48.0;
 /// room around the pill for its shadow
 pub const OSD_PAD: f32 = 12.0;
 
-/// ii OsdValueIndicator.qml (styles.css `.osd`), drawn at (OSD_PAD, OSD_PAD).
+/// The volume / brightness OSD pill, drawn at (OSD_PAD, OSD_PAD).
 pub fn paint_osd(p: &mut Painter, m: &Model, t: &Theme, kind: OsdKind, value: i32) -> anyhow::Result<()> {
   let r = Rect::new(OSD_PAD, OSD_PAD, OSD_W, OSD_H);
   // box-shadow: 0 2px 10px rgba(0 0 0 / 35%) -- a few soft layers

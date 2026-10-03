@@ -1,4 +1,4 @@
-//! The session screen (ii sessionScreen; the web edition's session.html):
+//! The session screen:
 //! lock, sleep, reload the desktop, sign out, restart, firmware settings,
 //! shut down.
 //!

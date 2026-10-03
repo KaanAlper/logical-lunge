@@ -1,5 +1,5 @@
 //! Icons for the workspace dots: the app list's icon for a window's process
-//! (`ui/lib/app-icons.js`, same matching rules), else the window's own icon
+//! (matched by process name), else the window's own icon
 //! from the core (`/winicon`). Decoded bitmaps are cached.
 
 use std::collections::{HashMap, HashSet};

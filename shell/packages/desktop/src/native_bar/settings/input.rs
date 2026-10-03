@@ -394,10 +394,9 @@ impl Ui {
       Act::EditKeys => {
         // the shortcut editor is the right panel's page
         self.settings_close();
-        let emit = self.emit.clone();
         std::thread::spawn(move || {
           std::thread::sleep(std::time::Duration::from_millis(180));
-          emit("ll:sidebar-open-page", json!("keys"));
+          crate::bus::publish(crate::bus::Event::SidebarOpenPage("keys".into()));
         });
         return;
       }

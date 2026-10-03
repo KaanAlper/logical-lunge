@@ -17,13 +17,13 @@ use windows::{
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Curve(pub f32, pub f32, pub f32, pub f32);
 
-/// styles.css `--outSine` (ii OutSine): workspace indicator.
+/// ease-out sine: the workspace indicator.
 pub const OUT_SINE: Curve = Curve(0.61, 1.0, 0.88, 1.0);
 /// `popDown` / `osdIn`: popups sliding out of the bar.
 pub const POP_IN: Curve = Curve(0.05, 0.7, 0.1, 1.0);
 /// `popUp`: popups going back.
 pub const POP_OUT: Curve = Curve(0.3, 0.0, 0.8, 0.15);
-/// `--expressiveSpatial` (ii expressiveDefaultSpatial): an entrance that
+/// expressive spatial: an entrance that
 /// overshoots a little and settles (notification cards).
 pub const SPRING_IN: Curve = Curve(0.38, 1.21, 0.22, 1.0);
 /// constant speed (a notification's remaining time)

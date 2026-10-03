@@ -1,6 +1,5 @@
-//! The Super menu (ii overview: the search box on top, the workspace grid
-//! below), drawn like the bar on its UI thread. Sizes and colours from the
-//! web edition's overview.css, results from `search.rs`, the
+//! The Super menu (the search box on top, the workspace grid below), drawn
+//! like the bar on its UI thread. Results from `search.rs`, the
 //! responsibility map in docs/native-overview.md.
 
 use std::{collections::HashMap, os::windows::process::CommandExt, sync::atomic::{AtomicU64, Ordering}, time::{Duration, Instant}};
@@ -49,11 +48,11 @@ use super::{
   Layer, Msg, Ui, CLASS,
 };
 
-/// ii searchWidthCollapsed / searchWidth with the margins and the two buttons
+/// the search box's width, empty / with text, with its margins and the two buttons
 const W_COLLAPSED: f32 = 356.0;
 const W_EXPANDED: f32 = 560.0;
 static FILE_SEARCH_GENERATION: AtomicU64 = AtomicU64::new(0);
-/// bar (40) + elevationMargin (10): ii opens the overview under the bar
+/// bar (40) + a 10 DIP gap: the menu opens under the bar
 const TOP: f32 = 50.0;
 const BAR: f32 = 56.0;
 const RADIUS: f32 = 28.0;
@@ -1521,7 +1520,7 @@ fn highlighted(p: &mut Painter, name: &str, query: &str, r: Rect, fg: Rgba, mark
   Ok(())
 }
 
-/// ii MaterialShape by prefix (Cookie7Sided, Clover4Leaf, PixelCircle ...):
+/// The prefix's shape left of the box (seven-sided cookie, four-leaf clover, pixel circle ...):
 /// its outline as points around the centre (a 40 x 40 box), unturned, and
 /// its turn. The action prefix is a pill.
 fn outline(prefix: Prefix) -> ([(f32, f32); OUTLINE], f32) {
@@ -2270,8 +2269,7 @@ impl Ui {
     if !item.stay {
       self.overview_hide();
     }
-    let emit = self.emit.clone();
-    let toast = move |v: Value| (emit)("ll:toast", v);
+    let toast = |v: Value| crate::bus::publish(crate::bus::Event::Toast(v));
     match item.act {
       Act::None => {}
       Act::Query(s) => {
@@ -2281,7 +2279,7 @@ impl Ui {
         self.overview_do(Do::Search);
       }
       Act::Launch(path) => {
-        // ii / Hyprland dwindle: the new window splits the one under the pointer
+        // dwindle layout: the new window splits the one under the pointer
         std::thread::spawn(move || {
           std::thread::sleep(Duration::from_millis(60));
           if let Some(exe) = core_api::core_exe() {
@@ -2324,7 +2322,7 @@ impl Ui {
     }
   }
 
-  /// ii /actions (search::ACTIONS)
+  /// the menu's /actions (search::ACTIONS)
   fn overview_action(&mut self, name: &str) {
     match name {
       "dark" => {
@@ -2339,9 +2337,8 @@ impl Ui {
       "shutdown" => spawn("shutdown", &["/s", "/t", "0"]),
       "reload" => self.wm_command("command wm-reload-config".into()),
       "apps" => {
-        let emit = self.emit.clone();
         std::thread::spawn(move || {
-          let toast = |v: Value| (emit)("ll:toast", v);
+          let toast = |v: Value| crate::bus::publish(crate::bus::Event::Toast(v));
           let _ = core_json(&["--build-apps"]);
           let apps = match core_api::post("/apps.json") {
             Some((200, body)) => serde_json::from_slice::<Vec<App>>(&body).ok(),
@@ -2361,7 +2358,7 @@ impl Ui {
     }
   }
 
-  /// ii SongRec: listen to what plays (`lunge.exe --songrec`), a toast with
+  /// Song recognition: listen to what plays (`lunge.exe --songrec`), a toast with
   /// the result; pressing again stops it.
   fn songrec(&mut self) {
     let Some(o) = self.overview.as_mut() else { return };
@@ -2378,7 +2375,6 @@ impl Ui {
     o.songrec = true;
     let run = super::SONGREC_RUN.fetch_add(1, Ordering::AcqRel) + 1;
     self.overview_render();
-    let emit = self.emit.clone();
     std::thread::spawn(move || {
       let res = songrec_listen(run);
       // a stopped run, or one a new press replaced, stays quiet
@@ -2386,7 +2382,7 @@ impl Ui {
         return;
       }
       super::send(Msg::SongRecDone);
-      let toast = |v: Value| (emit)("ll:toast", v);
+      let toast = |v: Value| crate::bus::publish(crate::bus::Event::Toast(v));
       match res {
         Some(r) if r["title"].is_string() => {
           let (title, sub) = (r["title"].as_str().unwrap_or(""), r["subtitle"].as_str().unwrap_or(""));

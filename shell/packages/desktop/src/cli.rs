@@ -1,122 +1,26 @@
-use std::{path::PathBuf, process};
+//! `lunge-shell [startup] [--config-dir <ui folder>] [-v | -q | --log-level <level>]`
+//!
+//! The core starts the shell without arguments; `startup` is still accepted
+//! from older launchers and changes nothing.
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+use clap::{Args, Parser, ValueEnum};
 use tracing::Level;
 
-use crate::{
-  app_settings::VERSION_NUMBER, common::LengthValue,
-  widget_pack::AnchorPoint,
-};
-
 #[derive(Clone, Debug, Parser)]
-#[clap(author, version = VERSION_NUMBER, about, long_about = None)]
+#[clap(
+  about = "Logical Lunge shell: the bar, the Super menu, the panels and the desktop widgets.",
+  long_about = None
+)]
 pub struct Cli {
-  #[command(subcommand)]
-  command: Option<CliCommand>,
-}
-
-impl Cli {
-  pub fn command(&self) -> CliCommand {
-    self.command.clone().unwrap_or(CliCommand::Empty)
-  }
-}
-
-#[derive(Clone, Debug, PartialEq, Subcommand)]
-pub enum CliCommand {
-  /// Opens a widget by its name and chosen placement.
-  ///
-  /// Starts the shell if it is not already running.
-  StartWidget(StartWidgetArgs),
-
-  /// Opens a widget by its name and a preset name.
-  ///
-  /// Starts the shell if it is not already running.
-  StartWidgetPreset(StartWidgetPresetArgs),
-
-  /// Opens all widgets that are set to launch on startup.
-  ///
-  /// Starts the shell if it is not already running.
-  Startup(StartupArgs),
-
-  /// Retrieves and outputs a specific part of the state.
-  ///
-  /// Requires an already running shell.
-  #[clap(subcommand)]
-  Query(QueryArgs),
-
-  /// Used when the shell is launched with no arguments.
-  ///
-  /// If the shell is already running, this command will no-op, otherwise it
-  /// will behave as `CliCommand::Startup`.
+  /// accepted and ignored ("startup")
   #[clap(hide = true)]
-  Empty,
-}
+  pub command: Option<String>,
 
-#[derive(Args, Clone, Debug, PartialEq)]
-pub struct StartWidgetArgs {
-  /// Widget pack ID.
-  #[clap(long = "pack")]
-  pub pack_id: String,
-
-  /// Widget name.
-  #[clap(long)]
-  pub widget_name: String,
-
-  /// Anchor-point of the widget.
-  #[clap(long)]
-  pub anchor: AnchorPoint,
-
-  /// Offset from the anchor-point.
-  #[clap(long)]
-  pub offset_x: LengthValue,
-
-  /// Offset from the anchor-point.
-  #[clap(long)]
-  pub offset_y: LengthValue,
-
-  /// Width of the widget in % or physical pixels.
-  #[clap(long)]
-  pub width: LengthValue,
-
-  /// Height of the widget in % or physical pixels.
-  #[clap(long)]
-  pub height: LengthValue,
-
-  /// Monitor(s) to place the widget on.
-  #[clap(long)]
-  pub monitor_type: MonitorType,
-}
-
-/// TODO: Add support for `Index` and `Name` types.
-#[derive(Clone, Debug, PartialEq, ValueEnum)]
-#[clap(rename_all = "snake_case")]
-pub enum MonitorType {
-  All,
-  Primary,
-  Secondary,
-}
-
-#[derive(Args, Clone, Debug, PartialEq)]
-pub struct StartWidgetPresetArgs {
-  /// Widget pack ID.
-  #[clap(long = "pack")]
-  pub pack_id: String,
-
-  /// Widget name.
-  #[clap(long)]
-  pub widget_name: String,
-
-  /// Name of the preset within the target widget config.
-  #[clap(long = "preset")]
-  pub preset_name: String,
-}
-
-#[derive(Args, Clone, Debug, PartialEq)]
-pub struct StartupArgs {
-  /// Absolute or relative path to the shell's UI directory.
-  ///
-  /// The default path is the `ui` folder next to the executable
-  #[clap(long, value_hint = clap::ValueHint::FilePath)]
+  /// The shell's UI folder (fonts, translations); the default is `ui` next
+  /// to the executable.
+  #[clap(long, value_hint = clap::ValueHint::DirPath)]
   pub config_dir: Option<PathBuf>,
 
   /// Logging verbosity.
@@ -147,12 +51,9 @@ impl Verbosity {
   /// Gets the log level based on the verbosity flags.
   #[must_use]
   pub fn level(&self) -> Level {
-    // If log_level is explicitly set (via CLI or env), use that.
     if let Some(level) = &self.log_level {
       return level.clone().into();
     }
-
-    // Otherwise fall back to verbose/quiet flags.
     match (self.verbose, self.quiet) {
       (true, _) => Level::DEBUG,
       (_, true) => Level::ERROR,
@@ -180,22 +81,18 @@ impl From<LogLevel> for Level {
   }
 }
 
-#[derive(Clone, Debug, Parser, PartialEq)]
-pub enum QueryArgs {
-  /// Outputs available monitors.
-  Monitors,
-}
+#[cfg(test)]
+mod tests {
+  use super::*;
 
-/// Prints to stdout/stderror and exits the process.
-pub fn print_and_exit(output: anyhow::Result<String>) {
-  match output {
-    Ok(output) => {
-      print!("{}", output);
-      process::exit(0);
-    }
-    Err(err) => {
-      eprintln!("Error: {}", err);
-      process::exit(1);
-    }
+  #[test]
+  fn reads_the_launchers_arguments() {
+    let cli = Cli::try_parse_from(["lunge-shell"]).unwrap();
+    assert_eq!(cli.command, None);
+    assert_eq!(cli.verbosity.level(), Level::INFO);
+    let cli = Cli::try_parse_from(["lunge-shell", "startup", "--config-dir", "C:\\ui", "-v"]).unwrap();
+    assert_eq!(cli.command.as_deref(), Some("startup"));
+    assert_eq!(cli.config_dir, Some(PathBuf::from("C:\\ui")));
+    assert_eq!(cli.verbosity.level(), Level::DEBUG);
   }
 }

@@ -1,5 +1,4 @@
-//! The panel's bottom group (ii BottomWidgetGroup; sidebar.html
-//! BottomWidgetGroup): a rail of three tabs -- calendar (with a month / year
+//! The panel's bottom group: a rail of three tabs -- calendar (with a month / year
 //! picker), to-do list, pomodoro timer -- that folds down to one line with
 //! the date and the open tasks.
 

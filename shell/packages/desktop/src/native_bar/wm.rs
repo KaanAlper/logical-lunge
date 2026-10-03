@@ -1,6 +1,4 @@
-//! Window manager IPC client (`ws://127.0.0.1:6123`), the Rust twin of
-//! `ui/lib/tiling-client.js` + the `tiling` provider in `shell-client.js`:
-//! subscribes to the events the bar cares about, folds bursts of events into
+//! Window manager IPC client (`ws://127.0.0.1:6123`): subscribes to the events the bar cares about, folds bursts of events into
 //! one query round, and sends a fresh `WmState` only when something changed.
 
 use std::time::Duration;
@@ -36,7 +34,7 @@ pub struct WmWorkspace {
   pub displayed: bool,
   /// Every non-minimized window, including those inside split containers.
   pub windows: Vec<WmWindow>,
-  /// Biggest non-minimized window (ii: showAppIcons, biggestWindow).
+  /// Biggest non-minimized window (its icon stands for the workspace).
   pub biggest: Option<WmWindow>,
 }
 

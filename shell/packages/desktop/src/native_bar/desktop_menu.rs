@@ -287,7 +287,7 @@ impl Ui {
     self.menu_open(at, MenuFocus::Take, items, move |ui, id| {
       let d = d.as_ref();
       match id {
-        "wallpaper" => (ui.emit)("ll:sidebar-open-page", serde_json::json!("walls")),
+        "wallpaper" => crate::bus::publish(crate::bus::Event::SidebarOpenPage("walls".into())),
         "display" => open_uri("ms-settings:display"),
         "settings" => ui.settings_toggle(),
         "terminal" => open_terminal(d),

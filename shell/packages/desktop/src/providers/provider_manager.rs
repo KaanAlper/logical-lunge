@@ -2,7 +2,6 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
 use serde::{ser::SerializeStruct, Serialize};
-use tauri::{AppHandle, Emitter};
 use tokio::{
   sync::{mpsc, oneshot, Mutex},
   task,
@@ -44,7 +43,6 @@ pub struct ProviderInput {
 
 pub enum ProviderInputMsg {
   Function(ProviderFunction, oneshot::Sender<ProviderFunctionResult>),
-  Stop,
 }
 
 /// Handle for sending provider emissions.
@@ -121,18 +119,12 @@ struct ProviderRef {
   /// Sender channel for sending inputs to the provider.
   sync_input_tx: crossbeam::channel::Sender<ProviderInputMsg>,
 
-  /// Handle to the provider's task.
-  task_handle: task::JoinHandle<()>,
-
   /// Runtime type of the provider.
   runtime_type: RuntimeType,
 }
 
 /// Manages the creation and cleanup of providers.
 pub struct ProviderManager {
-  /// Handle to the Tauri application.
-  app_handle: AppHandle,
-
   /// Map of active provider refs.
   provider_refs: Arc<Mutex<HashMap<String, ProviderRef>>>,
 
@@ -151,14 +143,11 @@ impl ProviderManager {
   ///
   /// Returns a tuple containing the `ProviderManager` instance and a
   /// channel for provider emissions.
-  pub fn new(
-    app_handle: &AppHandle,
-  ) -> (Arc<Self>, mpsc::UnboundedReceiver<ProviderEmission>) {
+  pub fn new() -> (Arc<Self>, mpsc::UnboundedReceiver<ProviderEmission>) {
     let (emit_tx, emit_rx) = mpsc::unbounded_channel::<ProviderEmission>();
 
     (
       Arc::new(Self {
-        app_handle: app_handle.clone(),
         provider_refs: Arc::new(Mutex::new(HashMap::new())),
         emit_cache: Arc::new(Mutex::new(HashMap::new())),
         sysinfo: Arc::new(Mutex::new(sysinfo::System::new_all())),
@@ -185,7 +174,8 @@ impl ProviderManager {
           config_hash
         );
 
-        self.app_handle.emit("provider-emit", found_emit)?;
+        // through the same channel as a fresh emission (the bar listens there)
+        self.emit_tx.send(found_emit.clone())?;
         return Ok(());
       };
     }
@@ -195,9 +185,8 @@ impl ProviderManager {
     let mut provider_refs = self.provider_refs.lock().await;
 
     // No-op if the provider has already been created (but has not emitted
-    // yet). Multiple frontend clients can call `create` for the same
-    // provider, and all will receive the same output once the provider
-    // emits.
+    // yet). Several parts of the bar can ask for the same provider; all
+    // get its output once it emits.
     if provider_refs.contains_key(&config_hash) {
       return Ok(());
     }
@@ -220,13 +209,13 @@ impl ProviderManager {
       sysinfo: self.sysinfo.clone(),
     };
 
-    let (task_handle, runtime_type) =
+    // the provider's task runs until its input channel closes
+    let (_task, runtime_type) =
       self.create_instance(config, config_hash.clone(), common)?;
 
     let provider_ref = ProviderRef {
       async_input_tx,
       sync_input_tx,
-      task_handle,
       runtime_type,
     };
 
@@ -357,45 +346,6 @@ impl ProviderManager {
       .await
       .context("Provider function timed out.")??
       .map_err(anyhow::Error::msg)
-  }
-
-  /// Destroys and cleans up the provider with the given config.
-  pub async fn stop(&self, config_hash: String) -> anyhow::Result<()> {
-    let provider_ref = {
-      let mut provider_refs = self.provider_refs.lock().await;
-
-      // Evict the provider's emission from cache. Hold the lock for
-      // `provider_refs` to avoid a race condition with provider
-      // creation.
-      let mut provider_cache = self.emit_cache.lock().await;
-      let _ = provider_cache.remove(&config_hash);
-
-      provider_refs
-        .remove(&config_hash)
-        .context("No provider found with config.")?
-    };
-
-    // Send shutdown signal to the provider.
-    match provider_ref.runtime_type {
-      RuntimeType::Async => {
-        provider_ref
-          .async_input_tx
-          .send(ProviderInputMsg::Stop)
-          .await
-          .context("Failed to send shutdown signal to provider.")?;
-      }
-      RuntimeType::Sync => {
-        provider_ref
-          .sync_input_tx
-          .send(ProviderInputMsg::Stop)
-          .context("Failed to send shutdown signal to provider.")?;
-      }
-    }
-
-    // Wait for the provider to stop.
-    provider_ref.task_handle.await?;
-
-    Ok(())
   }
 
   /// Updates the cache with the given provider emission.

@@ -1,4 +1,4 @@
-//! The right panel (ii sidebarRight; the web edition's sidebar.html): the
+//! The right panel: the
 //! uptime and the buttons on top (issue report, update check, wallpapers,
 //! shortcuts, settings, session), the quick settings, the notifications, the
 //! calendar / to-do / timer group, and its pages sliding over it (shortcut

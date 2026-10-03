@@ -238,7 +238,7 @@ impl<'p, 'a> Cx<'p, 'a> {
     r
   }
 
-  /// `progress_activity`, turning (ii's busy indicator).
+  /// `progress_activity`, turning (the busy indicator).
   pub fn spinner(&mut self, cx: f32, cy: f32, size: f32, c: Rgba) -> anyhow::Result<()> {
     self.busy = true;
     let m = Matrix3x2::rotation(self.spin, cx, cy);

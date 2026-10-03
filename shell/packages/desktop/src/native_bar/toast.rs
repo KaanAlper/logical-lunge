@@ -1,5 +1,4 @@
-//! Notification cards (ii notificationPopup, the web edition's toast
-//! widget): top right of the primary monitor under the bar, newest on top.
+//! Notification cards: top right of the primary monitor under the bar, newest on top.
 //! A card slides in from the right and back out, waits while the pointer is
 //! on it, and opens its sender or an action's link when clicked. Each card is
 //! a topmost window that never takes the keyboard ("Logical Lunge · toast":

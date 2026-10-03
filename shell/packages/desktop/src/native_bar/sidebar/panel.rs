@@ -56,7 +56,7 @@ pub(super) fn paint_main(cx: &mut Cx, sb: &mut Sidebar, m: &crate::native_bar::m
   Ok(())
 }
 
-/// ii SystemButtonRow: the uptime pill and the round buttons.
+/// The top row: the uptime pill and the round buttons.
 pub(super) fn paint_sys(cx: &mut Cx, x: f32, y: f32, w: f32) -> anyhow::Result<()> {
   let buttons: [(Sys, &str, &str); 6] = [
     (Sys::Bug, "bug_report", "Hata Bildir (Bug Report)"),

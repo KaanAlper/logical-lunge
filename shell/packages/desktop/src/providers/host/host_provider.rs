@@ -4,7 +4,7 @@ use sysinfo::System;
 use crate::{
   common::SyncInterval,
   providers::{
-    CommonProviderState, Provider, ProviderInputMsg, RuntimeType,
+    CommonProviderState, Provider, RuntimeType,
   },
 };
 
@@ -65,7 +65,8 @@ impl Provider for HostProvider {
           self.common.emitter.emit_output(output);
         }
         recv(self.common.input.sync_rx) -> input => {
-          if let Ok(ProviderInputMsg::Stop) = input {
+          // the manager is gone: the provider ends with it
+          if input.is_err() {
             break;
           }
         }

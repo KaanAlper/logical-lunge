@@ -1,4 +1,4 @@
-//! Popups under the bar (ii StyledPopup): resources, media, the tray panel,
+//! Popups under the bar: resources, media, the tray panel,
 //! tooltips and the dragged tray icon. Each is a small topmost window that
 //! never takes the keyboard, drawn into one DirectComposition surface.
 //! Opening slides down and fades in, closing goes back up (styles.css
@@ -409,7 +409,7 @@ fn frame_border(p: &mut Painter, t: &Theme, r: Rect, radius: f32) -> anyhow::Res
   Ok(())
 }
 
-// ---- resources (ii ResourcesPopup.qml + our temperatures)
+// ---- resources (CPU, memory, swap, temperatures)
 
 struct Row {
   icon: &'static str,
@@ -575,7 +575,7 @@ mod battery_tests {
   }
 }
 
-// ---- media (ii media popup)
+// ---- media (cover, title, controls, progress)
 
 pub const MEDIA_W: f32 = 360.0;
 pub const MEDIA_H: f32 = 110.0;
@@ -749,7 +749,7 @@ pub fn blur_art(gfx: &Gfx, art: &ID2D1Bitmap1, scale: f32) -> Result<ID2D1Bitmap
   }
 }
 
-// ---- tray panel (ii SysTray.qml overflow)
+// ---- tray panel (the icons not pinned to the bar)
 
 pub const TRAY_COLS: usize = 6;
 
@@ -897,7 +897,7 @@ fn mixer_row(p: &mut Painter, t: &Theme, r: Rect, row: &MixerRow, hover: bool, i
   Ok(())
 }
 
-// ---- tooltip (ii StyledToolTip)
+// ---- tooltip
 
 const TIP: TextStyle = style(12.0);
 

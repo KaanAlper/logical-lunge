@@ -1,5 +1,4 @@
-//! The notification list (ii NotificationList / NotificationGroup;
-//! sidebar.html NotificationList): Windows' notifications read by the core
+//! The notification list: Windows' notifications read by the core
 //! (`/notifications`, sent again on `ll:notifications`), grouped by app, the
 //! newest two of a group, all of them when expanded. A group goes with its
 //! ×, a middle click, a drag or a two-finger swipe to the right; one
@@ -29,7 +28,7 @@ use super::{
 const SWIPE_DISMISS: f32 = 0.33;
 const GROUP_GAP: f32 = 5.0;
 const LINE: f32 = 18.0;
-/// `--elementMove` (ii): a slight overshoot
+/// a slight overshoot
 const MOVE: Curve = SPRING_IN;
 
 #[derive(Clone, Debug, PartialEq)]

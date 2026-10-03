@@ -41,27 +41,3 @@ impl SyncInterval {
     }
   }
 }
-
-/// An interval timer for asynchronous contexts using tokio.
-pub struct AsyncInterval {
-  interval: tokio::time::Interval,
-}
-
-impl AsyncInterval {
-  pub fn new(interval_ms: u64) -> Self {
-    let mut interval =
-      tokio::time::interval(Duration::from_millis(interval_ms));
-
-    // Skip missed ticks when the interval runs. This prevents a burst
-    // of backlogged ticks after a delay.
-    interval
-      .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    Self { interval }
-  }
-
-  /// Returns a future that will complete at the next tick time.
-  pub async fn tick(&mut self) {
-    self.interval.tick().await;
-  }
-}

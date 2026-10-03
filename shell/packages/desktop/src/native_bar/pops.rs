@@ -1,4 +1,4 @@
-//! What the popups do: hover popups (resources, media) with ii's 200 ms
+//! What the popups do: hover popups (resources, media) with a 200 ms
 //! close delay, the tray panel (click-away closes it, dragging does not),
 //! drag to pin / unpin tray icons, the volume mixer, and tooltips.
 
@@ -294,7 +294,7 @@ impl Ui {
     self.pop_render();
   }
 
-  /// ii: popups close 200 ms after the pointer leaves (moving onto the popup keeps it).
+  /// Popups close 200 ms after the pointer leaves (moving onto the popup keeps it).
   pub(super) fn pop_schedule_close(&mut self) {
     if self.pops.kind.is_none() || self.pops.close_pending {
       return;
@@ -1084,7 +1084,7 @@ impl Ui {
       }
       d.started = true;
       self.tip_candidate(None);
-      // ii: dragging opens the panel (it is where icons are put away)
+      // dragging opens the panel (it is where icons are put away)
       if !self.pops.tray.as_ref().is_some_and(|w| w.shown && !w.closing) {
         let i = self.bar_at(pt).unwrap_or(0);
         self.tray_open(i);

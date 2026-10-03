@@ -1,5 +1,5 @@
-//! Native bar (docs/native-ui.md): the ii bar drawn with Direct2D into
-//! DirectComposition surfaces, without a WebView.
+//! Native bar (docs/native-ui.md): the top bar drawn with Direct2D into
+//! DirectComposition surfaces.
 //!
 //! Runs on its own thread with a Win32 message loop. Data comes from the
 //! shell's providers (forwarded from main.rs) and from the window manager's
@@ -164,7 +164,7 @@ const TIMER_WIDGETS_SAVE: usize = 81;
 const TIMER_WIDGETS_WEATHER: usize = 82;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
-/// ii: the first four tray icons are pinned until the user moves them.
+/// The first four tray icons are pinned until the user moves them.
 const DEFAULT_PINNED: usize = 4;
 
 enum Msg {
@@ -191,17 +191,10 @@ enum Msg {
   ToastImage(u64, Option<Vec<u8>>),
   /// the update card: checks, progress and results
   Update(update::Event),
-  /// a web widget asked for the Super menu (the Dock's search button)
-  OverviewToggle,
-  /// the sidebar's session button (`ll:session-toggle`), or a close
-  SessionToggle,
-  SessionHide,
-  /// `ll:osk-toggle` (the sidebar's keyboard tile)
+  /// the on-screen keyboard (the right panel's keyboard tile, on the bus)
   OskToggle,
   /// the Dock's pins as the core keeps them (None: no answer)
   DockPins(Option<Vec<String>>),
-  /// `ll:settings-toggle` (the sidebar's gear)
-  SettingsToggle,
   /// the settings window's answers from the core
   Settings(settings::Event),
   /// the right panel: the shell's events and its workers' results
@@ -347,63 +340,15 @@ fn send(msg: Msg) {
   }
 }
 
-/// A web widget's `ll:overview-toggle` (main.rs listens while the native
-/// Super menu is selected): the Dock's search button opens it. The bar's own
-/// toggles carry `"source":"native-bar"` and are not handed back.
-pub fn widget_overview_toggle(payload: &str) {
-  if !payload.contains("\"native-bar\"") {
-    send(Msg::OverviewToggle);
+/// The shell's bus events that concern the bar (main.rs subscribes this):
+/// handed to the bar's UI thread.
+pub fn on_bus(event: &crate::bus::Event) {
+  match event {
+    crate::bus::Event::Toast(card) if card.is_object() => send(Msg::Toast(card.clone())),
+    crate::bus::Event::Toast(_) => {}
+    crate::bus::Event::SidebarOpenPage(page) => send(Msg::Sidebar(sidebar::Ev::OpenPage(page.clone()))),
+    crate::bus::Event::OskToggle => send(Msg::OskToggle),
   }
-}
-
-/// `ll:session-toggle` / `ll:session-hide` from the web widgets (the
-/// sidebar's session button): the native session screen.
-pub fn session_toggle() {
-  send(Msg::SessionToggle);
-}
-
-pub fn session_hide() {
-  send(Msg::SessionHide);
-}
-
-/// `ll:settings-toggle` from the web widgets (the sidebar's gear): the
-/// native settings window.
-pub fn settings_toggle() {
-  send(Msg::SettingsToggle);
-}
-
-/// `ll:osk-toggle` from the web widgets (the sidebar's keyboard tile): the
-/// native on-screen keyboard.
-pub fn osk_toggle() {
-  send(Msg::OskToggle);
-}
-
-/// A widget's `ll:sidebar-right-toggle` (the bar's own toggles go straight
-/// to the panel).
-pub fn sidebar_toggle() {
-  send(Msg::Sidebar(sidebar::Ev::Toggle));
-}
-
-/// `ll:sidebar-open-page` with its page ("keys", "walls", "screensaver", "bug").
-pub fn sidebar_open_page(payload: &str) {
-  let page = serde_json::from_str::<String>(payload).unwrap_or_else(|_| payload.trim_matches('"').to_string());
-  send(Msg::Sidebar(sidebar::Ev::OpenPage(page)));
-}
-
-/// A widget's notification card (`ll:toast`; the bar's own come back the
-/// same way).
-pub fn toast(payload: &str) {
-  if let Ok(card) = serde_json::from_str::<serde_json::Value>(payload) {
-    if card.is_object() {
-      send(Msg::Toast(card));
-    }
-  }
-}
-
-/// The right panel or the settings asked for an update check
-/// (`ll:update-check`).
-pub fn update_check() {
-  send(Msg::Update(update::Event::Check(true)));
 }
 
 /// Every provider emission passes through here (main.rs); ours go to the bar.
@@ -422,11 +367,8 @@ pub struct Options {
   pub pack_dir: PathBuf,
   /// Test run next to the running shell's bar: own title, just below it, topmost.
   pub demo: bool,
-  /// Select the native Super menu instead of the startup WebView widget.
+  /// The Super menu (none in a demo bar next to the running one).
   pub native_overview: bool,
-  /// Sends a shell event to the web widgets (`ll:overview-toggle` ..., a
-  /// payload for `ll:toast`).
-  pub emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
 }
 
 
@@ -563,7 +505,7 @@ struct Bar {
   /// everything but the workspace pill and icons
   bg: Layer,
   /// the active workspace pill: a primary-coloured strip cut by `pill_clip`,
-  /// whose edges the compositor animates (ii: leading edge 100 ms, trailing 300 ms)
+  /// whose edges the compositor animates (leading edge 100 ms, trailing 300 ms)
   pill: Layer,
   pill_clip: IDCompositionRectangleClip,
   pill_left: Animated,
@@ -627,7 +569,6 @@ struct Ui {
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
   custom_theme: Option<view::Theme>,
-  emit: Arc<dyn Fn(&str, serde_json::Value) + Send + Sync>,
   /// the native Super menu (made on first use)
   overview: Option<overview::Overview>,
   /// the session screen while it is open
@@ -747,7 +688,6 @@ fn ui_thread(
         update: Default::default(),
         pack_dir: opts.pack_dir.clone(),
         custom_theme: None,
-        emit: opts.emit,
         overview: None,
         session: None,
         settings: None,
@@ -1159,7 +1099,6 @@ impl Ui {
           _ => false,
         };
         if !toggles {
-          (self.emit)("ll:bar-click", serde_json::Value::Null);
           self.dock_close();
           self.sidebar_close();
           // the native Super menu is no web widget: it closes here (a bar
@@ -1276,10 +1215,6 @@ impl Ui {
         Msg::Clips(clips) => self.overview_clips(clips),
         Msg::Files(query, result) => self.overview_files(query, result),
         Msg::SongRecDone => self.songrec_done(),
-        Msg::OverviewToggle => self.toggle_native_overview(),
-        Msg::SessionToggle => self.session_toggle(),
-        Msg::SessionHide => self.session_close(),
-        Msg::SettingsToggle => self.settings_toggle(),
         Msg::Settings(e) => self.settings_event(e),
         Msg::OskToggle => self.osk_toggle(),
         Msg::DockPins(pins) => self.dock_pins(pins),
@@ -1353,7 +1288,7 @@ impl Ui {
     }
   }
 
-  /// First run: the first icons are pinned (ii SysTray.qml).
+  /// First run: the first icons are pinned.
   /// No saved pins yet: the first icons, in memory only. The file stays
   /// missing until the user moves an icon, so a layout saved by the old web
   /// bar can still be moved over (`ll:tray-pins`).
@@ -1390,7 +1325,7 @@ impl Ui {
     self.model.pins = Some(pins);
   }
 
-  /// ii: the OSD shows whatever changed the volume (keys, other apps), on one
+  /// The OSD shows whatever changed the volume (keys, other apps), on one
   /// monitor only -- the bar that was scrolled, else the focused monitor.
   fn audio_osd(&mut self) {
     let Some(audio) = &self.model.audio else { return };
@@ -1655,7 +1590,7 @@ impl Ui {
             bar.pill_clip.SetRight2(right)?;
           },
           (Some(old), Some(new)) => {
-            // ii AnimatedTabIndexPair: the edge in front moves in 100 ms, the one behind in 300 ms
+            // the edge in front moves in 100 ms, the one behind in 300 ms (the pill stretches, then catches up)
             let forward = new > old;
             let (left_ms, right_ms) = if forward { (300.0, 100.0) } else { (100.0, 300.0) };
             if let Some(a) = bar.pill_left.to(&gfx.dcomp, left, left_ms, OUT_SINE)? {
@@ -1762,9 +1697,6 @@ impl Ui {
         return self.sidebar_event(sidebar::Ev::OpenPage(e["ll:sidebar-page-".len()..].to_string()));
       }
       _ => {}
-    }
-    if let Some(evt) = &evt {
-      (self.emit)(evt, serde_json::Value::Null);
     }
     let light = match evt.as_deref() {
       Some("ll:theme-light") => true,
@@ -1876,7 +1808,7 @@ impl Ui {
     unsafe {
       let _ = gfx.dcomp.Commit();
       let _ = SetWindowPos(osd.hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
-      SetTimer(self.msg_hwnd, TIMER_OSD, 1000, None); // ii: osd.timeout = 1000
+      SetTimer(self.msg_hwnd, TIMER_OSD, 1000, None); // the OSD stays a second after the last change
     }
   }
 
@@ -1991,10 +1923,6 @@ impl Ui {
 
   fn toggle_overview_from_bar(&mut self) {
     self.toggle_native_overview();
-    // Other panels close on this event. The web overview also opens on it
-    // when that edition is selected. The source keeps the shell from handing
-    // it back to this bar (widget_overview_toggle).
-    (self.emit)("ll:overview-toggle", serde_json::json!({ "source": "native-bar" }));
   }
 
   /// button: 0 left, 1 right, 2 middle, 3 left double
@@ -2021,7 +1949,6 @@ impl Ui {
     match (kind, button) {
       // the events the web widgets listen to
       (HitKind::Search, 0) => self.toggle_overview_from_bar(),
-      (HitKind::ActiveWindow, 0) => (self.emit)("ll:sidebar-left-toggle", serde_json::Value::Null),
       (HitKind::Paused, 0) => self.wm_command("command wm-toggle-pause".into()),
       (HitKind::Mode(name), 0) => self.wm_command(format!("command wm-disable-binding-mode --name {}", name)),
       (HitKind::Workspace(n), 0) => self.slide(n.to_string()),

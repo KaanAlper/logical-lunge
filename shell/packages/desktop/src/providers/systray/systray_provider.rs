@@ -1,3 +1,4 @@
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use systray_util::{ImageFormat, Systray, SystrayIcon, SystrayIconAction};
 
@@ -270,9 +271,6 @@ impl Provider for SystrayProvider {
         }
         Some(input) = self.common.input.async_rx.recv() => {
           match input {
-            ProviderInputMsg::Stop => {
-              break;
-            }
             ProviderInputMsg::Function(
               ProviderFunction::Systray(systray_function),
               sender,
