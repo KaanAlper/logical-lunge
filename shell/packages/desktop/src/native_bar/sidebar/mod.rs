@@ -333,19 +333,28 @@ fn modifiers() -> (bool, bool) {
   (ctrl, shift)
 }
 
+/// The panel's window on the monitor: its right edge, from under the bar to
+/// the bottom (ii's sidebar keeps out of the bar's zone). Over the bar, its
+/// session button lay on the indicators that toggle it, so the click meant
+/// to close the panel opened the session screen.
+fn window_rect(mon: RECT, scale: f32) -> RECT {
+  let w = (WIN_W * scale).round() as i32;
+  let bar = (super::view::BAR_H * scale).round() as i32;
+  RECT { left: mon.right - w, top: mon.top + bar, right: mon.right, bottom: mon.bottom }
+}
+
 fn make_win(gfx: &Gfx) -> anyhow::Result<Win> {
   let (mon, scale) = primary();
-  let w = (WIN_W * scale).round() as i32;
-  let h = mon.bottom - mon.top;
-  let x = mon.right - w;
+  let r = window_rect(mon, scale);
+  let (w, h) = (r.right - r.left, r.bottom - r.top);
   unsafe {
     let hwnd = CreateWindowExW(
       WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
       CLASS,
       &HSTRING::from(TITLE),
       WS_POPUP,
-      x,
-      mon.top,
+      r.left,
+      r.top,
       w,
       h,
       None,
@@ -838,5 +847,20 @@ mod tests {
     assert_eq!(uptime(5 * 60_000), "5m");
     assert_eq!(uptime((3 * 60 + 12) * 60_000), "3h 12m");
     assert_eq!(uptime((26 * 60 + 5) * 60_000), "1d 2h");
+  }
+
+  #[test]
+  fn the_open_panel_leaves_the_bar_uncovered() {
+    // the bar's indicators toggle the panel; a panel over the bar put its
+    // session button on them, so the click meant to close it opened the
+    // session screen
+    let mon = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+    for scale in [1.0, 1.25, 1.5, 2.0] {
+      let r = window_rect(mon, scale);
+      let bar_bottom = mon.top + (crate::native_bar::view::BAR_H * scale).round() as i32;
+      assert!(r.top >= bar_bottom, "scale {}: the panel starts at {}, the bar ends at {}", scale, r.top, bar_bottom);
+      assert_eq!((r.right, r.bottom), (mon.right, mon.bottom), "scale {}: right edge, down to the bottom", scale);
+      assert_eq!(r.right - r.left, (WIN_W * scale).round() as i32, "scale {}: the width", scale);
+    }
   }
 }
