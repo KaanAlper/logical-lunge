@@ -16,8 +16,9 @@ args = ap.parse_args()
 
 
 def out(obj):
-    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    # The core decodes UTF-8 even with a Windows code page on redirected stdout.
+    sys.stdout.buffer.write((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
 
 
 def open_stream(pa):

@@ -7,7 +7,7 @@ use super::overlay_policy::{is_transition_overlay, OverlayFacts};
 
 /// Keep a passive monitor-sized effect inside the tile that owns it.
 /// Effects drawn inside the app's surface follow the ordinary tiled geometry path.
-pub(super) fn constrain_transition_overlay(native: &NativeWindow, state: &mut WmState) -> anyhow::Result<bool> {
+pub(crate) fn constrain_transition_overlay(native: &NativeWindow, state: &mut WmState) -> anyhow::Result<bool> {
   let handle = native.hwnd().0;
   if let Some(tile) = state.transition_moves.get(&handle) {
     if native.frame()? == *tile {

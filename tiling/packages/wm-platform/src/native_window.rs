@@ -251,6 +251,23 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn set_cloaked(&self, cloaked: bool) -> crate::Result<()>;
 
+  /// Windows that belong to this one's app without being part of it for
+  /// Windows: shown, not cloaked, without an owner, of a process this
+  /// window's process started (an embedded browser, a renderer), and over
+  /// this window. Hiding the window leaves them up (cloaking acts on one
+  /// window), where they keep catching the clicks on its area.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn companions(&self) -> Vec<NativeWindow>;
+
+  /// Hide a companion with an HWND tag that core orphan recovery can restore.
+  fn hide_companion(&self) -> crate::Result<()>;
+
+  /// Restore without activating, removing its orphan tag after success.
+  fn show_companion(&self) -> crate::Result<()>;
+
   /// Marks the window as fullscreen.
   ///
   /// Causes the native Windows taskbar to be moved to the bottom of the
@@ -435,6 +452,18 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
     self.inner.set_cloaked(cloaked)
+  }
+
+  fn companions(&self) -> Vec<NativeWindow> {
+    self.inner.companions()
+  }
+
+  fn hide_companion(&self) -> crate::Result<()> {
+    self.inner.hide_companion()
+  }
+
+  fn show_companion(&self) -> crate::Result<()> {
+    self.inner.show_companion()
   }
 
   fn mark_fullscreen(&self, fullscreen: bool) -> crate::Result<()> {

@@ -14,6 +14,12 @@ pub enum PlatformEvent {
 
 #[derive(Clone, Debug)]
 pub enum WindowEvent {
+  /// Window was created; its initial geometry can be constrained before show.
+  Created {
+    window: NativeWindow,
+    notification: WindowEventNotification,
+  },
+
   /// Window gained focus.
   Focused {
     window: NativeWindow,
@@ -83,7 +89,8 @@ impl WindowEvent {
   #[must_use]
   pub fn window(&self) -> Option<&NativeWindow> {
     match self {
-      Self::Focused { window, .. }
+      Self::Created { window, .. }
+      | Self::Focused { window, .. }
       | Self::Hidden { window, .. }
       | Self::MovedOrResized { window, .. }
       | Self::Minimized { window, .. }
@@ -98,7 +105,8 @@ impl WindowEvent {
   #[must_use]
   pub fn notification(&self) -> &WindowEventNotification {
     match self {
-      Self::Focused { notification, .. }
+      Self::Created { notification, .. }
+      | Self::Focused { notification, .. }
       | Self::Hidden { notification, .. }
       | Self::MovedOrResized { notification, .. }
       | Self::Minimized { notification, .. }

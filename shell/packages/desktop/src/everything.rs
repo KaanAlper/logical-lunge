@@ -219,6 +219,7 @@ mod windows_ipc {
   const REQUEST_NAME_PATH: u32 = 3;
   const SORT_NAME: u32 = 1;
   const WAIT_MS: u32 = 1500;
+  const LATE_MS: u32 = 4000;
 
   // Win32 calls window_proc reentrantly while send_and_wait is reading this
   // state. It must have interior mutability: an outstanding &mut Reply made
@@ -286,16 +287,37 @@ mod windows_ipc {
       SendMessageTimeoutW(everything, WM_COPYDATA, WPARAM(hwnd.0 as usize),
         LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, WAIT_MS, Some(&mut accepted))
     };
-    if sent.0 == 0 || accepted == 0 { return Err("Everything yanıt vermiyor".into()); }
+    if sent.0 == 0 || accepted == 0 {
+      tracing::warn!("Everything: {:?} was not taken (sent {}, accepted {}, window {:?})", search, sent.0, accepted, everything.0);
+      return Err("Everything yanıt vermiyor".into());
+    }
     if let Some(result) = reply.result.take() { return result; }
+    // The usual answer comes in well under WAIT_MS; a late one is still
+    // taken up to LATE_MS (and logged, with how late), only then it is a
+    // timeout.
+    let asked = Instant::now();
     unsafe { SetTimer(hwnd, 1, WAIT_MS, None); }
+    let mut waited_long = false;
     loop {
       let mut msg = MSG::default();
       if unsafe { GetMessageW(&mut msg, hwnd, 0, 0) }.0 <= 0 { return Err("Everything IPC kapandı".into()); }
       // GetMessage dispatches incoming sent messages before returning a queued
       // message; the reply can arrive immediately before our timeout timer.
-      if let Some(result) = reply.result.take() { return result; }
-      if msg.message == WM_TIMER { return Err("Everything araması zaman aşımına uğradı".into()); }
+      if let Some(result) = reply.result.take() {
+        if waited_long {
+          tracing::warn!("Everything: {:?} answered late, after {} ms", search, asked.elapsed().as_millis());
+        }
+        return result;
+      }
+      if msg.message == WM_TIMER {
+        if waited_long {
+          tracing::warn!("Everything: {:?} got no answer in {} ms (window {:?})", search, asked.elapsed().as_millis(), everything.0);
+          return Err("Everything araması zaman aşımına uğradı".into());
+        }
+        waited_long = true;
+        unsafe { SetTimer(hwnd, 1, LATE_MS - WAIT_MS, None); }
+        continue;
+      }
       unsafe { DispatchMessageW(&msg); }
       if let Some(result) = reply.result.take() { return result; }
     }
@@ -426,6 +448,10 @@ mod windows_ipc {
         return LRESULT(1);
       }
       if msg == WM_APP + 1 {
+        // The request was acknowledged already. Simulate a busy indexer that
+        // answers after the old 1.5-second deadline, or never answers.
+        if lp.0 == 100 { std::thread::sleep(Duration::from_millis(1800)); }
+        if lp.0 == 101 { return LRESULT(0); }
         let dest = HWND(wp.0 as _);
         let bytes: Vec<u8> = [137u32, 0, lp.0 as u32, 3, 1].into_iter().flat_map(u32::to_le_bytes).collect();
         let cds = COPYDATASTRUCT { dwData: REPLY_ID, cbData: bytes.len() as u32, lpData: bytes.as_ptr() as _ };
@@ -443,6 +469,24 @@ mod windows_ipc {
 
     #[test]
     fn observes_the_answer_written_by_a_reentrant_window_callback() {
+      assert_eq!(fixture_query(40), Ok(FilePage { hits: Vec::new(), total: 137, offset: 40 }),
+        "the callback's page and offset must reach the waiting query");
+    }
+
+    #[test]
+    fn accepts_an_acknowledged_query_that_answers_after_the_normal_deadline() {
+      assert_eq!(fixture_query(100), Ok(FilePage { hits: Vec::new(), total: 137, offset: 100 }));
+    }
+
+    #[test]
+    fn an_acknowledged_query_without_a_reply_still_times_out() {
+      let started = Instant::now();
+      assert!(fixture_query(101).unwrap_err().contains("zaman aşımına"));
+      assert!(started.elapsed() >= Duration::from_millis(3900));
+      assert!(started.elapsed() < Duration::from_secs(8));
+    }
+
+    fn fixture_query(offset: u32) -> Result<FilePage, String> {
       let (tx, rx) = std::sync::mpsc::channel();
       let thread = std::thread::spawn(move || unsafe {
         let hinst = GetModuleHandleW(None).unwrap();
@@ -455,11 +499,10 @@ mod windows_ipc {
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 { DispatchMessageW(&msg); }
       });
       let hwnd = HWND(rx.recv_timeout(Duration::from_secs(3)).unwrap() as _);
-      let result = query_window(hwnd, "ipc-fixture", 8, 40);
+      let result = query_window(hwnd, "ipc-fixture", 8, offset);
       unsafe { let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)); }
       thread.join().unwrap();
-      assert_eq!(result, Ok(FilePage { hits: Vec::new(), total: 137, offset: 40 }),
-        "the callback's page and offset must reach the waiting query");
+      result
     }
   }
 }

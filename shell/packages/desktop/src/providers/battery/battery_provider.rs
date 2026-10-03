@@ -28,6 +28,7 @@ pub struct BatteryOutput {
   pub health_percent: f32,
   pub state: String,
   pub is_charging: bool,
+  pub is_plugged: bool,
   pub time_till_full: Option<f32>,
   pub time_till_empty: Option<f32>,
   pub power_consumption: f32,
@@ -64,7 +65,7 @@ impl BatteryProvider {
           self.common.emitter.emit_output(output);
         }
         recv(self.common.input.sync_rx) -> input => {
-          if let Ok(ProviderInputMsg::Stop) = input {
+          if input.is_err() || matches!(input, Ok(ProviderInputMsg::Stop)) {
             break;
           }
         }
@@ -79,12 +80,15 @@ impl BatteryProvider {
     battery: &mut starship_battery::Battery,
   ) -> anyhow::Result<BatteryOutput> {
     manager.refresh(battery)?;
+    let state = battery.state();
+    let is_plugged = plugged_state(ac_connected(), state);
 
     Ok(BatteryOutput {
       charge_percent: battery.state_of_charge().get::<percent>(),
       health_percent: battery.state_of_health().get::<percent>(),
-      state: battery.state().to_string(),
-      is_charging: battery.state() == State::Charging,
+      state: state.to_string(),
+      is_charging: is_plugged && state == State::Charging,
+      is_plugged,
       time_till_full: battery
         .time_to_full()
         .map(|time| time.get::<millisecond>()),
@@ -98,6 +102,30 @@ impl BatteryProvider {
   }
 }
 
+// Charging state alone misses a battery held below full by its charge limit.
+fn plugged_state(ac: Option<bool>, state: State) -> bool {
+  ac.unwrap_or(matches!(state, State::Charging | State::Full))
+}
+
+#[cfg(target_os = "windows")]
+fn ac_connected() -> Option<bool> {
+  // Fixed SYSTEM_POWER_STATUS ABI on x86/x64, independent of optional crate features.
+  #[repr(C)]
+  #[derive(Default)]
+  struct PowerStatus {
+    ac_line_status: u8, battery_flag: u8, battery_life_percent: u8,
+    system_status_flag: u8, battery_life_time: u32, battery_full_life_time: u32,
+  }
+  #[link(name = "kernel32")]
+  extern "system" { fn GetSystemPowerStatus(status: *mut PowerStatus) -> i32; }
+  let mut status = PowerStatus::default();
+  if unsafe { GetSystemPowerStatus(&mut status) } == 0 { return None; }
+  match status.ac_line_status { 0 => Some(false), 1 => Some(true), _ => None }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ac_connected() -> Option<bool> { None }
+
 impl Provider for BatteryProvider {
   fn runtime_type(&self) -> RuntimeType {
     RuntimeType::Sync
@@ -107,5 +135,32 @@ impl Provider for BatteryProvider {
     if let Err(err) = self.run() {
       self.common.emitter.emit_output::<BatteryOutput>(Err(err));
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn ac_status_wins_over_charge_state_including_charge_limits() {
+    for state in [State::Charging, State::Full, State::Discharging, State::Empty, State::Unknown] {
+      assert!(plugged_state(Some(true), state), "AC online with {state}");
+      assert!(!plugged_state(Some(false), state), "AC offline with {state}");
+      assert_eq!(plugged_state(None, state), matches!(state, State::Charging | State::Full));
+    }
+  }
+
+  #[test]
+  fn plugged_but_not_charging_is_serialized_independently() {
+    let output = BatteryOutput {
+      charge_percent: 80.0, health_percent: 90.0, state: "Unknown".into(),
+      is_charging: false, is_plugged: true, time_till_full: None, time_till_empty: None,
+      power_consumption: 0.0, voltage: 12.0, cycle_count: None,
+    };
+    let json = serde_json::to_value(output).unwrap();
+    assert_eq!(json["isPlugged"], true);
+    assert_eq!(json["isCharging"], false);
+    assert_eq!(json["chargePercent"], 80.0);
   }
 }

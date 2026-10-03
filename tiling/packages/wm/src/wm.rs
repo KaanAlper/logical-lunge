@@ -116,6 +116,15 @@ impl WindowManager {
         handle_mouse_move(&event, state, config)
       }
       PlatformEvent::Window(window_event) => match window_event {
+        WindowEvent::Created { window, .. } => {
+          #[cfg(target_os = "windows")]
+          {
+            let _ = crate::events::constrain_transition_overlay(&window, state)?;
+          }
+          #[cfg(not(target_os = "windows"))]
+          let _ = window;
+          Ok(())
+        }
         WindowEvent::Focused { window, .. } => {
           handle_window_focused(&window, state, config)
         }
@@ -827,6 +836,14 @@ impl WindowManager {
 
       if let Err(err) = result {
         tracing::warn!("Failed to restore window on exit: {:?}", err);
+      }
+    }
+
+    // Logical Lunge: and the windows hidden along with them.
+    #[cfg(target_os = "windows")]
+    for companion in self.state.hidden_companions.drain().flat_map(|(_, c)| c) {
+      if companion.is_valid() {
+        let _ = companion.show_companion();
       }
     }
 

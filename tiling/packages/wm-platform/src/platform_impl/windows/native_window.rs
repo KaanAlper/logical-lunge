@@ -1,3 +1,7 @@
+#[path = "companion_policy.rs"]
+mod companion_policy;
+use companion_policy::is_descendant;
+
 use std::time::Duration;
 
 use tokio::task;
@@ -12,9 +16,15 @@ use windows::{
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
-    System::Threading::{
-      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-      PROCESS_QUERY_LIMITED_INFORMATION,
+    System::{
+      Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+      },
+      Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+      },
     },
     UI::{
       Input::KeyboardAndMouse::{
@@ -433,6 +443,27 @@ impl NativeWindow {
     Ok(())
   }
 
+  pub(crate) fn hide_companion(&self) -> crate::Result<()> {
+    const TAG: PCWSTR = w!("LogicalLunge.HiddenCompanion");
+    // Mark before hiding: a crash between calls must still be recoverable.
+    unsafe { SetPropW(self.hwnd(), TAG, HANDLE(1)) }?;
+    if let Err(err) = self.hide() {
+      let _ = unsafe { RemovePropW(self.hwnd(), TAG) };
+      return Err(err);
+    }
+    Ok(())
+  }
+
+  pub(crate) fn show_companion(&self) -> crate::Result<()> {
+    // A destroyed HWND may already have been reused by an unrelated window.
+    if unsafe { GetPropW(self.hwnd(), w!("LogicalLunge.HiddenCompanion")) }.0 == 0 {
+      return Ok(());
+    }
+    self.show()?;
+    let _ = unsafe { RemovePropW(self.hwnd(), w!("LogicalLunge.HiddenCompanion")) };
+    Ok(())
+  }
+
   /// Implements [`NativeWindowWindowsExt::restore`].
   pub(crate) fn restore(
     &self,
@@ -465,6 +496,57 @@ impl NativeWindow {
         Ok(())
       }
     }
+  }
+
+  /// Implements [`NativeWindowWindowsExt::companions`].
+  pub(crate) fn companions(&self) -> Vec<crate::NativeWindow> {
+    let mut own_pid = 0;
+    unsafe { GetWindowThreadProcessId(self.hwnd(), Some(&raw mut own_pid)) };
+    let mut frame = RECT::default();
+    if own_pid == 0 || unsafe { GetWindowRect(self.hwnd(), &raw mut frame) }.is_err() {
+      return Vec::new();
+    }
+    let parents = process_parents();
+
+    let mut handles: Vec<isize> = Vec::new();
+    #[allow(clippy::items_after_statements)]
+    extern "system" fn collect(handle: HWND, data: LPARAM) -> BOOL {
+      let handles = data.0 as *mut Vec<isize>;
+      unsafe { (*handles).push(handle.0) };
+      true.into()
+    }
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(std::ptr::from_mut(&mut handles) as _)) };
+
+    handles
+      .into_iter()
+      .filter(|&handle| handle != self.handle)
+      .map(NativeWindow::new)
+      .filter(|w| {
+        let hwnd = w.hwnd();
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool()
+          || unsafe { GetWindow(hwnd, GW_OWNER) }.0 != 0
+        {
+          return false;
+        }
+        let mut cloaked = 0u32;
+        let read = unsafe {
+          DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, std::ptr::from_mut(&mut cloaked).cast(), 4)
+        };
+        if read.is_err() || cloaked != 0 {
+          return false;
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
+        let mut rect = RECT::default();
+        is_descendant(pid, own_pid, &parents)
+          && unsafe { GetWindowRect(hwnd, &raw mut rect) }.is_ok()
+          && rect.left < frame.right
+          && frame.left < rect.right
+          && rect.top < frame.bottom
+          && frame.top < rect.bottom
+      })
+      .map(Into::into)
+      .collect()
   }
 
   /// Implements [`NativeWindowWindowsExt::set_cloaked`].
@@ -864,6 +946,29 @@ impl From<NativeWindow> for crate::NativeWindow {
   }
 }
 
+/// Every process's parent (one snapshot; empty if it cannot be taken).
+fn process_parents() -> std::collections::HashMap<u32, u32> {
+  let mut parents = std::collections::HashMap::new();
+  let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+    return parents;
+  };
+  #[allow(clippy::cast_possible_truncation)]
+  let mut entry = PROCESSENTRY32W {
+    dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+    ..Default::default()
+  };
+  let mut more = unsafe { Process32FirstW(snapshot, &raw mut entry) }.is_ok();
+  while more {
+    parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+    more = unsafe { Process32NextW(snapshot, &raw mut entry) }.is_ok();
+  }
+  let _ = unsafe { CloseHandle(snapshot) };
+  parents
+}
+
+/// Whether `pid` was started (directly or further down) by `ancestor`. The
+/// walk is bounded: a parent id can be reused by an unrelated process.
+
 /// Implements [`Dispatcher::visible_windows`].
 pub(crate) fn visible_windows(
   _: &Dispatcher,
@@ -1033,3 +1138,4 @@ fn own_integrity() -> u32 {
     level
   })
 }
+
