@@ -9,8 +9,10 @@ function Get-BumpLevel([string[]]$commits) {
     $level = 'patch'
     foreach ($c in $commits) {
         if (-not $c) { continue }
-        if ($c -match '(?m)^\w+(\([^)]*\))?!:' -or $c -match '(?m)^BREAKING[ -]CHANGE: \S') { return 'major' }
-        if ($c -match '(?m)^feat(\([^)]*\))?:') { $level = 'minor' }
+        # the type (and its "!") is only the subject line's; a footer line must be "BREAKING CHANGE: <text>"
+        $subject = ($c -split "`n", 2)[0].Trim()
+        if ($subject -match '^\w+(\([^)]*\))?!:' -or $c -match '(?m)^BREAKING[ -]CHANGE: \S') { return 'major' }
+        if ($subject -match '^feat(\([^)]*\))?:') { $level = 'minor' }
     }
     $level
 }
