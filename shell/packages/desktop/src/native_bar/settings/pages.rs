@@ -550,7 +550,12 @@ fn about(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Result<f
   for (lx, ly, lw, lh, c) in [(15.0, 13.0, 11.0, 38.0, 0xd0bcff), (15.0, 40.0, 34.0, 11.0, 0xd0bcff), (31.0, 13.0, 18.0, 22.0, 0x7f67be)] {
     cx.p.fill_round(Rect::new(logo.x + lx, logo.y + ly, lw, lh), 5.0, Rgba::hex(c))?;
   }
-  cx.p.text("Logical Lunge", Rect::new(logo.right() + 18.0, y + 30.0, w - 120.0, 28.0), TextStyle { size: 22.0, weight: 560.0 }, t.on_layer1, Align::Left, false)?;
+  let title_style = TextStyle { size: 22.0, weight: 560.0 };
+  let title_x = logo.right() + 18.0;
+  let title_w = cx.p.measure("Logical Lunge", title_style)?;
+  cx.p.text("Logical Lunge", Rect::new(title_x, y + 30.0, title_w, 28.0), title_style, t.on_layer1, Align::Left, false)?;
+  let edition_x = title_x + title_w + 12.0;
+  cx.p.text("Native version", Rect::new(edition_x, y + 36.0, (r.right() - 18.0 - edition_x).max(0.0), 20.0), SUB, t.on_surface_variant, Align::Left, false)?;
   let version = s.s["version"].as_str().filter(|v| !v.is_empty()).unwrap_or("—");
   let v = cx.tr(&format!("Sürüm {version} · GPL-3.0"));
   cx.p.text(&v, Rect::new(logo.right() + 18.0, y + 60.0, w - 120.0, 20.0), BODY, t.on_surface_variant, Align::Left, false)?;
