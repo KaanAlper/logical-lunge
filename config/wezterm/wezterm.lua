@@ -9,8 +9,9 @@ local config = {}
 -- Acrylic + şeffaflık Windows 10'da DWM bulanıklığı yüzünden pencere taşırken donduruyordu: opak, GPU'da çiz.
 -- Açılış hızı (ölçüldü): WebGpu gölgelendiricileri her açılışta ~600 ms derleniyor -> OpenGL (0.55 s'e iniyor).
 config.front_end = 'OpenGL'
--- Sistemdeki ~860 fontu taramak 1.6 s sürüyordu: yalnız kendi font klasörümüz (+ WezTerm'in gömülü emoji/simge fontları)
-config.font_locator = 'ConfigDirsOnly'
+-- Önce kendi font klasörümüz; onda olmayan bir karakter (※, CJK, simgeler) Windows'un yazı tiplerinden bulunur. Bu arama
+-- yalnız eksik glif çıkınca yapılır (ls-fonts ile ölçüldü: ASCII metinde fark yok, ~110 ms). Eskiden ConfigDirsOnly
+-- sistemi tamamen kapatıyordu: eksik karakterler kutu olarak çizilip "Font problem" kartı çıkıyordu.
 config.font_dirs = { wezterm.home_dir .. '/.config/wezterm/fonts' }
 -- Son pencere kapanınca süreç arka planda kalsın: sonraki Super+Enter yeni süreç değil, anında yeni pencere
 config.quit_when_all_windows_are_closed = false
@@ -22,7 +23,7 @@ config.enable_scroll_bar = false
 config.scrollback_lines = 10000
 
 -- ---- kitty.conf: Font ----
-config.font = wezterm.font('JetBrainsMono Nerd Font') -- yedekler: WezTerm'in gömülü emoji / simge fontları
+config.font = wezterm.font('JetBrainsMono Nerd Font') -- yedekler: WezTerm'in gömülü fontları, sonra Windows'unkiler
 config.font_size = 11.0
 
 -- ---- kitty.conf: Cursor (beam) ----
