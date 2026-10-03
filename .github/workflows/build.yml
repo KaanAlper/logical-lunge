@@ -104,10 +104,15 @@ jobs:
       - name: Check theme, media and core regressions
         shell: powershell
         run: |
-          node ./tools/dev/theme-tests.mjs
-          if ($LASTEXITCODE) { throw 'Theme regression failed' }
-          node ./tools/dev/bar-data-tests.mjs
-          if ($LASTEXITCODE) { throw 'Bar data regression failed' }
+          # the web widgets' JavaScript tests (only the web edition has them)
+          if (Test-Path ./tools/dev/theme-tests.mjs) {
+            node ./tools/dev/theme-tests.mjs
+            if ($LASTEXITCODE) { throw 'Theme regression failed' }
+          }
+          if (Test-Path ./tools/dev/bar-data-tests.mjs) {
+            node ./tools/dev/bar-data-tests.mjs
+            if ($LASTEXITCODE) { throw 'Bar data regression failed' }
+          }
           ./tools/dev/core-tests.ps1
 
       - name: Keep the package
