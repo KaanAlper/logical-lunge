@@ -149,7 +149,6 @@
       const Icon = ({ name, fill }) => <span className={`icon ${fill ? 'fill' : ''}`}>{name}</span>;
       // Hepsi çekirdek üzerinden: hiç konsol penceresi açılmaz
       const helper = args => lunge.shellExec(HELPER, args).then(r => (r.stdout || '').trim());
-      const psFile = (file, args = []) => helper(['--ps', `${LL}\\${file}`, ...args]);
       // Hızlı ayarlar çekirdekte (eskiden her panel açılışında dört PowerShell betiği): /qs/radios, /qs/eth, /qs/bt ...
       const qs = path => fetch(`http://127.0.0.1:6131/qs/${path}`, { method: 'POST', cache: 'no-store' })
         .then(r => (r.ok ? r.text() : Promise.reject(new Error(`qs ${path}: ${r.status}`))));
@@ -1199,7 +1198,7 @@
               setSt(x => ({ ...x, eth: { ...x.eth, state: x.eth?.state === 'disabled' ? 'up' : 'disabled' } }));
               qs('eth-toggle').then(s => {
                 const r = json(s);
-                if (r && !r.ok) emit('ll:toast', { kind: 'error', title: 'Ethernet', body: 'Yönetici görevi bulunamadı: scripts\\setup-eth-tasks.ps1 bir kez yönetici olarak çalıştırılmalı.', icon: 'lan' }).catch(() => {});
+                if (r && !r.ok) emit('ll:toast', { kind: 'error', title: 'Ethernet', body: 'Ethernet kartı açılıp kapatılamadı. Kurulumu yeniden çalıştırmak yönetici görevlerini onarır.', icon: 'lan' }).catch(() => {});
                 setTimeout(refresh, 2500);
               }).catch(refresh);
             },
@@ -1498,13 +1497,13 @@
         const [scanning, setScanning] = useState(false);
         const scan = useCallback(() => {
           setScanning(true);
-          return psFile('wifi.ps1', ['list']).then(s => { const r = json(s); if (r) setData(r); }).catch(() => {}).finally(() => setScanning(false));
+          return qs('wifi').then(s => { const r = json(s); if (r) setData(r); }).catch(() => {}).finally(() => setScanning(false));
         }, []);
         useEffect(() => { if (radioOn) { scan(); const t = setInterval(scan, 10000); return () => clearInterval(t); } }, [radioOn]);
 
         const connect = async (n, password) => {
           setErr(''); setBusy(n.ssid);
-          const r = json(await psFile('wifi.ps1', ['connect', n.ssid, ...(password ? [password] : [])]).catch(() => '')) || {};
+          const r = json(await qs(`wifi-connect?ssid=${encodeURIComponent(n.ssid)}${password ? `&pw=${encodeURIComponent(password)}` : ''}`).catch(() => '')) || {};
           setBusy(null);
           if (r.needPassword) { setAsk(n.ssid); setPw(''); return; }
           if (!r.ok) { setErr(r.error || 'Bağlanılamadı'); return; }
@@ -1522,7 +1521,7 @@
                 return (
                   <div key={n.ssid} className={`net ${cur ? 'cur' : ''}`}>
                     <button className="net-row" disabled={!!busy}
-                      onClick={() => (cur ? psFile('wifi.ps1', ['disconnect']).then(scan)
+                      onClick={() => (cur ? qs('wifi-disconnect').then(scan)
                         : (n.known || !n.secure) ? connect(n) : (setAsk(ask === n.ssid ? null : n.ssid), setPw(''), setErr('')))}>
                       <Icon name={signalIcon(n.signal)} fill={cur} />
                       <span className="net-name">{n.ssid}</span>

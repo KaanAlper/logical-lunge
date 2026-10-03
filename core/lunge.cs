@@ -11491,6 +11491,12 @@ static class Program
             }
             return;
         }
+        // lunge.exe --eth enable|disable: kurulumun yönetici görevleri (LogicalLunge\Ethernet-On / -Off) çağırır
+        if (args.Length == 2 && args[0] == "--eth" && (args[1] == "enable" || args[1] == "disable"))
+        {
+            Environment.Exit(QuickSettings.SetEth(args[1] == "enable") ? 0 : 1);
+            return;
+        }
         // lunge.exe --build-apps: Super menüsünün uygulama listesini (state\apps.json) yeniden yazar (AppIndex)
         if (args.Length == 1 && args[0] == "--build-apps")
         {
@@ -11772,6 +11778,7 @@ static class Program
                 }
                 if (refresh) AppIndex.RebuildInBackground(System.IO.File.Exists(apps) ? "a day old" : "first run");
                 AppIndex.WatchStartMenu();
+                EverythingIndex.Start();
                 string colors = System.IO.Path.Combine(home, @".config\wezterm\ll-colors.lua");
                 string tc = Paths.Tool(@"termcolors\lunge-termcolors.exe");
                 if (!System.IO.File.Exists(colors) && System.IO.File.Exists(tc))
