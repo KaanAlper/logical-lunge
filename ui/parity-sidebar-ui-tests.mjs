@@ -27,9 +27,9 @@ const modulePattern = /<script type="module">\n([\s\S]*?)\n\s*<\/script>/;
 for (const name of ['sidebar', 'settings']) {
   const html = fs.readFileSync(path.join(ui, `${name}.html`), 'utf8').replace(/\r\n/g, '\n');
   const contents = html.match(modulePattern)[1];
-  // Match the production entry location. The integration runner creates .build;
-  // this test never writes to or removes that shared directory.
-  const options = { stdin: { contents, loader: 'jsx', resolveDir: path.join(ui, '.build') }, bundle: true, format: 'esm', nodePaths: [path.join(ui, 'node_modules')], define: { 'process.env.NODE_ENV': '"production"' }, target: 'chrome120' };
+  // Resolve as the production entry does (ui/.build/<name>.jsx: one level under ui, so '../x' is ui/x) from a
+  // directory of that depth that always exists: ui/.build is build.mjs's scratch folder, gone after every build.
+  const options = { stdin: { contents, loader: 'jsx', resolveDir: path.join(ui, 'lib') }, bundle: true, format: 'esm', nodePaths: [path.join(ui, 'node_modules')], define: { 'process.env.NODE_ENV': '"production"' }, target: 'chrome120' };
   // Compile actual production dependencies independently as well as the mocked test entry.
   await esbuild.build({ ...options, outfile: path.join(out, `${name}-production.js`), alias: { 'lunge/shell': path.join(ui, 'lib/shell-client.js'), 'lunge/theme': path.join(ui, 'lib/theme.mjs') } });
   await esbuild.build({ ...options, outfile: path.join(out, `${name}.js`), alias: { 'lunge/shell': shell, '@tauri-apps/api/event': events, '@tauri-apps/api/core': core, 'lunge/theme': path.join(ui, 'lib/theme.mjs') } });
