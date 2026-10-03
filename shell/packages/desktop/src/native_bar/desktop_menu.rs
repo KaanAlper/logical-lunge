@@ -28,7 +28,7 @@ use windows::{
 
 use super::{
   core_api,
-  desktop_shell::{Desktop, Entry, PKEY_DATE, PKEY_NAME, PKEY_SIZE, PKEY_TYPE},
+  desktop_shell::{Desktop, Entry, NewMenu, PKEY_DATE, PKEY_NAME, PKEY_SIZE, PKEY_TYPE},
   menu::{Item, MenuFocus},
   Ui,
 };
@@ -261,10 +261,32 @@ impl Ui {
       Item::new("sort:type", None, tr("Öğe türü")).checked(is_sorted(PKEY_TYPE)).enabled(have),
       Item::new("sort:date", None, tr("Değiştirme tarihi")).checked(is_sorted(PKEY_DATE)).enabled(have),
     ];
-    let new = vec![
-      Item::new("new:folder", Some("create_new_folder"), tr("Klasör")).enabled(have),
-      Item::new("new:text", Some("description"), tr("Metin belgesi")),
-    ];
+    // Windows' own "New" menu (what the installed apps registered, in its
+    // order); ours only when its handler cannot be had
+    let new_menu = NewMenu::open(d.as_ref()).filter(|(_, items)| !items.is_empty());
+    let new = match &new_menu {
+      Some((_, items)) => {
+        let mut list = Vec::new();
+        for (i, it) in items.iter().enumerate() {
+          // folder and shortcut, then the file types (a type's verb is its extension)
+          let file = it.verb.starts_with('.');
+          if i > 0 && file != items[i - 1].verb.starts_with('.') {
+            list.push(Item::sep());
+          }
+          let icon = match it.verb.as_str() {
+            "NewFolder" => "create_new_folder",
+            "NewLink" => "shortcut",
+            _ => "description",
+          };
+          list.push(Item::new(&format!("new:{}", it.id), Some(icon), it.label.clone()));
+        }
+        list
+      }
+      None => vec![
+        Item::new("new:folder", Some("create_new_folder"), tr("Klasör")).enabled(have),
+        Item::new("new:text", Some("description"), tr("Metin belgesi")),
+      ],
+    };
     let items = vec![
       Item::new("view", Some("grid_view"), tr("Görüntüle")).submenu(view),
       Item::new("sort", Some("sort"), tr("Sıralama ölçütü")).submenu(sort),
@@ -286,6 +308,9 @@ impl Ui {
     let link_suffix = tr("Kısayol");
     self.menu_open(at, MenuFocus::Take, items, move |ui, id| {
       let d = d.as_ref();
+      if let (Some((menu, _)), Some(n)) = (&new_menu, id.strip_prefix("new:").and_then(|n| n.parse::<u32>().ok())) {
+        return menu.invoke(n, at, d.map(Desktop::window).unwrap_or_default());
+      }
       match id {
         "wallpaper" => crate::bus::publish(crate::bus::Event::SidebarOpenPage("walls".into())),
         "display" => open_uri("ms-settings:display"),

@@ -5,20 +5,29 @@
 //! Our process (elevated) only asks; nothing here imitates Explorer.
 
 use windows::{
-  core::{w, Interface, BSTR, GUID, PCSTR, PCWSTR, PWSTR, VARIANT},
+  core::{w, Interface, BSTR, GUID, PCSTR, PCWSTR, PSTR, PWSTR, VARIANT},
   Win32::{
-    Foundation::{HWND, POINT},
+    Foundation::{HWND, LPARAM, POINT, WPARAM},
     Graphics::Gdi::{ClientToScreen, ScreenToClient},
-    System::Com::{CoCreateInstance, CoTaskMemFree, IDispatch, IServiceProvider, CLSCTX_ALL},
+    System::{
+      Com::{CoCreateInstance, CoTaskMemFree, IDispatch, IServiceProvider, CLSCTX_ALL, CLSCTX_INPROC_SERVER},
+      Ole::IObjectWithSite,
+      Registry::HKEY,
+    },
     UI::{
       Shell::{
-        Folder, IFolderView2, IShellBrowser, IShellDispatch2, IShellFolderViewDual, IShellItem, IShellItem2,
-        IShellView, IShellWindows, PropertiesSystem::PROPERTYKEY, SHObjectProperties, ShellWindows, FOLDERFLAGS,
-        FVM_ICON, SHOP_FILEPATH, SIGDN_FILESYSPATH, SID_STopLevelBrowser, SORTCOLUMN, SORT_ASCENDING,
-        SVGIO_ALLVIEW, SVGIO_BACKGROUND, SVSI_DESELECTOTHERS, SVSI_FOCUSED, SVSI_SELECT, SWC_DESKTOP,
-        SWFO_NEEDDISPATCH,
+        Folder, IContextMenu3, IFolderView2, IShellBrowser, IShellDispatch2, IShellExtInit, IShellFolderViewDual,
+        IShellItem, IShellItem2, IShellView, IShellWindows, PropertiesSystem::PROPERTYKEY, SHGetKnownFolderIDList,
+        SHObjectProperties, ShellWindows, CLSID_NewMenu, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
+        CMINVOKECOMMANDINFOEX, FOLDERFLAGS, FOLDERID_Desktop, FVM_ICON, GCS_VERBW, SHOP_FILEPATH, SIGDN_FILESYSPATH,
+        SID_STopLevelBrowser, SORTCOLUMN, SORT_ASCENDING, SVGIO_ALLVIEW, SVGIO_BACKGROUND, SVSI_DESELECTOTHERS,
+        SVSI_FOCUSED, SVSI_SELECT, SWC_DESKTOP, SWFO_NEEDDISPATCH,
       },
-      WindowsAndMessaging::{FindWindowExW, GetAncestor, SetForegroundWindow, GA_ROOT},
+      WindowsAndMessaging::{
+        CreatePopupMenu, DestroyMenu, FindWindowExW, GetAncestor, GetMenuItemCount, GetMenuItemInfoW, GetSubMenu,
+        SetForegroundWindow, GA_ROOT, HMENU, MENUITEMINFOW, MFT_SEPARATOR, MIIM_FTYPE, MIIM_ID, MIIM_STRING,
+        SW_SHOWNORMAL, WM_INITMENUPOPUP,
+      },
     },
   },
 };
@@ -286,6 +295,154 @@ impl Desktop {
         )
         .is_ok()
     }
+  }
+}
+
+/// Windows' own "New" menu of the desktop (the handler Explorer shows): its
+/// entries are what the installed apps registered (ShellNew), in Windows'
+/// order and words, and it makes the chosen item itself, then starts its
+/// rename in the desktop's view.
+pub struct NewMenu {
+  menu: IContextMenu3,
+  hmenu: HMENU,
+}
+
+/// One entry of the "New" menu.
+pub struct NewItem {
+  pub id: u32,
+  pub label: String,
+  /// the handler's verb ("NewFolder" for a folder; empty for most files)
+  pub verb: String,
+}
+
+/// The ids the handler numbers its entries from.
+const NEW_FIRST: u32 = 1;
+const NEW_LAST: u32 = 0x7FFF;
+
+/// "&Klasör" -> "Klasör": a menu's mnemonic marks go, a doubled one is an "&".
+fn without_mnemonics(raw: &str) -> String {
+  let mut label = String::new();
+  let mut chars = raw.chars().peekable();
+  while let Some(c) = chars.next() {
+    if c != '&' {
+      label.push(c);
+    } else if chars.peek() == Some(&'&') {
+      chars.next();
+      label.push('&');
+    }
+  }
+  label
+}
+
+impl NewMenu {
+  /// The handler for the desktop folder, with its entries; `desk` (Explorer's
+  /// view) lets it place and rename the new item.
+  pub fn open(desk: Option<&Desktop>) -> Option<(NewMenu, Vec<NewItem>)> {
+    unsafe {
+      let pidl = SHGetKnownFolderIDList(&FOLDERID_Desktop, 0, None).ok()?;
+      let init: windows::core::Result<IShellExtInit> = CoCreateInstance(&CLSID_NewMenu, None, CLSCTX_INPROC_SERVER);
+      let init = init.and_then(|i| i.Initialize(Some(pidl.cast_const()), None, HKEY::default()).map(|_| i));
+      CoTaskMemFree(Some(pidl.cast_const().cast()));
+      let init = init.ok()?;
+      if let (Some(d), Ok(site)) = (desk, init.cast::<IObjectWithSite>()) {
+        let _ = site.SetSite(&d.shell);
+      }
+      let menu: IContextMenu3 = init.cast().ok()?;
+      let hmenu = CreatePopupMenu().ok()?;
+      let nm = NewMenu { menu, hmenu };
+      nm.menu.QueryContextMenu(hmenu, 0, NEW_FIRST, NEW_LAST, CMF_NORMAL).ok()?;
+      // it adds one item, "New", and fills its submenu when that opens
+      let sub = GetSubMenu(hmenu, 0);
+      if sub.is_invalid() {
+        return None;
+      }
+      let _ = nm.menu.HandleMenuMsg(WM_INITMENUPOPUP, WPARAM(sub.0 as usize), LPARAM(0));
+      let items = (0..GetMenuItemCount(sub).max(0) as u32).filter_map(|i| nm.item(sub, i)).collect();
+      Some((nm, items))
+    }
+  }
+
+  fn item(&self, sub: HMENU, index: u32) -> Option<NewItem> {
+    let mut text = [0u16; 260];
+    let mut info = MENUITEMINFOW {
+      cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
+      fMask: MIIM_FTYPE | MIIM_ID | MIIM_STRING,
+      dwTypeData: PWSTR(text.as_mut_ptr()),
+      cch: text.len() as u32,
+      ..Default::default()
+    };
+    unsafe { GetMenuItemInfoW(sub, index, true, &mut info) }.ok()?;
+    if info.fType.0 & MFT_SEPARATOR.0 != 0 || info.wID < NEW_FIRST {
+      return None;
+    }
+    let label = without_mnemonics(&String::from_utf16_lossy(&text[..(info.cch as usize).min(text.len())]));
+    if label.trim().is_empty() {
+      return None;
+    }
+    let mut verb = [0u16; 64];
+    let got = unsafe {
+      self.menu.GetCommandString((info.wID - NEW_FIRST) as usize, GCS_VERBW, None, PSTR(verb.as_mut_ptr().cast()), verb.len() as u32)
+    };
+    let end = verb.iter().position(|&c| c == 0).unwrap_or(0);
+    let verb = if got.is_ok() { String::from_utf16_lossy(&verb[..end]) } else { String::new() };
+    Some(NewItem { id: info.wID, label, verb })
+  }
+
+  /// Makes the entry: the handler creates it at `at` (screen) and starts
+  /// its rename in the view.
+  pub fn invoke(&self, id: u32, at: POINT, owner: HWND) {
+    let info = CMINVOKECOMMANDINFOEX {
+      cbSize: std::mem::size_of::<CMINVOKECOMMANDINFOEX>() as u32,
+      fMask: CMIC_MASK_PTINVOKE,
+      hwnd: owner,
+      lpVerb: PCSTR((id - NEW_FIRST) as usize as *const u8),
+      nShow: SW_SHOWNORMAL.0,
+      ptInvoke: at,
+      ..Default::default()
+    };
+    if let Err(err) = unsafe { self.menu.InvokeCommand(std::ptr::from_ref(&info).cast::<CMINVOKECOMMANDINFO>()) } {
+      tracing::warn!("Desktop: new item: {:?}", err);
+    }
+  }
+}
+
+impl Drop for NewMenu {
+  fn drop(&mut self) {
+    unsafe {
+      let _ = DestroyMenu(self.hmenu);
+    }
+  }
+}
+
+impl Desktop {
+  /// Explorer's window for the desktop's icons (the owner of its dialogs).
+  pub fn window(&self) -> HWND {
+    self.list
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn mnemonic_marks_go_and_a_doubled_one_stays() {
+    for (raw, label) in [("&Klasör", "Klasör"), ("A && B", "A & B"), ("Metin &Belgesi", "Metin Belgesi"), ("&&&x", "&x")] {
+      assert_eq!(without_mnemonics(raw), label);
+    }
+  }
+
+  #[test]
+  #[ignore = "reads this machine's New menu (Explorer's handler)"]
+  fn lists_windows_new_menu() {
+    unsafe {
+      let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+    }
+    let (_menu, items) = NewMenu::open(None).expect("New menu handler");
+    for i in &items {
+      println!("{} | {} | {}", i.id, i.label, i.verb);
+    }
+    assert!(items.len() >= 2, "a folder and a text document at least");
   }
 }
 
