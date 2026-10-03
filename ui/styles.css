@@ -169,18 +169,20 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .ws .dot {
   width: 4.7px; height: 4.7px; border-radius: 50%;
   background: var(--colOnLayer1Inactive);
-  transition: background 200ms, transform 200ms var(--elementMove), opacity 150ms;
+  transition: background 200ms, transform 140ms var(--wsSwap), opacity 140ms var(--wsSwap);
 }
 .ws.occupied .dot { background: var(--m3onSecondaryContainer); }
 .ws.active .dot { background: var(--m3onPrimary); }
 .ws .num {
   position: absolute; font-size: 13px; color: var(--colOnLayer1Inactive);
   opacity: 0; transform: scale(0.7);
-  transition: opacity 150ms, transform 200ms var(--elementMove);
+  transition: opacity 140ms var(--wsSwap), transform 140ms var(--wsSwap);
 }
 .ws.occupied .num { color: var(--m3onSecondaryContainer); }
 .ws.active .num { color: var(--m3onPrimary); }
 .show-numbers .ws .num { opacity: 1; transform: scale(1); }
+/* the number moves a little up-left so the icon's badge has room (native bar: the same 140 ms ease-out cross-fade) */
+.show-numbers .ws.has-icon .num { transform: translate(-2.5px, -2.5px); }
 .show-numbers .ws .dot { opacity: 0; transform: scale(0); }
 .ws:hover::after {
   content: ''; position: absolute; inset: 2px; border-radius: 999px;
@@ -429,12 +431,15 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 /* ---------- Workspace uygulama ikonları (ii showAppIcons: workspaceIconSize = 26 * 0.69) ---------- */
 .ws .ws-icon {
   width: 18px; height: 18px; border-radius: 50%; object-fit: cover;
-  transition: transform 200ms var(--elementMove), filter 200ms;
+  transition: transform 140ms var(--wsSwap), filter 200ms;
   filter: saturate(0.7);
 }
 .ws.active .ws-icon { filter: none; transform: scale(1.05); }
-/* numaralar görünürken simge hücrenin sağ altına küçülür (yanındaki hücreye değmez; native bar'daki 8.5 DIP rozet) */
-.show-numbers .ws .ws-icon { transform: translate(6px, 6px) scale(0.47); }
+/* numaralar görünürken simge hücrenin sağ altına 12 px'lik bir rozet olarak kayar (yanındaki hücreye değmez; native bar ile aynı) */
+.show-numbers .ws .ws-icon { transform: translate(5.5px, 5.5px) scale(0.667); }
+:root { --wsSwap: cubic-bezier(0.33, 1, 0.68, 1); }
+/* animasyonlar kapalıyken (prefs.json animations: false) noktalar ve numaralar doğrudan yer değiştirir */
+.no-anim .ws .num, .no-anim .ws .dot, .no-anim .ws .ws-icon { transition: none; }
 
 /* ---------- Tray sürükle-bırak ---------- */
 .tray.drop-target { outline: 1px dashed var(--m3primary); outline-offset: 2px; border-radius: 999px; }

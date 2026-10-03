@@ -15,6 +15,7 @@
     if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
   } catch (e) {}
   window.LL_PREFS = prefs;
+  if (prefs.animations === false) document.documentElement.classList.add('no-anim');
   window.LL_HOUR12 = prefs.clock === '12';
   var lang = prefs.language && prefs.language !== 'system' ? prefs.language
     : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
@@ -804,7 +805,7 @@
               const ic = b ? (iconFor(b.proc) || winIconOf(b.handle, bumpIcons)) : null;
               return (
                 <button key={n}
-                  className={`ws ${occupied.has(n) ? 'occupied' : ''} ${i === idx ? 'active' : ''}`}
+                  className={`ws ${occupied.has(n) ? 'occupied' : ''} ${i === idx ? 'active' : ''}${ic ? ' has-icon' : ''}`}
                   title={b ? `${n}: ${b.title}` : String(n)}
                   onClick={() => slide(String(n), run)}>
                   {ic ? <img className="ws-icon" src={ic} alt="" /> : <span className="dot" />}
