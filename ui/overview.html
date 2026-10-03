@@ -126,6 +126,7 @@
   </head>
   <body>
     <div id="root"></div>
+    <script src="./file-search.js"></script>
     <script type="module">
       // ii modules/ii/overview: Super ile açılır. Üstte SearchWidget, altında OverviewWidget.
       import React, { useState, useEffect, useRef, useMemo } from 'react';
@@ -369,18 +370,17 @@
         const [tiling, setTiling] = useState(providers.outputMap.tiling);
         // ii "overviewClipboardToggle" / cliphist: ";" öneki pano geçmişini listeler (Super+V)
         const [clips, setClips] = useState([]);
-        const [fileSearch, setFileSearch] = useState({ query: '', hits: [], error: '' });
+        const [fileSearch, setFileSearch] = useState({ query: '', hits: [], error: '', loading: false });
+        const filePager = useRef(null);
+        if (!filePager.current) filePager.current = new LLFileSearchPager(invoke, setFileSearch);
         useEffect(() => {
           const term = query.startsWith(PREFIX.file) ? query.slice(1).trim() : query.trim();
           const eligible = query.startsWith(PREFIX.file) || !Object.values(PREFIX).some(p => query.startsWith(p));
-          if (!open || !eligible || term.length < (query.startsWith(PREFIX.file) ? 1 : 2)) { setFileSearch({ query: '', hits: [], error: '' }); return; }
-          let cancelled = false;
-          const timer = setTimeout(() => {
-            invoke('everything_search', { query: term, maxResults: 8 })
-              .then(hits => { if (!cancelled) setFileSearch({ query, hits, error: '' }); })
-              .catch(error => { if (!cancelled) setFileSearch({ query, hits: [], error: String(error) }); });
-          }, 110);
-          return () => { cancelled = true; clearTimeout(timer); };
+          const searchable = open && eligible && term.length >= (query.startsWith(PREFIX.file) ? 1 : 2);
+          const pager = filePager.current;
+          pager.reset(query, searchable ? term : '');
+          const timer = searchable ? setTimeout(() => pager.load(), 110) : null;
+          return () => { pager.cancel(); clearTimeout(timer); };
         }, [open, query]);
         const clipMode = query.startsWith(PREFIX.clip);
         const loadClips = async () => {
@@ -390,6 +390,14 @@
         useEffect(() => { if (open && clipMode) loadClips(); }, [open, clipMode]);
         const inputRef = useRef(null);
         const resultsRef = useRef(null);
+        const loadMoreFiles = () => {
+          const list = resultsRef.current;
+          if (list && list.clientHeight > 0 && list.scrollTop + list.clientHeight >= list.scrollHeight - 100) {
+            filePager.current.load();
+          }
+        };
+        useEffect(() => { if (open && !fileSearch.loading) loadMoreFiles(); }, [open, fileSearch]);
+
 
         useEffect(() => { providers.onOutput(() => setTiling(providers.outputMap.tiling)); }, []);
 
@@ -598,13 +606,13 @@
           const fileOnly = q.startsWith(PREFIX.file);
           const fileItems = fileSearch.query === q ? fileSearch.hits.map(hit => ({
             key: 'file:' + hit.fullPath, type: hit.isDir ? 'Klasör' : 'Dosya', name: hit.name,
-            sub: hit.path, material: hit.isDir ? 'folder' : 'draft', verb: 'Aç',
+            sub: hit.path, material: LLFileIcon(hit), verb: 'Aç',
             exec: () => spawn(HELPER, ['--launch', hit.fullPath]),
           })) : [];
           if (fileOnly) {
             if (fileItems.length) return fileItems;
             return [{ key: 'file-hint', type: 'Dosya', name: !q.slice(1).trim() ? 'Dosya veya klasör adı yaz…'
-              : fileSearch.query !== q ? 'Dosyalar aranıyor…' : fileSearch.error ? fileSearch.error : 'Dosya bulunamadı',
+              : fileSearch.query !== q || fileSearch.loading ? 'Dosyalar aranıyor…' : fileSearch.error ? fileSearch.error : 'Dosya bulunamadı',
               material: 'folder_open', verb: '', stay: true, exec: () => {} }];
           }
 
@@ -659,7 +667,7 @@
         const onKey = e => {
           if (e.key === 'Escape') { e.preventDefault(); if (query) setQuery(''); else hide(); }
           else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && results[sel]?.menu) { e.preventDefault(); shellMenu(results[sel].menu, results[sel].dock); }
-          else if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => Math.min(results.length - 1, s + 1)); }
+          else if (e.key === 'ArrowDown') { e.preventDefault(); setSel(s => Math.min(results.length - 1, s + 1)); if (sel >= results.length - 3) filePager.current.load(); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(s => Math.max(0, s - 1)); }
           else if (e.key === 'Enter') { e.preventDefault(); exec(results[sel]); }
           else if (e.key === 'Delete' && results[sel]?.clipId) {
@@ -703,9 +711,9 @@
                 {query && results.length > 0 && (
                   <>
                     <div className="sep" />
-                    <div className="results" ref={resultsRef}>
+                    <div className="results" ref={resultsRef} onScroll={loadMoreFiles}>
                       {results.map((r, i) => (
-                        <div key={r.key} className={`item ${i === sel ? 'selected' : ''}`}
+                        <div key={r.key} className={`item ${i === sel ? 'selected' : ''} ${r.key.startsWith('file:') ? 'file-result' : ''}`}
                              onMouseEnter={() => setSel(i)} onClick={() => exec(r)}
                              onContextMenu={e => { e.preventDefault(); if (r.menu) { setSel(i); shellMenu(r.menu, r.dock); } }}>
                           <div className="ico">
@@ -714,7 +722,7 @@
                               : <Icon name={r.material} />}
                           </div>
                           <div className="txt">
-                            <span className="type">{r.type}{r.sub ? ` · ${r.sub}` : ''}</span>
+                            <span className="type" title={r.sub || ''}>{r.type}{r.sub ? ` · ${r.sub}` : ''}</span>
                             <span className="name" style={r.mono ? { fontFamily: 'Consolas, monospace' } : undefined}>
                               {r.q ? highlight(r.name, r.q) : r.name}
                             </span>
@@ -722,6 +730,9 @@
                           <span className="verb">{r.verb}</span>
                         </div>
                       ))}
+                      {fileSearch.loading && fileSearch.hits.length > 0 && (
+                        <div className="item" role="status"><div className="txt"><span className="name">Yükleniyor…</span></div></div>
+                      )}
                     </div>
                   </>
                 )}

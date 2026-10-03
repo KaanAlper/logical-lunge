@@ -96,6 +96,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .item .ico .icon { font-size: 26px; }
 .item .ico .big { font-size: 22px; font-weight: 500; }
 .item .txt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.item.file-result .name { order: -1; font-weight: 550; }
 .item .type { font-size: 12px; color: var(--m3onSurfaceVariant); }
 .item.selected .type { color: var(--m3onPrimaryContainer); opacity: 0.8; }
 .item .name { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

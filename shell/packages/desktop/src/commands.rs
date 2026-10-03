@@ -10,6 +10,12 @@ pub async fn everything_search(query: String, max_results: Option<u32>) -> Resul
 }
 
 #[tauri::command]
+pub async fn everything_search_page(query: String, max_results: Option<u32>, offset: u32) -> Result<crate::everything::FilePage, String> {
+  tokio::task::spawn_blocking(move || crate::everything::query_page(&query, max_results.unwrap_or(10), offset))
+    .await.map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
 pub async fn screensaver_state() -> Result<crate::screensaver::State, String> {
   tokio::task::spawn_blocking(crate::screensaver::state).await.map_err(|err| err.to_string())?
 }

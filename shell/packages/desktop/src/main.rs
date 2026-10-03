@@ -118,6 +118,7 @@ async fn main() -> anyhow::Result<()> {
       commands::shell_write,
       commands::shell_kill,
       commands::everything_search,
+      commands::everything_search_page,
       commands::screensaver_state,
       commands::screensaver_set,
       commands::screensaver_run,
