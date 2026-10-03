@@ -15,6 +15,9 @@ using System.Web.Script.Serialization;
 // nesnesi: Main [STAThread].
 static class AppIndex
 {
+    // Windows'un Çalıştır penceresi (Win+R de bunu açar)
+    public const string RunDialog = @"shell:AppsFolder\Microsoft.Windows.Shell.RunDialog";
+
     const int ICON_SIZE = 48;
     static readonly Regex skip = new Regex(@"(uninstall|kaldır|readme|beni oku|help|yardım|documentation|belgeler|release notes|license|lisans|website|web sitesi|manual|kılavuz|changelog|what's new)", RegexOptions.IgnoreCase);
     static readonly Regex document = new Regex(@"\.(txt|pdf|html?|chm|md|rtf)$", RegexOptions.IgnoreCase);
@@ -243,7 +246,7 @@ static class AppIndex
                     }
                     // Win+R penceresi: 'run' yazınca da bulunsun
                     string alias = null;
-                    if (id == "Microsoft.Windows.Shell.RunDialog") { name = name + " (Run)"; alias = "run"; }
+                    if (@"shell:AppsFolder\" + id == RunDialog) { name = name + " (Run)"; alias = "run"; }
                     apps.Add(new Dictionary<string, object>
                     {
                         { "name", name }, { "path", @"shell:AppsFolder\" + id }, { "exe", exe }, { "alias", alias }, { "also", also },
