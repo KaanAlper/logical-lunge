@@ -1,0 +1,72 @@
+# Copies this edition's web widgets (ui/) into the live web demo repository
+# (KaanAlper/logical-lunge-web-demo, deployed by Vercel) whenever they change,
+# so the demo never falls behind. The demo keeps its own build.mjs and
+# lib/shell-client.js (they point the widgets at its mocked APIs).
+# The copy is pushed only when the demo still builds with it.
+# Needs a repository secret DEMO_PUSH_TOKEN: a fine-grained personal access
+# token with Contents: Read and write on KaanAlper/logical-lunge-web-demo.
+name: Sync web demo
+
+on:
+  push:
+    branches: [web-ui]
+    paths: ['ui/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-web-demo
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      TOKEN: ${{ secrets.DEMO_PUSH_TOKEN }}
+    steps:
+      - name: No token, nothing to do
+        if: env.TOKEN == ''
+        run: echo "::warning::DEMO_PUSH_TOKEN is not set; the web demo was not synced."
+
+      - uses: actions/checkout@v4
+        if: env.TOKEN != ''
+        with:
+          path: source
+
+      - uses: actions/checkout@v4
+        if: env.TOKEN != ''
+        with:
+          repository: KaanAlper/logical-lunge-web-demo
+          token: ${{ secrets.DEMO_PUSH_TOKEN }}
+          path: demo
+
+      - uses: actions/setup-node@v4
+        if: env.TOKEN != ''
+        with:
+          node-version: '22'
+
+      - name: Copy the widgets
+        if: env.TOKEN != ''
+        run: |
+          rsync -a --delete \
+            --exclude node_modules --exclude build.mjs --exclude lib/shell-client.js \
+            source/ui/ demo/ui/
+
+      - name: Build the demo with them
+        if: env.TOKEN != ''
+        working-directory: demo
+        run: |
+          npm ci
+          npm run build
+
+      - name: Push if anything changed
+        if: env.TOKEN != ''
+        working-directory: demo
+        run: |
+          git add -A ui
+          if git diff --cached --quiet; then echo "The demo is already up to date."; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore: sync widgets from web-ui ${GITHUB_SHA::7}"
+          git push
