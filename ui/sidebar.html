@@ -147,7 +147,7 @@
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
       import { invoke } from '@tauri-apps/api/core';
-      import { expandedToggle, importedSaver } from '../parity-sidebar.mjs';
+      import { expandedToggle, importedSaver, checkSwitch } from '../parity-sidebar.mjs';
       import { IssueReport, GalleryMenu } from '../parity-sidebar-components.jsx';
 
       const win = lunge.currentWidget().tauriWindow;
@@ -1221,6 +1221,27 @@
           return () => window.removeEventListener('storage', f);
         }, []);
 
+        // Where each switch's state is read back (one source per state the hardware or the core owns)
+        const radios = () => qs('radios').then(s => { const r = json(s); return r ? { radios: r } : null; });
+        const SOURCES = {
+          wifi: radios, bluetooth: radios,
+          ethernet: () => qs('eth').then(s => { const r = json(s); return r ? { eth: r } : null; }),
+          mic: () => helper(['--mic', 'status']).then(s => { const r = json(s); return r ? { mic: !r.muted } : null; }),
+          nightLight: () => helper(['--nightlight', 'status']).then(s => { const r = json(s); return r ? { night: r } : null; }),
+          idleInhibitor: () => qs('status').then(s => { const r = json(s); return r ? { awake: !!r.awake } : null; }),
+        };
+        // A switch: its request, then its check (checkSwitch). The tile ends on what the source says; a failed switch
+        // gets a card (with what would repair it, if the request knows).
+        const switchTile = (tile, want, request) => (async () => {
+          let hint = null;
+          try { hint = await request(); } catch {}
+          const r = await checkSwitch({ tile, want, read: SOURCES[tile], apply: part => setSt(x => ({ ...x, ...part })) });
+          if (r.ok) return;
+          if (!r.answered) refresh();
+          const d = defs[tile];
+          emit('ll:toast', { kind: 'error', title: d?.name || tile, body: hint || 'Açılıp kapatılamadı.', icon: d?.icon || 'error' }).catch(() => {});
+        })();
+
         const out = o.audio?.defaultPlaybackDevice;
         const ssid = o.network?.defaultGateway?.ssid || null;
         const wifiOn = st.radios.wifi === 'On';
@@ -1235,7 +1256,7 @@
             action: () => {
               const next = wifiOn ? 'Off' : 'On';
               setSt(x => ({ ...x, radios: { ...x.radios, wifi: next } }));
-              qs(`radio?kind=wifi&state=${next}`).then(refresh).catch(refresh);
+              switchTile('wifi', next === 'On', () => qs(`radio?kind=wifi&state=${next}`).then(() => null));
             },
             menu: () => toggleMenu('wifi'),
           },
@@ -1245,12 +1266,11 @@
             icon: eth?.state === 'disabled' ? 'settings_ethernet' : 'lan', toggled: eth?.state === 'up',
             status: eth?.state === 'disabled' ? 'Devre dışı' : eth?.speed ? `Bağlı · ${eth.speed}` : 'Bağlı',
             action: () => {
-              setSt(x => ({ ...x, eth: { ...x.eth, state: x.eth?.state === 'disabled' ? 'up' : 'disabled' } }));
-              qs('eth-toggle').then(s => {
-                const r = json(s);
-                if (r && !r.ok) emit('ll:toast', { kind: 'error', title: 'Ethernet', body: 'Ethernet kartı açılıp kapatılamadı. Kurulumu yeniden çalıştırmak yönetici görevlerini onarır.', icon: 'lan' }).catch(() => {});
-                setTimeout(refresh, 2500);
-              }).catch(refresh);
+              const on = eth?.state === 'disabled';
+              setSt(x => ({ ...x, eth: { ...x.eth, state: on ? 'up' : 'disabled' } }));
+              // the core's admin task for it is missing: the installer repairs it
+              switchTile('ethernet', on, () => qs('eth-toggle').then(s => json(s)?.needSetup
+                ? 'Ethernet kartı açılıp kapatılamadı. Kurulumu yeniden çalıştırmak yönetici görevlerini onarır.' : null));
             },
             menu: () => toggleMenu('ethernet'),
           },
@@ -1267,7 +1287,8 @@
                 if (noAdapter) return warn();
                 const next = st.radios.bluetooth === 'On' ? 'Off' : 'On';
                 setSt(x => ({ ...x, radios: { ...x.radios, bluetooth: next } }));
-                qs(`radio?kind=bluetooth&state=${next}`).then(refresh).catch(refresh);
+                // the device list comes with the full read
+                switchTile('bluetooth', next === 'On', () => qs(`radio?kind=bluetooth&state=${next}`).finally(refresh).then(() => null));
               },
               menu: () => (noAdapter ? warn() : toggleMenu('bluetooth')),
             };
@@ -1278,15 +1299,16 @@
               const next = !st.awake;
               save('ll.awake.want', next);
               setSt(x => ({ ...x, awake: next }));
-              qs(`awake?v=${next ? 1 : 0}`).catch(() => {});
+              switchTile('idleInhibitor', next, () => qs(`awake?v=${next ? 1 : 0}`).then(() => null));
             },
           },
           mic: {
             name: 'Mikrofon', icon: st.mic === false ? 'mic_off' : 'mic', toggled: st.mic !== false,
             status: st.mic === false ? 'Kapalı' : 'Açık',
             action: () => {
-              setSt(x => ({ ...x, mic: !(x.mic !== false) }));
-              helper(['--mic', 'toggle']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, mic: !r.muted })); }).catch(() => {});
+              const on = st.mic === false;
+              setSt(x => ({ ...x, mic: on }));
+              switchTile('mic', on, () => helper(['--mic', 'toggle']).then(() => null));
             },
             menu: () => toggleMenu('mic'),
           },
@@ -1303,8 +1325,9 @@
               name: 'Gece Işığı', alt: true, icon: n.active ? 'nightlight' : 'nightlight', toggled: !!n.on,
               status: !n.on ? 'Kapalı' : sched ? (n.active ? `Açık · ${sched}` : `Bekliyor · ${sched}`) : `Açık · %${n.level ?? 50}`,
               action: () => {
-                setSt(x => ({ ...x, night: { ...(x.night || {}), on: !(x.night && x.night.on) } }));
-                helper(['--nightlight', 'toggle']).then(s => { const r = json(s); if (r) setSt(x => ({ ...x, night: r })); }).catch(() => {});
+                const on = !n.on;
+                setSt(x => ({ ...x, night: { ...(x.night || {}), on } }));
+                switchTile('nightLight', on, () => helper(['--nightlight', 'toggle']).then(() => null));
               },
               menu: () => toggleMenu('nightLight'),
             };

@@ -78,3 +78,46 @@ export async function saveUiScale(value, transport = fetch) {
   await corePost(`/pref?k=uiScale&v=${value}`, transport);
 }
 export const importedSaver = path => /[\\/]LogicalLunge[\\/]screensavers[\\/]/i.test(path || '');
+
+// Quick settings switches, checked as the native panel checks them: after its request, a switch's source (the
+// state the hardware or the core owns) is read until it shows the switch as asked, for up to VERIFY_FOR. The tile
+// always ends on what the source says; a card says so when the source shows the opposite or never answers.
+export const VERIFY_FOR = 10000, VERIFY_EVERY = 500;
+
+// What a tile's switch flipped, from a read of its source: true / false, or null (neither: a wired adapter
+// without a cable is enabled but not up; a tile without a switch of the hardware's or the core's)
+export function switchedIn(tile, part) {
+  switch (tile) {
+    case 'wifi': return part?.radios?.wifi == null ? null : part.radios.wifi === 'On';
+    case 'bluetooth': return part?.radios?.bluetooth == null ? null : part.radios.bluetooth === 'On';
+    case 'ethernet': return part?.eth?.state === 'up' ? true : part?.eth?.state === 'disabled' ? false : null;
+    case 'mic': return typeof part?.mic === 'boolean' ? part.mic : null;
+    case 'nightLight': return typeof part?.night?.on === 'boolean' ? part.night.on : null;
+    case 'idleInhibitor': return typeof part?.awake === 'boolean' ? part.awake : null;
+    default: return null;
+  }
+}
+
+// seen: undefined (the source gave no answer), null (neither on nor off) or the switch's state. Done once it shows
+// the switch as asked; read again while time is left; then failed if the source shows the opposite or never
+// answered (neither on nor off is no failure: nothing contradicts it).
+export function verdict(want, seen, leftMs) {
+  if (seen === want) return 'done';
+  if (leftMs > 0) return 'again';
+  return seen === null ? 'done' : 'failed';
+}
+
+// Reads the switch's source until its verdict; `apply` shows each read on the tile.
+export async function checkSwitch({ tile, want, read, apply, waitMs = VERIFY_FOR, sleep = ms => new Promise(r => setTimeout(r, ms)), now = Date.now }) {
+  const until = now() + waitMs;
+  for (;;) {
+    let seen;
+    try {
+      const part = await read();
+      if (part) { apply(part); seen = switchedIn(tile, part); }
+    } catch {}
+    const v = verdict(want, seen, until - now());
+    if (v !== 'again') return { ok: v === 'done', answered: seen !== undefined };
+    await sleep(VERIFY_EVERY);
+  }
+}

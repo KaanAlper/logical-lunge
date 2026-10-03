@@ -47,3 +47,43 @@ test('library removal and scale use POST/204 contracts and report errors', async
   assert.equal(expandedToggle(117), false);
   assert.equal(expandedToggle(118), true);
 });
+
+test('a switch is judged by what its source shows (every combination)', async () => {
+  const { verdict } = await import('./parity-sidebar.mjs');
+  for (const want of [false, true]) for (const seen of [undefined, null, false, true]) for (const left of [0, 500]) {
+    const shown = seen === want;
+    const expected = shown ? 'done' : left > 0 ? 'again' : seen === null ? 'done' : 'failed';
+    assert.equal(verdict(want, seen, left), expected, `want ${want}, seen ${seen}, left ${left}`);
+  }
+});
+
+test('every switch tile reads its state back and nothing else does', async () => {
+  const { switchedIn } = await import('./parity-sidebar.mjs');
+  const allOn = { radios: { wifi: 'On', bluetooth: 'On' }, eth: { state: 'up' }, mic: true, night: { on: true }, awake: true };
+  const allOff = { radios: { wifi: 'Off', bluetooth: 'Off' }, eth: { state: 'disabled' }, mic: false, night: { on: false }, awake: false };
+  for (const tile of ['wifi', 'bluetooth', 'ethernet', 'mic', 'nightLight', 'idleInhibitor']) {
+    assert.equal(switchedIn(tile, allOn), true, tile);
+    assert.equal(switchedIn(tile, allOff), false, tile);
+    assert.equal(switchedIn(tile, {}), null, tile);
+  }
+  for (const tile of ['audio', 'darkMode', 'screenSnip', 'onScreenKeyboard', 'notifications']) assert.equal(switchedIn(tile, allOn), null, tile);
+  assert.equal(switchedIn('ethernet', { eth: { state: 'disconnected' } }), null, 'enabled without a cable is neither');
+});
+
+test('a switch is read again until its source agrees, and fails when it never does', async () => {
+  const { checkSwitch, VERIFY_EVERY } = await import('./parity-sidebar.mjs');
+  const run = async reads => {
+    let t = 0, i = 0; const shown = [];
+    const r = await checkSwitch({ tile: 'mic', want: true, waitMs: 2000, now: () => t, sleep: async ms => { t += ms; },
+      read: async () => { const v = reads[Math.min(i++, reads.length - 1)]; if (v instanceof Error) throw v; return v; }, apply: p => shown.push(p.mic) });
+    return { ...r, shown, reads: i, elapsed: t };
+  };
+  const late = await run([{ mic: false }, { mic: false }, { mic: true }]);
+  assert.deepEqual([late.ok, late.answered, late.shown, late.reads], [true, true, [false, false, true], 3]);
+  const opposite = await run([{ mic: false }]);
+  assert.equal(opposite.ok, false); assert.equal(opposite.answered, true); assert.ok(opposite.elapsed >= 2000 && opposite.elapsed < 2000 + VERIFY_EVERY * 2);
+  const silent = await run([new Error('no core')]);
+  assert.deepEqual([silent.ok, silent.answered, silent.shown.length], [false, false, 0]);
+  const neither = await run([{}]);
+  assert.equal(neither.ok, true, 'neither on nor off is not a failure');
+});
