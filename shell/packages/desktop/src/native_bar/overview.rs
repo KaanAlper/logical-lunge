@@ -388,6 +388,41 @@ pub enum Tool {
   SongRec,
 }
 
+/// One pending page per query; later pages append without replacing earlier rows.
+#[derive(Default)]
+struct FilePages {
+  result: Option<Result<Vec<crate::everything::FileHit>, String>>,
+  next: u32,
+  done: bool,
+  pending: Option<(u64, u32)>,
+}
+
+impl FilePages {
+  fn accept(&mut self, token: u64, offset: u32, result: Result<crate::everything::FilePage, String>) -> bool {
+    if self.pending != Some((token, offset)) { return false; }
+    self.pending = None;
+    match result {
+      Ok(page) if page.offset == offset => {
+        let count = page.hits.len() as u32;
+        self.next = offset.saturating_add(count);
+        self.done = count == 0 || self.next >= page.total;
+        let hits = self.result.get_or_insert_with(|| Ok(Vec::new()));
+        if let Ok(hits) = hits {
+          let mut seen: std::collections::HashSet<String> = hits.iter().map(|h| h.full_path.clone()).collect();
+          hits.extend(page.hits.into_iter().filter(|h| seen.insert(h.full_path.clone())));
+        }
+      }
+      other => {
+        self.done = true;
+        if self.result.is_none() {
+          self.result = Some(Err(other.err().unwrap_or_else(|| "Everything sayfa sırası değişti".into())));
+        }
+      }
+    }
+    true
+  }
+}
+
 pub struct Overview {
   pub hwnd: HWND,
   pub scale: f32,
@@ -404,7 +439,7 @@ pub struct Overview {
   pub edit: Edit,
   results: Vec<Item>,
   files_query: String,
-  files: Option<Result<Vec<crate::everything::FileHit>, String>>,
+  files: FilePages,
   sel: usize,
   /// first row shown (the list scrolls past 11 rows)
   first: usize,
@@ -526,7 +561,7 @@ impl Overview {
         edit: Edit::default(),
         results: Vec::new(),
         files_query: String::new(),
-        files: None,
+        files: FilePages::default(),
         sel: 0,
         first: 0,
         clips: Vec::new(),
@@ -659,7 +694,8 @@ impl Overview {
     let clip_mode = Prefix::of(&text) == Prefix::Clip;
     if self.files_query != text {
       self.files_query = text.clone();
-      self.files = None;
+      self.files = FilePages::default();
+      FILE_SEARCH_GENERATION.fetch_add(1, Ordering::AcqRel);
     }
     self.results = search::results(&text, apps, &self.clips, &|t| model::clock_at(t, hour12));
     self.add_file_results();
@@ -669,7 +705,7 @@ impl Overview {
   }
 
   fn add_file_results(&mut self) {
-    let Some(result) = &self.files else { return };
+    let Some(result) = &self.files.result else { return };
     match result {
       Ok(hits) => {
         if Prefix::of(&self.files_query) == Prefix::File { self.results.clear(); }
@@ -692,9 +728,8 @@ impl Overview {
     }
   }
 
-  fn set_files(&mut self, query: &str, result: Result<Vec<crate::everything::FileHit>, String>) -> bool {
-    if !self.shown || self.edit.text() != query { return false; }
-    self.files = Some(result);
+  fn set_files(&mut self, query: &str, token: u64, offset: u32, result: Result<crate::everything::FilePage, String>) -> bool {
+    if !self.shown || self.edit.text() != query || !self.files.accept(token, offset, result) { return false; }
     self.results.retain(|it| !it.key.starts_with("file:") && it.key != "file-hint");
     self.add_file_results();
     self.sel = self.sel.min(self.results.len().saturating_sub(1));
@@ -1050,8 +1085,9 @@ impl Overview {
     let tw = r.right() - tx - verb_w - 6.0;
     let kind = if item.sub.is_empty() { tr(item.kind) } else { format!("{} · {}", tr(item.kind), tr(&item.sub)) };
     let kind_c = if selected { Rgba(fg.0, fg.1, fg.2, 0.8) } else { t.on_surface_variant };
-    p.text(&kind, Rect::new(tx, r.y + 6.0, tw, 16.0), TextStyle { size: 12.0, weight: 450.0 }, kind_c, Align::Left, false)?;
-    let name_r = Rect::new(tx, r.y + 22.0, tw, 20.0);
+    let file_row = item.key.starts_with("file:");
+    p.text(&kind, Rect::new(tx, r.y + if file_row { 26.0 } else { 6.0 }, tw, 16.0), TextStyle { size: 12.0, weight: 450.0 }, kind_c, Align::Left, false)?;
+    let name_r = Rect::new(tx, r.y + if file_row { 5.0 } else { 22.0 }, tw, 20.0);
     let name = if item.tr_name || (item.key == "sh" && item.act == Act::None) { tr(&item.name) } else { item.name.clone() };
     match &item.highlight {
       Some(q) => highlighted(p, &name, q, name_r, fg, if selected { Rgba::hex(0xffffff) } else { t.primary })?,
@@ -1060,7 +1096,7 @@ impl Overview {
         p.text_mono(&name, name_r, TextStyle { size: 14.0, weight: 400.0 }, fg)?;
       }
       None => {
-        p.text(&name, name_r, TextStyle { size: 15.0, weight: 450.0 }, fg, Align::Left, false)?;
+        p.text(&name, name_r, TextStyle { size: 15.0, weight: if file_row { 550.0 } else { 450.0 } }, fg, Align::Left, false)?;
       }
     }
     if verb_w > 0.0 {
@@ -1158,7 +1194,7 @@ impl Overview {
         if self.select(s) {
           Do::Redraw
         } else {
-          Do::Nothing
+          if !self.files.done { Do::Redraw } else { Do::Nothing }
         }
       }
       0x09 => match self.selected() {
@@ -1439,13 +1475,13 @@ impl Overview {
   pub fn wheel(&mut self, delta: i32) -> Do {
     let n = self.visible_rows();
     if self.results.len() <= n {
-      return Do::Nothing;
+      return if delta < 0 && !self.files.done { Do::Redraw } else { Do::Nothing };
     }
     let max_first = self.results.len() - n;
     let step = if delta > 0 { -3i64 } else { 3 };
     let first = (self.first as i64 + step).clamp(0, max_first as i64) as usize;
     if first == self.first {
-      return Do::Nothing;
+      return if delta < 0 && !self.files.done { Do::Redraw } else { Do::Nothing };
     }
     self.first = first;
     // the selection stays in view
@@ -1463,6 +1499,8 @@ impl Overview {
     self.settle();
     self.clips_asked = false;
     self.results.clear();
+    self.files_query.clear();
+    self.files = FilePages::default();
     self.sel = 0;
     self.first = 0;
     self.scroll_x = 0.0;
@@ -2106,7 +2144,7 @@ impl Ui {
   fn overview_do(&mut self, d: Do) {
     match d {
       Do::Nothing => {}
-      Do::Redraw => self.overview_render(),
+      Do::Redraw => { self.overview_request_files(); self.overview_render(); },
       Do::Search => {
         let apps = self.icons.apps().to_vec();
         let hour12 = self.model.hour12;
@@ -2163,22 +2201,35 @@ impl Ui {
     }
   }
 
-  fn overview_request_files(&self) {
-    let token = FILE_SEARCH_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
-    let Some(query) = self.overview.as_ref().map(|o| o.edit.text()) else { return };
+  fn overview_request_files(&mut self) {
+    let Some(o) = self.overview.as_mut().filter(|o| o.shown) else { return };
+    if o.files.done || o.files.pending.is_some() { return; }
+    // Prefetch only as the visible range approaches the end of loaded rows.
+    if o.files.next > 0 && o.first + o.visible_rows() + 2 < o.results.len() { return; }
+    let query = o.edit.text();
     let Some(term) = search::file_term(&query).filter(|term| !term.is_empty()).map(str::to_owned) else { return };
+    let offset = o.files.next;
+    let token = FILE_SEARCH_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    o.files.pending = Some((token, offset));
+    if offset > 0 {
+      o.results.retain(|it| it.key != "file-hint");
+      let mut loading = search::results("#", &[], &[], &|_| String::new()).remove(0);
+      loading.name = "Yükleniyor…".into();
+      o.results.push(loading);
+    }
     std::thread::spawn(move || {
-      std::thread::sleep(Duration::from_millis(110));
+      if offset == 0 { std::thread::sleep(Duration::from_millis(110)); }
       if FILE_SEARCH_GENERATION.load(Ordering::Acquire) != token { return; }
-      let result = crate::everything::query(&term, 40);
+      let result = crate::everything::query_page(&term, 10, offset);
       if FILE_SEARCH_GENERATION.load(Ordering::Acquire) == token {
-        super::send(Msg::Files(query, result));
+        super::send(Msg::Files(query, token, offset, result));
       }
     });
   }
 
-  pub(super) fn overview_files(&mut self, query: String, result: Result<Vec<crate::everything::FileHit>, String>) {
-    if self.overview.as_mut().is_some_and(|o| o.set_files(&query, result)) {
+  pub(super) fn overview_files(&mut self, query: String, token: u64, offset: u32, result: Result<crate::everything::FilePage, String>) {
+    if self.overview.as_mut().is_some_and(|o| o.set_files(&query, token, offset, result)) {
+      self.overview_request_files();
       self.overview_render();
     }
   }
@@ -2422,6 +2473,41 @@ impl Ui {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  fn file_page(offset: u32, count: u32, total: u32) -> crate::everything::FilePage {
+    crate::everything::FilePage { offset, total, hits: (offset..offset + count).map(|i| crate::everything::FileHit {
+      name: format!("{i}.txt"), path: "C:\\files".into(), full_path: format!("C:\\files\\{i}.txt"), is_dir: false,
+    }).collect() }
+  }
+
+  #[test]
+  fn file_pages_continue_past_forty_and_reject_stale_replies() {
+    let mut pages = FilePages::default();
+    for offset in (0..60).step_by(10) {
+      pages.pending = Some((offset as u64 + 1, offset));
+      assert!(!pages.accept(999, offset, Ok(file_page(offset, 10, 60))));
+      assert!(pages.accept(offset as u64 + 1, offset, Ok(file_page(offset, 10, 60))));
+      assert_eq!(pages.result.as_ref().unwrap().as_ref().unwrap().len(), offset as usize + 10);
+      assert_eq!(pages.next, offset + 10);
+      assert_eq!(pages.done, offset == 50);
+    }
+    assert_eq!(pages.result.unwrap().unwrap()[0].name, "0.txt");
+  }
+
+  #[test]
+  fn file_pages_keep_loaded_rows_after_failure_and_stop_on_empty_page() {
+    let mut pages = FilePages::default();
+    pages.pending = Some((1, 0));
+    pages.accept(1, 0, Ok(file_page(0, 10, 100)));
+    pages.pending = Some((2, 10));
+    pages.accept(2, 10, Err("timeout".into()));
+    assert!(pages.done);
+    assert_eq!(pages.result.as_ref().unwrap().as_ref().unwrap().len(), 10);
+    pages.done = false;
+    pages.pending = Some((3, 10));
+    pages.accept(3, 10, Ok(file_page(10, 0, 100)));
+    assert!(pages.done);
+  }
 
   fn edit(s: &str) -> Edit {
     let mut e = Edit::default();

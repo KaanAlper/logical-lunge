@@ -14,6 +14,14 @@ pub struct FileHit {
   pub is_dir: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilePage {
+  pub hits: Vec<FileHit>,
+  pub total: u32,
+  pub offset: u32,
+}
+
 /// Window class of Everything's IPC window. The unnamed instance uses it as
 /// is; a named instance (Everything 1.5 runs as "1.5a" by default, any other
 /// via `-instance <name>`) appends "_(<name>)". Every instance answers the
@@ -44,7 +52,7 @@ fn exe_of(command: &str) -> Option<std::path::PathBuf> {
 
 #[cfg(windows)]
 mod windows_ipc {
-  use super::{exe_of, is_ipc_class, FileHit};
+  use super::{exe_of, is_ipc_class, FileHit, FilePage};
   use crate::common::windows::read_reg_string;
   use std::{
     cell::RefCell,
@@ -218,18 +226,18 @@ mod windows_ipc {
   // the callback's raw-pointer write undefined, and optimized builds kept
   // seeing None even after Everything had answered. Only the owning window
   // thread accesses the cell, and no borrow is held over a Win32 call.
-  struct Reply { result: RefCell<Option<Result<Vec<FileHit>, String>>> }
+  struct Reply { result: RefCell<Option<Result<FilePage, String>>> }
 
-  pub fn query(search: &str, limit: u32) -> Result<Vec<FileHit>, String> {
+  pub fn query_page(search: &str, limit: u32, offset: u32) -> Result<FilePage, String> {
     let search = search.trim();
-    if search.is_empty() { return Ok(Vec::new()); }
+    if search.is_empty() { return Ok(FilePage { hits: Vec::new(), total: 0, offset }); }
     if search.encode_utf16().count() > 512 || search.contains('\0') {
       return Err("Arama çok uzun veya geçersiz".into());
     }
-    query_window(ipc_window_or_start()?, search, limit)
+    query_window(ipc_window_or_start()?, search, limit, offset)
   }
 
-  fn query_window(everything: HWND, search: &str, limit: u32) -> Result<Vec<FileHit>, String> {
+  fn query_window(everything: HWND, search: &str, limit: u32, offset: u32) -> Result<FilePage, String> {
     let hinst = unsafe { GetModuleHandleW(None) }.map_err(|e| e.to_string())?;
     let class = w!("LogicalLungeEverythingIPC");
     unsafe {
@@ -250,7 +258,7 @@ mod windows_ipc {
     }
     let reply = Reply { result: RefCell::new(None) };
     unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &reply as *const _ as isize); }
-    let outcome = send_and_wait(everything, hwnd, search, limit.clamp(1, 40), &reply);
+    let outcome = send_and_wait(everything, hwnd, search, limit.clamp(1, 40), offset, &reply);
     unsafe {
       SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       let _ = DestroyWindow(hwnd);
@@ -258,12 +266,17 @@ mod windows_ipc {
     outcome
   }
 
-  fn send_and_wait(everything: HWND, hwnd: HWND, search: &str, limit: u32, reply: &Reply) -> Result<Vec<FileHit>, String> {
+  fn query_bytes(reply_hwnd: u32, search: &str, limit: u32, offset: u32) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(28 + (search.len() + 1) * 2);
-    for field in [hwnd.0 as usize as u32, REPLY_ID as u32, 0, 0, limit, REQUEST_NAME_PATH, SORT_NAME] {
+    for field in [reply_hwnd, REPLY_ID as u32, 0, offset, limit.clamp(1, 40), REQUEST_NAME_PATH, SORT_NAME] {
       bytes.extend_from_slice(&field.to_le_bytes());
     }
     for ch in search.encode_utf16().chain(std::iter::once(0)) { bytes.extend_from_slice(&ch.to_le_bytes()); }
+    bytes
+  }
+
+  fn send_and_wait(everything: HWND, hwnd: HWND, search: &str, limit: u32, offset: u32, reply: &Reply) -> Result<FilePage, String> {
+    let mut bytes = query_bytes(hwnd.0 as usize as u32, search, limit, offset);
     let cds = COPYDATASTRUCT {
       dwData: QUERY2_UNICODE,
       cbData: bytes.len() as u32,
@@ -320,7 +333,7 @@ mod windows_ipc {
         } else {
           std::slice::from_raw_parts((*cds).lpData.cast::<u8>(), (*cds).cbData as usize)
         };
-        (*state).result.replace(Some(parse_reply(data)));
+        (*state).result.replace(Some(parse_page(data)));
         let _ = PostMessageW(hwnd, WM_APP + 1, WPARAM(0), LPARAM(0));
         return LRESULT(1);
       }
@@ -347,7 +360,14 @@ mod windows_ipc {
     Ok(String::from_utf16_lossy(&chars))
   }
 
+  #[cfg_attr(not(test), allow(dead_code))]
   pub(super) fn parse_reply(data: &[u8]) -> Result<Vec<FileHit>, String> {
+    parse_page(data).map(|page| page.hits)
+  }
+
+  pub(super) fn parse_page(data: &[u8]) -> Result<FilePage, String> {
+    let total = number(data, 0)?;
+    let offset = number(data, 8)?;
     let count = number(data, 4)? as usize;
     let flags = number(data, 12)?;
     if flags & REQUEST_NAME_PATH != REQUEST_NAME_PATH || count > 40 { return Err("IPC sonuç biçimi geçersiz".into()); }
@@ -364,13 +384,55 @@ mod windows_ipc {
       let full_path = PathBuf::from(&path).join(&name).to_string_lossy().into_owned();
       hits.push(FileHit { name, path, full_path, is_dir: item_flags & 1 != 0 });
     }
-    Ok(hits)
+    Ok(FilePage { hits, total, offset })
   }
 
   #[cfg(test)]
   mod callback_tests {
     use super::*;
     use windows::Win32::UI::WindowsAndMessaging::{PostQuitMessage, WM_CLOSE};
+
+    #[test]
+    fn page_request_preserves_offset_limit_and_unicode_search() {
+      for (offset, limit, expected_limit) in [(0, 10, 10), (10, 10, 10), (20, 10, 10), (400, 80, 40), (u32::MAX, 0, 1)] {
+        let bytes = query_bytes(123, "ödev", limit, offset);
+        assert_eq!(number(&bytes, 0).unwrap(), 123);
+        assert_eq!(number(&bytes, 4).unwrap(), REPLY_ID as u32);
+        assert_eq!(number(&bytes, 8).unwrap(), 0);
+        assert_eq!(number(&bytes, 12).unwrap(), offset);
+        assert_eq!(number(&bytes, 16).unwrap(), expected_limit);
+        assert_eq!(number(&bytes, 20).unwrap(), REQUEST_NAME_PATH);
+        assert_eq!(number(&bytes, 24).unwrap(), SORT_NAME);
+        let text = bytes[28..].chunks_exact(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect::<Vec<_>>();
+        assert_eq!(String::from_utf16(&text).unwrap(), "ödev\0");
+      }
+    }
+
+    #[test]
+    fn page_reply_keeps_total_offset_hits_and_legacy_vector() {
+      let mut bytes: Vec<u8> = [137u32, 1, 40, 3, 1, 0, 28].into_iter().flat_map(u32::to_le_bytes).collect();
+      for text in ["ödev.txt", "C:\\Türkçe"] {
+        let chars = text.encode_utf16().collect::<Vec<_>>();
+        bytes.extend_from_slice(&(chars.len() as u32).to_le_bytes());
+        for ch in chars.into_iter().chain(std::iter::once(0)) { bytes.extend_from_slice(&ch.to_le_bytes()); }
+      }
+      let page = parse_page(&bytes).unwrap();
+      assert_eq!((page.total, page.offset, page.hits.len()), (137, 40, 1));
+      assert_eq!(page.hits[0].name, "ödev.txt");
+      assert_eq!(page.hits[0].full_path, "C:\\Türkçe\\ödev.txt");
+      assert_eq!(parse_reply(&bytes).unwrap(), page.hits);
+      bytes[24..28].copy_from_slice(&5000u32.to_le_bytes());
+      assert!(parse_page(&bytes).is_err());
+      assert!(parse_reply(&bytes).is_err());
+    }
+
+    #[test]
+    fn empty_last_page_keeps_total_and_requested_offset() {
+      let bytes = [137u32, 0, 137, 3, 1].into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>();
+      assert_eq!(parse_page(&bytes).unwrap(), FilePage { hits: Vec::new(), total: 137, offset: 137 });
+      assert_eq!(query_page(" ", 10, 20).unwrap(), FilePage { hits: Vec::new(), total: 0, offset: 20 });
+      assert!(parse_page(&bytes[..16]).is_err());
+    }
 
     // A hidden IPC peer, with Everything's real request/reply contract. It
     // answers on a later message, so the query must observe a callback write
@@ -381,13 +443,13 @@ mod windows_ipc {
         let cds = &*(lp.0 as *const COPYDATASTRUCT);
         if cds.dwData != QUERY2_UNICODE { return LRESULT(0); }
         let request = std::slice::from_raw_parts(cds.lpData.cast::<u8>(), cds.cbData as usize);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, number(request, 0).unwrap() as isize);
-        let _ = PostMessageW(hwnd, WM_APP + 1, WPARAM(0), LPARAM(0));
+        let _ = PostMessageW(hwnd, WM_APP + 1,
+          WPARAM(number(request, 0).unwrap() as usize), LPARAM(number(request, 12).unwrap() as isize));
         return LRESULT(1);
       }
       if msg == WM_APP + 1 {
-        let dest = HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize as _);
-        let bytes: Vec<u8> = [0u32, 0, 0, 3, 1].into_iter().flat_map(u32::to_le_bytes).collect();
+        let dest = HWND(wp.0 as _);
+        let bytes: Vec<u8> = [137u32, 0, lp.0 as u32, 3, 1].into_iter().flat_map(u32::to_le_bytes).collect();
         let cds = COPYDATASTRUCT { dwData: REPLY_ID, cbData: bytes.len() as u32, lpData: bytes.as_ptr() as _ };
         let _ = SendMessageTimeoutW(dest, WM_COPYDATA, WPARAM(hwnd.0 as usize),
           LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, WAIT_MS, None);
@@ -415,19 +477,26 @@ mod windows_ipc {
         while GetMessageW(&mut msg, None, 0, 0).0 > 0 { DispatchMessageW(&msg); }
       });
       let hwnd = HWND(rx.recv_timeout(Duration::from_secs(3)).unwrap() as _);
-      let result = query_window(hwnd, "ipc-fixture", 8);
+      let result = query_window(hwnd, "ipc-fixture", 8, 40);
       unsafe { let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)); }
       thread.join().unwrap();
-      assert_eq!(result, Ok(Vec::new()), "the callback's reply must reach the waiting query");
+      assert_eq!(result, Ok(FilePage { hits: Vec::new(), total: 137, offset: 40 }),
+        "the callback's page and offset must reach the waiting query");
     }
   }
 }
 
 #[cfg(windows)]
-pub fn query(search: &str, limit: u32) -> Result<Vec<FileHit>, String> { windows_ipc::query(search, limit) }
+pub fn query(search: &str, limit: u32) -> Result<Vec<FileHit>, String> { query_page(search, limit, 0).map(|page| page.hits) }
+
+#[cfg(windows)]
+pub fn query_page(search: &str, limit: u32, offset: u32) -> Result<FilePage, String> { windows_ipc::query_page(search, limit, offset) }
 
 #[cfg(not(windows))]
 pub fn query(_search: &str, _limit: u32) -> Result<Vec<FileHit>, String> { Err("Everything yalnızca Windows'ta kullanılabilir".into()) }
+
+#[cfg(not(windows))]
+pub fn query_page(_search: &str, _limit: u32, _offset: u32) -> Result<FilePage, String> { Err("Everything yalnızca Windows'ta kullanılabilir".into()) }
 
 #[cfg(test)]
 mod exe_tests {

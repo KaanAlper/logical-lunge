@@ -247,11 +247,19 @@ static class AppIndex
                     // Win+R penceresi: 'run' yazınca da bulunsun
                     string alias = null;
                     if (@"shell:AppsFolder\" + id == RunDialog) { name = name + " (Run)"; alias = "run"; }
+                    string path = @"shell:AppsFolder\" + id;
+                    string file = FileOf(it, id);
+                    // A legacy AppsFolder entry can still point into .glzr and
+                    // supply Windows' generic icon. Our bundled terminal moved
+                    // with the installation; use that executable and its icon.
+                    string bundled = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, @"tools\wezterm\wezterm-gui.exe");
+                    bool ownTerminal = exe == "wezterm-gui" && System.IO.File.Exists(bundled);
+                    if (ownTerminal) { path = bundled; file = bundled; }
                     apps.Add(new Dictionary<string, object>
                     {
-                        { "name", name }, { "path", @"shell:AppsFolder\" + id }, { "exe", exe }, { "alias", alias }, { "also", also },
-                        { "file", FileOf(it, id) },
-                        { "icon", Png(@"shell:AppsFolder\" + id, ICON_SIZE) }
+                        { "name", name }, { "path", path }, { "exe", exe }, { "alias", alias }, { "also", also },
+                        { "file", file },
+                        { "icon", Png(path, ICON_SIZE) }
                     });
                 }
                 finally { Marshal.FinalReleaseComObject(it); }

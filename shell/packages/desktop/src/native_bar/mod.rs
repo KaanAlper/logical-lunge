@@ -206,7 +206,7 @@ enum Msg {
   Core(Option<String>),
   /// the clipboard history (Super menu, `;`)
   Clips(Vec<search::Clip>),
-  Files(String, Result<Vec<crate::everything::FileHit>, String>),
+  Files(String, u64, u32, Result<crate::everything::FilePage, String>),
   /// song recognition ended
   SongRecDone,
   /// a notification card (the core's stream or a widget's `ll:toast`)
@@ -1244,7 +1244,7 @@ impl Ui {
         Msg::Art(title, bytes) => self.got_art(title, bytes),
         Msg::Core(evt) => self.core_event(evt),
         Msg::Clips(clips) => self.overview_clips(clips),
-        Msg::Files(query, result) => self.overview_files(query, result),
+        Msg::Files(query, token, offset, result) => self.overview_files(query, token, offset, result),
         Msg::SongRecDone => self.songrec_done(),
         Msg::Settings(e) => self.settings_event(e),
         Msg::OskToggle => self.osk_toggle(),

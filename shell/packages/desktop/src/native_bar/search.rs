@@ -814,13 +814,31 @@ pub fn file_term(query: &str) -> Option<&str> {
   }
 }
 
+pub fn file_icon(hit: &FileHit) -> &'static str {
+  if hit.is_dir { return "folder"; }
+  let ext = hit.name.rsplit_once('.').map(|(_, ext)| ext.to_ascii_lowercase()).unwrap_or_default();
+  match ext.as_str() {
+    "pdf" => "picture_as_pdf",
+    "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" => "image",
+    "mp3" | "wav" | "flac" | "ogg" | "m4a" => "audio_file",
+    "mp4" | "mkv" | "avi" | "mov" | "webm" => "movie",
+    "zip" | "rar" | "7z" | "tar" | "gz" => "folder_zip",
+    "rs" | "js" | "ts" | "tsx" | "jsx" | "py" | "cs" | "cpp" | "h" | "html" | "css" | "json" | "yaml" | "yml" | "ps1" => "code",
+    "exe" | "msi" => "apps",
+    "doc" | "docx" | "txt" | "md" | "rtf" | "odt" => "description",
+    "xls" | "xlsx" | "csv" | "ods" => "table_chart",
+    "ppt" | "pptx" | "odp" => "slideshow",
+    _ => "draft",
+  }
+}
+
 pub fn file_items(hits: &[FileHit]) -> Vec<Item> {
   hits.iter().map(|hit| {
     let mut item = Item::new(
       format!("file:{}", hit.full_path),
       if hit.is_dir { "Klasör" } else { "Dosya" },
       hit.name.clone(),
-      Glyph::Material(if hit.is_dir { "folder" } else { "draft" }),
+      Glyph::Material(file_icon(hit)),
       "Aç",
       Act::OpenPath(hit.full_path.clone()),
     );
