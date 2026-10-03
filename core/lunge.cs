@@ -4091,8 +4091,10 @@ static class UserLaunch
         {
             try
             {
-                // ErrorDialog false: ShellExecuteEx SEE_MASK_FLAG_NO_UI ile (hata istisna olarak gelir, kutu açılmaz)
-                Process.Start(new ProcessStartInfo(file, args ?? "") { UseShellExecute = true, ErrorDialog = false, Verb = verb ?? "", WorkingDirectory = dir ?? Paths.Home, WindowStyle = hidden ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal }).Dispose();
+                // ErrorDialog false: ShellExecuteEx SEE_MASK_FLAG_NO_UI ile (hata istisna olarak gelir, kutu açılmaz). Yeni süreç
+                // olmayan başlatmada (shell:AppsFolder, Store uygulaması, açık örneğe devir) Process null döner: using null'ı geçer
+                // (.Dispose() burada NullReference atıyor, açılan şey "açılamadı" sayılıyordu).
+                using (Process.Start(new ProcessStartInfo(file, args ?? "") { UseShellExecute = true, ErrorDialog = false, Verb = verb ?? "", WorkingDirectory = dir ?? Paths.Home, WindowStyle = hidden ? ProcessWindowStyle.Hidden : ProcessWindowStyle.Normal })) { }
                 return true;
             }
             catch (System.ComponentModel.Win32Exception ex)
