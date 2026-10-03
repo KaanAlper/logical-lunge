@@ -4,6 +4,25 @@
 use super::*;
 
 impl Quick {
+  /// What a tile's switch flipped, as last read: on / off, or None (no switch
+  /// of the hardware's or the core's, or neither: a wired adapter without a
+  /// cable is enabled but not up). Read back from `Source::of`.
+  pub(super) fn switched(&self, tile: Tile) -> Option<bool> {
+    match tile {
+      Tile::Wifi => Some(self.wifi_on()),
+      Tile::Bluetooth => Some(self.bt_on()),
+      Tile::Ethernet => match s(&self.hw.eth["state"]) {
+        "up" => Some(true),
+        "disabled" => Some(false),
+        _ => None,
+      },
+      Tile::Mic => self.hw.mic,
+      Tile::NightLight => self.hw.night["on"].as_bool(),
+      Tile::IdleInhibitor => Some(self.hw.awake),
+      Tile::DarkMode | Tile::ScreenSnip | Tile::OnScreenKeyboard | Tile::Audio | Tile::Notifications => None,
+    }
+  }
+
   pub(super) fn def(&self, tile: Tile, m: &Model, tr: &dyn Fn(&str) -> String) -> Def {
     let audio_out = m.audio.as_ref().and_then(|a| a.default_playback_device.as_ref());
     let ssid = m.network.as_ref().and_then(|n| n.default_gateway.as_ref()).and_then(|g| g.ssid.clone());

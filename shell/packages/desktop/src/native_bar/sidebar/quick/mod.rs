@@ -79,9 +79,100 @@ pub(in crate::native_bar) enum QEv {
   Mic(Option<bool>),
   Wifi(Option<Value>),
   WifiConnected(String, Value),
-  EthToggled(Value),
+  /// a switch's source, read after it was asked to switch (`verdict`):
+  /// None when the core gave no answer; `hint` says what would repair it
+  Check { tile: Tile, want: bool, until: Instant, hint: Option<String>, read: Option<Box<QEv>> },
   AudioDefault(String),
   ScanDone,
+}
+
+/// How long a switch may take to show in its source (an adapter comes up in
+/// seconds), and how often it is read meanwhile.
+const VERIFY_FOR: Duration = Duration::from_secs(10);
+const VERIFY_EVERY: Duration = Duration::from_millis(500);
+
+/// Where the state a tile's switch flips is read: one source per state the
+/// hardware or the core owns. Tiles without one keep a state of ours (a
+/// preference) or get theirs back from a provider.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Source {
+  Radios,
+  Eth,
+  Mic,
+  Night,
+  Status,
+}
+
+impl Source {
+  const ALL: [Source; 5] = [Source::Radios, Source::Eth, Source::Mic, Source::Night, Source::Status];
+
+  pub(super) fn of(tile: Tile) -> Option<Source> {
+    match tile {
+      Tile::Wifi | Tile::Bluetooth => Some(Source::Radios),
+      Tile::Ethernet => Some(Source::Eth),
+      Tile::Mic => Some(Source::Mic),
+      Tile::NightLight => Some(Source::Night),
+      Tile::IdleInhibitor => Some(Source::Status),
+      Tile::DarkMode | Tile::ScreenSnip | Tile::OnScreenKeyboard | Tile::Audio | Tile::Notifications => None,
+    }
+  }
+
+  /// Reads it (blocking: a worker thread); None when the core gave no answer.
+  fn read(self) -> Option<QEv> {
+    match self {
+      Source::Radios => qs("radios").map(QEv::Radios),
+      Source::Eth => qs("eth").map(QEv::Eth),
+      Source::Night => core_json(&["--nightlight", "status"]).map(QEv::Night),
+      Source::Status => qs("status").map(QEv::Status),
+      Source::Mic => core_json(&["--mic", "status"]).and_then(|v| v["muted"].as_bool()).map(|muted| QEv::Mic(Some(!muted))),
+    }
+  }
+}
+
+/// What a switch's source showed after the switch was asked for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Seen {
+  /// the core gave no answer
+  NoAnswer,
+  /// on / off, or neither (a wired adapter without a cable)
+  Read(Option<bool>),
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) enum Verdict {
+  Done,
+  Again,
+  Failed,
+}
+
+/// A switch is done once its source shows it as asked. Until the time is up
+/// it is read again; then it failed if the source shows the opposite or
+/// never answered (neither on nor off is no failure: nothing contradicts it).
+pub(super) fn verdict(want: bool, seen: Seen, left: Duration) -> Verdict {
+  match seen {
+    Seen::Read(Some(on)) if on == want => Verdict::Done,
+    _ if !left.is_zero() => Verdict::Again,
+    Seen::Read(None) => Verdict::Done,
+    _ => Verdict::Failed,
+  }
+}
+
+/// A switch's request on a worker, then its check: the tile's source is read
+/// until it shows the switch as asked (`verdict`; the panel shows each read).
+/// `request` returns what would repair a failure, if it knows.
+fn switch(tile: Tile, want: bool, request: impl FnOnce() -> Option<String> + Send + 'static) {
+  spawn(move || {
+    let hint = request();
+    if Source::of(tile).is_some() {
+      check(tile, want, Instant::now() + VERIFY_FOR, hint);
+    }
+  });
+}
+
+/// One read of the tile's source for its check (on a worker).
+fn check(tile: Tile, want: bool, until: Instant, hint: Option<String>) {
+  let read = Source::of(tile).and_then(Source::read).map(Box::new);
+  ev(QEv::Check { tile, want, until, hint, read });
 }
 
 /// The hardware as last read (also kept in the store's cache).
@@ -740,6 +831,43 @@ mod tests {
 
   fn t(tile: Tile, size: u8) -> Toggle {
     Toggle { tile, size }
+  }
+
+  #[test]
+  fn every_switch_is_read_back_and_only_switches_are() {
+    // every hardware state on: a tile has a switch exactly when it has a source
+    let all_on = json!({
+      "radios": { "wifi": "On", "bluetooth": "On" }, "eth": { "state": "up" },
+      "awake": true, "mic": true, "night": { "on": true },
+    });
+    let q = Quick::new(Vec::new(), &all_on);
+    for tile in AVAILABLE {
+      assert_eq!(Source::of(tile).is_some(), q.switched(tile).is_some(), "{:?}", tile);
+    }
+  }
+
+  #[test]
+  fn a_switch_is_judged_by_what_its_source_shows() {
+    let seen = [Seen::NoAnswer, Seen::Read(None), Seen::Read(Some(false)), Seen::Read(Some(true))];
+    for want in [false, true] {
+      for s in seen {
+        for left in [Duration::ZERO, VERIFY_EVERY] {
+          let v = verdict(want, s, left);
+          let shown = s == Seen::Read(Some(want));
+          let contradicted = matches!(s, Seen::NoAnswer | Seen::Read(Some(_))) && !shown;
+          let expected = if shown {
+            Verdict::Done
+          } else if !left.is_zero() {
+            Verdict::Again
+          } else if contradicted {
+            Verdict::Failed
+          } else {
+            Verdict::Done
+          };
+          assert_eq!(v, expected, "want {want}, seen {s:?}, left {left:?}");
+        }
+      }
+    }
   }
 
   #[test]

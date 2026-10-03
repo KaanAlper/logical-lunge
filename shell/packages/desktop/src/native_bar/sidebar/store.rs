@@ -10,7 +10,7 @@ use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(super) enum Tile {
+pub(in crate::native_bar) enum Tile {
   Wifi,
   Ethernet,
   Bluetooth,

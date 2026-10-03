@@ -10,38 +10,25 @@ impl Ui {
       return;
     }
     q.last_refresh = Some(Instant::now());
-    spawn(|| {
-      if let Some(v) = qs("radios") {
-        ev(QEv::Radios(v));
-      }
-    });
-    spawn(|| {
-      if let Some(v) = qs("eth") {
-        ev(QEv::Eth(v));
-      }
-    });
+    for source in Source::ALL {
+      spawn(move || {
+        if let Some(e) = source.read() {
+          ev(e);
+        }
+      });
+    }
     spawn(|| {
       if let Some(v) = qs("bt") {
         ev(QEv::Bt(v));
       }
     });
-    spawn(|| {
-      if let Some(v) = core_json(&["--nightlight", "status"]) {
-        ev(QEv::Night(v));
-      }
-    });
-    spawn(|| {
-      if let Some(v) = qs("status") {
-        ev(QEv::Status(v));
-      }
-    });
-    spawn(|| {
-      let v = core_json(&["--mic", "status"]);
-      ev(QEv::Mic(v.and_then(|v| v["muted"].as_bool()).map(|m| !m)));
-    });
   }
 
   pub(in crate::native_bar::sidebar) fn sb_quick_event(&mut self, e: QEv) {
+    let e = match e {
+      QEv::Check { tile, want, until, hint, read } => return self.sb_quick_check(tile, want, until, hint, read),
+      e => e,
+    };
     let q = &mut self.sidebar.quick;
     match e {
       QEv::Radios(v) => q.hw.radios = v,
@@ -88,20 +75,7 @@ impl Ui {
           self.sb_wifi_scan();
         }
       }
-      QEv::EthToggled(r) => {
-        if r["ok"].as_bool() == Some(false) {
-          let body = self.model.tr("Ethernet kartı açılıp kapatılamadı. Kurulumu yeniden çalıştırmak yönetici görevlerini onarır.");
-          self.toast_add(json!({ "kind": "error", "title": "Ethernet", "body": body, "icon": "lan" }));
-        }
-        let q = &mut self.sidebar.quick;
-        q.last_refresh = None;
-        std::thread::spawn(|| {
-          std::thread::sleep(Duration::from_millis(2500));
-          if let Some(v) = qs("eth") {
-            ev(QEv::Eth(v));
-          }
-        });
-      }
+      QEv::Check { .. } => {}
       QEv::AudioDefault(id) => {
         if q.audio_busy.as_deref() == Some(id.as_str()) {
           q.audio_busy = None;
@@ -126,6 +100,36 @@ impl Ui {
     self.model.audio.as_ref().and_then(|a| a.default_playback_device.clone())
   }
 
+  /// A switch's check (`verdict`): the read is shown, then the switch is
+  /// done, read again shortly, or reported. A failure leaves the tile showing
+  /// what the source says (or, with no answer, reads everything again).
+  fn sb_quick_check(&mut self, tile: Tile, want: bool, until: Instant, hint: Option<String>, read: Option<Box<QEv>>) {
+    let seen = match read {
+      Some(e) => {
+        self.sb_quick_event(*e);
+        Seen::Read(self.sidebar.quick.switched(tile))
+      }
+      None => Seen::NoAnswer,
+    };
+    match verdict(want, seen, until.saturating_duration_since(Instant::now())) {
+      Verdict::Done => {}
+      Verdict::Again => spawn(move || {
+        std::thread::sleep(VERIFY_EVERY);
+        check(tile, want, until, hint);
+      }),
+      Verdict::Failed => {
+        if seen == Seen::NoAnswer {
+          self.sb_qs_refresh(true);
+        }
+        let def = {
+          let tr = |s: &str| self.model.tr(s);
+          self.sidebar.quick.def(tile, &self.model, &tr)
+        };
+        self.sb_toast(def.name, hint.as_deref().unwrap_or("Açılıp kapatılamadı."), def.icon);
+      }
+    }
+  }
+
   pub(in crate::native_bar::sidebar) fn sb_toast(&mut self, title: &str, body: &str, icon: &str) {
     let (t, b) = (self.model.tr(title), self.model.tr(body));
     self.toast_add(json!({ "kind": "error", "title": t, "body": b, "icon": icon }));
@@ -136,24 +140,24 @@ impl Ui {
     let q = &mut self.sidebar.quick;
     match tile {
       Tile::Wifi => {
-        let next = if q.wifi_on() { "Off" } else { "On" };
+        let on = !q.wifi_on();
+        let next = if on { "On" } else { "Off" };
         q.hw.radios["wifi"] = json!(next);
-        spawn(move || {
+        switch(tile, on, move || {
           let _ = qs(&format!("radio?kind=wifi&state={next}"));
-          if let Some(v) = qs("radios") {
-            ev(QEv::Radios(v));
-          }
+          None
         });
       }
       Tile::Ethernet => {
-        let disabled = s(&q.hw.eth["state"]) == "disabled";
+        let on = s(&q.hw.eth["state"]) == "disabled";
         if q.hw.eth.is_object() {
-          q.hw.eth["state"] = json!(if disabled { "up" } else { "disabled" });
+          q.hw.eth["state"] = json!(if on { "up" } else { "disabled" });
         }
-        spawn(|| {
-          if let Some(v) = qs("eth-toggle") {
-            ev(QEv::EthToggled(v));
-          }
+        switch(tile, on, || {
+          // the core's admin task for it is missing: the installer repairs it
+          let r = qs("eth-toggle")?;
+          (r["needSetup"].as_bool() == Some(true))
+            .then(|| "Ethernet kartı açılıp kapatılamadı. Kurulumu yeniden çalıştırmak yönetici görevlerini onarır.".to_string())
         });
       }
       Tile::Bluetooth => {
@@ -161,16 +165,15 @@ impl Ui {
           self.sb_toast("Bluetooth", "Bluetooth adaptörü bulunamadı.", "bluetooth_disabled");
           return;
         }
-        let next = if q.bt_on() { "Off" } else { "On" };
+        let on = !q.bt_on();
+        let next = if on { "On" } else { "Off" };
         q.hw.radios["bluetooth"] = json!(next);
-        spawn(move || {
+        switch(tile, on, move || {
           let _ = qs(&format!("radio?kind=bluetooth&state={next}"));
-          if let Some(v) = qs("radios") {
-            ev(QEv::Radios(v));
-          }
           if let Some(v) = qs("bt") {
             ev(QEv::Bt(v));
           }
+          None
         });
       }
       Tile::IdleInhibitor => {
@@ -178,13 +181,17 @@ impl Ui {
         q.hw.awake = next;
         self.sidebar.store.awake_want = next;
         self.sidebar.save_soon();
-        core_api::post_async(format!("/qs/awake?v={}", next as u8));
+        switch(tile, next, move || {
+          let _ = qs(&format!("awake?v={}", next as u8));
+          None
+        });
       }
       Tile::Mic => {
-        q.hw.mic = Some(q.hw.mic == Some(false));
-        spawn(|| {
-          let v = core_json(&["--mic", "toggle"]);
-          ev(QEv::Mic(v.and_then(|v| v["muted"].as_bool()).map(|m| !m)));
+        let on = q.hw.mic == Some(false);
+        q.hw.mic = Some(on);
+        switch(tile, on, || {
+          let _ = core_json(&["--mic", "toggle"]);
+          None
         });
       }
       Tile::Audio => {
@@ -199,10 +206,9 @@ impl Ui {
         } else {
           q.hw.night = json!({ "on": !on });
         }
-        spawn(|| {
-          if let Some(v) = core_json(&["--nightlight", "toggle"]) {
-            ev(QEv::Night(v));
-          }
+        switch(tile, !on, || {
+          let _ = core_json(&["--nightlight", "toggle"]);
+          None
         });
       }
       Tile::DarkMode => {
