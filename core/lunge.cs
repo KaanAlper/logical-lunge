@@ -1132,6 +1132,49 @@ class Slider
 
     static IntPtr FocusedTop() { return Native.GetAncestor(Native.GetForegroundWindow(), 2); }
 
+    // Match the WM's descendant focus order before its asynchronous foreground change.
+    // Layout order can differ from the last focused window, including inside splits.
+    static Dictionary<string, object> WorkspaceFocusNode(Dictionary<string, object> node)
+    {
+        if (node == null) return null;
+        if (J.Str(node, "type") == "window") return node;
+        object order;
+        var children = J.Children(node);
+        var ids = node.TryGetValue("childFocusOrder", out order) ? order as object[] : null;
+        if (ids != null)
+            foreach (var id in ids)
+                foreach (Dictionary<string, object> child in children)
+                    if (id != null && J.Str(child, "id") == id.ToString())
+                    {
+                        var focused = WorkspaceFocusNode(child);
+                        if (focused != null) return focused;
+                    }
+        foreach (Dictionary<string, object> child in children)
+        {
+            var focused = WorkspaceFocusNode(child);
+            if (focused != null) return focused;
+        }
+        return null;
+    }
+
+    static IntPtr WorkspaceFocusHandle(Dictionary<string, object> workspace)
+    {
+        var window = WorkspaceFocusNode(workspace);
+        if (window == null) return IntPtr.Zero;
+        object stateValue, handle;
+        var state = window.TryGetValue("state", out stateValue) ? stateValue as Dictionary<string, object> : null;
+        if (state != null && J.Str(state, "type") == "minimized") return IntPtr.Zero;
+        return window.TryGetValue("handle", out handle) && handle != null ? new IntPtr(Convert.ToInt64(handle)) : IntPtr.Zero;
+    }
+
+    static IntPtr WorkspacePreviewFocus(double progress, IntPtr oldFocus, IntPtr prevFocus, IntPtr nextFocus,
+        bool hasPrev, bool hasNext)
+    {
+        if (progress > 0 && hasNext) return nextFocus;
+        if (progress < 0 && hasPrev) return prevFocus;
+        return oldFocus;
+    }
+
     // Passive desktop widgets are part of the background scene. Their live
     // previews belong above the wallpaper but below moving application windows;
     // putting them in PinsAttach's top layer would make them cover tiled apps.
@@ -2131,7 +2174,7 @@ class Slider
             long regMs = clock.ElapsedMilliseconds;
             // Kenarlık: taşınan pencerenin (taşı+takip) ya da odaklı pencerenin; tüm önizlemelerden sonra kaydedilir
             // Kenarlıklar: taşınan (taşı+takip) ya da odaklı pencereye etkin, diğerlerine pasif; önizlemelerden sonra
-            RingsAttach(thumbs, carried != null ? carried.Src : FocusedTop());
+            RingsAttach(thumbs, carried != null ? carried.Src : WorkspaceFocusHandle(target));
             foreach (var t in oldThumbs) RingPlace(t, t.Dest, 255);
             foreach (var t in newThumbs) { var r0 = t.Dest; r0.Left += fdir * (mw + GAP); r0.Right += fdir * (mw + GAP); RingPlace(t, r0, 255); }
             if (carried != null) RingPlace(carried, carried.Dest, 255);
@@ -2278,6 +2321,8 @@ class Slider
                 var t = RegisterWindow(h, ox, oy);
                 if (t != null) { newThumbs.Add(t); thumbs.Add(t); RingAdd(t, false); Move(t, dir * (mw + GAP)); }
             }
+            RingsFocus(WorkspaceFocusHandle(newWs));
+            foreach (var t in newThumbs) Move(t, dir * (mw + GAP));
             Native.DwmFlush();
 
             var pc = new PresentClock();
@@ -2307,6 +2352,7 @@ class Slider
     // (gizli olsa da) buraya çekilmez (kenar sayılır). UI thread'inde çalışır (dokunma girdisi de orada gelir).
     sealed class SwipeScene
     {
+        public IntPtr OldFocus, PrevFocus, NextFocus;
         public string OldName, PrevName, NextName;
         public int Mw;
         public readonly List<Thumb> All = new List<Thumb>(), Old = new List<Thumb>(), Prev = new List<Thumb>(), Next = new List<Thumb>();
@@ -2361,6 +2407,9 @@ class Slider
         UseOverlay(new Rectangle(mx, my + barH, mw, mh - barH));
         int ox = mx, oy = my + barH;
         var s = new SwipeScene { OldName = cur.ToString(), PrevName = prevName, NextName = nextName, Mw = mw };
+        s.OldFocus = WorkspaceFocusHandle(oldWs);
+        s.PrevFocus = WorkspaceFocusHandle(WorkspaceNode(mons, prevName));
+        s.NextFocus = WorkspaceFocusHandle(WorkspaceNode(mons, nextName));
 
         // Duvar kağıdı (sabit)
         Native.RECT wsrc;
@@ -2397,7 +2446,7 @@ class Slider
             }
         }
         swipe = s;
-        RingsAttach(s.All, FocusedTop());
+        RingsAttach(s.All, s.OldFocus);
         SwipePlace(0);
         PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, s.All);
         overlay.Reveal();
@@ -2411,6 +2460,7 @@ class Slider
     {
         var s = swipe;
         if (s == null) return;
+        RingsFocus(WorkspacePreviewFocus(p, s.OldFocus, s.PrevFocus, s.NextFocus, s.PrevName != null, s.NextName != null));
         int span = s.Mw + GAP;
         int shift = (int)Math.Round(p * span);
         foreach (var t in s.Old) Move(t, -shift);

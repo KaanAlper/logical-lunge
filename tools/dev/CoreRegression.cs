@@ -496,6 +496,8 @@ static class CoreRegression
     }
 
     static void Main(string[] args) {
+        WorkspaceOutlineTests();
+        if (args.Length == 1 && args[0] == "--workspace-outline-only") return;
         ParityTests();
         if (args.Length == 1 && args[0] == "--parity-only") return;
         DesktopWidgetTests();
@@ -666,5 +668,28 @@ static class CoreRegression
         Check(Keymap.Check("{\"removed\":[\"ws-1\"]}").Contains("\"ok\":false"), "A non-app shortcut could be removed");
         Check(Reserved.Action(Binds.SUPER, 0x4C) == "lock" && Reserved.Action(Binds.SUPER, 0x4B) == null, "Super+L is not the lock action");
         Console.WriteLine("PASS: core routing, origin, method, release selection, settings file updates, Windows notifications and live wallpaper entries");
+    }
+
+    static void WorkspaceOutlineTests() {
+        var method = typeof(Slider).GetMethod("WorkspaceFocusHandle", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(method != null, "Workspace preview must select the arriving focus before the WM changes foreground");
+        Func<string, IntPtr> focus = text => (IntPtr)method.Invoke(null, new object[] { new JavaScriptSerializer().DeserializeObject(text) });
+        Check(focus(@"{""children"":[{""id"":""a"",""type"":""window"",""handle"":41},{""id"":""b"",""type"":""window"",""handle"":42}],""childFocusOrder"":[""b"",""a""]}") == new IntPtr(42), "Incoming focus followed layout order rather than workspace MRU");
+        Check(focus(@"{""children"":[{""id"":""split"",""children"":[{""id"":""a"",""type"":""window"",""handle"":41},{""id"":""b"",""type"":""window"",""handle"":42}],""childFocusOrder"":[""b"",""a""]},{""id"":""c"",""type"":""window"",""handle"":43}],""childFocusOrder"":[""split"",""c""]}") == new IntPtr(42), "Incoming focus did not traverse the focused split");
+        Check(focus(@"{""children"":[{""id"":""a"",""type"":""window"",""handle"":41}],""childFocusOrder"":[""removed"",""a""]}") == new IntPtr(41), "Removed focus-order IDs hid the incoming cue");
+        Check(focus(@"{""children"":[{""id"":""a"",""type"":""window"",""handle"":41,""state"":{""type"":""minimized""}}],""childFocusOrder"":[""a""]}") == IntPtr.Zero, "A minimized preview must not get an outline");
+        Check(focus(@"{""children"":[],""childFocusOrder"":[]}") == IntPtr.Zero, "Empty workspace borrowed the departing window's outline");
+        Check((IntPtr)method.Invoke(null, new object[] { null }) == IntPtr.Zero, "Missing target workspace did not yield an empty preview");
+        Check(focus(@"{""children"":[{""id"":""a"",""type"":""window"",""handle"":41}]}") == new IntPtr(41), "Missing focus order lost the available preview");
+        var preview = typeof(Slider).GetMethod("WorkspacePreviewFocus", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(preview != null, "Swipe focus must follow the incoming workspace before commit");
+        Func<double, bool, bool, IntPtr> swipeFocus = (progress, prev, next) => (IntPtr)preview.Invoke(null,
+            new object[] { progress, new IntPtr(41), new IntPtr(42), new IntPtr(43), prev, next });
+        Check(swipeFocus(0.01, true, true) == new IntPtr(43), "Next workspace cue appeared only at swipe completion");
+        Check(swipeFocus(-0.01, true, true) == new IntPtr(42), "Reversing swipe direction kept the wrong cue");
+        Check(swipeFocus(0, true, true) == new IntPtr(41), "Cancelled swipe did not restore the original cue");
+        Check(swipeFocus(0.03, true, false) == new IntPtr(41), "Rubber band at the last workspace lost the original cue");
+        Check(swipeFocus(-0.03, false, true) == new IntPtr(41), "Rubber band at the first workspace lost the original cue");
+        Console.WriteLine("PASS: arriving workspace focus outline (MRU, nested splits, stale IDs, empty and minimized)");
     }
 }
