@@ -4430,34 +4430,56 @@ static class DesktopRestart
     static bool StartOwnToken(string exe, string args, ref STARTUPINFO startup, out PROCESS_INFORMATION info)
     {
         info = new PROCESS_INFORMATION();
-        IntPtr token = IntPtr.Zero;
-        // Current process pseudo-handle only: TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY.
-        if (!OpenProcessToken(new IntPtr(-1), 0xB, out token)) return false;
+        // CreateProcess with BREAKAWAY_FROM_JOB and CreateProcessWithTokenW both
+        // fail with ERROR_ACCESS_DENIED when the scheduler's job restricts breakaway
+        // and secondary logon. WMI Win32_Process.Create breaks out of the job but
+        // cannot preserve elevation (Medium Integrity), failing the Peer check.
+        // A temporary task with the same user's HighestAvailable principal starts
+        // the child elevated, outside any job, without a UAC prompt.
+        // The child connects back through the restart pipe; WaitCandidate verifies it.
+        string taskName = "Restart-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        object service = null, folder = null, regTask = null, run = null;
         try
         {
-            using (var identity = new System.Security.Principal.WindowsIdentity(token))
-                if (!new System.Security.Principal.WindowsPrincipal(identity)
-                    .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)) return false;
-            // Secondary Logon can create outside the scheduled job. Verify that before any child code runs.
-            if (!CreateProcessWithTokenW(token, 0, exe, new StringBuilder("\"" + exe + "\" " + (args ?? "")),
-                0x08000004, IntPtr.Zero, Paths.Home, ref startup, out info)) // NO_WINDOW | SUSPENDED
+            service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+            Com(service, "Connect", false, null, null, null, null);
+            folder = Com(service, "GetFolder", false, @"\LogicalLunge");
+            using (var own = System.Security.Principal.WindowsIdentity.GetCurrent())
             {
-                Slider.Log("restart own-token launch failed: " + Marshal.GetLastWin32Error());
-                return false;
+                string xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" +
+                    "<Task version=\"1.3\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">" +
+                    "<RegistrationInfo/><Principals><Principal id=\"A\">" +
+                    "<UserId>" + own.User.Value + "</UserId>" +
+                    "<LogonType>InteractiveToken</LogonType>" +
+                    "<RunLevel>HighestAvailable</RunLevel>" +
+                    "</Principal></Principals><Settings>" +
+                    "<MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy>" +
+                    "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>" +
+                    "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" +
+                    "<ExecutionTimeLimit>PT2M</ExecutionTimeLimit>" +
+                    "<UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>" +
+                    "</Settings><Actions Context=\"A\"><Exec>" +
+                    "<Command>" + System.Security.SecurityElement.Escape(exe) + "</Command>" +
+                    "<Arguments>" + System.Security.SecurityElement.Escape(args ?? "") + "</Arguments>" +
+                    "<WorkingDirectory>" + System.Security.SecurityElement.Escape(Paths.Home) + "</WorkingDirectory>" +
+                    "</Exec></Actions></Task>";
+                // TASK_CREATE = 2, TASK_LOGON_INTERACTIVE_TOKEN = 3
+                regTask = Com(folder, "RegisterTask", false, taskName, xml, 2, null, null, 3, null);
             }
-            bool inJob;
-            if (!IsProcessInJob(info.process, IntPtr.Zero, out inJob) || inJob ||
-                !Peer(info.pid, true) || ResumeThread(info.thread) == uint.MaxValue)
-            {
-                Slider.Log("restart own-token child could not be verified/resumed outside all jobs");
-                TerminateProcess(info.process, 3);
-                CloseHandle(info.thread); CloseHandle(info.process);
-                info = new PROCESS_INFORMATION();
-                return false;
-            }
-            return true;
+            run = Com(regTask, "RunEx", false, null, 4, Process.GetCurrentProcess().SessionId, null);
+            return run != null;
         }
-        finally { CloseHandle(token); }
+        catch (Exception ex)
+        {
+            Slider.Log("restart temp-task: " + ex.GetBaseException().Message);
+            return false;
+        }
+        finally
+        {
+            ReleaseCom(run); ReleaseCom(regTask);
+            try { if (folder != null) Com(folder, "DeleteTask", false, taskName, 0); } catch { }
+            ReleaseCom(folder); ReleaseCom(service);
+        }
     }
 
     // Validate both pipe peers using OS identity, never a claimed PID or elevation in a message.
