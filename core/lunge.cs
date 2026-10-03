@@ -4517,6 +4517,9 @@ static class Supervisor
         }
         Kill(Names.Tiling);
         Kill(Names.Shell);
+        // Bilerek kapatılan kabuk çökmüş sayılmasın: kabuğun çöküş döngüsü kaydı (son açılışları) silinir. Yoksa iki
+        // dakikada üç "masaüstünü yenile" barı 90 sn bekletiyor, ekran boş kalıyordu.
+        try { System.IO.File.Delete(Paths.State("native-ui-starts")); } catch { }
         Kill(LiveWallpaper.Name);
         Thread.Sleep(300);
         // Windows'un devredilen parçaları (görev çubuğu, ayarlar, bildirim balonları) geri gelir; yeni çekirdek yeniden alır

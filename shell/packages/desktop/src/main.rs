@@ -116,8 +116,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
       // a while (the core gives Windows' taskbar back), then try it again —
       // giving up for good left the desktop barless until a restart.
       error!("Native bar: the shell died at its last starts; the bar is tried again in {} s.", CRASH_LOOP_PAUSE.as_secs());
-      std::thread::spawn(move || {
-        std::thread::sleep(CRASH_LOOP_PAUSE);
+      start_later(CRASH_LOOP_PAUSE, move || {
         if let Err(err) = native_bar::start(manager, opts) {
           error!("Native bar: start after the pause failed: {:?}", err);
         }
@@ -140,6 +139,19 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 /// How long a shell that kept dying at start runs without the bar.
 #[cfg(windows)]
 const CRASH_LOOP_PAUSE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Runs `start` on a thread of its own after `pause`, inside this runtime:
+/// the bar spawns its WM link and providers on it (outside, the start
+/// panicked and the bar never came back).
+#[cfg(windows)]
+fn start_later(pause: std::time::Duration, start: impl FnOnce() + Send + 'static) -> std::thread::JoinHandle<()> {
+  let rt = tokio::runtime::Handle::current();
+  std::thread::spawn(move || {
+    std::thread::sleep(pause);
+    let _rt = rt.enter();
+    start();
+  })
+}
 
 /// One shell per session: a second start (the core's watchdog racing a
 /// user's start) ends at once. The mutex lives as long as the process.
@@ -269,4 +281,23 @@ fn setup_logging(cli: &Cli) -> anyhow::Result<()> {
   tracing::subscriber::set_global_default(subscriber)?;
   info!("Starting with log level {:?}.", log_level.to_string());
   Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+  use std::time::Duration;
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn a_bar_started_after_the_pause_can_reach_the_runtime() {
+    // native_bar::start spawns the WM link and the providers on the runtime:
+    // outside it, the start after the crash-loop pause panicked ("there is
+    // no reactor running") and the bar never came back
+    let (tx, rx) = std::sync::mpsc::channel();
+    let thread = super::start_later(Duration::ZERO, move || {
+      let _ = tx.send(tokio::runtime::Handle::try_current().is_ok());
+    });
+    let inside = tokio::task::block_in_place(|| rx.recv_timeout(Duration::from_secs(5)));
+    let _ = thread.join();
+    assert_eq!(inside, Ok(true));
+  }
 }

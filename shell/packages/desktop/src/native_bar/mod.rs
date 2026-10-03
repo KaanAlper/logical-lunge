@@ -312,6 +312,7 @@ fn replay() {
 /// bar and the core brings Windows' taskbar back. The record is cleared once
 /// a bar has run for a minute.
 pub fn crash_loop() -> bool {
+  // the core deletes this record when it stops the desktop on purpose
   let path = state_dir().join("native-ui-starts");
   let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
   let mut starts: Vec<u64> = std::fs::read_to_string(&path)
