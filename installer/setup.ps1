@@ -564,6 +564,18 @@ try {
                 # Only on the first install: these need Everything closed. Out-Null makes PowerShell wait for each
                 # command (Everything is a GUI program).
                 & $own -app-data -disable-update-notification | Out-Null
+                # new NTFS / ReFS volumes (fixed and removable) join the index by themselves and offline ones leave it;
+                # FAT / exFAT drives are added by the core as rescanned folder indexes (they have no change journal)
+                $ini = Join-Path $UserProfile 'AppData\Roaming\Everything\Everything.ini'
+                if (Test-Path $ini) {
+                    $lines = [Collections.Generic.List[string]](Get-Content $ini -Encoding UTF8)
+                    foreach ($k in 'auto_include_fixed_volumes', 'auto_include_removable_volumes', 'auto_remove_offline_ntfs_volumes',
+                        'auto_include_fixed_refs_volumes', 'auto_include_removable_refs_volumes', 'auto_remove_offline_refs_volumes') {
+                        $i = $lines.FindIndex([Predicate[string]] { param($l) $l.StartsWith("$k=") })
+                        if ($i -ge 0) { $lines[$i] = "$k=1" } else { $lines.Add("$k=1") }
+                    }
+                    [IO.File]::WriteAllLines($ini, $lines, (New-Object Text.UTF8Encoding $false))
+                }
             }
             if (-not (Get-Service Everything -ErrorAction SilentlyContinue)) {
                 $script:everythingService = $own
@@ -716,10 +728,16 @@ try {
         $te = Join-Path $APP 'tools\temps\lunge-temps.exe'
         Register-LLTask 'Temps' (New-ScheduledTaskAction -Execute $te -WorkingDirectory (Split-Path $te)) $trigger $principalHigh (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 7)
     }
-    $eth = Join-Path $APP 'scripts\eth.ps1'
+    # the right panel's Ethernet tile when the core is not elevated: the core itself switches the adapter (lunge.exe --eth)
     foreach ($pair in @(@('Ethernet-On', 'enable'), @('Ethernet-Off', 'disable'))) {
-        $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$eth`" $($pair[1])"
+        $a = New-ScheduledTaskAction -Execute (Join-Path $APP 'lunge.exe') -Argument "--eth $($pair[1])"
         Register-LLTask $pair[0] $a $null $principalHigh (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 1))
+    }
+    # the bundled Everything, started again as the user (not elevated) after the core changes its folder indexes
+    $ev = Join-Path $APP 'tools\everything\Everything.exe'
+    if (Test-Path $ev) {
+        $principalUser = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Limited
+        Register-LLTask 'Everything' (New-ScheduledTaskAction -Execute $ev -Argument '-startup') $null $principalUser (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero))
     }
     Step-Progress 85
 
