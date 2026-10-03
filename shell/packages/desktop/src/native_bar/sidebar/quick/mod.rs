@@ -5,7 +5,7 @@
 //! the night light.
 //!
 //! Hardware state comes from the core (`/qs/*`, `--nightlight`, `--mic`,
-//! `scripts\wifi.ps1`) on worker threads; audio and the Wi-Fi name from the
+//! Wi-Fi through `/qs/wifi*`) on worker threads; audio and the Wi-Fi name from the
 //! bar's providers.
 
 mod actions;
@@ -692,13 +692,30 @@ fn core_json(args: &[&str]) -> Option<Value> {
   core_api::run_core_output(args).and_then(|s| serde_json::from_str(&s).ok())
 }
 
-/// `lunge.exe --ps <install>\scripts\<script> <args>`
-pub(super) fn ps(script: &str, args: &[&str]) -> Option<Value> {
-  let path = core_api::core_exe()?.parent()?.join("scripts").join(script);
-  let path = path.to_string_lossy().to_string();
-  let mut all = vec!["--ps", path.as_str()];
-  all.extend_from_slice(args);
-  core_json(&all)
+/// Wi-Fi from the core (the Native Wifi API): `list` scans and lists,
+/// `connect` (with a password for a new network) and `disconnect`.
+pub(super) fn wifi(action: &str, ssid: &str, password: Option<&str>) -> Option<Value> {
+  match action {
+    "connect" => {
+      let mut path = format!("wifi-connect?ssid={}", query(ssid));
+      if let Some(p) = password {
+        path.push_str(&format!("&pw={}", query(p)));
+      }
+      qs(&path)
+    }
+    "disconnect" => qs("wifi-disconnect"),
+    _ => qs("wifi"),
+  }
+}
+
+/// Percent-encodes a query value (UTF-8, unreserved characters kept).
+fn query(s: &str) -> String {
+  s.bytes()
+    .map(|b| match b {
+      b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+      _ => format!("%{b:02X}"),
+    })
+    .collect()
 }
 
 fn ev(e: QEv) {

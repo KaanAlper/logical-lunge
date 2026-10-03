@@ -527,7 +527,7 @@ impl Ui {
       return;
     }
     q.wifi_scanning = true;
-    spawn(|| ev(QEv::Wifi(ps("wifi.ps1", &["list"]))));
+    spawn(|| ev(QEv::Wifi(wifi("list", "", None))));
   }
 
   pub(in crate::native_bar::sidebar) fn sb_toggle_menu(&mut self, tile: Tile) {
@@ -575,8 +575,8 @@ impl Ui {
     if cur {
       q.wifi_busy = Some(ssid);
       spawn(|| {
-        let _ = ps("wifi.ps1", &["disconnect"]);
-        ev(QEv::Wifi(ps("wifi.ps1", &["list"])));
+        let _ = wifi("disconnect", "", None);
+        ev(QEv::Wifi(wifi("list", "", None)));
       });
       // the list read clears the busy mark through WifiConnected
       let s2 = q.wifi_busy.clone().unwrap_or_default();
@@ -602,11 +602,7 @@ impl Ui {
     q.wifi_err.clear();
     q.wifi_busy = Some(ssid.clone());
     spawn(move || {
-      let mut args = vec!["connect", ssid.as_str()];
-      if let Some(p) = password.as_deref() {
-        args.push(p);
-      }
-      let r = ps("wifi.ps1", &args).unwrap_or(Value::Null);
+      let r = wifi("connect", &ssid, password.as_deref()).unwrap_or(Value::Null);
       ev(QEv::WifiConnected(ssid, r));
     });
   }

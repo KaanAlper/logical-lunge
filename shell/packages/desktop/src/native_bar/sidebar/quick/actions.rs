@@ -90,7 +90,7 @@ impl Ui {
       }
       QEv::EthToggled(r) => {
         if r["ok"].as_bool() == Some(false) {
-          let body = self.model.tr("Yönetici görevi bulunamadı: scripts\\setup-eth-tasks.ps1 bir kez yönetici olarak çalıştırılmalı.");
+          let body = self.model.tr("Ethernet kartı açılıp kapatılamadı. Kurulumu yeniden çalıştırmak yönetici görevlerini onarır.");
           self.toast_add(json!({ "kind": "error", "title": "Ethernet", "body": body, "icon": "lan" }));
         }
         let q = &mut self.sidebar.quick;

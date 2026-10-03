@@ -185,6 +185,10 @@ static class CoreRegression
         Check(Request("GET", "/qs/radio?kind=wifi&state=Off", null).Contains("405"), "A plain GET switched a radio");
         Check(Request("GET", "/qs/awake?v=1", null).Contains("405"), "A plain GET changed keep-awake");
         Check(Request("GET", "/qs/eth-toggle", null).Contains("405"), "A plain GET toggled Ethernet");
+        Check(Request("GET", "/qs/wifi-disconnect", null).Contains("405"), "A plain GET disconnected Wi-Fi");
+        Check(Request("GET", "/qs/wifi-connect?ssid=x&pw=y", null).Contains("405"), "A plain GET joined a Wi-Fi network");
+        Check(Request("POST", "/qs/wifi-connect?pw=y", "http://127.0.0.1:6124").Contains("400"), "Joining Wi-Fi without a network name was accepted");
+        Check(Request("POST", "/qs/wifi-disconnect", "https://example.invalid").Contains("403"), "Wi-Fi accepted a foreign origin");
         Check(Request("GET", "/qs/bt", "http://127.0.0.1:6124").Contains("405"), "The Bluetooth device list must require POST");
         Check(Request("POST", "/qs/radio?kind=wifi&state=Maybe", "http://127.0.0.1:6124").Contains("400"), "A radio accepted an invalid state");
         Check(Request("POST", "/qs/awake?v=1", "https://example.invalid").Contains("403"), "Keep-awake accepted a foreign origin");
@@ -210,6 +214,8 @@ static class CoreRegression
         Check(Request("POST", remove("saver", packFile), shell).Contains("204") && !System.IO.Directory.Exists(packDir), "An imported screen saver (and its emptied pack folder) was not removed");
         string radios = Request("POST", "/qs/radios", "http://127.0.0.1:6124");
         Check(radios.Contains("200 OK") && radios.Contains("\"wifi\"") && radios.Contains("\"bluetooth\""), "Radios were not served");
+        string wifi = Request("POST", "/qs/wifi", "http://127.0.0.1:6124");
+        Check(wifi.Contains("200 OK") && wifi.Contains("\"connected\"") && wifi.Contains("\"networks\""), "Wi-Fi networks were not served");
         string eth = Request("POST", "/qs/eth", "http://127.0.0.1:6124");
         Check(eth.Contains("200 OK") && eth.Contains("\"state\""), "Ethernet state was not served");
         string bt = Request("POST", "/qs/bt", "http://127.0.0.1:6124");

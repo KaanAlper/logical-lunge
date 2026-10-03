@@ -36,15 +36,23 @@ static class QuickSettings
             status = "204 No Content";
             return true;
         }
+        m = System.Text.RegularExpressions.Regex.Match(target, @"^/qs/wifi-connect\?ssid=([^&]+)(?:&pw=([^&]*))?$");
+        if (m.Success)
+        {
+            body = Wifi.Connect(Uri.UnescapeDataString(m.Groups[1].Value), m.Groups[2].Success ? Uri.UnescapeDataString(m.Groups[2].Value) : null);
+            return true;
+        }
         switch (target)
         {
+            case "/qs/wifi": body = Wifi.List(); return true;
+            case "/qs/wifi-disconnect": body = Wifi.Disconnect(); return true;
             case "/qs/radios": body = RadiosJson(); return true;
             case "/qs/eth": body = EthJson(); return true;
             case "/qs/eth-toggle": body = EthToggle(); return true;
             case "/qs/bt": body = BtJson(); return true;
             case "/qs/status": body = StatusJson(); return true;
         }
-        if (target.StartsWith("/qs/radio") || target.StartsWith("/qs/awake")) { status = "400 Bad Request"; return true; }
+        if (target.StartsWith("/qs/radio") || target.StartsWith("/qs/awake") || target.StartsWith("/qs/wifi")) { status = "400 Bad Request"; return true; }
         return false;
     }
 
@@ -130,24 +138,23 @@ static class QuickSettings
     }
 
     // ---------------- Ethernet ----------------
-    // Fiziksel kablolu kartlar (sanal VPN / VirtualBox / Hamachi kartları hariç); Get-NetAdapter de bu WMI sınıfını okur.
-    static readonly System.Text.RegularExpressions.Regex notWired = new System.Text.RegularExpressions.Regex(
-        @"virtual|vpn|tap|hamachi|radmin|tailscale|wireless|wi-?fi|802\.11", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+    // Fiziksel kablolu kart: donanım arabirimi, takılı bir bağlantı noktası ve fiziksel ortamı 802.3 (MSFT_NetAdapter;
+    // Get-NetAdapter de bu sınıfı okur). Sanal kartlar (VPN, sanal makine, tünel) bu üç özellikle ayrılır, adlarıyla değil.
 
     sealed class Adapter { public string Name, Desc; public int Index; public bool Disabled, Up; public ulong Speed; }
 
     static Adapter Wired()
     {
         var scope = new System.Management.ManagementScope(@"root\StandardCimv2");
-        var q = new System.Management.ObjectQuery("SELECT Name, InterfaceDescription, InterfaceIndex, State, InterfaceOperationalStatus, NdisMedium, Speed, Virtual, HardwareInterface, ConnectorPresent FROM MSFT_NetAdapter");
+        var q = new System.Management.ObjectQuery("SELECT Name, InterfaceDescription, InterfaceIndex, State, InterfaceOperationalStatus, NdisPhysicalMedium, Speed, Virtual, HardwareInterface, ConnectorPresent FROM MSFT_NetAdapter");
         using (var s = new System.Management.ManagementObjectSearcher(scope, q, new System.Management.EnumerationOptions { Timeout = TimeSpan.FromSeconds(5) }))
         using (var all = s.Get())
             foreach (System.Management.ManagementObject a in all)
                 using (a)
                 {
-                    bool physical = !Flag(a["Virtual"]) && (Flag(a["HardwareInterface"]) || Flag(a["ConnectorPresent"]));
+                    bool physical = !Flag(a["Virtual"]) && Flag(a["HardwareInterface"]) && Flag(a["ConnectorPresent"]);
                     string desc = (a["InterfaceDescription"] as string) ?? "";
-                    if (!physical || Convert.ToUInt32(a["NdisMedium"] ?? 1u) != 0 || notWired.IsMatch(desc)) continue; // 0: 802.3
+                    if (!physical || Convert.ToUInt32(a["NdisPhysicalMedium"] ?? 0u) != 14) continue; // 14: NdisPhysicalMedium802_3
                     return new Adapter
                     {
                         Name = a["Name"] as string, Desc = desc, Index = Convert.ToInt32(a["InterfaceIndex"] ?? 0),
@@ -202,13 +209,15 @@ static class QuickSettings
         });
     }
 
-    // Kartı açıp kapatmak yönetici ister: kurulumun oluşturduğu görevler (LogicalLunge\Ethernet-On / -Off) izin sormaz
+    // Kartı açıp kapatmak yönetici ister. Çekirdek oturum açılışındaki görevden yönetici olarak başlar ve bunu kendisi
+    // yapar; yönetici değilse kurulumun görevleri (LogicalLunge\Ethernet-On / -Off: lunge.exe --eth) izin sormaz.
     public static string EthToggle()
     {
         Adapter a;
         try { a = Wired(); }
         catch (Exception ex) { Slider.Log("ethernet okunamadı: " + ex.GetBaseException().Message); a = null; }
         if (a == null) return "{\"ok\":false}";
+        if (UserLaunch.Elevated) return SetEth(a.Disabled) ? "{\"ok\":true,\"needSetup\":false}" : "{\"ok\":false,\"needSetup\":false}";
         string task = a.Disabled ? @"LogicalLunge\Ethernet-On" : @"LogicalLunge\Ethernet-Off";
         int code = -1;
         try
@@ -222,6 +231,29 @@ static class QuickSettings
         }
         catch (Exception ex) { Slider.Log("ethernet görevi başlatılamadı: " + ex.Message); }
         return code == 0 ? "{\"ok\":true,\"needSetup\":false}" : "{\"ok\":false,\"needSetup\":true}";
+    }
+
+    // lunge.exe --eth enable|disable (yönetici): fiziksel kablolu kartı MSFT_NetAdapter Enable/Disable ile açar / kapatır
+    public static bool SetEth(bool enable)
+    {
+        try
+        {
+            var scope = new System.Management.ManagementScope(@"root\StandardCimv2");
+            var q = new System.Management.ObjectQuery("SELECT * FROM MSFT_NetAdapter");
+            bool any = false;
+            using (var s = new System.Management.ManagementObjectSearcher(scope, q, new System.Management.EnumerationOptions { Timeout = TimeSpan.FromSeconds(5) }))
+            using (var all = s.Get())
+                foreach (System.Management.ManagementObject a in all)
+                    using (a)
+                    {
+                        bool physical = !Flag(a["Virtual"]) && Flag(a["HardwareInterface"]) && Flag(a["ConnectorPresent"]);
+                        if (!physical || Convert.ToUInt32(a["NdisPhysicalMedium"] ?? 0u) != 14) continue;
+                        var r = a.InvokeMethod(enable ? "Enable" : "Disable", null);
+                        if (Convert.ToUInt32(r ?? 1u) == 0) any = true;
+                    }
+            return any;
+        }
+        catch (Exception ex) { Slider.Log("ethernet " + (enable ? "açılamadı" : "kapatılamadı") + ": " + ex.GetBaseException().Message); return false; }
     }
 
     // ---------------- Bluetooth cihazları ----------------
