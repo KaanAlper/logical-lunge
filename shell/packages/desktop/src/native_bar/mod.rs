@@ -1153,6 +1153,17 @@ impl Ui {
       Some("ll:theme-dark") => false,
       Some("ll:tray-pins") => return self.reload_pins(),
       Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
+      // the core rewrote the app list (an app was installed or removed)
+      Some("ll:apps") => {
+        std::thread::spawn(|| {
+          if let Some((200, body)) = core_api::post("/apps.json") {
+            if let Ok(apps) = serde_json::from_slice::<Vec<icons::App>>(&body) {
+              send(Msg::Apps(apps));
+            }
+          }
+        });
+        return;
+      }
       None => {
         self.reload_pins();
         self.reload_custom_theme();

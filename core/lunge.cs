@@ -11764,8 +11764,14 @@ static class Program
             {
                 string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 string apps = Paths.AppsJson;
-                if (!System.IO.File.Exists(apps))
-                    Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--build-apps") { UseShellExecute = false, CreateNoWindow = true });
+                bool refresh = !System.IO.File.Exists(apps);
+                if (!refresh)
+                {
+                    var info = new System.IO.FileInfo(apps);
+                    refresh = info.Length <= 2 || info.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-1);
+                }
+                if (refresh) AppIndex.RebuildInBackground(System.IO.File.Exists(apps) ? "a day old" : "first run");
+                AppIndex.WatchStartMenu();
                 string colors = System.IO.Path.Combine(home, @".config\wezterm\ll-colors.lua");
                 string tc = Paths.Tool(@"termcolors\lunge-termcolors.exe");
                 if (!System.IO.File.Exists(colors) && System.IO.File.Exists(tc))
