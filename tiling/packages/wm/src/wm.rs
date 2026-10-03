@@ -839,6 +839,14 @@ impl WindowManager {
       }
     }
 
+    // Logical Lunge: and the windows hidden along with them.
+    #[cfg(target_os = "windows")]
+    for companion in self.state.hidden_companions.drain().flat_map(|(_, c)| c) {
+      if companion.is_valid() {
+        let _ = companion.show();
+      }
+    }
+
     // Ensure that the WM is unpaused, otherwise, shutdown commands won't
     // get executed.
     self.state.is_paused = false;

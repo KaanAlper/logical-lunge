@@ -12,9 +12,15 @@ use windows::{
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
-    System::Threading::{
-      OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-      PROCESS_QUERY_LIMITED_INFORMATION,
+    System::{
+      Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
+        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+      },
+      Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+      },
     },
     UI::{
       Input::KeyboardAndMouse::{
@@ -467,6 +473,57 @@ impl NativeWindow {
     }
   }
 
+  /// Implements [`NativeWindowWindowsExt::companions`].
+  pub(crate) fn companions(&self) -> Vec<crate::NativeWindow> {
+    let mut own_pid = 0;
+    unsafe { GetWindowThreadProcessId(self.hwnd(), Some(&raw mut own_pid)) };
+    let mut frame = RECT::default();
+    if own_pid == 0 || unsafe { GetWindowRect(self.hwnd(), &raw mut frame) }.is_err() {
+      return Vec::new();
+    }
+    let parents = process_parents();
+
+    let mut handles: Vec<isize> = Vec::new();
+    #[allow(clippy::items_after_statements)]
+    extern "system" fn collect(handle: HWND, data: LPARAM) -> BOOL {
+      let handles = data.0 as *mut Vec<isize>;
+      unsafe { (*handles).push(handle.0) };
+      true.into()
+    }
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(std::ptr::from_mut(&mut handles) as _)) };
+
+    handles
+      .into_iter()
+      .filter(|&handle| handle != self.handle)
+      .map(NativeWindow::new)
+      .filter(|w| {
+        let hwnd = w.hwnd();
+        if !unsafe { IsWindowVisible(hwnd) }.as_bool()
+          || unsafe { GetWindow(hwnd, GW_OWNER) }.0 != 0
+        {
+          return false;
+        }
+        let mut cloaked = 0u32;
+        let read = unsafe {
+          DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, std::ptr::from_mut(&mut cloaked).cast(), 4)
+        };
+        if read.is_err() || cloaked != 0 {
+          return false;
+        }
+        let mut pid = 0;
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
+        let mut rect = RECT::default();
+        is_descendant(pid, own_pid, &parents)
+          && unsafe { GetWindowRect(hwnd, &raw mut rect) }.is_ok()
+          && rect.left < frame.right
+          && frame.left < rect.right
+          && rect.top < frame.bottom
+          && frame.top < rect.bottom
+      })
+      .map(Into::into)
+      .collect()
+  }
+
   /// Implements [`NativeWindowWindowsExt::set_cloaked`].
   pub(crate) fn set_cloaked(&self, cloaked: bool) -> crate::Result<()> {
     COM_INIT.with(|com_init| -> crate::Result<()> {
@@ -864,6 +921,40 @@ impl From<NativeWindow> for crate::NativeWindow {
   }
 }
 
+/// Every process's parent (one snapshot; empty if it cannot be taken).
+fn process_parents() -> std::collections::HashMap<u32, u32> {
+  let mut parents = std::collections::HashMap::new();
+  let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+    return parents;
+  };
+  #[allow(clippy::cast_possible_truncation)]
+  let mut entry = PROCESSENTRY32W {
+    dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+    ..Default::default()
+  };
+  let mut more = unsafe { Process32FirstW(snapshot, &raw mut entry) }.is_ok();
+  while more {
+    parents.insert(entry.th32ProcessID, entry.th32ParentProcessID);
+    more = unsafe { Process32NextW(snapshot, &raw mut entry) }.is_ok();
+  }
+  let _ = unsafe { CloseHandle(snapshot) };
+  parents
+}
+
+/// Whether `pid` was started (directly or further down) by `ancestor`. The
+/// walk is bounded: a parent id can be reused by an unrelated process.
+fn is_descendant(pid: u32, ancestor: u32, parents: &std::collections::HashMap<u32, u32>) -> bool {
+  let mut current = pid;
+  for _ in 0..8 {
+    match parents.get(&current) {
+      Some(&parent) if parent == ancestor => return true,
+      Some(&parent) if parent != 0 && parent != current => current = parent,
+      _ => return false,
+    }
+  }
+  false
+}
+
 /// Implements [`Dispatcher::visible_windows`].
 pub(crate) fn visible_windows(
   _: &Dispatcher,
@@ -1032,4 +1123,44 @@ fn own_integrity() -> u32 {
     let _ = CloseHandle(token);
     level
   })
+}
+
+#[cfg(test)]
+mod companion_tests {
+  use std::collections::HashMap;
+
+  use super::is_descendant;
+
+  #[test]
+  fn descendants_follow_the_parent_chain() {
+    // generated trees: each of 8 processes has a lower id as its parent (0: none)
+    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+    for _ in 0..500 {
+      let mut parents = HashMap::new();
+      for pid in 1..=8u32 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        #[allow(clippy::cast_possible_truncation)]
+        parents.insert(pid, (seed >> 33) as u32 % pid);
+      }
+      for pid in 1..=8u32 {
+        let mut ancestors = Vec::new();
+        let mut current = pid;
+        while let Some(&parent) = parents.get(&current).filter(|&&p| p != 0) {
+          ancestors.push(parent);
+          current = parent;
+        }
+        for ancestor in 1..=8u32 {
+          assert_eq!(is_descendant(pid, ancestor, &parents), ancestors.contains(&ancestor), "{pid} / {ancestor} in {parents:?}");
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn a_reused_parent_id_ends_the_walk() {
+    let looped = HashMap::from([(1, 2), (2, 1), (5, 5)]);
+    assert!(!is_descendant(1, 3, &looped));
+    assert!(!is_descendant(5, 4, &looped));
+    assert!(is_descendant(1, 2, &looped));
+  }
 }

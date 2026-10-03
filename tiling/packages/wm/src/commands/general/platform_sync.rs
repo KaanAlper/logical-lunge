@@ -484,6 +484,11 @@ fn redraw_containers(
       tracing::warn!("Failed to set window position: {}", err);
     }
 
+    #[cfg(target_os = "windows")]
+    if config.value.general.hide_method == HideMethod::Cloak {
+      sync_companions(window, state);
+    }
+
     // Whether the window is either transitioning to or from fullscreen.
     // TODO: This check can be improved since `prev_state` can be
     // fullscreen without it needing to be marked as not fullscreen.
@@ -526,6 +531,37 @@ fn redraw_containers(
   }
 
   Ok(())
+}
+
+/// Logical Lunge: cloaking hides one window. Windows its app's own
+/// processes put over it (an embedded browser's input window) stayed up and
+/// kept catching the clicks on its area, on every workspace. They go when it
+/// starts hiding and come back when it starts showing; windows the WM
+/// manages are left to it.
+#[cfg(target_os = "windows")]
+fn sync_companions(window: &WindowContainer, state: &mut WmState) {
+  let key = window.native().hwnd().0;
+  match window.display_state() {
+    DisplayState::Hiding if !state.hidden_companions.contains_key(&key) => {
+      let managed = state.windows();
+      let hidden: Vec<_> = window
+        .native()
+        .companions()
+        .into_iter()
+        .filter(|c| !managed.iter().any(|w| w.native().id() == c.id()))
+        .filter(|c| c.hide().is_ok())
+        .collect();
+      if !hidden.is_empty() {
+        state.hidden_companions.insert(key, hidden);
+      }
+    }
+    DisplayState::Showing => {
+      for companion in state.hidden_companions.remove(&key).unwrap_or_default() {
+        let _ = companion.show();
+      }
+    }
+    _ => {}
+  }
 }
 
 fn reposition_window(
