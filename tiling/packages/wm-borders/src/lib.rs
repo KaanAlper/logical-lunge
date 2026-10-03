@@ -657,6 +657,36 @@ fn place_impl(hwnd: isize, left: i32, top: i32, right: i32, bottom: i32) {
     }
 }
 
+/// The focus outline is a moment, not a state: a window shows the active color for [`FOCUS_FLASH`] after it gets the
+/// focus (whatever moved it there: a click, the keyboard, a workspace switch) or the window manager moves it, then
+/// fades back to the inactive color like every other window.
+pub(crate) const FOCUS_FLASH: std::time::Duration = std::time::Duration::from_millis(800);
+static CUE: Mutex<(isize, Option<std::time::Instant>)> = Mutex::new((0, None));
+
+/// How much longer the border of `hwnd` shows the focus outline; None when it doesn't.
+pub(crate) fn cue_left(hwnd: isize) -> Option<std::time::Duration> {
+    let cue = CUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let since = cue.1.filter(|_| cue.0 == hwnd)?;
+    FOCUS_FLASH.checked_sub(since.elapsed()).filter(|left| !left.is_zero())
+}
+
+/// Shows the focus outline of `hwnd` for a moment: it got the focus, or the window manager moved it.
+pub fn cue(hwnd: isize) {
+    guarded("cue", (), || cue_impl(hwnd));
+}
+
+fn cue_impl(hwnd: isize) {
+    *CUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (hwnd, Some(std::time::Instant::now()));
+    if !ENGINE_READY.load(Ordering::Acquire) {
+        return;
+    }
+    if let Some(border) = utils::get_border_for_window(HWND(hwnd as _)) {
+        post_message_w(Some(border), utils::WM_APP_CUE, WPARAM(0), LPARAM(0))
+            .context("cue")
+            .log_if_err();
+    }
+}
+
 /// Hides the border of a window the window manager is hiding, in the same step as the window (the CLOAKED event
 /// would come a moment later, leaving the border on screen for a frame, e.g. on a workspace switch).
 pub fn hide(hwnd: isize) {
@@ -777,5 +807,21 @@ fn stop_impl() {
             WPARAM::default(),
             LPARAM::default(),
         );
+    }
+}
+
+#[cfg(test)]
+mod focus_outline {
+    use super::{FOCUS_FLASH, cue, cue_left};
+
+    #[test]
+    fn shows_for_a_moment_on_the_window_that_got_the_focus() {
+        cue(42);
+        assert!(cue_left(42).is_some_and(|left| left <= FOCUS_FLASH));
+        assert!(cue_left(43).is_none(), "other windows show no outline");
+        cue(43);
+        assert!(cue_left(42).is_none(), "only the window that got the focus last");
+        std::thread::sleep(FOCUS_FLASH);
+        assert!(cue_left(43).is_none(), "it goes off by itself");
     }
 }

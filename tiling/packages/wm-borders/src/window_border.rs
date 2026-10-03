@@ -38,7 +38,7 @@ use crate::config::{Offset, WindowRule, ZOrderMode};
 use crate::render_backend::{RenderBackend, RenderBackendConfig};
 use crate::utils::{
     LogIfErr, OwnedHWND, ReentrancyBlocker, ReentrancyBlockerExt, StandaloneWindowsError,
-    T_E_ERROR, T_E_REENTRANCY, T_E_UNINIT, ToWindowsResult, WM_APP_ANIMATE, WM_APP_FOREGROUND,
+    T_E_ERROR, T_E_REENTRANCY, T_E_UNINIT, ToWindowsResult, WM_APP_ANIMATE, WM_APP_CUE, WM_APP_FOREGROUND,
     WM_APP_HIDECLOAKED, WM_APP_LOCATIONCHANGE, WM_APP_MINIMIZEEND,
     WM_APP_MINIMIZESTART, WM_APP_PLACE, WM_APP_RECREATE_DRAWER, WM_APP_REORDER,
     WM_APP_SHOWUNCLOAKED,
@@ -50,6 +50,8 @@ use crate::utils::{
 use crate::APP_STATE;
 
 const REORDER_TIMER_ID: usize = 0;
+/// Ends the focus outline ([`crate::FOCUS_FLASH`]).
+const CUE_TIMER_ID: usize = 1;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub enum WindowState {
@@ -60,7 +62,8 @@ pub enum WindowState {
 
 impl WindowState {
     pub fn update(&mut self, self_hwnd: isize, active_hwnd: isize) {
-        if self_hwnd == active_hwnd {
+        // Active (the focus outline) only for a moment after the window got the focus or was moved
+        if self_hwnd == active_hwnd && crate::cue_left(self_hwnd).is_some() {
             *self = WindowState::Active;
         } else {
             *self = WindowState::Inactive;
@@ -463,6 +466,12 @@ impl WindowBorder {
             self.tracking_window.0 as isize,
             *APP_STATE.active_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        // The outline goes off by itself (whichever way it came on: a cue, a new border, a foreground change)
+        if let (WindowState::Active, Some(left)) =
+            (self.window_state, crate::cue_left(self.tracking_window.0 as isize))
+        {
+            unsafe { SetTimer(Some(self.border_window.0), CUE_TIMER_ID, left.as_millis() as u32 + 20, None) };
+        }
 
         match self
             .drawer
@@ -918,6 +927,20 @@ impl WindowBorder {
 
                     self.handle_reorder();
                 }
+                if wparam.0 == CUE_TIMER_ID {
+                    unsafe { KillTimer(Some(window), CUE_TIMER_ID) }.log_if_err();
+                    self.update_color(None);
+                    self.render().log_if_err();
+                }
+            }
+            // Focus outline: on now, off when the timer fires
+            WM_APP_CUE => {
+                if !is_window(Some(self.tracking_window)) {
+                    self.cleanup_and_queue_exit();
+                    return LRESULT(0);
+                }
+                self.update_color(None);
+                self.render().log_if_err();
             }
             // EVENT_SYSTEM_FOREGROUND
             WM_APP_FOREGROUND => {

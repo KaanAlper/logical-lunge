@@ -58,6 +58,8 @@ pub const WM_APP_SET_OFFSET: u32 = WM_APP + 12;
 pub const WM_APP_SET_RADIUS: u32 = WM_APP + 13;
 // Logical Lunge: the window manager moved the tracking window (target frame packed in WPARAM/LPARAM).
 pub const WM_APP_PLACE: u32 = WM_APP + 14;
+/// The window got the focus outline for a moment ([`crate::cue`]).
+pub const WM_APP_CUE: u32 = WM_APP + 15;
 
 // T_E_UNINIT indicates an uninitialized object, T_E_ERROR indicates a general error, and
 // T_E_REENTRANCY indicates re-entrancy where there shouldn't have been any. These custom HRESULTs

@@ -373,6 +373,9 @@ impl WindowManager {
                 state,
                 config,
               )?;
+              // It keeps the focus: show its outline for a moment as when
+              // the focus moves
+              wm_borders::cue(window.native().id().0 as isize);
             }
 
             if let Some(direction) = &args.workspace_in_direction {

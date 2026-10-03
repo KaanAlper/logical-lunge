@@ -110,7 +110,14 @@ pub fn handle_foreground_event(best_hwnd_guess: HWND, other_hwnd_guess: HWND) {
         true => best_hwnd_guess,
         false => other_hwnd_guess,
     };
-    *APP_STATE.active_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = new_active_hwnd.0 as isize;
+    let previous = std::mem::replace(
+        &mut *APP_STATE.active_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        new_active_hwnd.0 as isize,
+    );
+    // Focus moved to another window: its outline shows for a moment
+    if previous != new_active_hwnd.0 as isize {
+        crate::cue(new_active_hwnd.0 as isize);
+    }
 
     // Send foreground messages to all the border windows
     // TODO: I think only the previous focused and new focused actually need the message
