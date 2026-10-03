@@ -9,7 +9,7 @@ function Get-BumpLevel([string[]]$commits) {
     $level = 'patch'
     foreach ($c in $commits) {
         if (-not $c) { continue }
-        if ($c -match '(?m)^\w+(\([^)]*\))?!:' -or $c -match '(?m)^BREAKING[ -]CHANGE:') { return 'major' }
+        if ($c -match '(?m)^\w+(\([^)]*\))?!:' -or $c -match '(?m)^BREAKING[ -]CHANGE: \S') { return 'major' }
         if ($c -match '(?m)^feat(\([^)]*\))?:') { $level = 'minor' }
     }
     $level
