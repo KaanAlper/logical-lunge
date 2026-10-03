@@ -74,6 +74,8 @@ impl Model {
       ..Default::default()
     };
     m.read_prefs(&prefs);
+    // before any window is made: they are all sized with it
+    super::scale::set_percent(super::scale::from_pref(prefs["uiScale"].as_u64()));
     m.tick_clock();
     m
   }

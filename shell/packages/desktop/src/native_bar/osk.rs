@@ -406,7 +406,8 @@ fn primary_monitor() -> Option<(RECT, u32)> {
 
 fn make(gfx: &Gfx) -> anyhow::Result<Osk> {
   let (mon, dpi) = primary_monitor().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
-  let scale = dpi as f32 / 96.0;
+  // the interface scale can make it wider than the monitor: then it shrinks as one
+  let scale = crate::native_bar::scale::fit_scale(crate::native_bar::scale::of_dpi(dpi), panel_w() + 2.0 * SHADOW, mon.right - mon.left);
   let w = ((panel_w() + 2.0 * SHADOW) * scale).ceil() as i32;
   let h = ((panel_h() + SHADOW + BOTTOM) * scale).ceil() as i32;
   let x = mon.left + (mon.right - mon.left - w) / 2;

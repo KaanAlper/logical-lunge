@@ -312,6 +312,14 @@ impl Ui {
           set_pref("clock", json!(v), true);
         }
       }
+      Key::UiScale => {
+        let v = crate::native_bar::scale::STEPS[i.min(crate::native_bar::scale::STEPS.len() - 1)];
+        // the core writes it, moves the window manager's top gap with the
+        // bar and announces ll:prefs: every window is made again at once
+        if s.s["uiScale"].as_u64() != Some(v as u64) {
+          set_pref("uiScale", json!(v), false);
+        }
+      }
       Key::NightMode => {
         let v = ["manual", "after", "range"][i.min(2)];
         night(&["--nightlight-set", "mode", v]);

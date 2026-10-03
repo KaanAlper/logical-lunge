@@ -61,6 +61,19 @@ static class CoreRegression
         Check(ShellTakeover.TryParse(withAh, out saved, out autoHide) && autoHide == 3, "Auto-hide state did not survive the record");
     }
 
+    static void UiScaleTests() {
+        Check(UiScale.Valid(100) && UiScale.Valid(125) && !UiScale.Valid(101) && !UiScale.Valid(0), "uiScale steps were misjudged");
+        Check(UiScale.TopGap(100) == 45 && UiScale.TopGap(125) == 55 && UiScale.TopGap(85) == 39, "Top gap must be the bar's height plus 5");
+        string yaml = "gaps:\n  scale_with_dpi: true\n  inner_gap: '8px'\n  outer_gap:\n    top: '45px'\n    right: '5px'\n";
+        string next = UiScale.WithTopGap(yaml, 55);
+        Check(next.Contains("    top: '55px'") && next.Contains("right: '5px'") && next.Contains("inner_gap: '8px'"), "outer_gap top was not rewritten alone: " + next);
+        string reordered = "  outer_gap:\r\n    left: '5px'\r\n    top: 45px\r\n";
+        Check(UiScale.WithTopGap(reordered, 60).Contains("top: '60px'"), "top after another side was missed");
+        string none = "gaps:\n  inner_gap: '8px'\n";
+        Check(UiScale.WithTopGap(none, 60) == none, "A config without outer_gap must stay as it is");
+        Check(UiScale.Percent(new Dictionary<string, object> { { "uiScale", 125 } }) == 125 && UiScale.Percent(new Dictionary<string, object> { { "uiScale", 7 } }) == 100, "uiScale pref read wrongly");
+    }
+
     static void DialogTests() {
         string err;
         var d = Dialogs.Parse("kind=question&title=Silinsin%20mi%3F&body=a+b&buttons=Sil|Vazge%C3%A7&default=1&cancel=1&check=Bir%20daha%20sorma&checked=1", out err);
@@ -108,6 +121,7 @@ static class CoreRegression
 
     static void Main() {
         TakeoverTests();
+        UiScaleTests();
         DialogTests();
         LauncherTests();
         string response = Request("POST", "/focus-color?v=invalid", "http://127.0.0.1:6124");

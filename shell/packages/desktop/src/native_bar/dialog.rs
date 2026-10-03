@@ -264,7 +264,7 @@ fn target_monitor() -> (RECT, f32) {
     let _ = GetMonitorInfoW(mon, &mut info);
     let (mut dx, mut dy) = (96u32, 96u32);
     let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-    (info.rcMonitor, dx as f32 / 96.0)
+    (info.rcMonitor, crate::native_bar::scale::of_dpi(dx))
   }
 }
 

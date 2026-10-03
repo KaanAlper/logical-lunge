@@ -159,7 +159,7 @@ impl Ui {
     let mons = monitors();
     let here = mon_for(&mons, &self.widgets.wins[wi].device);
     let Some(cur) = here else { return };
-    let scale = cur.dpi as f32 / 96.0;
+    let scale = crate::native_bar::scale::of_dpi(cur.dpi);
     let (dx, dy) = ((now.x - d_from.x) as f32 / scale, (now.y - d_from.y) as f32 / scale);
     if dx.abs() < 2.0 && dy.abs() < 2.0 && !self.widgets.wins[wi].drag.as_ref().is_some_and(|d| d.moved) {
       return;
@@ -183,7 +183,7 @@ impl Ui {
         let device = String::from_utf16_lossy(&info.szDevice[..end]);
         if !device.eq_ignore_ascii_case(&cur.device) {
           if let Some(m) = mon_for(&mons, &device) {
-            let s2 = m.dpi as f32 / 96.0;
+            let s2 = crate::native_bar::scale::of_dpi(m.dpi);
             // the grab point stays under the cursor
             let gx = (d_from.x - cur.work.left) as f32 / scale - d_start.0;
             let gy = (d_from.y - cur.work.top) as f32 / scale - d_start.1;
@@ -216,7 +216,7 @@ impl Ui {
   pub(super) fn widget_apply(&mut self, wi: usize, m: &Mon) {
     let id = self.widgets.wins[wi].id;
     let Some((x, y, w, h)) = self.spec(id).map(|s| s.rect()) else { return };
-    let scale = m.dpi as f32 / 96.0;
+    let scale = crate::native_bar::scale::of_dpi(m.dpi);
     let (px, py) = (m.work.left + (x * scale).round() as i32, m.work.top + (y * scale).round() as i32);
     let (pw, ph) = ((w * scale).round() as u32, (h * scale).round() as u32);
     let win = &mut self.widgets.wins[wi];

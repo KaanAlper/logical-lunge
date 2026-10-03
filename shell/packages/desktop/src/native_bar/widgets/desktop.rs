@@ -49,7 +49,7 @@ pub(super) fn mon_for(mons: &[Mon], device: &str) -> Option<Mon> {
 }
 
 pub(super) fn area_dip(m: &Mon) -> (f32, f32) {
-  let s = m.dpi as f32 / 96.0;
+  let s = crate::native_bar::scale::of_dpi(m.dpi);
   ((m.work.right - m.work.left) as f32 / s, (m.work.bottom - m.work.top) as f32 / s)
 }
 

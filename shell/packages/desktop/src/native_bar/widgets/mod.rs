@@ -239,7 +239,7 @@ impl Ui {
     if own {
       (spec.x, spec.y, spec.w, spec.h) = (x, y, w, h);
     }
-    let scale = m.dpi as f32 / 96.0;
+    let scale = crate::native_bar::scale::of_dpi(m.dpi);
     let (px, py) = (m.work.left + (x * scale).round() as i32, m.work.top + (y * scale).round() as i32);
     let (pw, ph) = ((w * scale).round() as u32, (h * scale).round() as u32);
     let (hwnd, target, root, layer) = match make_window(&self.gfx, px, py, pw, ph) {

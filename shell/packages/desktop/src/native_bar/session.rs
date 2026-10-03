@@ -191,7 +191,7 @@ pub(super) struct Session {
 
 fn make_win(gfx: &Gfx, rect: RECT, dpi: u32, primary: bool) -> anyhow::Result<Win> {
   let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-  let scale = dpi as f32 / 96.0;
+  let scale = crate::native_bar::scale::of_dpi(dpi);
   let fit = ((w as f32 / scale - 32.0) / (ROW_W + 2.0 * SHADOW)).clamp(0.4, 1.0);
   let row_scale = scale * fit;
   let ex = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | if primary { WINDOW_EX_STYLE(0) } else { WS_EX_NOACTIVATE };

@@ -279,6 +279,16 @@ fn look(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Result<f3
   }
   y += ch;
 
+  // the interface scale: every native window at the monitor's DPI times this
+  y = cx.sec_title(x, y, "Boyut")?;
+  let steps = crate::native_bar::scale::STEPS;
+  let current = crate::native_bar::scale::from_pref(s.s["uiScale"].as_u64());
+  let chosen = steps.iter().position(|p| *p == current).unwrap_or(2);
+  let rows = [Row::new("format_size", "Arayüz ölçeği".into())
+    .sub("Bar, paneller, menüler, bildirimler, yazılar ve widget'lar birlikte büyür ya da küçülür".into())
+    .ctrl(Ctrl::Seg(Key::UiScale, steps.iter().map(|p| (format!("%{p}"), None)).collect(), chosen))];
+  y += cx.card(x, y, w, &rows, 0.0)?;
+
   y = cx.sec_title(x, y, "Hareket")?;
   let mut rows = vec![Row::new("animation", "Animasyonlar".into())
     .sub("Workspace kaymaları, pencere açma / kapama / taşıma ve menü geçişleri".into())

@@ -3538,6 +3538,10 @@ static class Prefs
             case "toastError":
                 if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) || n < 1 || n > ToastMax) return false;
                 val = n; break;
+            // arayüz ölçeği (yüzde): UiScale.Steps'ten biri
+            case "uiScale":
+                if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) || !UiScale.Valid(n)) return false;
+                val = n; break;
             default: return false;
         }
         lock (gate)
@@ -3561,7 +3565,54 @@ static class Prefs
             if (!Files.WriteAtomic(FilePath, new JavaScriptSerializer().Serialize(d))) return false;
         }
         Load();
+        if (key == "uiScale") UiScale.Apply((int)val);
         return true;
+    }
+}
+
+// Arayüz ölçeği (prefs.json "uiScale", yüzde): native kabuk her pencereyi monitörün DPI ölçeği × bu oranla çizer. Bar
+// bu oranla uzayınca pencere yöneticisinin üst boşluğu (config.yaml > gaps > outer_gap > top) da yeniden yazılır ve
+// yapılandırma yeniden yüklenir: döşenen pencereler barın altına girmez. Boşluk DPI ile ölçeklenir (scale_with_dpi),
+// bar da: ikisi aynı DIP değerinde kalır.
+static class UiScale
+{
+    public static readonly int[] Steps = { 85, 90, 100, 110, 125, 150 };
+    const double BarDip = 40, Margin = 5;
+
+    public static bool Valid(int pct) { return Array.IndexOf(Steps, pct) >= 0; }
+
+    public static int Percent(Dictionary<string, object> prefs)
+    {
+        object v;
+        return prefs.TryGetValue("uiScale", out v) && v is int && Valid((int)v) ? (int)v : 100;
+    }
+
+    // barın yüksekliği + kenar boşluğu (DIP)
+    public static int TopGap(int pct) { return (int)Math.Round(BarDip * pct / 100.0 + Margin); }
+
+    static readonly System.Text.RegularExpressions.Regex topLine = new System.Text.RegularExpressions.Regex(
+        @"(^[ \t]*outer_gap:[ \t]*\r?\n(?:[ \t]+(?:right|bottom|left):.*\r?\n)*[ \t]+top:[ \t]*)'?\d+px'?",
+        System.Text.RegularExpressions.RegexOptions.Multiline);
+
+    // config.yaml metninde outer_gap'in top değeri; bulunamazsa metin olduğu gibi döner
+    public static string WithTopGap(string yaml, int px)
+    {
+        return topLine.Replace(yaml, m => m.Groups[1].Value + "'" + px + "px'", 1);
+    }
+
+    public static void Apply(int pct)
+    {
+        try
+        {
+            string path = Paths.ConfigFile;
+            if (!System.IO.File.Exists(path)) return;
+            string text = System.IO.File.ReadAllText(path);
+            string next = WithTopGap(text, TopGap(pct));
+            if (next == text) return;
+            if (!Files.WriteAtomic(path, next)) { Slider.Log("arayüz ölçeği: config.yaml yazılamadı"); return; }
+            try { new TilingClient().Command("wm-reload-config"); } catch (Exception ex) { Slider.Log("arayüz ölçeği: " + ex.Message); }
+        }
+        catch (Exception ex) { Slider.Log("arayüz ölçeği: " + ex.Message); }
     }
 }
 
@@ -4161,6 +4212,8 @@ static class ConfigWatch
     {
         Prefs.Load();
         Anims.Load();
+        // pencere yöneticisinin üst boşluğu arayüz ölçeğinin barıyla aynı olsun (config.yaml elle ya da sürümle değiştiyse)
+        ThreadPool.QueueUserWorkItem(_ => UiScale.Apply(UiScale.Percent(Prefs.Read())));
         try
         {
             watcher = new System.IO.FileSystemWatcher(Paths.ConfigDir) { NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.Size };

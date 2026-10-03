@@ -42,6 +42,7 @@ use super::{
   icons::{data_url_bytes, App},
   model,
   popup,
+  scale,
   search::{self, Act, Clip, Glyph, Item, Prefix},
   view::{Align, Painter, Theme},
   wm::{self, WmState},
@@ -571,13 +572,20 @@ impl Overview {
     (self.monitor.right - self.monitor.left) as f32 / self.scale
   }
 
+  /// The results list's tallest size: LIST_MAX, or what is left below the
+  /// search bar on a monitor that is short at this scale (the interface
+  /// scale or a small screen).
+  fn list_max(&self) -> f32 {
+    let above = ((TOP + BAR + 1.0 + SHADOW + 8.0) * self.scale).ceil() as i32;
+    scale::fit(LIST_MAX, self.monitor.bottom - self.monitor.top - above, self.scale).max(ROW + 2.0 * LIST_PAD)
+  }
+
   /// The box's width for its text: narrow while empty.
   fn target_width(&self) -> f32 {
-    if self.edit.chars.is_empty() && self.comp.is_empty() {
-      W_COLLAPSED
-    } else {
-      W_EXPANDED
-    }
+    let w = if self.edit.chars.is_empty() && self.comp.is_empty() { W_COLLAPSED } else { W_EXPANDED };
+    // never wider than the monitor leaves room for
+    let margins = ((2.0 * SHADOW + 16.0) * self.scale).ceil() as i32;
+    scale::fit(w, self.monitor.right - self.monitor.left - margins, self.scale)
   }
 
   /// The width now, part way through its transition (the elementMove curve
@@ -633,7 +641,7 @@ impl Overview {
 
   /// Rows that fit in the list (max-height 600, padding 10).
   fn visible_rows(&self) -> usize {
-    (((LIST_MAX - 2.0 * LIST_PAD) + ROW_GAP) / (ROW + ROW_GAP)).floor() as usize
+    (((self.list_max() - 2.0 * LIST_PAD) + ROW_GAP) / (ROW + ROW_GAP)).floor().max(1.0) as usize
   }
 
   fn list_height(&self) -> f32 {
@@ -1626,7 +1634,7 @@ fn overview_monitor(wm: &WmState) -> (RECT, f32) {
     let _ = GetMonitorInfoW(mon, &mut mi);
     let (mut dx, mut dy) = (96u32, 96u32);
     let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-    (mi.rcMonitor, dx as f32 / 96.0)
+    (mi.rcMonitor, crate::native_bar::scale::of_dpi(dx))
   }
 }
 

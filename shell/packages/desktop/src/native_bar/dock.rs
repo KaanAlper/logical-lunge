@@ -270,7 +270,7 @@ impl Dock {
 
 fn make_window(gfx: &Gfx, rect: RECT, dpi: u32) -> anyhow::Result<(HWND, IDCompositionTarget, IDCompositionVisual2, Layer, f32, f32, f32, f32, f32)> {
   let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-  let scale = dpi as f32 / 96.0;
+  let scale = crate::native_bar::scale::of_dpi(dpi);
   let screen_w = w as f32 / scale;
   let surface_w = screen_w.min(MAX_W + 2.0 * SHADOW);
   let ex = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;

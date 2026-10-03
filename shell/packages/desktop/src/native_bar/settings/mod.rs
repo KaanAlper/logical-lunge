@@ -79,6 +79,7 @@ pub(super) const PAGE_HEALTH: usize = 5;
 pub(super) enum Key {
   Theme,
   Clock,
+  UiScale,
   NightMode,
   WsMode,
 }
@@ -223,7 +224,7 @@ fn make_window(gfx: &gfx::Gfx) -> anyhow::Result<(HWND, f32, IDCompositionTarget
     .or_else(|| layout.first().copied())
     .ok_or_else(|| anyhow::anyhow!("no monitor"))?;
   let (mw, mh) = ((right - left) as f32, (bottom - top) as f32);
-  let dpi_scale = dpi as f32 / 96.0;
+  let dpi_scale = crate::native_bar::scale::of_dpi(dpi);
   let (ww, wh) = (CARD_W + 2.0 * M, CARD_H + 2.0 * M);
   let fit = ((mw / dpi_scale - 24.0) / ww).min((mh / dpi_scale - 24.0) / wh).clamp(0.5, 1.0);
   let scale = dpi_scale * fit;
@@ -389,6 +390,11 @@ impl Settings {
 
 impl Ui {
   /// `ll:settings-toggle` (the right panel's gear)
+  /// Shown and not closing.
+  pub(super) fn settings_is_open(&self) -> bool {
+    self.settings.as_ref().is_some_and(|s| !s.closing)
+  }
+
   pub(super) fn settings_toggle(&mut self) {
     match &self.settings {
       Some(s) if !s.closing => self.settings_close(),

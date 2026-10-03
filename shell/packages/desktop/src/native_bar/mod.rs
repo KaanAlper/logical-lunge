@@ -22,6 +22,7 @@ mod mixer;
 mod model;
 mod palette;
 mod popup;
+mod scale;
 mod overview;
 mod pops;
 mod search;
@@ -1401,7 +1402,7 @@ impl Ui {
     unsafe {
       let (mut dx, mut dy) = (96u32, 96u32);
       let _ = GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
-      let scale = dx as f32 / 96.0;
+      let scale = crate::native_bar::scale::of_dpi(dx);
       let w = rc.right - rc.left;
       let h = (view::BAR_H * scale).round() as i32;
       let y = rc.top + if self.demo { (45.0 * scale).round() as i32 } else { 0 };
@@ -1730,11 +1731,32 @@ impl Ui {
   fn reload_custom_theme(&mut self) {
     let prefs = model::prefs(&self.pack_dir);
     self.model.read_prefs(&prefs);
+    if scale::set_percent(scale::from_pref(prefs["uiScale"].as_u64())) {
+      return self.ui_scale_changed();
+    }
     self.custom_theme = Some(palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light));
     self.redraw_all();
     self.pops_repaint();
     self.overview_render();
     self.settings_restyle();
+  }
+
+  /// The interface scale changed (Settings > Görünüm): every window is made
+  /// again at the new size, as after a DPI change; an open settings window
+  /// comes back on its page so the change can be judged at once.
+  fn ui_scale_changed(&mut self) {
+    let settings_open = self.settings_is_open();
+    self.menu_close();
+    self.session_destroy();
+    self.dialog_destroy_all();
+    self.settings_destroy();
+    self.osk_destroy();
+    self.dock_destroy();
+    self.create_bars();
+    self.overview_recreate_window();
+    if settings_open {
+      self.settings_toggle();
+    }
   }
 
   fn set_light(&mut self, light: bool) {
