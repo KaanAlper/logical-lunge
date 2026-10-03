@@ -414,6 +414,62 @@ impl Drop for NewMenu {
   }
 }
 
+/// The "New" menu's entries as last read: (label, verb). Reading them takes
+/// the handler 0.2-0.35 s, too long for a menu that opens on a click, so it
+/// happens on a worker (at start, and after each use for the next one).
+static NEW_ENTRIES: std::sync::Mutex<Option<Vec<(String, String)>>> = std::sync::Mutex::new(None);
+
+/// COM for a worker thread, in the apartment the shell's handlers expect.
+struct Sta;
+
+impl Sta {
+  fn new() -> Self {
+    unsafe {
+      let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+    }
+    Sta
+  }
+}
+
+impl Drop for Sta {
+  fn drop(&mut self) {
+    unsafe { windows::Win32::System::Com::CoUninitialize() };
+  }
+}
+
+/// The entries as last read (None until the first read is done).
+pub fn new_entries() -> Option<Vec<(String, String)>> {
+  NEW_ENTRIES.lock().ok()?.clone()
+}
+
+/// Reads the entries again, on a worker.
+pub fn refresh_new_entries() {
+  std::thread::spawn(|| {
+    let _com = Sta::new();
+    if let Some((_, items)) = NewMenu::open(None) {
+      if let Ok(mut entries) = NEW_ENTRIES.lock() {
+        *entries = Some(items.into_iter().map(|i| (i.label, i.verb)).collect());
+      }
+    }
+  });
+}
+
+/// Makes the entry (found by its verb and label) at `at` (screen), on a
+/// worker: Explorer's view comes along, so the handler places the new item
+/// there and starts its rename.
+pub fn make_new(label: String, verb: String, at: POINT) {
+  std::thread::spawn(move || {
+    let _com = Sta::new();
+    let desk = Desktop::open();
+    let Some((menu, items)) = NewMenu::open(desk.as_ref()) else { return };
+    let item = items.iter().find(|i| i.verb == verb && i.label == label).or_else(|| items.iter().find(|i| i.verb == verb));
+    match item {
+      Some(i) => menu.invoke(i.id, at, desk.as_ref().map(Desktop::window).unwrap_or_default()),
+      None => tracing::warn!("Desktop: new item {:?} is gone from the New menu", label),
+    }
+  });
+}
+
 impl Desktop {
   /// Explorer's window for the desktop's icons (the owner of its dialogs).
   pub fn window(&self) -> HWND {
@@ -429,6 +485,26 @@ mod tests {
   fn mnemonic_marks_go_and_a_doubled_one_stays() {
     for (raw, label) in [("&Klasör", "Klasör"), ("A && B", "A & B"), ("Metin &Belgesi", "Metin Belgesi"), ("&&&x", "&x")] {
       assert_eq!(without_mnemonics(raw), label);
+    }
+  }
+
+  #[test]
+  #[ignore = "times this machine's desktop menu steps (Explorer's view, the New menu handler)"]
+  fn times_the_desktop_menu_steps() {
+    unsafe {
+      let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+    }
+    for round in 0..3 {
+      let t = std::time::Instant::now();
+      let desk = Desktop::open();
+      let open = t.elapsed();
+      let t = std::time::Instant::now();
+      let _ = desk.as_ref().map(|d| (d.item_at(POINT { x: 400, y: 400 }), d.icon_size(), d.flags(), d.sorted_by()));
+      let view = t.elapsed();
+      let t = std::time::Instant::now();
+      let new = NewMenu::open(desk.as_ref()).map_or(0, |(_, items)| items.len());
+      let new_menu = t.elapsed();
+      println!("round {round}: Desktop::open {open:?}, view reads {view:?}, NewMenu::open {new_menu:?} ({new} items)");
     }
   }
 

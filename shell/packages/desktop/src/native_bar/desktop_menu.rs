@@ -28,7 +28,7 @@ use windows::{
 
 use super::{
   core_api,
-  desktop_shell::{Desktop, Entry, NewMenu, PKEY_DATE, PKEY_NAME, PKEY_SIZE, PKEY_TYPE},
+  desktop_shell::{self, Desktop, Entry, PKEY_DATE, PKEY_NAME, PKEY_SIZE, PKEY_TYPE},
   menu::{Item, MenuFocus},
   Ui,
 };
@@ -262,23 +262,25 @@ impl Ui {
       Item::new("sort:date", None, tr("Değiştirme tarihi")).checked(is_sorted(PKEY_DATE)).enabled(have),
     ];
     // Windows' own "New" menu (what the installed apps registered, in its
-    // order); ours only when its handler cannot be had
-    let new_menu = NewMenu::open(d.as_ref()).filter(|(_, items)| !items.is_empty());
-    let new = match &new_menu {
-      Some((_, items)) => {
+    // order), as last read; read again for the next time (it is slow to read,
+    // so never on the way to this menu). Ours only until it has been read.
+    let new_entries = desktop_shell::new_entries().filter(|e| !e.is_empty());
+    desktop_shell::refresh_new_entries();
+    let new = match &new_entries {
+      Some(entries) => {
         let mut list = Vec::new();
-        for (i, it) in items.iter().enumerate() {
+        for (i, (label, verb)) in entries.iter().enumerate() {
           // folder and shortcut, then the file types (a type's verb is its extension)
-          let file = it.verb.starts_with('.');
-          if i > 0 && file != items[i - 1].verb.starts_with('.') {
+          let file = verb.starts_with('.');
+          if i > 0 && file != entries[i - 1].1.starts_with('.') {
             list.push(Item::sep());
           }
-          let icon = match it.verb.as_str() {
+          let icon = match verb.as_str() {
             "NewFolder" => "create_new_folder",
             "NewLink" => "shortcut",
             _ => "description",
           };
-          list.push(Item::new(&format!("new:{}", it.id), Some(icon), it.label.clone()));
+          list.push(Item::new(&format!("new:{i}"), Some(icon), label.clone()));
         }
         list
       }
@@ -308,8 +310,8 @@ impl Ui {
     let link_suffix = tr("Kısayol");
     self.menu_open(at, MenuFocus::Take, items, move |ui, id| {
       let d = d.as_ref();
-      if let (Some((menu, _)), Some(n)) = (&new_menu, id.strip_prefix("new:").and_then(|n| n.parse::<u32>().ok())) {
-        return menu.invoke(n, at, d.map(Desktop::window).unwrap_or_default());
+      if let Some((label, verb)) = id.strip_prefix("new:").and_then(|n| n.parse::<usize>().ok()).and_then(|n| new_entries.as_ref()?.get(n)) {
+        return desktop_shell::make_new(label.clone(), verb.clone(), at);
       }
       match id {
         "wallpaper" => crate::bus::publish(crate::bus::Event::SidebarOpenPage("walls".into())),

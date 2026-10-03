@@ -454,6 +454,8 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
       std::thread::sleep(Duration::from_secs(2));
     }
   });
+  // the desktop menu's "New" entries are slow to read: ready before the first right click
+  desktop_shell::refresh_new_entries();
 
   let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<(), String>>();
   std::thread::Builder::new().name("native-ui-guard".into()).spawn(move || {
