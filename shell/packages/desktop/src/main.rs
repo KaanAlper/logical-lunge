@@ -107,12 +107,21 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
   // without a bar and the core brings Windows' taskbar and Start menu back.
   #[cfg(windows)]
   if native_bar != "off" {
+    // the shell's own events (cards, panel pages, the keyboard) reach the bar
+    bus::subscribe(native_bar::on_bus);
+    let opts = native_bar::Options { pack_dir, demo, native_overview: !demo };
     if !demo && native_bar::crash_loop() {
-      error!("Native bar: it failed at the last starts; no bar this time (the core brings Windows' taskbar back).");
+      // The shell kept dying right after starting: run without the bar for
+      // a while (the core gives Windows' taskbar back), then try it again —
+      // giving up for good left the desktop barless until a restart.
+      error!("Native bar: the shell died at its last starts; the bar is tried again in {} s.", CRASH_LOOP_PAUSE.as_secs());
+      std::thread::spawn(move || {
+        std::thread::sleep(CRASH_LOOP_PAUSE);
+        if let Err(err) = native_bar::start(manager, opts) {
+          error!("Native bar: start after the pause failed: {:?}", err);
+        }
+      });
     } else {
-      // the shell's own events (cards, panel pages, the keyboard) reach the bar
-      bus::subscribe(native_bar::on_bus);
-      let opts = native_bar::Options { pack_dir, demo, native_overview: !demo };
       // waits up to a few seconds for the first bars (not on a runtime thread)
       let started = tokio::task::block_in_place(|| native_bar::start(manager, opts));
       // A failed first start is logged; the bar's guard goes on trying.
@@ -126,6 +135,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 
   Ok(())
 }
+
+/// How long a shell that kept dying at start runs without the bar.
+#[cfg(windows)]
+const CRASH_LOOP_PAUSE: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// One shell per session: a second start (the core's watchdog racing a
 /// user's start) ends at once. The mutex lives as long as the process.

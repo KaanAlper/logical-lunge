@@ -3251,31 +3251,11 @@ static class Orphans
 }
 
 // ---------------- Shell nöbetçisi ----------------
-// Bar ve tüm paneller shell'de. shell hiç açılmazsa (ör. yeni kurulumda PATH) ya da açık olduğu halde widget sunucusu
-// (127.0.0.1:6124) çalışmıyorsa (port o an önceki shell'de kaldıysa sunucusuz açılıyor, bar "bağlantı reddedildi"
-// gösteriyordu) masaüstü yarım kalmasın: tiling çalışıyorken iki ardışık kontrolde (~10 sn) sorun sürerse shell'i temiz
-// biçimde (port boşalana kadar bekleyip) yeniden başlat. Art arda başarısızlıkta beklemeyi uzatır.
+// Bar ve tüm paneller shell'de. shell hiç açılmazsa ya da barları birkaç saniyede bir verdikleri canlılık bildirimini
+// kesmişse masaüstü yarım kalmasın: tiling çalışıyorken iki ardışık kontrolde (~10 sn) sorun sürerse shell'i yeniden
+// başlat. Art arda başarısızlıkta beklemeyi uzatır.
 static class ShellWatchdog
 {
-    const int PORT = 6124;
-
-    static bool PortOpen()
-    {
-        try
-        {
-            using (var c = new System.Net.Sockets.TcpClient())
-            {
-                var ar = c.BeginConnect("127.0.0.1", PORT, null, null);
-                bool ok = ar.AsyncWaitHandle.WaitOne(700) && c.Connected;
-                try { c.EndConnect(ar); } catch { ok = false; }
-                // bekleme tutamacı çöp toplayıcıya kalmasın (5 sn'de bir çağrılıyor)
-                try { ar.AsyncWaitHandle.Close(); } catch { }
-                return ok;
-            }
-        }
-        catch { return false; }
-    }
-
     static List<Process> Shells()
     {
         return new List<Process>(Process.GetProcessesByName(Names.Shell));
@@ -3373,9 +3353,6 @@ static class ShellWatchdog
     public static void Restart(string why)
     {
         foreach (var p in Shells()) { try { p.Kill(); p.WaitForExit(3000); } catch { } finally { p.Dispose(); } }
-        // Önceki süreç portu bırakana kadar bekle (yoksa yeni shell da sunucusuz açılabiliyor)
-        var sw = Stopwatch.StartNew();
-        while (PortOpen() && sw.ElapsedMilliseconds < 5000) Thread.Sleep(200);
         StartShell(why);
     }
 
@@ -3393,7 +3370,8 @@ static class ShellWatchdog
                     if (!TilingRunning()) { bad = 0; continue; } // tiling kapalıyken (çıkış / yeniden başlatma) karışma
                     if (Maint.Quiet() || TilingWatchdog.Recovering) { bad = 0; continue; }
                     var shell = Find(Names.Shell);
-                    string problem = shell == null ? "shell çalışmıyordu" : !PortOpen() ? "widget sunucusu (6124) yanıt vermiyordu" : SilentBars(shell);
+                    // native kabukta web sunucusu (eskiden 6124) yok: canlılığı barların kendi bildirimi söyler
+                    string problem = shell == null ? "shell çalışmıyordu" : SilentBars(shell);
                     if (problem != null && problem.StartsWith("bar ")) lock (barAlive) barAlive.Clear(); // yeniden başlayınca sayım sıfırdan
                     if (problem == null) { bad = 0; failures = 0; continue; }
                     if (++bad < 2) continue;
