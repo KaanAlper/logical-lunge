@@ -1,6 +1,6 @@
 # Logical Lunge - build a release package: dist\LogicalLunge-<version>.zip (+ .sha256)
 # Build machine needs: Windows 10/11 x64 (.NET Framework 4.8 csc is built in), Windows 10 SDK (lunge-media.exe),
-# Rust (rustup; tiling and shell), Python 3.12 (packaged tools) and Node.js (translations).
+# Rust (rustup; tiling and shell), Python 3.12 (packaged tools) and Node.js (the translations file).
 #
 # Package layout (app\ is copied as is to %ProgramFiles%\LogicalLunge):
 #   app\lunge.exe, lunge-tiling.exe, lunge-tiling-cli.exe, lunge-tiling-watcher.exe, lunge-shell.exe,
@@ -97,9 +97,8 @@ if (-not $SkipRust) {
     try { Native { cargo build --release -p wm -p wm-cli -p wm-watcher } 'tiling' }
     finally { Pop-Location }
     Copy-Item "$root\tiling\target\release\lunge-tiling.exe", "$root\tiling\target\release\lunge-tiling-cli.exe", "$root\tiling\target\release\lunge-tiling-watcher.exe" $app
-    Step 'lunge-shell (widget host)'
-    # tauri-build merges this into tauri.conf.json: the exe carries the release version
-    $env:TAURI_CONFIG = '{"version":"' + ($ver -replace '[^0-9.]', '') + '"}'
+    Step 'lunge-shell (bar, panels) + lunge-wallpaper'
+    # VERSION_NUMBER (above) goes into lunge-shell.exe's version resource (its build.rs)
     Push-Location "$root\shell"
     try { Native { cargo build --release -p lunge-shell -p lunge-wallpaper } 'shell' }
     finally { Pop-Location }
@@ -117,14 +116,11 @@ foreach ($exe in 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watch
 # the video screen saver: the same player under a .scr name (it switches by its own name)
 Copy-Item (Join-Path $app 'lunge-wallpaper.exe') (Join-Path $app 'LogicalLunge.scr') -Force
 
-Step 'UI (widgets bundled with their libraries and fonts; translations)'
-# React, the Tauri API and the shell client are bundled in (ui\build.mjs): nothing is loaded from the network
-Push-Location "$root\ui"
-try {
-    Native { npm ci --no-audit --no-fund } 'npm ci (ui)'
-    Native { node build.mjs $pack } 'ui build'
-}
-finally { Pop-Location }
+Step 'UI data (fonts and translations the native shell and the core read)'
+# no web pages: the bar, menus and panels are drawn natively from these
+Native { node "$root\ui\i18n.src.js" } 'translations (ui\i18n.json)'
+Copy-Item "$root\ui\fonts.css", "$root\ui\i18n.json" $pack
+Copy-Item "$root\ui\fonts" $pack -Recurse
 
 Step 'Scripts, configs, installer'
 Copy-Item "$root\scripts\*.ps1" "$app\scripts\"
