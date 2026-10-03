@@ -1,4 +1,4 @@
-//! `lunge-shell [startup] [--config-dir <ui folder>] [-v | -q | --log-level <level>]`
+//! `lunge-shell [startup] [--config-dir <ui folder>] [--planned] [-v | -q | --log-level <level>]`
 //!
 //! The core starts the shell without arguments; `startup` is still accepted
 //! from older launchers and changes nothing.
@@ -22,6 +22,11 @@ pub struct Cli {
   /// to the executable.
   #[clap(long, value_hint = clap::ValueHint::DirPath)]
   pub config_dir: Option<PathBuf>,
+
+  /// The core restarted the shell on purpose (a preference applied): this
+  /// start does not count towards the bar's crash-loop guard.
+  #[clap(long, hide = true)]
+  pub planned: bool,
 
   /// Logging verbosity.
   #[clap(flatten)]

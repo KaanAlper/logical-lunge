@@ -3343,17 +3343,18 @@ static class ShellWatchdog
     // web içeriği yönetici olmaz ve kabuğun açtığı her şey (uygulamalar, komutlar) kullanıcı haklarıyla açılır.
     // Oturum açılışında Gezgin henüz hazır değilse 20 sn'ye kadar bekler. (ShellExecute: çekirdeğin tutamaçları kabuğa
     // miras kalmaz.)
-    public static void StartShell(string why)
+    // planned: istenerek yeniden başlatma (bir tercih uygulandı); kabuk bunu çöküş döngüsü sayısına katmaz
+    public static void StartShell(string why, bool planned = false)
     {
         if (!System.IO.File.Exists(Paths.Shell)) { Slider.Log("shell nöbetçisi: " + why + ", " + Paths.Shell + " bulunamadı"); return; }
-        if (UserLaunch.StartWhenReady(Paths.Shell, "", Paths.Home, 20000)) Slider.Log("shell nöbetçisi: " + why + ", başlatıldı");
+        if (UserLaunch.StartWhenReady(Paths.Shell, planned ? "--planned" : "", Paths.Home, 20000)) Slider.Log("shell nöbetçisi: " + why + ", başlatıldı");
         else Slider.Log("shell nöbetçisi: " + why + ", başlatılamadı");
     }
 
-    public static void Restart(string why)
+    public static void Restart(string why, bool planned = false)
     {
         foreach (var p in Shells()) { try { p.Kill(); p.WaitForExit(3000); } catch { } finally { p.Dispose(); } }
-        StartShell(why);
+        StartShell(why, planned);
     }
 
     public static void Start()
@@ -5299,7 +5300,7 @@ static class Toasts
                 // Ayarlar penceresi: dil / saat biçimi / animasyon tercihi widget'lar yeniden açılınca uygulanır
                 else if (act == "restart-shell" && SelfHeal.IsMain)
                 {
-                    ThreadPool.QueueUserWorkItem(_ => ShellWatchdog.Restart("tercihler değişti"));
+                    ThreadPool.QueueUserWorkItem(_ => ShellWatchdog.Restart("tercihler değişti", true));
                     status = "202 Accepted";
                 }
                 // Sağ paneli bir sayfasıyla aç (lunge.exe --open-page; video ekran koruyucusunun "Ayarlar"ı): olay akışıyla

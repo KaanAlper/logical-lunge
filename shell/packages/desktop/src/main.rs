@@ -76,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
 
 /// Starts the providers and the native bar.
 async fn run(cli: Cli) -> anyhow::Result<()> {
+  let cli_planned = cli.planned;
   // The UI ships with the app, in `ui` next to the exe; native code reads
   // its fonts and translations from `ui\logical-lunge`.
   let ui_dir = match cli.config_dir {
@@ -110,7 +111,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     // the shell's own events (cards, panel pages, the keyboard) reach the bar
     bus::subscribe(native_bar::on_bus);
     let opts = native_bar::Options { pack_dir, demo, native_overview: !demo };
-    if !demo && native_bar::crash_loop() {
+    if !demo && !cli_planned && native_bar::crash_loop() {
       // The shell kept dying right after starting: run without the bar for
       // a while (the core gives Windows' taskbar back), then try it again —
       // giving up for good left the desktop barless until a restart.
