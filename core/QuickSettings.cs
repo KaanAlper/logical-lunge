@@ -248,8 +248,9 @@ static class QuickSettings
                     {
                         bool physical = !Flag(a["Virtual"]) && Flag(a["HardwareInterface"]) && Flag(a["ConnectorPresent"]);
                         if (!physical || Convert.ToUInt32(a["NdisPhysicalMedium"] ?? 0u) != 14) continue;
-                        var r = a.InvokeMethod(enable ? "Enable" : "Disable", null);
-                        if (Convert.ToUInt32(r ?? 1u) == 0) any = true;
+                        // (ad, giriş, seçenek) biçimi: (ad, null) çağrıyı göndermeden NullReferenceException atıyordu
+                        var r = a.InvokeMethod(enable ? "Enable" : "Disable", null, null);
+                        if (r != null && Convert.ToUInt32(r["ReturnValue"] ?? 1u) == 0) any = true;
                     }
             return any;
         }
