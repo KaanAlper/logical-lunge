@@ -569,7 +569,7 @@ impl Ui {
         save(&self.widgets.store);
       }
       TIMER_WIDGETS_WEATHER => self.widgets_weather_due(),
-      _ => {
+      TIMER_WIDGETS_TICK => {
         if !locked() {
           if self.widgets.store.widgets.iter().any(|s| s.kind == Kind::System) {
             self.widgets_read_temps();
@@ -581,6 +581,7 @@ impl Ui {
         }
         self.widgets_schedule();
       }
+      _ => {}
     }
   }
 

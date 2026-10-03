@@ -92,77 +92,102 @@ use crate::providers::{
 };
 
 const HASH_PREFIX: &str = "native-ui:";
-const WM_APP_WAKE: u32 = WM_APP + 1;
-const WM_APP_REBUILD: u32 = WM_APP + 2;
-/// the tray panel's click-away hooks: close it
-const WM_APP_TRAY_CLOSE: u32 = WM_APP + 3;
-const WM_APP_DRAG_HOVER: u32 = WM_APP + 4;
-const WM_APP_DRAG_LEAVE: u32 = WM_APP + 5;
-const TIMER_CLOCK: usize = 1;
-const TIMER_REBUILD: usize = 2;
-const TIMER_OSD: usize = 3;
-const TIMER_ALIVE: usize = 4;
-const TIMER_RECOVER: usize = 5;
-/// demo only (`LL_NATIVE_BAR_CYCLE=1`): fakes workspace switches to measure the pill animation
-const TIMER_CYCLE: usize = 6;
-const TIMER_POP_CLOSE: usize = 7;
-const TIMER_POP_HIDE: usize = 8;
-/// open popup: media clock (1 s) / temperatures (2 s)
-const TIMER_POP_TICK: usize = 9;
-const TIMER_TRAY_HIDE: usize = 10;
-const TIMER_TIP: usize = 11;
-/// running for a minute: the start is not part of a crash loop
-const TIMER_STABLE: usize = 12;
-/// test only (`LL_NATIVE_BAR_FAIL_AFTER=<s>`): the first bar panics in its
-/// window procedure after that many seconds, to check that a new bar is built
-const TIMER_TEST_FAIL: usize = 13;
-/// test only: waits for the app list before `LL_NATIVE_OVERVIEW_SHOT`
-const TIMER_SNAPSHOT: usize = 14;
-const TIMER_DRAG_DWELL: usize = 15;
-const TIMER_WS_NUMBERS: usize = 16;
+
+/// Ids that the windows' one procedure tells apart (the message window's
+/// timers, our window messages), each named once: they are numbered here,
+/// `base + 1`, `base + 2` ... in this order, so no two of a kind share one.
+/// Two timers once had the same hand-picked number: the dialog's close timer
+/// took the right panel's, the closed panel's window was never destroyed and
+/// stayed on screen, invisible, catching clicks. The procedure names every id
+/// it routes (no ranges), so a new id never lands in another's handler.
+macro_rules! numbered {
+  ($kind:ident: $ty:ty = $base:expr; $($(#[$doc:meta])* $name:ident,)*) => {
+    #[allow(non_camel_case_types, dead_code)]
+    #[repr(usize)]
+    enum $kind {
+      Base,
+      $($name,)*
+    }
+    $($(#[$doc])* const $name: $ty = $base + $kind::$name as $ty;)*
+  };
+}
+
+numbered! { AppMessage: u32 = WM_APP;
+  WM_APP_WAKE,
+  WM_APP_REBUILD,
+  /// the tray panel's click-away hooks: close it
+  WM_APP_TRAY_CLOSE,
+  WM_APP_DRAG_HOVER,
+  WM_APP_DRAG_LEAVE,
+}
+
+numbered! { Timer: usize = 0;
+  TIMER_CLOCK,
+  TIMER_REBUILD,
+  TIMER_OSD,
+  TIMER_ALIVE,
+  TIMER_RECOVER,
+  /// demo only (`LL_NATIVE_BAR_CYCLE=1`): fakes workspace switches to measure the pill animation
+  TIMER_CYCLE,
+  TIMER_POP_CLOSE,
+  TIMER_POP_HIDE,
+  /// open popup: media clock (1 s) / temperatures (2 s)
+  TIMER_POP_TICK,
+  TIMER_TRAY_HIDE,
+  TIMER_TIP,
+  /// running for a minute: the start is not part of a crash loop
+  TIMER_STABLE,
+  /// test only (`LL_NATIVE_BAR_FAIL_AFTER=<s>`): the first bar panics in its
+  /// window procedure after that many seconds, to check that a new bar is built
+  TIMER_TEST_FAIL,
+  /// test only: waits for the app list before `LL_NATIVE_OVERVIEW_SHOT`
+  TIMER_SNAPSHOT,
+  TIMER_DRAG_DWELL,
+  TIMER_WS_NUMBERS,
+  /// the volume mixer's levels while it is open
+  TIMER_MIXER_TICK,
+  TIMER_MIXER_HIDE,
+  /// notification cards: deadlines, slides out, cards waiting for a game
+  TIMER_TOASTS,
+  /// the update check: a minute after the start, then every six hours
+  TIMER_UPDATE,
+  /// the update card: its own timeouts and animations while it is up
+  TIMER_UPDATE_TICK,
+  /// the session screen faded out: its windows go
+  TIMER_SESSION_CLOSE,
+  /// the on-screen keyboard slid out: its window goes
+  TIMER_OSK_CLOSE,
+  /// the Dock's icons growing toward the pointer
+  TIMER_DOCK_TICK,
+  /// the Dock faded out: its window goes
+  TIMER_DOCK_CLOSE,
+  /// the settings window faded out: it goes
+  TIMER_SETTINGS_CLOSE,
+  /// slider values sent a moment after the last move
+  TIMER_SETTINGS_COMMIT,
+  /// the health page reads the core again while it is looked at
+  TIMER_SETTINGS_HEALTH,
+  /// "saved" under the workspace settings goes
+  TIMER_SETTINGS_SAVED,
+  /// an answered dialog faded out: its window goes, the next one opens
+  TIMER_DIALOG_CLOSE,
+  /// the right panel: its slide out is over (the window goes), a page slid
+  /// back, frames while something on it moves, the clock of its timer and
+  /// lists, a touchpad swipe on a notification ended
+  TIMER_SB_CLOSE,
+  TIMER_SB_PAGE,
+  TIMER_SB_FRAME,
+  TIMER_SB_TICK,
+  TIMER_SB_WHEEL,
+  /// desktop widgets: their clock (each second or minute), a save after a
+  /// move, the weather's half-hourly read
+  TIMER_WIDGETS_TICK,
+  TIMER_WIDGETS_SAVE,
+  TIMER_WIDGETS_WEATHER,
+}
+
 /// how long the workspace dots and numbers take to swap
 const NUMBERS_FADE: Duration = Duration::from_millis(140);
-/// the volume mixer's levels while it is open
-const TIMER_MIXER_TICK: usize = 17;
-const TIMER_MIXER_HIDE: usize = 18;
-/// notification cards: deadlines, slides out, cards waiting for a game
-const TIMER_TOASTS: usize = 19;
-/// the update check: a minute after the start, then every six hours
-const TIMER_UPDATE: usize = 20;
-/// the update card: its own timeouts and animations while it is up
-const TIMER_UPDATE_TICK: usize = 21;
-/// the session screen faded out: its windows go
-const TIMER_SESSION_CLOSE: usize = 22;
-/// the on-screen keyboard slid out: its window goes (an id of its own:
-/// other panels add timers next to the session's)
-const TIMER_OSK_CLOSE: usize = 40;
-/// the Dock's icons growing toward the pointer
-const TIMER_DOCK_TICK: usize = 50;
-/// the Dock faded out: its window goes
-const TIMER_DOCK_CLOSE: usize = 51;
-/// the settings window faded out: it goes
-const TIMER_SETTINGS_CLOSE: usize = 60;
-/// an answered dialog faded out: its window goes, the next one opens
-const TIMER_DIALOG_CLOSE: usize = 70;
-/// slider values sent a moment after the last move
-const TIMER_SETTINGS_COMMIT: usize = 61;
-/// the health page reads the core again while it is looked at
-const TIMER_SETTINGS_HEALTH: usize = 62;
-/// "saved" under the workspace settings goes
-const TIMER_SETTINGS_SAVED: usize = 63;
-/// the right panel: its slide out is over (the window goes), a page slid
-/// back, frames while something on it moves, the clock of its timer and
-/// lists, a touchpad swipe on a notification ended
-const TIMER_SB_CLOSE: usize = 70;
-const TIMER_SB_PAGE: usize = 71;
-const TIMER_SB_FRAME: usize = 72;
-const TIMER_SB_TICK: usize = 73;
-const TIMER_SB_WHEEL: usize = 74;
-/// desktop widgets: their clock (each second or minute), a save after a
-/// move, the weather's half-hourly read
-const TIMER_WIDGETS_TICK: usize = 80;
-const TIMER_WIDGETS_SAVE: usize = 81;
-const TIMER_WIDGETS_WEATHER: usize = 82;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// The first four tray icons are pinned until the user moves them.
@@ -940,8 +965,10 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_OSK_CLOSE => self.osk_destroy(),
         WM_TIMER if wp.0 == TIMER_DOCK_TICK => self.dock_tick(),
         WM_TIMER if wp.0 == TIMER_DOCK_CLOSE => self.dock_destroy(),
-        WM_TIMER if (TIMER_SB_CLOSE..=TIMER_SB_WHEEL).contains(&wp.0) => self.sidebar_timer(wp.0),
-        WM_TIMER if (TIMER_WIDGETS_TICK..=TIMER_WIDGETS_WEATHER).contains(&wp.0) => self.widgets_timer(wp.0),
+        WM_TIMER if matches!(wp.0, TIMER_SB_CLOSE | TIMER_SB_PAGE | TIMER_SB_FRAME | TIMER_SB_TICK | TIMER_SB_WHEEL) => {
+          self.sidebar_timer(wp.0)
+        }
+        WM_TIMER if matches!(wp.0, TIMER_WIDGETS_TICK | TIMER_WIDGETS_SAVE | TIMER_WIDGETS_WEATHER) => self.widgets_timer(wp.0),
         WM_TIMER if wp.0 == TIMER_WS_NUMBERS => {
           // frames while the numbers fade in or out; nothing between
           let now = Instant::now();
