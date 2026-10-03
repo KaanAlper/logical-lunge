@@ -4526,6 +4526,7 @@ static class DesktopRestart
     [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
     [DllImport("kernel32.dll")] static extern bool ProcessIdToSessionId(uint pid, out uint session);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int tokenInfoClass, out int tokenInfo, int tokenInfoLength, out int returnLength);
     [DllImport("kernel32.dll")] static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint pid);
     [DllImport("kernel32.dll")] static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);
     [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint code);
@@ -4622,13 +4623,6 @@ static class DesktopRestart
     static bool StartOwnToken(string exe, string args, ref STARTUPINFO startup, out PROCESS_INFORMATION info)
     {
         info = new PROCESS_INFORMATION();
-        // CreateProcess with BREAKAWAY_FROM_JOB and CreateProcessWithTokenW both
-        // fail with ERROR_ACCESS_DENIED when the scheduler's job restricts breakaway
-        // and secondary logon. WMI Win32_Process.Create breaks out of the job but
-        // cannot preserve elevation (Medium Integrity), failing the Peer check.
-        // A temporary task with the same user's HighestAvailable principal starts
-        // the child elevated, outside any job, without a UAC prompt.
-        // The child connects back through the restart pipe; WaitCandidate verifies it.
         string taskName = "Restart-" + Guid.NewGuid().ToString("N").Substring(0, 8);
         object service = null, folder = null, regTask = null, run = null;
         try
@@ -4636,6 +4630,25 @@ static class DesktopRestart
             service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
             Com(service, "Connect", false, null, null, null, null);
             folder = Com(service, "GetFolder", false, @"\LogicalLunge");
+            try
+            {
+                object tasks = Com(folder, "GetTasks", false, 1);
+                int count = Convert.ToInt32(Com(tasks, "Count", true));
+                for (int i = 1; i <= count; i++)
+                {
+                    object t = Com(tasks, "get_Item", false, i);
+                    try
+                    {
+                        string name = (string)Com(t, "Name", true);
+                        if (name.StartsWith("Restart-") && Convert.ToInt32(Com(t, "State", true)) != 4)
+                            Com(folder, "DeleteTask", false, name, 0);
+                    }
+                    catch { }
+                    finally { ReleaseCom(t); }
+                }
+                ReleaseCom(tasks);
+            }
+            catch { }
             using (var own = System.Security.Principal.WindowsIdentity.GetCurrent())
             {
                 string xml = "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" +
@@ -4655,31 +4668,46 @@ static class DesktopRestart
                     "<Arguments>" + System.Security.SecurityElement.Escape(args ?? "") + "</Arguments>" +
                     "<WorkingDirectory>" + System.Security.SecurityElement.Escape(Paths.Home) + "</WorkingDirectory>" +
                     "</Exec></Actions></Task>";
-                // TASK_CREATE = 2, TASK_LOGON_INTERACTIVE_TOKEN = 3
                 regTask = Com(folder, "RegisterTask", false, taskName, xml, 2, null, null, 3, null);
             }
             run = Com(regTask, "RunEx", false, null, 4, Process.GetCurrentProcess().SessionId, null);
+            if (run != null)
+            {
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try
+                    {
+                        Thread.Sleep(30000);
+                        object s = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+                        Com(s, "Connect", false, null, null, null, null);
+                        object f = Com(s, "GetFolder", false, @"\LogicalLunge");
+                        Com(f, "DeleteTask", false, taskName, 0);
+                        ReleaseCom(f); ReleaseCom(s);
+                    }
+                    catch { }
+                });
+            }
             return run != null;
         }
         catch (Exception ex)
         {
             Slider.Log("restart temp-task: " + ex.GetBaseException().Message);
+            try { if (folder != null) Com(folder, "DeleteTask", false, taskName, 0); } catch { }
             return false;
         }
         finally
         {
             ReleaseCom(run); ReleaseCom(regTask);
-            try { if (folder != null) Com(folder, "DeleteTask", false, taskName, 0); } catch { }
             ReleaseCom(folder); ReleaseCom(service);
         }
     }
-
     // Validate both pipe peers using OS identity, never a claimed PID or elevation in a message.
     static bool Peer(uint pid, bool requireElevated)
     {
         uint session;
-        if (!ProcessIdToSessionId(pid, out session) || session != Process.GetCurrentProcess().SessionId ||
-            !string.Equals(ProcInfo.Path(pid), Paths.Core, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!ProcessIdToSessionId(pid, out session) || session != Process.GetCurrentProcess().SessionId) return false;
+        string path = ProcInfo.Path(pid);
+        if (!string.Equals(path, Paths.Core, StringComparison.OrdinalIgnoreCase)) return false;
         IntPtr process = OpenProcess(0x1000, false, pid), token = IntPtr.Zero;
         if (process == IntPtr.Zero) return false;
         try
@@ -4687,8 +4715,13 @@ static class DesktopRestart
             if (!OpenProcessToken(process, 8, out token)) return false;
             using (var identity = new System.Security.Principal.WindowsIdentity(token))
             using (var own = System.Security.Principal.WindowsIdentity.GetCurrent())
-                return identity.User == own.User && (!requireElevated || new System.Security.Principal.WindowsPrincipal(identity)
-                    .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator));
+            {
+                if (identity.User != own.User) return false;
+                if (!requireElevated) return true;
+                int isElevated = 0, returnLength = 0;
+                // TokenElevation = 20. Win32 TokenElevation works directly on primary tokens without throwing.
+                return GetTokenInformation(token, 20, out isElevated, 4, out returnLength) && isElevated != 0;
+            }
         }
         catch { return false; }
         finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
@@ -4723,7 +4756,7 @@ static class DesktopRestart
             }
             try
             {
-                if (peer() && ReadSignal(pipe, (byte)'R', Math.Min(1000, Math.Max(0, timeout - (int)clock.ElapsedMilliseconds))))
+                if (peer() && ReadSignal(pipe, (byte)'R', Math.Min(5000, Math.Max(0, timeout - (int)clock.ElapsedMilliseconds))))
                     return true;
             }
             catch (System.IO.IOException) { }
@@ -4849,7 +4882,7 @@ static class DesktopRestart
         bool connected = false;
         try
         {
-            pipe.Connect(required ? 1500 : 150); connected = true;
+            pipe.Connect(required ? 3000 : 500); connected = true;
             uint server;
             if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out server) || !Peer(server, false) ||
                 !UserLaunch.Elevated || !System.IO.File.Exists(Paths.Tiling) || !System.IO.File.Exists(Paths.Shell)) return false;
