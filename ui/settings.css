@@ -209,6 +209,7 @@ input[type="time"] {
 .about .logo { width: 64px; height: 64px; border-radius: 18px; background: #1d1b20; display: grid; place-items: center; position: relative; flex: none; }
 .about .logo i { position: absolute; background: #d0bcff; border-radius: 5px; }
 .about h2 { margin: 0; font-size: 22px; font-weight: normal; font-variation-settings: 'wght' 560; }
+.about .edition { display: inline-block; margin-inline-start: 12px; color: var(--m3onSurfaceVariant); font-size: 12.5px; font-variation-settings: 'wght' 450; vertical-align: baseline; }
 .about .sub { color: var(--m3onSurfaceVariant); }
 /* Workspace order and monitor assignments */
 .ws-count { display: inline-flex; height: 36px; border: 1px solid var(--m3outlineVariant); border-radius: 12px; overflow: hidden; }
