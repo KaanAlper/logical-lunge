@@ -17,7 +17,10 @@ static class AppIndex
 {
     const int ICON_SIZE = 48;
     static readonly Regex skip = new Regex(@"(uninstall|kaldır|readme|beni oku|help|yardım|documentation|belgeler|release notes|license|lisans|website|web sitesi|manual|kılavuz|changelog|what's new)", RegexOptions.IgnoreCase);
-    static readonly Regex document = new Regex(@"\.(txt|pdf|html?|chm|url|md|rtf)$", RegexOptions.IgnoreCase);
+    static readonly Regex document = new Regex(@"\.(txt|pdf|html?|chm|md|rtf)$", RegexOptions.IgnoreCase);
+    // Bir .url kısayolu web sayfası açıyorsa elenir; steam://, com.epicgames.launcher:// gibi bir programı başlatanlar
+    // (Steam / Epic / itch oyunları ve uygulamaları Başlat menüsüne .lnk değil .url koyar) listede kalır.
+    static readonly Regex webTarget = new Regex(@"^(https?|ftp|file|mailto):", RegexOptions.IgnoreCase);
     static readonly Regex exeName = new Regex(@"\\([^\\]+)\.exe$", RegexOptions.IgnoreCase);
     // Görünmez karakterler (bazı oyun adlarında sıfır genişlikli boşluk var: "4<ZWSP>42"; aranınca bulunmuyordu)
     static readonly Regex invisible = new Regex("[­​-‏⁠-⁤﻿]");
@@ -125,6 +128,34 @@ static class AppIndex
     [DllImport("shell32.dll")] static extern int SHGetKnownFolderPath(ref Guid id, uint flags, IntPtr token, out IntPtr path);
     static readonly Regex knownFolder = new Regex(@"^\{([0-9A-Fa-f-]{36})\}(\\.*)?$");
 
+    // AppsFolder kimliğinden kısayol dosyasının yolu ("{bilinen klasör}\alt\ad.url" ya da tam yol)
+    static string PathOf(string id)
+    {
+        var m = knownFolder.Match(id);
+        if (m.Success)
+        {
+            var guid = new Guid(m.Groups[1].Value);
+            IntPtr p;
+            if (SHGetKnownFolderPath(ref guid, 0, IntPtr.Zero, out p) != 0) return null;
+            try { return Marshal.PtrToStringUni(p) + m.Groups[2].Value; } finally { Marshal.FreeCoTaskMem(p); }
+        }
+        return id.Length > 3 && id[1] == ':' && id[2] == '\\' ? id : null;
+    }
+
+    // Bir İnternet kısayolunun ([InternetShortcut] URL=) açtığı adres; okunamazsa null
+    static string UrlOf(string id)
+    {
+        try
+        {
+            string path = PathOf(id);
+            if (path == null || !System.IO.File.Exists(path)) return null;
+            foreach (var line in System.IO.File.ReadAllLines(path))
+                if (line.StartsWith("URL=", StringComparison.OrdinalIgnoreCase)) return line.Substring(4).Trim();
+        }
+        catch (Exception) { }
+        return null;
+    }
+
     // Uygulamanın dosyası (Super menüsünün "Dosya konumunu aç" maddesi): kısayolun hedefi, ya da kimliğin kendisi bir yol
     // ("{bilinen klasör}\alt\uygulama.exe" ya da "C:\...\uygulama.exe"). Mağaza uygulamalarında yok.
     static string FileOf(object it, string id)
@@ -189,6 +220,11 @@ static class AppIndex
                     if (!string.IsNullOrEmpty(name) && localized.TryGetValue(name.ToLower(), out loc) && loc != name) { also = name; name = loc; }
                     if (string.IsNullOrEmpty(name) || skip.IsMatch(name)) continue;
                     if (Regex.IsMatch(id, "^https?:", RegexOptions.IgnoreCase) || document.IsMatch(id)) continue;
+                    if (id.EndsWith(".url", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string url = UrlOf(id);
+                        if (string.IsNullOrEmpty(url) || webTarget.IsMatch(url)) continue;
+                    }
                     if (!seen.Add(name.ToLower())) continue;
                     string exe = null;
                     var m = exeName.Match(id);
@@ -234,5 +270,82 @@ static class AppIndex
         }
         finally { if (System.IO.File.Exists(temp)) System.IO.File.Delete(temp); }
         return apps.Count;
+    }
+
+    // ---- Yenileme: listeyi ayrı bir süreç (lunge.exe --build-apps, STA ve COM) yazar. Aynı anda tek tarama; tarama
+    // sürerken gelen istek bittiğinde bir kez daha tarar.
+    static readonly object rebuildLock = new object();
+    static bool scanning, again;
+
+    public static void RebuildInBackground(string reason)
+    {
+        lock (rebuildLock)
+        {
+            if (scanning) { again = true; return; }
+            scanning = true;
+        }
+        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+        {
+            while (true)
+            {
+                try
+                {
+                    var psi = new System.Diagnostics.ProcessStartInfo(System.Windows.Forms.Application.ExecutablePath, "--build-apps")
+                    {
+                        UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
+                        WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+                    };
+                    using (var scan = System.Diagnostics.Process.Start(psi))
+                    {
+                        try { scan.PriorityClass = System.Diagnostics.ProcessPriorityClass.BelowNormal; } catch (Exception) { }
+                        string error = scan.StandardError.ReadToEnd();
+                        scan.WaitForExit();
+                        string apps = Paths.AppsJson;
+                        if (scan.ExitCode != 0 || !System.IO.File.Exists(apps) || new System.IO.FileInfo(apps).Length <= 2)
+                            Slider.Log("apps index failed (" + reason + ", exit " + scan.ExitCode + "): " + (error.Length > 300 ? error.Substring(0, 300) : error));
+                        else Toasts.Emit("ll:apps"); // kabuk listeyi hemen yeniden okur
+                    }
+                }
+                catch (Exception ex) { Slider.Log("apps index (" + reason + "): " + ex.Message); }
+                lock (rebuildLock)
+                {
+                    if (!again) { scanning = false; return; }
+                    again = false;
+                }
+            }
+        });
+    }
+
+    // Başlat menüsü klasörleri izlenir: bir uygulama kurulunca / kaldırılınca liste birkaç saniye sonra kendiliğinden
+    // yenilenir (eskiden yalnızca açılışta ve günde bir; yeni kurulan uygulama ertesi güne kadar aranamıyordu). Bir
+    // kurulum art arda çok dosya yazar: son değişiklikten 4 sn sonra bir kez taranır.
+    static readonly List<System.IO.FileSystemWatcher> watchers = new List<System.IO.FileSystemWatcher>();
+    static System.Threading.Timer settle;
+
+    public static void WatchStartMenu()
+    {
+        settle = new System.Threading.Timer(_ => RebuildInBackground("start menu changed"), null, System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+        foreach (var dir in new[] {
+            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"Microsoft\Windows\Start Menu\Programs"),
+            System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Windows\Start Menu\Programs") })
+        {
+            if (!System.IO.Directory.Exists(dir)) continue;
+            try
+            {
+                var w = new System.IO.FileSystemWatcher(dir)
+                {
+                    IncludeSubdirectories = true,
+                    NotifyFilter = System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.DirectoryName | System.IO.NotifyFilters.LastWrite
+                };
+                System.IO.FileSystemEventHandler changed = (o, e) => settle.Change(4000, System.Threading.Timeout.Infinite);
+                w.Created += changed; w.Deleted += changed; w.Changed += changed;
+                w.Renamed += (o, e) => settle.Change(4000, System.Threading.Timeout.Infinite);
+                // arabellek taştıysa (çok büyük kurulum) yine bir kez taranır
+                w.Error += (o, e) => settle.Change(4000, System.Threading.Timeout.Infinite);
+                w.EnableRaisingEvents = true;
+                watchers.Add(w);
+            }
+            catch (Exception ex) { Slider.Log("apps index: cannot watch " + dir + ": " + ex.Message); }
+        }
     }
 }

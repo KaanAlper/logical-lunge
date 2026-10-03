@@ -11865,31 +11865,8 @@ static class Program
                     var info = new System.IO.FileInfo(apps);
                     refresh = info.Length <= 2 || info.LastWriteTimeUtc < DateTime.UtcNow.AddDays(-1);
                 }
-                if (refresh)
-                {
-                    var psi = new ProcessStartInfo(Application.ExecutablePath, "--build-apps")
-                    {
-                        UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
-                        WorkingDirectory = home
-                    };
-                    var scan = Process.Start(psi);
-                    if (scan != null)
-                    {
-                        try { scan.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
-                        ThreadPool.QueueUserWorkItem(__ =>
-                        {
-                            try
-                            {
-                                string error = scan.StandardError.ReadToEnd();
-                                scan.WaitForExit();
-                                if (scan.ExitCode != 0 || !System.IO.File.Exists(apps) || new System.IO.FileInfo(apps).Length <= 2)
-                                    Slider.Log("apps index failed (exit " + scan.ExitCode + "): " + (error.Length > 300 ? error.Substring(0, 300) : error));
-                            }
-                            catch (Exception ex) { Slider.Log("apps index: " + ex.Message); }
-                            finally { scan.Dispose(); }
-                        });
-                    }
-                }
+                if (refresh) AppIndex.RebuildInBackground(System.IO.File.Exists(apps) ? "a day old" : "first run");
+                AppIndex.WatchStartMenu();
                 string colors = System.IO.Path.Combine(home, @".config\wezterm\ll-colors.lua");
                 string tc = Paths.Tool(@"termcolors\lunge-termcolors.exe");
                 if (!System.IO.File.Exists(colors) && System.IO.File.Exists(tc))

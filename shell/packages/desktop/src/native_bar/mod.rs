@@ -255,6 +255,22 @@ fn monitor_layout() -> Vec<(i32, i32, i32, i32, u32)> {
 }
 static SONGREC_CHILD: Mutex<Option<(u64, std::process::Child)>> = Mutex::new(None);
 
+/// Reads the Super menu's app list from the core and hands it to the bar;
+/// false while the indexer has not written one yet.
+fn fetch_apps() -> bool {
+  let Some((200, body)) = core_api::post("/apps.json") else { return false };
+  if body.len() <= 2 {
+    return false;
+  }
+  let Ok(apps) = serde_json::from_slice::<Vec<icons::App>>(&body) else { return false };
+  if apps.is_empty() {
+    return false;
+  }
+  remember(|l| l.apps = Some(apps.clone()));
+  send(Msg::Apps(apps));
+  true
+}
+
 /// The bar cannot go on (a panic, the graphics device never came back). Its
 /// UI thread ends (its windows go with it) and `start`'s guard builds a new
 /// bar; the shell and the other panels are not touched.
@@ -462,23 +478,11 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
     core_api::CoreEvent::Dialog(d) => send(Msg::Dialog(d)),
   });
 
-  // The indexer can finish after the shell starts. Ignore its temporary []
-  // response, then notice later app installs without restarting the bar.
+  // The indexer can finish after the shell starts: until it has, its []
+  // answer is ignored and asked again. Later installs come as ll:apps.
   std::thread::spawn(|| {
-    let mut previous: Option<Vec<u8>> = None;
-    loop {
-      if let Some((200, body)) = core_api::post("/apps.json") {
-        if body.len() > 2 && previous.as_deref() != Some(body.as_slice()) {
-          if let Ok(apps) = serde_json::from_slice::<Vec<icons::App>>(&body) {
-            if !apps.is_empty() {
-              remember(|l| l.apps = Some(apps.clone()));
-              send(Msg::Apps(apps));
-              previous = Some(body);
-            }
-          }
-        }
-      }
-      std::thread::sleep(if previous.is_some() { Duration::from_secs(1800) } else { Duration::from_secs(2) });
+    while !fetch_apps() {
+      std::thread::sleep(Duration::from_secs(2));
     }
   });
 
@@ -1768,6 +1772,11 @@ impl Ui {
       Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
       Some("ll:tray-pins") => return self.reload_pins(),
       Some("ll:ws-numbers") => return self.flash_numbers(),
+      // the core rewrote the app list (an app was installed or removed)
+      Some("ll:apps") => {
+        std::thread::spawn(fetch_apps);
+        return;
+      }
       Some("ll:desktop-menu") => return self.desktop_menu(),
       Some("ll:desktop-menu-key") => return self.desktop_menu_key(),
       // a click outside the shell: a menu that could not take the focus
