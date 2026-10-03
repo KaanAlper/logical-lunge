@@ -86,8 +86,9 @@ try {
     const detail=await page.locator('.battery-pop').innerText();
     for(const value of ['49%','1:30','25.6 W']) assert.ok(detail.includes(value),detail);
     assert.equal(await page.locator('.battery').getAttribute('title'),null);
-    assert.equal(await page.locator('.battery .label').innerText(),'bolt');
-    const pill = await page.locator('.battery').boundingBox(), bolt = await page.locator('.battery .icon').boundingBox();
+    // the mark's own layer (the filled copy over it only colours the charged part)
+    assert.equal(await page.locator('.battery .label-layer:not(.filled) .label').innerText(),'bolt');
+    const pill = await page.locator('.battery').boundingBox(), bolt = await page.locator('.battery .label-layer:not(.filled) .icon').boundingBox();
     assert.ok(Math.abs((bolt.x + bolt.width / 2) - (pill.x + pill.width / 2)) < 1, 'charging icon must stay centered');
     assert.ok(bolt.y >= pill.y && bolt.y + bolt.height <= pill.y + pill.height, 'charging icon must fit the pill');
     await page.screenshot({path:path.join(out,'battery-charging.png')});
