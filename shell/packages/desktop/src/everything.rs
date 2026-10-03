@@ -210,6 +210,7 @@ mod windows_ipc {
   const REQUEST_NAME_PATH: u32 = 3;
   const SORT_NAME: u32 = 1;
   const WAIT_MS: u32 = 1500;
+  const LATE_MS: u32 = 4000;
 
   struct Reply { result: Option<Result<Vec<FileHit>, String>> }
 
@@ -266,16 +267,37 @@ mod windows_ipc {
       SendMessageTimeoutW(everything, WM_COPYDATA, WPARAM(hwnd.0 as usize),
         LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, WAIT_MS, Some(&mut accepted))
     };
-    if sent.0 == 0 || accepted == 0 { return Err("Everything yanıt vermiyor".into()); }
+    if sent.0 == 0 || accepted == 0 {
+      tracing::warn!("Everything: {:?} was not taken (sent {}, accepted {}, window {:?})", search, sent.0, accepted, everything.0);
+      return Err("Everything yanıt vermiyor".into());
+    }
     if let Some(result) = reply.result.take() { return result; }
+    // The usual answer comes in well under WAIT_MS; a late one is still
+    // taken up to LATE_MS (and logged, with how late), only then it is a
+    // timeout.
+    let asked = Instant::now();
     unsafe { SetTimer(hwnd, 1, WAIT_MS, None); }
+    let mut waited_long = false;
     loop {
       let mut msg = MSG::default();
       if unsafe { GetMessageW(&mut msg, hwnd, 0, 0) }.0 <= 0 { return Err("Everything IPC kapandı".into()); }
       // GetMessage dispatches incoming sent messages before returning a queued
       // message; the reply can arrive immediately before our timeout timer.
-      if let Some(result) = reply.result.take() { return result; }
-      if msg.message == WM_TIMER { return Err("Everything araması zaman aşımına uğradı".into()); }
+      if let Some(result) = reply.result.take() {
+        if waited_long {
+          tracing::warn!("Everything: {:?} answered late, after {} ms", search, asked.elapsed().as_millis());
+        }
+        return result;
+      }
+      if msg.message == WM_TIMER {
+        if waited_long {
+          tracing::warn!("Everything: {:?} got no answer in {} ms (window {:?})", search, asked.elapsed().as_millis(), everything.0);
+          return Err("Everything araması zaman aşımına uğradı".into());
+        }
+        waited_long = true;
+        unsafe { SetTimer(hwnd, 1, LATE_MS - WAIT_MS, None); }
+        continue;
+      }
       unsafe { DispatchMessageW(&msg); }
       if let Some(result) = reply.result.take() { return result; }
     }
