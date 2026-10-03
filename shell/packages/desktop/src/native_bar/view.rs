@@ -274,6 +274,15 @@ impl Painter<'_> {
     Ok(())
   }
 
+  /// Shared settings scrollbar; callers supply their viewport and content offset.
+  pub(super) fn scrollbar(&mut self, view: Rect, content_h: f32, scroll: f32, c: Rgba) -> Result<()> {
+    if content_h <= view.h + 1.0 { return Ok(()); }
+    let track = view.h - 16.0;
+    let h = (track * view.h / content_h).max(28.0).min(track);
+    let y = view.y + 8.0 + (track - h) * (scroll / (content_h - view.h).max(1.0)).clamp(0.0, 1.0);
+    self.fill_round(Rect::new(view.right() - 8.0, y, 4.0, h), 2.0, c)
+  }
+
   pub(super) fn fill_circle(&mut self, cx: f32, cy: f32, r: f32, c: Rgba) -> Result<()> {
     let b = self.brush(c)?;
     unsafe { self.dc.FillEllipse(&ellipse(cx, cy, r), &b) };

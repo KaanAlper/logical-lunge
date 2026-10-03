@@ -19,7 +19,7 @@ use super::super::{
   view::{Align, Painter, Theme},
 };
 
-pub const RADIUS: f32 = 20.0;
+pub const RADIUS: f32 = 24.0;
 /// the corner a press resizes from
 pub const GRIP: f32 = 18.0;
 
@@ -91,8 +91,14 @@ pub fn paint(
   note_layout: &mut Option<IDWriteTextLayout>,
 ) -> anyhow::Result<Vec<(Rect, Hit)>> {
   let card = Rect::new(0.0, 0.0, s.w, s.h);
-  p.fill_round(card, RADIUS, t.layer0.alpha(0.86))?;
-  p.stroke_round(card, RADIUS, t.border, 1.0)?;
+  // A dense material keeps text readable over bright or detailed wallpapers.
+  // The inset edge separates the widget without reserving extra screen space.
+  p.fill_round(card, RADIUS, Rgba(0, 0, 0, 0.18))?;
+  p.fill_round(card.inset(1.0, 1.0), RADIUS - 1.0, t.layer0.alpha(0.97))?;
+  p.stroke_round(card.inset(1.0, 1.0), RADIUS - 1.0, t.on_layer0.alpha(if hover { 0.20 } else { 0.10 }), 1.0)?;
+  if s.kind == Kind::Note {
+    p.fill_round(Rect::new(8.0, 18.0, 3.0, s.h - 36.0), 1.5, t.primary.alpha(0.6))?;
+  }
   let inner = card.inset(16.0, 14.0);
   let mut hits = Vec::new();
   match s.kind {
@@ -122,11 +128,15 @@ fn clock(p: &mut Painter, t: &Theme, s: &Spec, d: &Data, r: Rect) -> anyhow::Res
       let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
       let rad = size / 2.0;
       p.fill_circle(cx, cy, rad, t.surface_container)?;
-      for i in 0..12 {
-        let a = i as f32 / 12.0 * std::f32::consts::TAU;
+      for i in 0..60 {
+        let a = i as f32 / 60.0 * std::f32::consts::TAU;
         let (sx, sy) = (a.sin(), -a.cos());
-        let dot = if i % 3 == 0 { 2.4 } else { 1.4 };
-        p.fill_circle(cx + sx * rad * 0.84, cy + sy * rad * 0.84, dot, t.on_surface_variant)?;
+        let major = i % 5 == 0;
+        let b = p.brush(t.on_layer0.alpha(if major { 0.7 } else { 0.20 }))?;
+        unsafe {
+          p.dc.DrawLine(pt(cx + sx * rad * if major { 0.77 } else { 0.84 }, cy + sy * rad * if major { 0.77 } else { 0.84 }),
+            pt(cx + sx * rad * 0.90, cy + sy * rad * 0.90), &b, if major { 2.0 } else { 1.0 }, None);
+        }
       }
       let hand = |p: &mut Painter, frac: f32, len: f32, width: f32, c: Rgba| -> anyhow::Result<()> {
         let a = frac * std::f32::consts::TAU;
@@ -150,7 +160,7 @@ fn clock(p: &mut Painter, t: &Theme, s: &Spec, d: &Data, r: Rect) -> anyhow::Res
       let max = if large { r.h - date_h } else { (r.h - date_h) * 0.8 };
       // the time fits the width too (a narrow widget)
       let mut size = max.max(12.0);
-      let probe = TextStyle { size, weight: if large { 300.0 } else { 500.0 } };
+      let probe = TextStyle { size, weight: if large { 300.0 } else { 400.0 } };
       let w = p.measure_with(&c.time, probe, true)?;
       if w > r.w {
         size *= r.w / w;
@@ -183,17 +193,17 @@ fn media(p: &mut Painter, t: &Theme, d: &Data, r: Rect, hits: &mut Vec<(Rect, Hi
     p.text(&(d.tr)("Çalan bir şey yok"), Rect::new(r.x + 42.0, r.y, r.w - 42.0, r.h), BODY, t.on_surface_variant, Align::Left, false)?;
     return Ok(());
   };
-  let side = r.h;
+  let side = r.h.min(r.w * 0.32);
   let cover = Rect::new(r.x, r.y, side, side);
   match m.art {
     Some(bmp) => {
       let size = unsafe { bmp.GetSize() };
       let img: ID2D1Image = bmp.cast()?;
-      p.image_round(&img, size.width, size.height, cover, 12.0, 1.0)?;
+      p.image_round(&img, size.width, size.height, cover, 16.0, 1.0)?;
     }
     None => {
-      p.fill_round(cover, 12.0, t.sec_container)?;
-      p.icon("music_note", cover.x + side / 2.0, cover.y + side / 2.0, side * 0.4, false, t.on_sec_container)?;
+      p.fill_round(cover, 16.0, t.primary_container)?;
+      p.icon("music_note", cover.x + side / 2.0, cover.y + side / 2.0, side * 0.4, false, t.on_primary_container)?;
     }
   }
   let x = cover.right() + 14.0;
@@ -202,9 +212,9 @@ fn media(p: &mut Painter, t: &Theme, d: &Data, r: Rect, hits: &mut Vec<(Rect, Hi
   p.text(&m.artist, Rect::new(x, r.y + 20.0, w, 18.0), SMALL, t.on_surface_variant, Align::Left, false)?;
   let btn = 32.0;
   let by = r.bottom() - btn;
-  if let Some(f) = m.progress {
-    let bar = Rect::new(x, by - 12.0, w, 4.0);
-    p.fill_round(bar, 2.0, t.sec_container)?;
+  if let Some(f) = m.progress.filter(|_| r.h >= 82.0) {
+    let bar = Rect::new(x, by - 10.0, w, 3.0);
+    p.fill_round(bar, 2.0, t.on_layer0.alpha(0.12))?;
     p.fill_round(Rect::new(bar.x, bar.y, bar.w * f.clamp(0.0, 1.0), bar.h), 2.0, t.primary)?;
   }
   let row = btn * 3.0 + 16.0;
@@ -225,21 +235,22 @@ fn system(p: &mut Painter, t: &Theme, s: &Spec, d: &Data, r: Rect) -> anyhow::Re
   if sys.gpu.is_some() || (s.temps && sys.gpu_temp.is_some()) {
     gauges.push(("GPU", sys.gpu, if s.temps { sys.gpu_temp } else { None }));
   }
-  let n = gauges.len() as f32;
-  let cell = r.w / n;
-  let rad = (cell / 2.0 - 8.0).min((r.h - 36.0) / 2.0).max(10.0);
+  let row_h = (r.h / gauges.len() as f32).min(38.0);
+  let top = r.y + (r.h - row_h * gauges.len() as f32) / 2.0;
   for (i, (label, value, temp)) in gauges.iter().enumerate() {
-    let cx = r.x + cell * (i as f32 + 0.5);
-    let cy = r.y + rad + 2.0;
+    let y = top + row_h * i as f32;
     let frac = value.unwrap_or(0.0).clamp(0.0, 100.0) / 100.0;
-    p.ring(cx, cy, rad, 6.0, frac, t.sec_container, t.primary)?;
     let pct = value.map_or("–".to_string(), |v| format!("{}%", v.round() as i32));
-    p.text(&pct, Rect::new(cx - rad, cy - 10.0, rad * 2.0, 20.0), TextStyle { size: 13.0, weight: 600.0 }, t.on_layer0, Align::Center, true)?;
-    let caption = match temp {
-      Some(c) => format!("{label} · {}°", c.round() as i32),
-      None => label.to_string(),
-    };
-    p.text(&caption, Rect::new(cx - cell / 2.0, cy + rad + 6.0, cell, 18.0), SMALL, t.on_surface_variant, Align::Center, false)?;
+    p.text(label, Rect::new(r.x, y, 40.0, 18.0), SMALL, t.on_layer0, Align::Left, false)?;
+    if let Some(c) = temp {
+      p.text(&format!("{}°", c.round() as i32), Rect::new(r.x + 42.0, y, 40.0, 18.0), SMALL, t.on_surface_variant, Align::Left, true)?;
+    }
+    p.text(&pct, Rect::new(r.right() - 48.0, y, 48.0, 18.0), TextStyle { size: 13.0, weight: 600.0 }, t.on_layer0, Align::Center, true)?;
+    let track = Rect::new(r.x, y + row_h - 6.0, r.w, 4.0);
+    p.fill_round(track, 2.0, t.on_layer0.alpha(0.10))?;
+    if value.is_some() && frac > 0.0 {
+      p.fill_round(Rect::new(track.x, track.y, track.w * frac, track.h), 2.0, t.primary)?;
+    }
   }
   Ok(())
 }
@@ -248,11 +259,11 @@ fn weather_card(p: &mut Painter, t: &Theme, d: &Data, r: Rect) -> anyhow::Result
   match d.weather {
     Some(Ok(w)) => {
       let (icon, text) = weather::describe(w.code, w.day);
-      let big = (r.h * 0.5).min(52.0);
+      let big = (r.h - 44.0).clamp(24.0, 52.0);
       p.icon(icon, r.x + big / 2.0, r.y + big / 2.0 + 4.0, big, true, t.primary)?;
       let unit = if w.fahrenheit { "°F" } else { "°" };
       let temp = format!("{}{unit}", w.temp.round() as i32);
-      p.text(&temp, Rect::new(r.x + big + 12.0, r.y, r.w - big - 12.0, big + 8.0), TextStyle { size: big * 0.8, weight: 400.0 }, t.on_layer0, Align::Left, true)?;
+      p.text(&temp, Rect::new(r.x + big + 12.0, r.y, r.w - big - 12.0, big + 4.0), TextStyle { size: big * 0.8, weight: 400.0 }, t.on_layer0, Align::Left, true)?;
       let line = if w.high.is_finite() && w.low.is_finite() {
         format!("{} · ↑{}° ↓{}°", (d.tr)(text), w.high.round() as i32, w.low.round() as i32)
       } else {
@@ -274,9 +285,11 @@ fn weather_card(p: &mut Painter, t: &Theme, d: &Data, r: Rect) -> anyhow::Result
 }
 
 fn agenda(p: &mut Painter, t: &Theme, d: &Data, r: Rect) -> anyhow::Result<()> {
-  p.text(&d.day_big, Rect::new(r.x, r.y, 64.0, 48.0), TextStyle { size: 40.0, weight: 400.0 }, t.primary, Align::Left, true)?;
-  p.text(&d.day_line, Rect::new(r.x + 64.0, r.y + 6.0, r.w - 64.0, 36.0), BODY, t.on_layer0, Align::Left, false)?;
-  let mut y = r.y + 58.0;
+  p.fill_round(Rect::new(r.x, r.y, 52.0, 52.0), 16.0, t.primary_container)?;
+  p.text(&d.day_big, Rect::new(r.x, r.y, 52.0, 52.0), TextStyle { size: 32.0, weight: 500.0 }, t.on_primary_container, Align::Center, true)?;
+  p.text(&d.day_line, Rect::new(r.x + 66.0, r.y + 6.0, r.w - 66.0, 40.0), BODY, t.on_layer0, Align::Left, false)?;
+  p.fill(Rect::new(r.x, r.y + 66.0, r.w, 1.0), t.on_layer0.alpha(0.10))?;
+  let mut y = r.y + 78.0;
   if d.todos.is_empty() {
     p.text(&(d.tr)("Yapılacak yok"), Rect::new(r.x, y, r.w, 20.0), SMALL, t.on_surface_variant, Align::Left, false)?;
     return Ok(());
@@ -285,9 +298,9 @@ fn agenda(p: &mut Painter, t: &Theme, d: &Data, r: Rect) -> anyhow::Result<()> {
     if y + 22.0 > r.bottom() {
       break;
     }
-    p.icon("check_box_outline_blank", r.x + 9.0, y + 11.0, 18.0, false, t.on_surface_variant)?;
+    p.icon("radio_button_unchecked", r.x + 8.0, y + 11.0, 14.0, false, t.primary)?;
     p.text(todo, Rect::new(r.x + 26.0, y, r.w - 26.0, 22.0), BODY, t.on_layer0, Align::Left, false)?;
-    y += 26.0;
+    y += 30.0;
   }
   Ok(())
 }
@@ -376,6 +389,66 @@ pub fn char_at_utf16(text: &str, pos: u32) -> usize {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  #[ignore = "offscreen Direct2D visual check; requires the installed font assets"]
+  fn render_widget_gallery_without_showing_windows() -> anyhow::Result<()> {
+    use super::super::super::{fonts::Fonts, gfx::Gfx, icons::Icons, view::{Res, DARK, LIGHT}};
+    use windows::{Foundation::Numerics::Matrix3x2, Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED}};
+    unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?; }
+    struct Com;
+    impl Drop for Com { fn drop(&mut self) { unsafe { CoUninitialize(); } } }
+    let _com = Com;
+    let gfx = Gfx::new()?;
+    let pack = std::path::PathBuf::from(std::env::var_os("LL_WIDGET_TEST_FONTS")
+      .unwrap_or_else(|| r"C:\Program Files\LogicalLunge\ui\logical-lunge".into()));
+    let mut fonts = Fonts::load(&gfx.dwrite, &pack)?;
+    let mut res = Res::new(&gfx)?;
+    let mut icons = Icons::default();
+    let out = std::env::temp_dir().join("ll-widget-gallery");
+    std::fs::create_dir_all(&out)?;
+    let report = Ok(Report { place: "İstanbul".into(), temp: 23.0, high: 25.0, low: 17.0, code: 2, day: true, fahrenheit: false });
+    let tr = |s: &str| s.to_owned();
+    let d = Data {
+      clock: Clock { h: 13, m: 24, s: 36, time: "13:24".into(), date: "3 Ekim Cumartesi".into() },
+      media: Some(Media { title: "Açık pencereler".into(), artist: "Logical Lunge".into(), playing: true, progress: Some(0.42), art: None }),
+      system: System { cpu: Some(32.0), ram: Some(64.0), gpu: Some(12.0), cpu_temp: Some(51.0), gpu_temp: Some(42.0) },
+      weather: Some(&report), day_big: "3".into(), day_line: "Ekim\nCumartesi".into(),
+      todos: &["Yerel sürümü dene".into(), "Notları düzenle".into()], tr: &tr,
+    };
+    for (name, theme) in [("dark", DARK), ("light", LIGHT)] {
+      for small in [false, true] {
+        let path = out.join(format!("{name}-{}.png", if small { "min" } else { "default" }));
+        let mut requests = Vec::new();
+        let mut paint_error = None;
+        gfx.snapshot(760, 720, 1.0, &path, |dc| {
+          let mut p = Painter { dc, gfx: &gfx, fonts: &mut fonts, res: &mut res, icons: &mut icons, requests: &mut requests };
+          p.fill(Rect::new(0.0, 0.0, 760.0, 720.0), Rgba::hex(0x698778))?;
+          // Light, dark and detailed wallpaper behind every card.
+          for x in 0..19 {
+            p.fill(Rect::new(x as f32 * 40.0, 0.0, 20.0, 720.0), if x % 2 == 0 { Rgba::hex(0xe7dabb) } else { Rgba::hex(0x273e4b) })?;
+          }
+          for (i, kind) in super::super::layout::KINDS.into_iter().enumerate() {
+            let mut spec = Spec::new(i as u64 + 1, kind, "");
+            if small { (spec.w, spec.h) = kind.min_size(); }
+            spec.note = "Bugün\nÖnce küçük işleri bitir.\n\nBir fikir: sakin bir masaüstü.".into();
+            let x = 24.0 + (i % 2) as f32 * 380.0;
+            let y = 24.0 + (i / 2) as f32 * 208.0;
+            unsafe { dc.SetTransform(&Matrix3x2::translation(x, y)); }
+            let mut note_layout = None;
+            match paint(&mut p, &theme, &spec, &d, true, None, &mut note_layout) {
+              Ok(hits) => assert!(hits.iter().all(|(r, _)| r.x >= 0.0 && r.y >= 0.0 && r.right() <= spec.w && r.bottom() <= spec.h), "hit area outside {:?}", kind),
+              Err(err) => { paint_error = Some(err); break; }
+            }
+          }
+          Ok(())
+        })?;
+        if let Some(err) = paint_error { return Err(err); }
+        println!("{}", path.display());
+      }
+    }
+    Ok(())
+  }
 
   #[test]
   fn utf16_positions_count_surrogates() {

@@ -260,8 +260,7 @@ impl Ui {
         self.sb_quick_changed();
       }
       (QHit::Tile(t), 0) => {
-        let size = self.sidebar.quick.toggles.iter().find(|x| x.tile == t).map_or(1, |x| x.size);
-        if size == 2 && self.sb_tile_has_menu(t) {
+        if self.sidebar.quick.tile_expanded(t) && self.sb_tile_has_menu(t) {
           self.sb_tile_menu(t);
         } else {
           self.sb_tile_action(t);

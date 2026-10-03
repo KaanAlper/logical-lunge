@@ -12,7 +12,9 @@ impl Ui {
     let id = self.widgets.wins[wi].id;
     if msg != 0 && msg == self.widgets.taskbar_created {
       // Explorer started again: a new desktop window to sit above
-      place_above_desktop(hwnd);
+      if !self.widgets.editor.as_ref().is_some_and(|e| e.id == id) {
+        place_above_desktop(hwnd);
+      }
       return Some(None);
     }
     let point = |lp: LPARAM, scale: f32| ((lp.0 & 0xFFFF) as i16 as f32 / scale, ((lp.0 >> 16) & 0xFFFF) as i16 as f32 / scale);

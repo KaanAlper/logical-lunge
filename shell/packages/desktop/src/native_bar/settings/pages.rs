@@ -181,14 +181,7 @@ fn head(cx: &mut Ctx, s: &Settings) -> anyhow::Result<()> {
 }
 
 fn scrollbar(cx: &mut Ctx, s: &Settings, view: Rect) -> anyhow::Result<()> {
-  if s.content_h <= view.h + 1.0 {
-    return Ok(());
-  }
-  let track = view.h - 16.0;
-  let h = (track * view.h / s.content_h).max(28.0);
-  let y = view.y + 8.0 + (track - h) * (s.scroll / s.max_scroll().max(1.0));
-  let c = ink(cx.t, 0.18);
-  cx.p.fill_round(Rect::new(view.right() - 8.0, y, 4.0, h), 2.0, c)?;
+  cx.p.scrollbar(view, s.content_h, s.scroll, ink(cx.t, 0.18))?;
   Ok(())
 }
 

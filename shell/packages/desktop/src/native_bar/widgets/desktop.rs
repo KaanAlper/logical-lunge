@@ -105,7 +105,7 @@ pub(super) fn covered_monitor() -> Option<RECT> {
 /// WorkerW in the classic layout).
 pub(super) fn icons_host() -> HWND {
   unsafe extern "system" fn find(top: HWND, lp: LPARAM) -> BOOL {
-    if FindWindowExW(top, None, w!("SHELLDLL_DefView"), PCWSTR::null()).is_ok_and(|h| !h.is_invalid()) {
+    if IsWindowVisible(top).as_bool() && FindWindowExW(top, None, w!("SHELLDLL_DefView"), PCWSTR::null()).is_ok_and(|h| !h.is_invalid()) {
       *(lp.0 as *mut HWND) = top;
       return BOOL(0);
     }
@@ -124,6 +124,11 @@ pub(super) fn place_above_desktop(hwnd: HWND) {
   unsafe {
     let host = icons_host();
     let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER;
+    // The core raises a note/place editor as topmost. Once it becomes a
+    // passive widget again, HWND_TOP alone would leave it in that band.
+    if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0 {
+      let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, flags);
+    }
     if host.is_invalid() {
       let _ = SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, flags);
       return;
@@ -142,16 +147,41 @@ pub(super) fn place_above_desktop(hwnd: HWND) {
   }
 }
 
-/// Whether one of `ours` is the window right above the desktop icons' (a
-/// desktop rebuilt by Explorer or by the live wallpaper may have come above
-/// them).
-pub(super) fn layer_ok(ours: &[HWND]) -> bool {
+/// All passive widgets must sit above the icons and below visible apps.
+/// Hidden/cloaked siblings do not obscure the retained composition surfaces;
+/// demanding immediate HWND adjacency used to restack on unrelated events.
+pub(super) fn layer_ok(ours: &[HWND], editing: Option<HWND>) -> bool {
   let host = icons_host();
   if host.is_invalid() || ours.is_empty() {
     return true;
   }
-  let above = unsafe { GetWindow(host, GW_HWNDPREV) }.unwrap_or_default();
-  ours.contains(&above)
+  struct Stack<'a> {
+    host: HWND,
+    ours: &'a [HWND],
+    editing: Option<HWND>,
+    windows: Vec<policy::Window>,
+  }
+  unsafe extern "system" fn each(hwnd: HWND, lp: LPARAM) -> BOOL {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+    let stack = &mut *(lp.0 as *mut Stack<'_>);
+    let role = if hwnd == stack.host { policy::Role::Desktop }
+      else if Some(hwnd) == stack.editing { policy::Role::Editing }
+      else if stack.ours.contains(&hwnd) { policy::Role::Widget }
+      else { policy::Role::Other };
+    let visible = IsWindowVisible(hwnd).as_bool();
+    let topmost = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0;
+    let mut cloaked = 0u32;
+    if role == policy::Role::Other && visible && !topmost {
+      let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut _ as *mut _, std::mem::size_of::<u32>() as u32);
+    }
+    stack.windows.push(policy::Window { role, visible, topmost, cloaked: cloaked != 0 });
+    BOOL(1)
+  }
+  let mut stack = Stack { host, ours, editing, windows: Vec::new() };
+  if unsafe { EnumWindows(Some(each), LPARAM(&mut stack as *mut _ as isize)) }.is_err() {
+    return true; // An incomplete snapshot cannot justify moving windows.
+  }
+  policy::layer_is_correct(&stack.windows)
 }
 
 pub(super) fn cursor() -> POINT {

@@ -802,13 +802,12 @@ impl Overview {
         self.rows.push((Rect::new(left + r.x, top + r.y, r.w, r.h), i));
         y += ROW + ROW_GAP;
       }
-      // scroll thumb (6 px, outline-variant) when the list is longer than the box
+      // Reuse the settings scrollbar for the results viewport.
       if self.results.len() > n {
-        let track = Rect::new(bx.right() - 8.0, sep_y + 1.0 + LIST_PAD, 6.0, self.list_height() - 1.0 - 2.0 * LIST_PAD);
-        let k = n as f32 / self.results.len() as f32;
-        let th = (track.h * k).max(24.0);
-        let ty = track.y + (track.h - th) * (self.first as f32 / (self.results.len() - n) as f32);
-        p.fill_round(Rect::new(track.x, ty, 6.0, th), 3.0, t.outline_variant)?;
+        let view = Rect::new(bx.x, sep_y + 1.0, w, self.list_height() - 1.0);
+        let count = self.results.len() as f32;
+        let content_h = 2.0 * LIST_PAD + count * ROW + (count - 1.0) * ROW_GAP;
+        p.scrollbar(view, content_h, self.first as f32 * (ROW + ROW_GAP), t.on_layer1.alpha(0.18))?;
       }
     }
     self.paint_grid(gfx, p, t, wm, left, top)?;
@@ -2171,7 +2170,7 @@ impl Ui {
     std::thread::spawn(move || {
       std::thread::sleep(Duration::from_millis(110));
       if FILE_SEARCH_GENERATION.load(Ordering::Acquire) != token { return; }
-      let result = crate::everything::query(&term, 8);
+      let result = crate::everything::query(&term, 40);
       if FILE_SEARCH_GENERATION.load(Ordering::Acquire) == token {
         super::send(Msg::Files(query, result));
       }

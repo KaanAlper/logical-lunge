@@ -19,6 +19,7 @@ mod edit;
 mod input;
 pub(super) mod layout;
 mod paint;
+mod policy;
 mod weather;
 
 use std::{
@@ -131,7 +132,7 @@ struct Win {
   hits: Vec<(Rect, Hit)>,
   drag: Option<Drag>,
   /// what it showed last (skip draws that would look the same)
-  last_key: u64,
+  repaint: policy::Repaint,
   note_layout: Option<IDWriteTextLayout>,
 }
 
@@ -264,7 +265,7 @@ impl Ui {
       hot: None,
       hits: Vec::new(),
       drag: None,
-      last_key: 0,
+      repaint: policy::Repaint::default(),
       note_layout: None,
     });
     self.widget_paint(id, true);
@@ -362,8 +363,10 @@ impl Ui {
       return;
     }
     let ours: Vec<HWND> = self.widgets.wins.iter().map(|w| w.hwnd).collect();
-    if !layer_ok(&ours) {
-      for h in ours {
+    let editing = self.widgets.editor.as_ref().and_then(|e| self.widgets.wins.iter().find(|w| w.id == e.id)).map(|w| w.hwnd);
+    if !layer_ok(&ours, editing) {
+      tracing::debug!(?editing, widgets = ours.len(), "Desktop widgets: repairing desktop layer");
+      for h in ours.into_iter().filter(|h| Some(*h) != editing) {
         place_above_desktop(h);
       }
     }
@@ -464,10 +467,9 @@ impl Ui {
     let Some(spec) = self.spec(id).cloned() else { return };
     let Some(wi) = self.widgets.wins.iter().position(|w| w.id == id) else { return };
     let key = self.widget_key(&spec, &self.widgets.wins[wi]);
-    if !force && key == self.widgets.wins[wi].last_key {
+    if !self.widgets.wins[wi].repaint.should_draw(key, force) {
       return;
     }
-    self.widgets.wins[wi].last_key = key;
     let theme = self.theme();
     let clock = self.clock_now(&spec);
     // (title, artist, playing, progress, cover)
@@ -519,21 +521,21 @@ impl Ui {
     let mut note_layout = None;
     let drawn = gfx::draw_surface(&win.layer.surface, win.scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      match paint::paint(&mut p, &theme, &spec_shown, &data, win.hover || win.drag.is_some(), editing.as_ref(), &mut note_layout) {
-        Ok(h) => hits = h,
-        Err(err) => tracing::warn!("Desktop widget: paint: {:?}", err),
-      }
+      hits = paint::paint(&mut p, &theme, &spec_shown, &data, win.hover || win.drag.is_some(), editing.as_ref(), &mut note_layout)
+        .map_err(|err| windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32), err.to_string()))?;
       if let Some((city, caret)) = &editing_city {
-        if let Err(err) = city_field(&mut p, &theme, &spec_shown, city, *caret, &tr) {
-          tracing::warn!("Desktop widget: city field: {:?}", err);
-        }
+        city_field(&mut p, &theme, &spec_shown, city, *caret, &tr)
+          .map_err(|err| windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32), err.to_string()))?;
       }
       Ok(())
     });
-    win.hits = hits;
-    win.note_layout = note_layout;
-    if let Err(err) = drawn.and_then(|_| unsafe { gfx.dcomp.Commit() }) {
-      tracing::warn!("Desktop widget: draw: {:?}", err);
+    match drawn.and_then(|_| unsafe { gfx.dcomp.Commit() }) {
+      Ok(()) => {
+        win.repaint.presented(key);
+        win.hits = hits;
+        win.note_layout = note_layout;
+      },
+      Err(err) => tracing::warn!("Desktop widget: draw: {:?}", err),
     }
   }
 

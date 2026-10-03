@@ -47,6 +47,7 @@ mod windows_ipc {
   use super::{exe_of, is_ipc_class, FileHit};
   use crate::common::windows::read_reg_string;
   use std::{
+    cell::RefCell,
     ffi::c_void,
     mem::size_of,
     path::{Path, PathBuf},
@@ -212,7 +213,12 @@ mod windows_ipc {
   const WAIT_MS: u32 = 1500;
   const LATE_MS: u32 = 4000;
 
-  struct Reply { result: Option<Result<Vec<FileHit>, String>> }
+  // Win32 calls window_proc reentrantly while send_and_wait is reading this
+  // state. It must have interior mutability: an outstanding &mut Reply made
+  // the callback's raw-pointer write undefined, and optimized builds kept
+  // seeing None even after Everything had answered. Only the owning window
+  // thread accesses the cell, and no borrow is held over a Win32 call.
+  struct Reply { result: RefCell<Option<Result<Vec<FileHit>, String>>> }
 
   pub fn query(search: &str, limit: u32) -> Result<Vec<FileHit>, String> {
     let search = search.trim();
@@ -220,7 +226,10 @@ mod windows_ipc {
     if search.encode_utf16().count() > 512 || search.contains('\0') {
       return Err("Arama çok uzun veya geçersiz".into());
     }
-    let everything = ipc_window_or_start()?;
+    query_window(ipc_window_or_start()?, search, limit)
+  }
+
+  fn query_window(everything: HWND, search: &str, limit: u32) -> Result<Vec<FileHit>, String> {
     let hinst = unsafe { GetModuleHandleW(None) }.map_err(|e| e.to_string())?;
     let class = w!("LogicalLungeEverythingIPC");
     unsafe {
@@ -235,15 +244,13 @@ mod windows_ipc {
       CreateWindowExW(WINDOW_EX_STYLE::default(), class, w!(""), WINDOW_STYLE::default(),
         0, 0, 0, 0, None, None, hinst, None)
     }.map_err(|e| e.to_string())?;
-    // The shell runs elevated and Everything usually does not: Windows drops
-    // a lower-integrity process's WM_COPYDATA (the answer) unless the window
-    // lets it in, and every search then timed out.
+    // Permit answers across integrity levels if the shell is ever elevated.
     unsafe {
       let _ = ChangeWindowMessageFilterEx(hwnd, WM_COPYDATA, MSGFLT_ALLOW, None);
     }
-    let mut reply = Reply { result: None };
-    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &mut reply as *mut _ as isize); }
-    let outcome = send_and_wait(everything, hwnd, search, limit.clamp(1, 40), &mut reply);
+    let reply = Reply { result: RefCell::new(None) };
+    unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, &reply as *const _ as isize); }
+    let outcome = send_and_wait(everything, hwnd, search, limit.clamp(1, 40), &reply);
     unsafe {
       SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
       let _ = DestroyWindow(hwnd);
@@ -251,7 +258,7 @@ mod windows_ipc {
     outcome
   }
 
-  fn send_and_wait(everything: HWND, hwnd: HWND, search: &str, limit: u32, reply: &mut Reply) -> Result<Vec<FileHit>, String> {
+  fn send_and_wait(everything: HWND, hwnd: HWND, search: &str, limit: u32, reply: &Reply) -> Result<Vec<FileHit>, String> {
     let mut bytes = Vec::with_capacity(28 + (search.len() + 1) * 2);
     for field in [hwnd.0 as usize as u32, REPLY_ID as u32, 0, 0, limit, REQUEST_NAME_PATH, SORT_NAME] {
       bytes.extend_from_slice(&field.to_le_bytes());
@@ -305,7 +312,7 @@ mod windows_ipc {
 
   unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_COPYDATA {
-      let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Reply;
+      let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Reply;
       let cds = lp.0 as *const COPYDATASTRUCT;
       if !state.is_null() && !cds.is_null() && (*cds).dwData == REPLY_ID {
         let data = if (*cds).lpData.is_null() || (*cds).cbData == 0 {
@@ -313,7 +320,7 @@ mod windows_ipc {
         } else {
           std::slice::from_raw_parts((*cds).lpData.cast::<u8>(), (*cds).cbData as usize)
         };
-        (*state).result = Some(parse_reply(data));
+        (*state).result.replace(Some(parse_reply(data)));
         let _ = PostMessageW(hwnd, WM_APP + 1, WPARAM(0), LPARAM(0));
         return LRESULT(1);
       }
@@ -358,6 +365,61 @@ mod windows_ipc {
       hits.push(FileHit { name, path, full_path, is_dir: item_flags & 1 != 0 });
     }
     Ok(hits)
+  }
+
+  #[cfg(test)]
+  mod callback_tests {
+    use super::*;
+    use windows::Win32::UI::WindowsAndMessaging::{PostQuitMessage, WM_CLOSE};
+
+    // A hidden IPC peer, with Everything's real request/reply contract. It
+    // answers on a later message, so the query must observe a callback write
+    // made inside GetMessage. Run this test optimized too: the former &mut
+    // alias passed debug tests but timed out in release.
+    unsafe extern "system" fn peer(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+      if msg == WM_COPYDATA {
+        let cds = &*(lp.0 as *const COPYDATASTRUCT);
+        if cds.dwData != QUERY2_UNICODE { return LRESULT(0); }
+        let request = std::slice::from_raw_parts(cds.lpData.cast::<u8>(), cds.cbData as usize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, number(request, 0).unwrap() as isize);
+        let _ = PostMessageW(hwnd, WM_APP + 1, WPARAM(0), LPARAM(0));
+        return LRESULT(1);
+      }
+      if msg == WM_APP + 1 {
+        let dest = HWND(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as usize as _);
+        let bytes: Vec<u8> = [0u32, 0, 0, 3, 1].into_iter().flat_map(u32::to_le_bytes).collect();
+        let cds = COPYDATASTRUCT { dwData: REPLY_ID, cbData: bytes.len() as u32, lpData: bytes.as_ptr() as _ };
+        let _ = SendMessageTimeoutW(dest, WM_COPYDATA, WPARAM(hwnd.0 as usize),
+          LPARAM(&cds as *const _ as isize), SMTO_ABORTIFHUNG, WAIT_MS, None);
+        return LRESULT(0);
+      }
+      if msg == WM_CLOSE {
+        let _ = DestroyWindow(hwnd);
+        PostQuitMessage(0);
+        return LRESULT(0);
+      }
+      DefWindowProcW(hwnd, msg, wp, lp)
+    }
+
+    #[test]
+    fn observes_the_answer_written_by_a_reentrant_window_callback() {
+      let (tx, rx) = std::sync::mpsc::channel();
+      let thread = std::thread::spawn(move || unsafe {
+        let hinst = GetModuleHandleW(None).unwrap();
+        let class = w!("LogicalLungeEverythingTestPeer");
+        RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(peer), hInstance: hinst.into(), lpszClassName: class, ..Default::default() });
+        let hwnd = CreateWindowExW(WINDOW_EX_STYLE::default(), class, w!(""), WINDOW_STYLE::default(),
+          0, 0, 0, 0, None, None, hinst, None).unwrap();
+        tx.send(hwnd.0 as usize).unwrap();
+        let mut msg = MSG::default();
+        while GetMessageW(&mut msg, None, 0, 0).0 > 0 { DispatchMessageW(&msg); }
+      });
+      let hwnd = HWND(rx.recv_timeout(Duration::from_secs(3)).unwrap() as _);
+      let result = query_window(hwnd, "ipc-fixture", 8);
+      unsafe { let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0)); }
+      thread.join().unwrap();
+      assert_eq!(result, Ok(Vec::new()), "the callback's reply must reach the waiting query");
+    }
   }
 }
 

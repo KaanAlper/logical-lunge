@@ -529,7 +529,7 @@ impl Quick {
       dashed(cx, r.inset(1.0, 1.0), 26.0, cx.t.primary.alpha(0.6), 2.0, dash)?;
       return Ok(());
     }
-    let expanded = t.size == 2;
+    let expanded = r.w >= CELL_H * 2.0 + SPACING;
     let alt_look = def.alt && expanded;
     let hot = cx.hot(&hit) || cx.hot(&Hit::Quick(QHit::TileIcon(t.tile)));
     let pressed = cx.down(&hit) || cx.down(&Hit::Quick(QHit::TileIcon(t.tile)));
@@ -622,6 +622,10 @@ impl Quick {
 
   pub fn tile_rect(&self, tile: Tile) -> Option<Rect> {
     self.placed.get(&tile).copied()
+  }
+
+  pub fn tile_expanded(&self, tile: Tile) -> bool {
+    self.tile_rect(tile).is_some_and(|r| r.w >= CELL_H * 2.0 + SPACING)
   }
 
   // ------------------------------------------------------------------ input
@@ -887,6 +891,23 @@ mod tests {
     assert_eq!(r[0].1.w, 200.0);
     assert_eq!(r[1].1.x, 206.0);
     assert_eq!(r[1].1.w, 100.0);
+  }
+
+  #[test]
+  fn a_compact_tile_stretched_across_a_row_keeps_its_label_and_menu() {
+    let saved: super::super::store::Store = serde_json::from_str(r#"{"quickToggles":[{"type":"nightLight","size":1}]}"#).unwrap();
+    let mut q = Quick::new(saved.toggles(), &Value::Null);
+    q.placed = rects_for(&q.toggles, 418.0).into_iter().collect();
+    assert!(q.tile_expanded(Tile::NightLight));
+    let r = q.tile_rect(Tile::NightLight).unwrap();
+    assert!(r.contains(r.x + 28.0, r.y + 28.0));
+    assert!(r.right() - (r.x + 54.0) - 30.0 > 0.0);
+    q.placed.insert(Tile::NightLight, Rect::new(0.0, 0.0, 81.0, CELL_H));
+    assert!(!q.tile_expanded(Tile::NightLight));
+    q.edit_size(Tile::NightLight);
+    assert_eq!(q.toggles[0].size, 2);
+    q.placed = rects_for(&q.toggles, 418.0).into_iter().collect();
+    assert!(q.tile_expanded(Tile::NightLight));
   }
 
   #[test]
