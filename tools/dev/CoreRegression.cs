@@ -106,7 +106,272 @@ static class CoreRegression
         Check(Request("POST", "/launch?file=" + Uri.EscapeDataString(System.IO.Path.Combine(missingDir, "a.exe")), "http://127.0.0.1:6124").Contains("422"), "A launch that cannot open must answer 422 (our card)");
     }
 
-    static void Main() {
+    static void RestartTests() {
+        var type = typeof(Supervisor).Assembly.GetType("DesktopRestart");
+        Check(type != null, "Restart has no readiness gate: the desktop can be stopped before an elevated successor exists");
+        var handoff = type.GetMethod("Handoff", BindingFlags.Static | BindingFlags.Public);
+        Func<Func<bool>, Action, Func<bool>, Action, bool> run = (prepare, stop, commit, rollback) =>
+            (bool)handoff.Invoke(null, new object[] { prepare, stop, commit, rollback });
+        var events = new List<string>();
+        Action stopDesktop = () => events.Add("stop");
+        Action restore = () => events.Add("restore");
+        Check(!run(() => false, stopDesktop, () => true, restore) && events.Count == 0,
+            "Failed preparation changed the running desktop");
+        Check(!run(() => { throw new Exception("launch failed"); }, stopDesktop, () => true, restore) && events.Count == 0,
+            "A launch exception changed the running desktop");
+        Check(run(() => { events.Add("ready"); return true; }, stopDesktop,
+            () => { events.Add("commit"); return true; }, restore) && string.Join(",", events) == "ready,stop,commit",
+            "Restart stopped the desktop before readiness or did not commit the successor");
+        events.Clear();
+        Check(!run(() => true, stopDesktop, () => false, restore) && string.Join(",", events) == "stop,restore",
+            "A failed commit did not restore desktop availability");
+        events.Clear();
+        Check(!run(() => true, () => { events.Add("partial-stop"); throw new Exception("cannot stop core"); },
+            () => { events.Add("commit"); return true; }, restore) && string.Join(",", events) == "partial-stop,restore",
+            "Partial shutdown committed a successor or skipped recovery");
+        events.Clear();
+        Check(!run(() => true, stopDesktop, () => { throw new Exception("pipe broke"); }, restore) &&
+            string.Join(",", events) == "stop,restore", "A broken commit pipe skipped recovery");
+        bool inherited = false;
+        Check(!DesktopRestart.PrepareRoutes(false, () => false, () => { inherited = true; return true; }) && !inherited,
+            "A medium coordinator fell back to a medium successor");
+        Check(DesktopRestart.PrepareRoutes(true, () => false, () => { inherited = true; return true; }) && inherited,
+            "An elevated coordinator could not preserve its token when the task was unavailable");
+        Check(DesktopRestart.PrepareRoutes(false, () => true, () => { throw new Exception("unexpected direct launch"); }),
+            "A prepared scheduled candidate was bypassed");
+        Check(!DesktopRestart.PrepareRoutes(true, () => false, () => false), "Two failed launch routes were treated as success");
+        Check(DesktopRestart.CanBrokerLaunch(5, true), "Access-denied breakaway could not use the elevated own-token route");
+        Check(!DesktopRestart.CanBrokerLaunch(5, false), "A medium caller was allowed to use the own-token fallback");
+        foreach (int error in new[] { 0, 2, 87, 1314 })
+            Check(!DesktopRestart.CanBrokerLaunch(error, true), "An unrelated launch error used the broker fallback");
+
+        string xml = "<Task xmlns='http://schemas.microsoft.com/windows/2004/02/mit/task'><Principals>" +
+            "<Principal id='Author'><UserId>S-1-5-21-123-1001</UserId><LogonType>InteractiveToken</LogonType>" +
+            "<RunLevel>HighestAvailable</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" +
+            "</Settings><Actions Context='Author'><Exec><Command>C:\\Program Files\\LogicalLunge\\lunge.exe</Command>" +
+            "<WorkingDirectory>C:\\Users\\tester</WorkingDirectory></Exec></Actions></Task>";
+        Func<string, int, bool> allowed = (doc, count) => DesktopRestart.CanRunTask(doc,
+            @"C:\Program Files\LogicalLunge\lunge.exe", @"C:\Users\tester", "S-1-5-21-123-1001", @"PC\tester", count);
+        Check(allowed(xml, 0), "The installed highest interactive task was rejected");
+        Check(!allowed(xml, 1) && !allowed(xml.Replace("IgnoreNew", "Queue"), 1), "A busy task was treated as a ready replacement");
+        Check(!allowed(xml.Replace("IgnoreNew", "StopExisting"), 0), "A task could kill the desktop before candidate readiness");
+        Check(!allowed(xml.Replace("HighestAvailable", "LeastPrivilege"), 0), "A limited task could replace the elevated core");
+        Check(!allowed(xml.Replace("InteractiveToken", "Password"), 0), "A task in a non-interactive logon could replace the desktop");
+        Check(!allowed(xml.Replace("123-1001", "123-1002"), 0), "A task for a different user could replace the desktop");
+        Check(!allowed(xml.Replace("lunge.exe", "other.exe"), 0), "A different executable could replace the desktop");
+        Check(!allowed(xml.Replace("</Exec>", "<Arguments>--shutdown</Arguments></Exec>"), 0), "A task with destructive arguments was accepted");
+        Check(!allowed(xml.Replace("<Settings>", "<Settings><Enabled>false</Enabled>"), 0) &&
+            !allowed(xml.Replace("<Settings>", "<Settings><AllowStartOnDemand>false</AllowStartOnDemand>"), 0), "A disabled task was accepted");
+        Check(!allowed(xml.Replace("</Actions>", "<Exec><Command>other.exe</Command></Exec></Actions>"), 0) && !allowed("broken", 0),
+            "Extra task actions or malformed XML were accepted");
+        Check(!allowed(xml.Replace("Context='Author'", "Context='SomeoneElse'"), 0), "The action used an unvalidated principal");
+
+        // Exercise the real wire protocol on an isolated pipe, never the installed restart pipe.
+        string pipeName = "ll-restart-test-" + Guid.NewGuid().ToString("N");
+        using (var server = new System.IO.Pipes.NamedPipeServerStream(pipeName, System.IO.Pipes.PipeDirection.InOut, 1,
+            System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous))
+        using (var client = new System.IO.Pipes.NamedPipeClientStream(".", pipeName, System.IO.Pipes.PipeDirection.InOut,
+            System.IO.Pipes.PipeOptions.Asynchronous))
+        {
+            var connected = server.BeginWaitForConnection(null, null);
+            client.Connect(1000); server.EndWaitForConnection(connected);
+            var peer = System.Threading.Tasks.Task.Run(() => {
+                Check(DesktopRestart.WriteSignal(client, (byte)'R', 1000), "Candidate readiness write timed out");
+                Check(DesktopRestart.ReadSignal(client, (byte)'C', 1000), "Commit was not received");
+                Check(DesktopRestart.WatchStartup(client, () => true, () => false, () => { }, () => {
+                    throw new Exception("Ready startup was aborted");
+                }, 1000).Wait(1500), "Startup acknowledgement did not finish");
+            });
+            Check(DesktopRestart.ReadSignal(server, (byte)'R', 1000), "Candidate readiness was not received");
+            Check(DesktopRestart.WriteSignal(server, (byte)'C', 1000), "Commit write timed out");
+            Check(DesktopRestart.ReadSignal(server, (byte)'S', 1000), "Startup acknowledgement was not received");
+            Check(DesktopRestart.WriteSignal(server, (byte)'A', 1000), "Coordinator acceptance was not sent");
+            Check(peer.Wait(1500), "Candidate protocol did not finish");
+        }
+        using (var empty = new System.IO.MemoryStream())
+            Check(!DesktopRestart.ReadSignal(empty, (byte)'C', 1000), "Coordinator EOF was interpreted as commit");
+        using (var wrong = new System.IO.MemoryStream(new byte[] { (byte)'R' }))
+            Check(!DesktopRestart.ReadSignal(wrong, (byte)'C', 1000), "Readiness was interpreted as commit");
+        string timeoutPipe = "ll-restart-timeout-" + Guid.NewGuid().ToString("N");
+        using (var server = new System.IO.Pipes.NamedPipeServerStream(timeoutPipe, System.IO.Pipes.PipeDirection.InOut, 1,
+            System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous))
+        using (var client = new System.IO.Pipes.NamedPipeClientStream(".", timeoutPipe, System.IO.Pipes.PipeDirection.InOut,
+            System.IO.Pipes.PipeOptions.Asynchronous))
+        {
+            var connected = server.BeginWaitForConnection(null, null); client.Connect(1000); server.EndWaitForConnection(connected);
+            Check(!DesktopRestart.ReadSignal(server, (byte)'R', 50), "A silent candidate had no readiness deadline");
+            Check(!DesktopRestart.WriteSignal(server, (byte)'C', 50), "An unread commit had no write deadline");
+        }
+        RestartReviewTests();
+        Console.WriteLine("PASS: restart readiness, elevation fallback, task contract, pipe protocol/deadlines, commit order and rollback");
+    }
+
+    sealed class FakeStopProcess : DesktopRestart.StopProcess {
+        readonly Func<bool> exit;
+        public bool Disposed;
+        public FakeStopProcess(Func<bool> action) { exit = action; }
+        public bool Exit(int timeout) { return exit(); }
+        public void Dispose() { Disposed = true; }
+    }
+
+    static void RestartPipe(Action<System.IO.Pipes.NamedPipeServerStream, System.IO.Pipes.NamedPipeClientStream> test) {
+        string name = "ll-restart-review-" + Guid.NewGuid().ToString("N");
+        using (var server = new System.IO.Pipes.NamedPipeServerStream(name, System.IO.Pipes.PipeDirection.InOut, 1,
+            System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous))
+        using (var client = new System.IO.Pipes.NamedPipeClientStream(".", name, System.IO.Pipes.PipeDirection.InOut,
+            System.IO.Pipes.PipeOptions.Asynchronous)) {
+            var connection = server.BeginWaitForConnection(null, null);
+            client.Connect(1000); server.EndWaitForConnection(connection);
+            test(server, client);
+        }
+    }
+
+    static void RestartReviewTests() {
+        // Core termination tests use a private mutex and fake handles; no installed process is touched.
+        string name = "ll-core-stop-test-" + Guid.NewGuid().ToString("N");
+        using (var held = new System.Threading.ManualResetEventSlim())
+        using (var release = new System.Threading.ManualResetEventSlim()) {
+            var owner = System.Threading.Tasks.Task.Run(() => {
+                using (var mutex = new System.Threading.Mutex(false, name)) {
+                    mutex.WaitOne(); held.Set(); release.Wait(); mutex.ReleaseMutex();
+                }
+            });
+            Check(held.Wait(1000), "Test mutex owner did not start");
+            try {
+                foreach (string why in new[] { "missing PID", "unreadable PID", "stale PID", "termination access denied" }) {
+                    bool launched = false, mutated = false, recovery = false;
+                    Check(!DesktopRestart.Handoff(() => {
+                        using (var guard = new DesktopRestart.CoreStop(name, () => { throw new InvalidOperationException(why); })) {
+                            launched = true; return true;
+                        }
+                    }, () => mutated = true, () => true, () => recovery = true) &&
+                        !launched && !mutated && !recovery, "Unsafe preflight changed the desktop: " + why);
+                }
+                var denied = new FakeStopProcess(() => false);
+                using (var guard = new DesktopRestart.CoreStop(name, () => denied)) {
+                    bool mutated = false;
+                    try { guard.ExitAndReserve(); mutated = true; } catch (InvalidOperationException) { }
+                    Check(!mutated && !guard.Exited, "Failed termination allowed wallpaper/splash/teardown mutation");
+                }
+                Check(denied.Disposed, "Failed termination leaked the retained handle");
+                using (var guard = new DesktopRestart.CoreStop(name, () => new FakeStopProcess(() => true))) {
+                    bool mutated = false;
+                    try { guard.ExitAndReserve(); mutated = true; } catch (InvalidOperationException) { }
+                    Check(!mutated, "An exit result without a free core mutex allowed teardown");
+                }
+                using (var guard = new DesktopRestart.CoreStop(name, () => new FakeStopProcess(() => {
+                    release.Set(); return owner.Wait(1000);
+                }))) {
+                    guard.ExitAndReserve();
+                    Check(guard.Exited, "Verified exit did not reserve the core mutex");
+                    bool competitor = System.Threading.Tasks.Task.Run(() => {
+                        using (var mutex = new System.Threading.Mutex(false, name)) {
+                            bool got = mutex.WaitOne(0); if (got) mutex.ReleaseMutex(); return got;
+                        }
+                    }).Result;
+                    Check(!competitor, "Another startup acquired the core mutex during teardown");
+                    guard.Release();
+                    guard.ExitAndReserve(); // rollback reacquires after a released handoff
+                    Check(guard.Exited, "Rollback could not reacquire the free core mutex");
+                }
+                using (var guard = new DesktopRestart.CoreStop(name, () => { throw new Exception("PID should not be read"); }))
+                    Check(guard.Exited, "A genuinely free core mutex still required a PID file");
+            } finally { release.Set(); Check(owner.Wait(1500), "Test mutex owner did not finish"); }
+        }
+
+        // Readiness includes BringUp, a live UI pump, initialized watchdogs and HTTP binding.
+        RestartPipe((server, client) => {
+            int flags = 0, accepted = 0, aborted = 0;
+            var worker = DesktopRestart.WatchStartup(client, () => System.Threading.Volatile.Read(ref flags) == 15,
+                () => false, () => System.Threading.Interlocked.Increment(ref accepted),
+                () => System.Threading.Interlocked.Increment(ref aborted), 2000);
+            var signal = new byte[1]; var read = server.ReadAsync(signal, 0, 1);
+            for (int i = 0; i < 4; i++) {
+                Check(!read.Wait(40), "S was sent before all startup prerequisites were ready");
+                System.Threading.Volatile.Write(ref flags, (1 << (i + 1)) - 1);
+            }
+            Check(read.Wait(1000) && read.Result == 1 && signal[0] == (byte)'S', "Full readiness did not send S");
+            Check(accepted == 0, "Startup discarded rollback before coordinator acceptance");
+            server.Dispose(); // coordinator failed after S: the candidate must still abort
+            Check(worker.Wait(1500) && aborted == 1 && accepted == 0, "EOF after S did not abort startup");
+        });
+        foreach (bool explicitFailure in new[] { false, true }) RestartPipe((server, client) => {
+            int accepted = 0, aborted = 0;
+            var worker = DesktopRestart.WatchStartup(client, () => false, () => explicitFailure,
+                () => accepted++, () => aborted++, 120);
+            Check(DesktopRestart.ReadSignal(server, (byte)'F', 1500), "Startup failure/timeout did not report F");
+            Check(worker.Wait(1500) && accepted == 0 && aborted == 1, "Startup failure/timeout did not abort");
+        });
+        RestartPipe((server, client) => {
+            int accepted = 0, aborted = 0;
+            var worker = DesktopRestart.WatchStartup(client, () => false, () => false,
+                () => accepted++, () => aborted++, 1000);
+            Check(DesktopRestart.WriteSignal(server, (byte)'A', 1000), "Early acceptance test could not send A");
+            Check(worker.Wait(1500) && accepted == 0 && aborted == 1, "Early acceptance bypassed readiness");
+        });
+
+        // The first (medium duplicate) client must not consume the legitimate candidate's launch attempt.
+        string race = "ll-restart-race-" + Guid.NewGuid().ToString("N");
+        using (var server = new System.IO.Pipes.NamedPipeServerStream(race, System.IO.Pipes.PipeDirection.InOut, 1,
+            System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous)) {
+            int peers = 0, launches = 0;
+            System.Threading.Tasks.Task clients = null;
+            Check(DesktopRestart.WaitCandidate(server, () => {
+                launches++;
+                clients = System.Threading.Tasks.Task.Run(() => {
+                    using (var wrong = new System.IO.Pipes.NamedPipeClientStream(".", race,
+                        System.IO.Pipes.PipeDirection.InOut, System.IO.Pipes.PipeOptions.Asynchronous)) {
+                        wrong.Connect(1000);
+                        Check(wrong.ReadByte() == -1, "Wrong peer was not disconnected");
+                    }
+                    using (var right = new System.IO.Pipes.NamedPipeClientStream(".", race,
+                        System.IO.Pipes.PipeDirection.InOut, System.IO.Pipes.PipeOptions.Asynchronous)) {
+                        right.Connect(1000);
+                        Check(DesktopRestart.WriteSignal(right, (byte)'R', 1000), "Correct candidate could not signal R");
+                    }
+                });
+                return true;
+            }, () => ++peers == 2, 2000), "A wrong first client prevented the correct candidate from preparing");
+            Check(launches == 1 && peers == 2 && clients.Wait(1500), "Client rejection relaunched or lost the candidate");
+        }
+        Console.WriteLine("PASS: termination preflight, missing/stale PID mutex guard, startup readiness/failure/rollback and wrong-peer race");
+    }
+
+    static void DesktopWidgetTests() {
+        var eligible = typeof(Slider).GetMethod("DesktopWidgetEligible", BindingFlags.NonPublic | BindingFlags.Static);
+        var attach = typeof(Slider).GetMethod("AddDesktopThumbnails", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(eligible != null && attach != null, "Desktop widgets have no stationary layer in the animation scene");
+        for (int bits = 0; bits < 64; bits++) {
+            bool identity = (bits & 7) == 7, visible = (bits & 8) != 0, cloaked = (bits & 16) != 0, topmost = (bits & 32) != 0;
+            bool actual = (bool)eligible.Invoke(null, new object[] {
+                (bits & 1) != 0 ? "Logical Lunge · widget" : "another surface",
+                (bits & 2) != 0 ? "LungeNativeBar" : "another class",
+                (bits & 4) != 0 ? Names.Shell : "another process", visible, cloaked, topmost });
+            Check(actual == (identity && visible && !cloaked && !topmost), "Wrong desktop thumbnail eligibility at " + bits);
+        }
+        var background = new Slider.Thumb { Src = new IntPtr(1) };
+        var scene = new List<Slider.Thumb> { background };
+        var sources = new List<KeyValuePair<IntPtr, Native.RECT>> {
+            new KeyValuePair<IntPtr, Native.RECT>(new IntPtr(2), new Native.RECT { Left = -1900, Top = 100, Right = -1800, Bottom = 180 }),
+            new KeyValuePair<IntPtr, Native.RECT>(new IntPtr(3), new Native.RECT { Left = -1850, Top = 110, Right = -1750, Bottom = 210 }),
+        };
+        Func<IntPtr, Native.RECT, Slider.Thumb> register = (h, dest) => new Slider.Thumb { Src = h, Dest = dest };
+        attach.Invoke(null, new object[] { scene, sources, -1920, 40, register });
+        scene.Add(new Slider.Thumb { Src = new IntPtr(4), IsWin = true });
+        Check(scene.Count == 4 && scene[0] == background && scene[1].Src == new IntPtr(3) && scene[2].Src == new IntPtr(2) && scene[3].Src == new IntPtr(4),
+            "Widget previews must keep z-order between wallpaper and animated apps");
+        var r = scene[2].Dest;
+        Check(!scene[2].IsWin && r.Left == 20 && r.Top == 60 && r.Right == 120 && r.Bottom == 140,
+            "Desktop previews moved with apps or changed their size/monitor coordinates");
+        attach.Invoke(null, new object[] { scene, sources, 0, 0, new Func<IntPtr, Native.RECT, Slider.Thumb>((h, dest) => null) });
+        Check(scene.Count == 4, "A failed thumbnail registration corrupted the scene");
+        Console.WriteLine("PASS: stationary desktop thumbnails, visibility, ownership, z-order and monitor coordinates");
+    }
+
+    static void Main(string[] args) {
+        DesktopWidgetTests();
+        RestartTests();
+        if (args.Length == 1 && args[0] == "--restart-only") return;
         TakeoverTests();
         DialogTests();
         LauncherTests();

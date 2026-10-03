@@ -96,7 +96,7 @@ static class Names
     public const string Core = "lunge", Tiling = "lunge-tiling", Shell = "lunge-shell";
     public const string Bar = "Logical Lunge · bar", Toast = "Logical Lunge · toast", Update = "Logical Lunge · update",
         Osk = "Logical Lunge · osk", Sidebar = "Logical Lunge · sidebar-right", Settings = "Logical Lunge · settings",
-        TitlePrefix = "Logical Lunge ·";
+        TitlePrefix = "Logical Lunge ·", DesktopWidget = "Logical Lunge · widget";
 }
 
 static class Native
@@ -1132,6 +1132,47 @@ class Slider
 
     static IntPtr FocusedTop() { return Native.GetAncestor(Native.GetForegroundWindow(), 2); }
 
+    // Passive desktop widgets are part of the background scene. Their live
+    // previews belong above the wallpaper but below moving application windows;
+    // putting them in PinsAttach's top layer would make them cover tiled apps.
+    internal static bool DesktopWidgetEligible(string title, string cls, string process, bool visible, bool cloaked, bool topmost)
+    {
+        return visible && !cloaked && !topmost && title == Names.DesktopWidget &&
+            cls == "LungeNativeBar" && string.Equals(process, Names.Shell, StringComparison.OrdinalIgnoreCase);
+    }
+    internal static void AddDesktopThumbnails(List<Thumb> scene, List<KeyValuePair<IntPtr, Native.RECT>> sources,
+        int ox, int oy, Func<IntPtr, Native.RECT, Thumb> register)
+    {
+        // EnumWindows enumerates front to back; register back to front.
+        for (int i = sources.Count - 1; i >= 0; i--)
+        {
+            var t = register(sources[i].Key, Shift(sources[i].Value, ox, oy));
+            if (t != null) scene.Add(t);
+        }
+    }
+    void DesktopWidgetsAttach(List<Thumb> scene, Rectangle mon, int ox, int oy)
+    {
+        var sources = new List<KeyValuePair<IntPtr, Native.RECT>>();
+        var title = new StringBuilder(64); var cls = new StringBuilder(64);
+        Native.EnumWindows(delegate (IntPtr h, IntPtr unused)
+        {
+            if (!Native.IsWindowVisible(h) || Native.IsIconic(h)) return true;
+            title.Length = 0; Native.GetWindowText(h, title, 64);
+            if (title.ToString() != Names.DesktopWidget) return true;
+            cls.Length = 0; Native.GetClassName(h, cls, 64);
+            uint pid; Native.GetWindowThreadProcessId(h, out pid);
+            int cloaked;
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cloaked, 4) != 0) return true;
+            if (!DesktopWidgetEligible(title.ToString(), cls.ToString(), ProcInfo.Name(pid), true, cloaked != 0,
+                (Native.GetWindowLong(h, Native.GWL_EXSTYLE) & 0x8) != 0)) return true;
+            Native.RECT r;
+            if (Native.GetWindowRect(h, out r) && mon.IntersectsWith(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom)))
+                sources.Add(new KeyValuePair<IntPtr, Native.RECT>(h, r));
+            return true;
+        }, IntPtr.Zero);
+        AddDesktopThumbnails(scene, sources, ox, oy, (h, dest) => Register(h, dest, null));
+    }
+
     // Hyprland bezier "menu_decel" = (0.1, 1), (0, 1)
     // İlerleme 0..1; süre 0 ise (hareket kapalı) hemen son kare (0/0 sonsuz döngüye sokardı)
     static double Prog(double at, int ms) { return ms <= 0 ? 1.0 : Math.Min(1.0, at / ms); }
@@ -1446,6 +1487,7 @@ class Slider
             var wt = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mon.Width, Bottom = mon.Height - barH }, src);
             if (wt != null) f.All.Add(wt);
         }
+        DesktopWidgetsAttach(f.All, new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy);
         foreach (var h in handles)
         {
             var hw = new IntPtr(h);
@@ -2019,6 +2061,7 @@ class Slider
             var t = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mw, Bottom = mh - barH }, src);
             if (t != null) thumbs.Add(t);
         }
+        DesktopWidgetsAttach(thumbs, new Rectangle(mx, oy, mw, mh - barH), ox, oy);
 
         // Super+Ctrl+Shift+←/→: pencereyi taşı ve takip et. Taşınan pencere yerinde kalır, workspace'ler onun
         // arkasında kayar (pencereyi yanında götürüyormuşsun gibi), sonra yeni yerleşimdeki yerine oturur.
@@ -2328,6 +2371,7 @@ class Slider
             var t = Register(wall, new Native.RECT { Left = 0, Top = 0, Right = mw, Bottom = mh - barH }, src);
             if (t != null) s.All.Add(t);
         }
+        DesktopWidgetsAttach(s.All, new Rectangle(mx, oy, mw, mh - barH), ox, oy);
         var oldWins = new List<IntPtr>();
         J.Windows(oldWs, oldWins);
         foreach (var h in oldWins)
@@ -4241,6 +4285,424 @@ static class WidgetWindows
 // tiling'i ve shell'i kendi alt süreçleri olarak açar, Görev Yöneticisi üçünü tek "lunge" altında gruplar. Sonradan
 // çöken parçayı nöbetçiler yine buradan başlatır. tiling'den çıkılınca (kod 0) shell'i kapatır, Windows görev
 // çubuğunu geri getirir ve kendisi de çıkar.
+// Intentional restart is a two-phase handoff. The next core waits before taking the main mutex,
+// writing state or starting any desktop parts. A successful scheduler API call is not readiness.
+static class DesktopRestart
+{
+    const int LaunchTimeout = 10000, CommitTimeout = 30000;
+    static string PipeName { get { return "LogicalLunge.Restart." + System.Security.Principal.WindowsIdentity.GetCurrent().User.Value + "." + Process.GetCurrentProcess().SessionId; } }
+
+    public static bool Handoff(Func<bool> prepare, Action stop, Func<bool> commit, Action rollback)
+    {
+        bool stopping = false;
+        try
+        {
+            if (!prepare()) return false;
+            stopping = true;
+            stop();
+            if (commit()) return true;
+        }
+        catch (Exception ex) { Slider.Log("restart handoff: " + ex.GetBaseException().Message); }
+        if (stopping)
+        {
+            try { rollback(); } catch (Exception ex) { Slider.Log("restart recovery: " + ex.GetBaseException().Message); }
+        }
+        return false;
+    }
+
+    // No runas/ShellExecute: retain the caller's token without inheriting shell sockets or pipe handles.
+    // Break away from a parent job so exiting the old scheduled action cannot take the coordinator down.
+    // A job that denies breakaway may use the verified own-token broker route below.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct STARTUPINFO
+    {
+        public int cb; public string reserved, desktop, title;
+        public int x, y, xSize, ySize, xChars, yChars, fill, flags;
+        public short show, reservedSize; public IntPtr reservedPtr, input, output, error;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr process, thread; public uint pid, tid; }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateProcess(string exe, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity,
+        bool inheritHandles, uint flags, IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
+    static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string exe, StringBuilder command,
+        uint flags, IntPtr environment, string directory, ref STARTUPINFO startup, out PROCESS_INFORMATION info);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
+    [DllImport("kernel32.dll")] static extern bool ProcessIdToSessionId(uint pid, out uint session);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("kernel32.dll")] static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint pid);
+    [DllImport("kernel32.dll")] static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);
+    [DllImport("kernel32.dll")] static extern bool TerminateProcess(IntPtr process, uint code);
+    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle, uint timeout);
+
+    // Retain the opened process object: a recycled PID must never become a termination target.
+    public interface StopProcess : IDisposable { bool Exit(int timeout); }
+    public sealed class OwnedProcess : StopProcess
+    {
+        IntPtr handle;
+        public OwnedProcess(IntPtr value) { handle = value; }
+        public bool Exit(int timeout)
+        {
+            return WaitForSingleObject(handle, 0) == 0 ||
+                (TerminateProcess(handle, 0) && WaitForSingleObject(handle, (uint)timeout) == 0);
+        }
+        public void Dispose() { if (handle != IntPtr.Zero) { CloseHandle(handle); handle = IntPtr.Zero; } }
+    }
+
+    public sealed class CoreStop : IDisposable
+    {
+        readonly Mutex mutex;
+        StopProcess process;
+        bool reserved;
+        public bool Exited { get { return reserved; } }
+        public CoreStop() : this("LogicalLunge.Core", OpenCore) { }
+        public CoreStop(string name, Func<StopProcess> open)
+        {
+            mutex = new Mutex(false, name);
+            try
+            {
+                if (Reserve(0)) return; // PID file is unnecessary only when the actual mutex is free.
+                process = open();
+                if (process == null) throw new InvalidOperationException("No verified termination target");
+            }
+            catch { Dispose(); throw; }
+        }
+        static StopProcess OpenCore()
+        {
+            int pid;
+            if (!int.TryParse(System.IO.File.ReadAllText(Supervisor.PidFile).Trim(), out pid) ||
+                pid == Process.GetCurrentProcess().Id || !Peer((uint)pid, false))
+                throw new InvalidOperationException("Core mutex is busy but its owner cannot be verified");
+            // PROCESS_TERMINATE | SYNCHRONIZE | QUERY_LIMITED_INFORMATION, before any desktop mutation.
+            IntPtr handle = OpenProcess(0x101001, false, (uint)pid);
+            if (handle == IntPtr.Zero) throw new InvalidOperationException("No termination access to the existing core");
+            var target = new OwnedProcess(handle);
+            if (!Peer((uint)pid, false)) { target.Dispose(); throw new InvalidOperationException("Core identity changed during preparation"); }
+            return target;
+        }
+        bool Reserve(int timeout)
+        {
+            try { reserved = mutex.WaitOne(timeout); }
+            catch (AbandonedMutexException) { reserved = true; }
+            return reserved;
+        }
+        public void ExitAndReserve()
+        {
+            if (reserved) return;
+            if (Reserve(0)) return;
+            if (process == null || !process.Exit(3000) || !Reserve(3000))
+                throw new InvalidOperationException("Old core exit and free mutex could not be verified");
+        }
+        public void Release()
+        {
+            if (reserved) { mutex.ReleaseMutex(); reserved = false; }
+        }
+        public void Dispose() { Release(); if (process != null) process.Dispose(); mutex.Dispose(); }
+    }
+
+    public static bool StartInherited(string exe, string args)
+    {
+        using (var process = StartOwned(exe, args)) return process != null;
+    }
+    public static OwnedProcess StartOwned(string exe, string args)
+    {
+        var startup = new STARTUPINFO { cb = Marshal.SizeOf(typeof(STARTUPINFO)), flags = 1, show = 0 };
+        PROCESS_INFORMATION info;
+        if (!CreateProcess(exe, new StringBuilder("\"" + exe + "\" " + (args ?? "")), IntPtr.Zero, IntPtr.Zero,
+            false, 0x09000000, IntPtr.Zero, Paths.Home, ref startup, out info)) // NO_WINDOW | BREAKAWAY_FROM_JOB
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (!CanBrokerLaunch(error, UserLaunch.Elevated) || !StartOwnToken(exe, args, ref startup, out info))
+            {
+                Slider.Log("restart launch failed: " + error);
+                return null;
+            }
+        }
+        CloseHandle(info.thread);
+        return new OwnedProcess(info.process);
+    }
+
+    public static bool CanBrokerLaunch(int error, bool elevated) { return error == 5 && elevated; }
+    static bool StartOwnToken(string exe, string args, ref STARTUPINFO startup, out PROCESS_INFORMATION info)
+    {
+        info = new PROCESS_INFORMATION();
+        IntPtr token = IntPtr.Zero;
+        // Current process pseudo-handle only: TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY.
+        if (!OpenProcessToken(new IntPtr(-1), 0xB, out token)) return false;
+        try
+        {
+            using (var identity = new System.Security.Principal.WindowsIdentity(token))
+                if (!new System.Security.Principal.WindowsPrincipal(identity)
+                    .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator)) return false;
+            // Secondary Logon can create outside the scheduled job. Verify that before any child code runs.
+            if (!CreateProcessWithTokenW(token, 0, exe, new StringBuilder("\"" + exe + "\" " + (args ?? "")),
+                0x08000004, IntPtr.Zero, Paths.Home, ref startup, out info)) // NO_WINDOW | SUSPENDED
+            {
+                Slider.Log("restart own-token launch failed: " + Marshal.GetLastWin32Error());
+                return false;
+            }
+            bool inJob;
+            if (!IsProcessInJob(info.process, IntPtr.Zero, out inJob) || inJob ||
+                !Peer(info.pid, true) || ResumeThread(info.thread) == uint.MaxValue)
+            {
+                Slider.Log("restart own-token child could not be verified/resumed outside all jobs");
+                TerminateProcess(info.process, 3);
+                CloseHandle(info.thread); CloseHandle(info.process);
+                info = new PROCESS_INFORMATION();
+                return false;
+            }
+            return true;
+        }
+        finally { CloseHandle(token); }
+    }
+
+    // Validate both pipe peers using OS identity, never a claimed PID or elevation in a message.
+    static bool Peer(uint pid, bool requireElevated)
+    {
+        uint session;
+        if (!ProcessIdToSessionId(pid, out session) || session != Process.GetCurrentProcess().SessionId ||
+            !string.Equals(ProcInfo.Path(pid), Paths.Core, StringComparison.OrdinalIgnoreCase)) return false;
+        IntPtr process = OpenProcess(0x1000, false, pid), token = IntPtr.Zero;
+        if (process == IntPtr.Zero) return false;
+        try
+        {
+            if (!OpenProcessToken(process, 8, out token)) return false;
+            using (var identity = new System.Security.Principal.WindowsIdentity(token))
+            using (var own = System.Security.Principal.WindowsIdentity.GetCurrent())
+                return identity.User == own.User && (!requireElevated || new System.Security.Principal.WindowsPrincipal(identity)
+                    .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator));
+        }
+        catch { return false; }
+        finally { if (token != IntPtr.Zero) CloseHandle(token); CloseHandle(process); }
+    }
+
+    public static bool ReadSignal(System.IO.Stream stream, byte expected, int timeout)
+    {
+        var buffer = new byte[1];
+        var read = stream.ReadAsync(buffer, 0, 1);
+        return read.Wait(timeout) && read.Result == 1 && buffer[0] == expected;
+    }
+    public static bool WriteSignal(System.IO.Stream stream, byte value, int timeout)
+    {
+        return stream.WriteAsync(new byte[] { value }, 0, 1).Wait(timeout);
+    }
+
+    // A rejected client is disconnected, not allowed to consume the entire launch attempt.
+    public static bool WaitCandidate(System.IO.Pipes.NamedPipeServerStream pipe, Func<bool> launch,
+        Func<bool> peer, int timeout)
+    {
+        var clock = Stopwatch.StartNew();
+        bool launched = false;
+        while (clock.ElapsedMilliseconds < timeout)
+        {
+            var connection = pipe.BeginWaitForConnection(null, null);
+            using (connection.AsyncWaitHandle)
+            {
+                if (!launched) { launched = true; if (!launch()) return false; }
+                int remaining = Math.Max(0, timeout - (int)clock.ElapsedMilliseconds);
+                if (!connection.AsyncWaitHandle.WaitOne(remaining)) return false;
+                pipe.EndWaitForConnection(connection);
+            }
+            try
+            {
+                if (peer() && ReadSignal(pipe, (byte)'R', Math.Min(1000, Math.Max(0, timeout - (int)clock.ElapsedMilliseconds))))
+                    return true;
+            }
+            catch (System.IO.IOException) { }
+            catch (AggregateException ex) { if (!(ex.GetBaseException() is System.IO.IOException)) throw; }
+            pipe.Disconnect();
+        }
+        return false;
+    }
+
+    public sealed class Candidate : IDisposable
+    {
+        readonly System.IO.Pipes.NamedPipeServerStream pipe;
+        uint pid;
+        public Candidate()
+        {
+            var security = new System.IO.Pipes.PipeSecurity();
+            using (var own = System.Security.Principal.WindowsIdentity.GetCurrent())
+                security.AddAccessRule(new System.IO.Pipes.PipeAccessRule(own.User, System.IO.Pipes.PipeAccessRights.FullControl,
+                    System.Security.AccessControl.AccessControlType.Allow));
+            pipe = new System.IO.Pipes.NamedPipeServerStream(PipeName, System.IO.Pipes.PipeDirection.InOut, 1,
+                System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.Asynchronous, 0, 0, security);
+        }
+        public bool Prepare(Func<bool> launch)
+        {
+            return WaitCandidate(pipe, launch, () =>
+                GetNamedPipeClientProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out pid) && Peer(pid, true), LaunchTimeout);
+        }
+        public bool Alive { get { return pipe.IsConnected && Peer(pid, true); } }
+        public bool Commit()
+        {
+            return WriteSignal(pipe, (byte)'C', 3000) && ReadSignal(pipe, (byte)'S', CommitTimeout) &&
+                WriteSignal(pipe, (byte)'A', 3000);
+        }
+        public void Dispose() { pipe.Dispose(); } // EOF aborts a candidate that has not received commit.
+    }
+
+    public static bool CanRunTask(string xml, string core, string home, string sid, string account, int running)
+    {
+        try
+        {
+            var doc = new System.Xml.XmlDocument { XmlResolver = null }; doc.LoadXml(xml);
+            var ns = new System.Xml.XmlNamespaceManager(doc.NameTable); ns.AddNamespace("t", "http://schemas.microsoft.com/windows/2004/02/mit/task");
+            Func<string, string> value = path => { var node = doc.SelectSingleNode("/t:Task/" + path, ns); return node == null ? "" : node.InnerText; };
+            string user = value("t:Principals/t:Principal/t:UserId"), policy = value("t:Settings/t:MultipleInstancesPolicy");
+            var principal = doc.SelectSingleNode("/t:Task/t:Principals/t:Principal", ns) as System.Xml.XmlElement;
+            var actions = doc.SelectSingleNode("/t:Task/t:Actions", ns) as System.Xml.XmlElement;
+            return doc.SelectNodes("/t:Task/t:Principals/t:Principal", ns).Count == 1 &&
+                doc.SelectNodes("/t:Task/t:Actions/*", ns).Count == 1 &&
+                principal != null && actions != null && principal.GetAttribute("id") == actions.GetAttribute("Context") &&
+                (user == sid || string.Equals(user, account, StringComparison.OrdinalIgnoreCase)) &&
+                value("t:Principals/t:Principal/t:LogonType") == "InteractiveToken" &&
+                value("t:Principals/t:Principal/t:RunLevel") == "HighestAvailable" &&
+                string.Equals(value("t:Actions/t:Exec/t:Command"), core, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(value("t:Actions/t:Exec/t:WorkingDirectory"), home, StringComparison.OrdinalIgnoreCase) &&
+                string.IsNullOrWhiteSpace(value("t:Actions/t:Exec/t:Arguments")) &&
+                value("t:Settings/t:Enabled") != "false" && value("t:Settings/t:Enabled") != "0" &&
+                value("t:Settings/t:AllowStartOnDemand") != "false" && value("t:Settings/t:AllowStartOnDemand") != "0" &&
+                (policy == "Parallel" || ((policy == "IgnoreNew" || policy == "Queue" || policy == "") && running == 0));
+        }
+        catch { return false; }
+    }
+
+    static object Com(object obj, string member, bool property, params object[] args)
+    {
+        return obj.GetType().InvokeMember(member, property ? System.Reflection.BindingFlags.GetProperty : System.Reflection.BindingFlags.InvokeMethod,
+            null, obj, args);
+    }
+    static void ReleaseCom(object obj) { if (obj != null && Marshal.IsComObject(obj)) Marshal.FinalReleaseComObject(obj); }
+    static bool StartTask()
+    {
+        object service = null, folder = null, task = null, instances = null, run = null;
+        try
+        {
+            service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+            Com(service, "Connect", false, null, null, null, null);
+            folder = Com(service, "GetFolder", false, @"\LogicalLunge");
+            task = Com(folder, "GetTask", false, "Start");
+            instances = Com(task, "GetInstances", false, 0);
+            using (var own = System.Security.Principal.WindowsIdentity.GetCurrent())
+                if (!CanRunTask((string)Com(task, "Xml", true), Paths.Core, Paths.Home, own.User.Value, own.Name,
+                    Convert.ToInt32(Com(instances, "Count", true)))) return false;
+            // Use the registered highest principal in this interactive session. Never TASK_RUN_AS_SELF.
+            run = Com(task, "RunEx", false, null, 4, Process.GetCurrentProcess().SessionId, null);
+            return run != null;
+        }
+        catch (Exception ex) { Slider.Log("restart task unavailable: " + ex.GetBaseException().Message); return false; }
+        finally { ReleaseCom(run); ReleaseCom(instances); ReleaseCom(task); ReleaseCom(folder); ReleaseCom(service); }
+    }
+
+    static Candidate TryPrepare(Func<bool> launch)
+    {
+        Candidate candidate = null;
+        try
+        {
+            candidate = new Candidate();
+            if (candidate.Prepare(launch)) return candidate;
+        }
+        catch (Exception ex) { Slider.Log("restart preparation: " + ex.GetBaseException().Message); }
+        if (candidate != null) candidate.Dispose();
+        return null;
+    }
+    public static bool PrepareRoutes(bool elevated, Func<bool> scheduled, Func<bool> inherited)
+    {
+        if (scheduled()) return true;
+        // A running IgnoreNew task cannot launch a second instance. An already elevated coordinator can
+        // preserve its token directly. A medium coordinator must abort rather than start a medium desktop.
+        return elevated && inherited();
+    }
+    public static Candidate Prepare()
+    {
+        Candidate candidate = null;
+        PrepareRoutes(UserLaunch.Elevated, () => { candidate = TryPrepare(StartTask); return candidate != null; },
+            () => { candidate = TryPrepare(() => StartInherited(Paths.Core, "--restart-desktop-candidate")); return candidate != null; });
+        return candidate;
+    }
+
+    // Arg-less scheduler action joins a pending restart; normal sign-in has no pipe and starts normally.
+    public static bool Join(bool required, out System.IO.Pipes.NamedPipeClientStream committed)
+    {
+        committed = null;
+        var pipe = new System.IO.Pipes.NamedPipeClientStream(".", PipeName, System.IO.Pipes.PipeDirection.InOut,
+            System.IO.Pipes.PipeOptions.Asynchronous, System.Security.Principal.TokenImpersonationLevel.Identification);
+        bool connected = false;
+        try
+        {
+            pipe.Connect(required ? 1500 : 150); connected = true;
+            uint server;
+            if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle.DangerousGetHandle(), out server) || !Peer(server, false) ||
+                !UserLaunch.Elevated || !System.IO.File.Exists(Paths.Tiling) || !System.IO.File.Exists(Paths.Shell)) return false;
+            // Prove that the existing main mutex is accessible before sending readiness.
+            Mutex main; if (Mutex.TryOpenExisting("LogicalLunge.Core", out main)) main.Dispose();
+            if (!WriteSignal(pipe, (byte)'R', 3000)) return false;
+            if (!ReadSignal(pipe, (byte)'C', CommitTimeout)) return false;
+            committed = pipe; return true;
+        }
+        catch (TimeoutException) { return !required && !connected; }
+        catch (Exception ex) { Slider.Log("restart candidate: " + ex.GetBaseException().Message); return false; }
+        finally { if (committed == null) pipe.Dispose(); }
+    }
+    public sealed class Startup : IDisposable
+    {
+        public int BringUpDone, UiReady, Initialized;
+        int failed;
+        public volatile bool Accepted;
+        readonly System.Threading.Tasks.Task worker;
+        public Startup(System.IO.Pipes.NamedPipeClientStream pipe)
+        {
+            worker = WatchStartup(pipe, () => Volatile.Read(ref BringUpDone) == 1 &&
+                Volatile.Read(ref UiReady) == 1 && Volatile.Read(ref Initialized) == 1 &&
+                Supervisor.RestartReady(), () => Volatile.Read(ref failed) != 0,
+                () => { Accepted = true; SelfHeal.IsMain = true; }, () => Environment.Exit(3), CommitTimeout);
+        }
+        public void Fail() { Interlocked.Exchange(ref failed, 1); }
+        public void Wait(int timeout) { try { worker.Wait(timeout); } catch { } }
+        public void Dispose() { if (!Accepted) { Fail(); Wait(3500); } }
+    }
+
+    // Keep EOF/rollback observable throughout initialization, including a stuck UI or BringUp.
+    public static System.Threading.Tasks.Task WatchStartup(System.IO.Stream pipe, Func<bool> ready,
+        Func<bool> failed, Action accepted, Action abort, int timeout)
+    {
+        // Independent of HTTP/hook thread-pool load: the startup/rollback deadline must keep advancing.
+        return System.Threading.Tasks.Task.Factory.StartNew(() =>
+        {
+            bool success = false;
+            try
+            {
+                var clock = Stopwatch.StartNew();
+                var signal = new byte[1];
+                var reply = pipe.ReadAsync(signal, 0, 1);
+                bool sent = false;
+                while (clock.ElapsedMilliseconds < timeout && !failed())
+                {
+                    if (reply.IsCompleted)
+                    {
+                        success = sent && reply.Result == 1 && signal[0] == (byte)'A';
+                        break;
+                    }
+                    if (!sent && ready()) { if (!WriteSignal(pipe, (byte)'S', 1000)) break; sent = true; }
+                    Thread.Sleep(20);
+                }
+                if (!success) { try { WriteSignal(pipe, (byte)'F', 500); } catch { } }
+            }
+            catch (Exception ex) { Slider.Log("restart startup: " + ex.GetBaseException().Message); }
+            finally
+            {
+                pipe.Dispose();
+                if (success) accepted(); else abort();
+            }
+        }, CancellationToken.None, System.Threading.Tasks.TaskCreationOptions.LongRunning, System.Threading.Tasks.TaskScheduler.Default);
+    }
+}
+
 static class Supervisor
 {
     public static string PidFile { get { return Paths.State("core.pid"); } }
@@ -4268,6 +4730,11 @@ static class Supervisor
     {
         try { using (var c = new System.Net.Sockets.TcpClient()) return c.ConnectAsync("127.0.0.1", 6123).Wait(150) && c.Connected; }
         catch { return false; }
+    }
+
+    public static bool RestartReady()
+    {
+        return Toasts.Listening && Maint.Running(Names.Tiling) && Maint.Running(Names.Shell) && TilingIpcUp();
     }
 
     // ShellExecute: çekirdeğin tutamaçları alt sürece miras kalmasın
@@ -4314,12 +4781,29 @@ static class Supervisor
     // Masaüstünü kapatır (kurulum, güncelleme, "masaüstünü yenile"): bakım işareti, önce çekirdek (kapanan parçaları
     // yeniden başlatmasın), pencere yöneticisine nazik çıkış (gizli workspace'lerin pencerelerini geri getirir), kalanlar,
     // sonra görünmez kalmış pencereler. Bakım işareti kalır; kaldırmak çağıranın işi (en geç 10 dakikada geçersizleşir).
-    public static void StopDesktop()
+    public static void StopDesktop(bool requireCoreExit = false)
     {
+        if (requireCoreExit)
+        {
+            using (var stop = new DesktopRestart.CoreStop()) { stop.ExitAndReserve(); StopDesktopParts(); }
+            return;
+        }
         Maint.Mark();
         LiveWallpaper.Stop();
         var core = MainCore();
-        if (core != null) { try { core.Kill(); core.WaitForExit(3000); } catch { } finally { core.Dispose(); } }
+        if (core != null)
+        {
+            try { core.Kill(); if (!core.WaitForExit(3000) && requireCoreExit) throw new InvalidOperationException("Old core did not exit"); }
+            catch { if (requireCoreExit) throw; }
+            finally { core.Dispose(); }
+        }
+        StopDesktopParts();
+    }
+
+    static void StopDesktopParts()
+    {
+        Maint.Mark();
+        LiveWallpaper.Stop();
         if (Maint.Running(Names.Tiling))
         {
             try { new TilingClient().Command("wm-exit"); } catch { }
@@ -4379,24 +4863,59 @@ static class Supervisor
         StopDesktop();
     }
 
-    // Tutamaç devralmadan (ShellExecute): kabuğun başlattığı bu süreç kabuğun soketlerini (6124) miras almış olabilir;
-    // onları taşıyan bir alt süreç yeni kabuğun sunucusunu açmasını engelliyordu. İş temiz bir kopyada yapılır.
+    // Detached coordinator retains the main core's elevation and inherits no shell/socket handles.
     public static void RestartDesktopDetached()
     {
-        Start(Paths.Core, "--restart-desktop-now");
+        DesktopRestart.StartInherited(Paths.Core, "--restart-desktop-now");
     }
 
     public static void RestartDesktop()
     {
-        // Perde: mevcut masaüstünün kapanmasını, sonra yenisinin hazır olmasını bekler (ortam değişkeni ShellExecute'la
-        // başlatılan alt sürece geçer)
-        Environment.SetEnvironmentVariable("LL_SPLASH_WAIT_RESTART", "1");
-        Start(Paths.Core, "--splash");
-        Environment.SetEnvironmentVariable("LL_SPLASH_WAIT_RESTART", null);
-        try { StopDesktop(); }
-        finally { Maint.Unmark(); }
-        // Yeni kök: pencere yöneticisini ve kabuğu o açar (perde zaten açık)
-        Start(Paths.Core, null);
+        using (var gate = new Mutex(false, @"Local\LogicalLunge.Restart.Coordinator"))
+        {
+            bool owned; try { owned = gate.WaitOne(0); } catch (AbandonedMutexException) { owned = true; }
+            if (!owned) return;
+            DesktopRestart.Candidate next = null;
+            DesktopRestart.OwnedProcess splash = null;
+            DesktopRestart.CoreStop stop = null;
+            bool changed = false;
+            try
+            {
+                // A medium fallback without termination access must fail before task launch or any state change.
+                stop = new DesktopRestart.CoreStop();
+                bool ok = DesktopRestart.Handoff(() => { next = DesktopRestart.Prepare(); return next != null; }, () =>
+                {
+                    if (!next.Alive) throw new InvalidOperationException("Prepared core exited");
+                    stop.ExitAndReserve();
+                    changed = true;
+                    StopDesktopParts();
+                    // Old core is gone and the mutex is reserved. Only now create an owned, cancellable cover.
+                    splash = DesktopRestart.StartOwned(Paths.Core, "--splash");
+                    stop.Release();
+                }, () => next.Commit(), () =>
+                {
+                    if (splash != null) { splash.Exit(3000); splash.Dispose(); splash = null; }
+                    next.Dispose(); next = null;
+                    if (!changed) return; // failed kill: leave wallpaper, maintenance and the running desktop intact
+                    // EOF makes the failed candidate exit without SelfHeal. Reserve the mutex before cleanup.
+                    stop.ExitAndReserve();
+                    StopDesktopParts();
+                    stop.Release();
+                    Maint.Unmark();
+                    using (var recovery = DesktopRestart.Prepare())
+                        if (recovery == null || !recovery.Commit()) Slider.Log("restart recovery failed; Windows desktop restored");
+                });
+                if (!ok) Slider.Log("restart aborted or recovered; elevated handoff was not completed");
+            }
+            catch (Exception ex) { Slider.Log("restart refused: " + ex.GetBaseException().Message); }
+            finally
+            {
+                if (next != null) next.Dispose();
+                if (splash != null) splash.Dispose();
+                if (stop != null) stop.Dispose();
+                gate.ReleaseMutex();
+            }
+        }
     }
 }
 
@@ -4736,6 +5255,7 @@ static class SelfHeal
 // buradan bildirim gönderir (Windows hata pencereleri yerine). Yalnızca loopback dinlenir.
 static class Toasts
 {
+    public static volatile bool Listening;
     const int PORT = 6131;
     static readonly List<System.Net.Sockets.NetworkStream> clients = new List<System.Net.Sockets.NetworkStream>();
     static readonly JavaScriptSerializer json = new JavaScriptSerializer();
@@ -4761,6 +5281,7 @@ static class Toasts
             {
                 l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, PORT);
                 l.Start();
+                Listening = true;
                 if (wait > 500) Slider.Log("toast server: yeniden dinliyor");
                 wait = 500;
                 int errors = 0;
@@ -4781,7 +5302,7 @@ static class Toasts
                 Slider.Log("toast server: üst üste hata; dinleyici yeniden açılıyor");
             }
             catch (Exception ex) { Slider.Log("toast server: " + ex.GetBaseException().Message); }
-            finally { try { if (l != null) l.Stop(); } catch { } }
+            finally { Listening = false; try { if (l != null) l.Stop(); } catch { } }
             Thread.Sleep(wait);
             wait = Math.Min(wait * 2, 30000);
         }
@@ -11788,31 +12309,42 @@ static class Program
 
         // Tanınmayan bir komut (ör. eski bir çekirdeğe yeni bir sürümün komutu) asıl çekirdek gibi açılıp masaüstünü
         // başlatmasın: yalnızca argümansız ya da --respawn ile açılan süreç asıl çekirdektir
-        if (args.Length > 0 && !(args.Length == 1 && args[0] == "--respawn"))
+        if (args.Length > 0 && !(args.Length == 1 && (args[0] == "--respawn" || args[0] == "--restart-desktop-candidate")))
         {
             Slider.Log("bilinmeyen komut: " + string.Join(" ", args));
             Environment.Exit(2);
         }
 
+        System.IO.Pipes.NamedPipeClientStream restart;
+        if (!DesktopRestart.Join(args.Length == 1 && args[0] == "--restart-desktop-candidate", out restart)) return;
+        var startup = restart == null ? null : new DesktopRestart.Startup(restart);
+
         // Yakalanmayan her hatayı yığın iziyle log'a yaz (sessiz çökme olmasın)
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
         {
             Slider.Log("CRASH: " + e.ExceptionObject);
-            if (e.IsTerminating) SelfHeal.Respawn("çöktü: " + (e.ExceptionObject is Exception ? e.ExceptionObject.GetType().Name : "?"));
+            if (startup != null && !startup.Accepted) { startup.Fail(); startup.Wait(3500); }
+            else if (e.IsTerminating) SelfHeal.Respawn("çöktü: " + (e.ExceptionObject is Exception ? e.ExceptionObject.GetType().Name : "?"));
         };
-        Application.ThreadException += (s, e) => Slider.Log("UI HATA: " + e.Exception);
+        Application.ThreadException += (s, e) =>
+        {
+            Slider.Log("UI HATA: " + e.Exception);
+            if (startup != null && !startup.Accepted) startup.Fail();
+        };
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
+        try
+        {
         bool created;
         var mutex = new Mutex(true, "LogicalLunge.Core", out created);
         // Kendini yeniden başlatan kopya: eskisi kapanıp kilidi bırakana kadar bekle
-        if (!created && args.Length == 1 && args[0] == "--respawn")
+        if (!created && (restart != null || (args.Length == 1 && args[0] == "--respawn")))
         {
             try { created = mutex.WaitOne(15000); }
             catch (AbandonedMutexException) { created = true; }
         }
-        if (!created) return;
-        SelfHeal.IsMain = true;
+        if (!created) { if (startup != null) { startup.Fail(); startup.Wait(3500); } return; }
+        SelfHeal.IsMain = restart == null; // no autonomous respawn until the coordinator acknowledges full startup
         try { System.IO.File.WriteAllText(Supervisor.PidFile, Process.GetCurrentProcess().Id.ToString()); } catch { }
         // Pencere yöneticisinin config'i kurulum klasörüne %LUNGE_HOME% ile başvurur (shell-exec komutları); başlattığı
         // alt süreçlere bu ortam değişkeni geçer
@@ -11826,7 +12358,15 @@ static class Program
         catch { }
         // Kök süreç: eksik parçaları (perde, tiling, shell) kendi alt süreçleri olarak aç. Çekirdeğin kendi kurulumunu
         // beklemez; perde hemen gelsin.
-        new Thread(() => { try { Supervisor.BringUp(true); } catch (Exception ex) { Slider.Log("kök: " + ex.Message); } }) { IsBackground = true, Name = "bring-up" }.Start();
+        new Thread(() =>
+        {
+            try
+            {
+                Supervisor.BringUp(restart == null);
+                if (startup != null) Volatile.Write(ref startup.BringUpDone, 1);
+            }
+            catch (Exception ex) { Slider.Log("kök: " + ex.Message); if (startup != null) startup.Fail(); }
+        }) { IsBackground = true, Name = "bring-up" }.Start();
         Microsoft.Win32.SystemEvents.SessionEnding += (s0, e0) => { Maint.SessionEnding = true; };
         try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { } // PER_MONITOR_AWARE_V2
 
@@ -11989,7 +12529,20 @@ static class Program
         PerfGuard.Start();
         SelfHeal.WatchUi(ui);
 
+        if (startup != null)
+        {
+            Volatile.Write(ref startup.Initialized, 1);
+            ui.BeginInvoke((Action)(() => Volatile.Write(ref startup.UiReady, 1)));
+        }
         Application.Run(ui);
         GC.KeepAlive(mutex);
+        }
+        catch (Exception ex)
+        {
+            if (startup == null || startup.Accepted) throw;
+            Slider.Log("restart initialization failed: " + ex.GetBaseException().Message);
+            startup.Fail(); startup.Wait(3500);
+        }
+        finally { if (startup != null) startup.Dispose(); }
     }
 }
