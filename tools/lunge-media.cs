@@ -1,5 +1,5 @@
-// Çalan medyanın albüm kapağını data URL olarak stdout'a yazar (ii medya kutusu için).
-// ii kapağı MPRIS'ten alır; Windows karşılığı GlobalSystemMediaTransportControls.
+// Çalan medyanın albüm kapağını data URL olarak stdout'a yazar (medya kutusu için),
+// Windows'un GlobalSystemMediaTransportControls'undan.
 // Derleme: build.ps1 (Windows 10 SDK gerekir)
 using System;
 using System.IO;

@@ -1,10 +1,10 @@
 // lunge — Logical Lunge'un çekirdeği ve kök süreci. Pencere yöneticisini (lunge-tiling) ve kabuğu (lunge-shell) alt
-// süreç olarak açar ve korur (Supervisor, nöbetçiler); pencere yöneticisinin yapamadığı, Hyprland/ii'de olan şeyleri yapar:
+// süreç olarak açar ve korur (Supervisor, nöbetçiler); pencere yöneticisinin tek başına yapamadığı masaüstü işlerini yapar:
 //   1) Workspace geçişinde "slide" animasyonu (Hyprland: animation workspaces, slide, menu_decel)
 //      DWM thumbnail'leri ile: eski workspace'in canlı görüntüsü kayarak çıkar, yenisi girer.
 //   2) Tüm pencerelerde yuvarlak köşe (Hyprland decoration.rounding) — Win10'da DWM yapmadığı
 //      için SetWindowRgn ile.
-//   3) Tek başına Super -> ii overview (arama) aç/kapa; Başlat menüsü açılmaz.
+//   3) Tek başına Super -> Super menüsü (arama) aç/kapa; Başlat menüsü açılmaz.
 //
 // Kısayollar (tiling config'den buraya taşındı, animasyonlu olsunlar diye):
 //   Super+Ctrl+←/→          workspace sol/sağ
@@ -535,7 +535,7 @@ static class BorderStyle
 
 // ---------------- Hareket eğrileri ve süreleri (Hyprland'deki bezier / animation satırları) ----------------
 // config.yaml'daki üst düzey animations: bölümünden okunur, dosya değişince yeniden okunur. Bölüm yoksa ya da bir değer
-// hatalıysa o değer için varsayılan kalır (bugüne dek sabit olan değerler; eğri adları ii'nin Hyprland ayarındaki gibi).
+// hatalıysa o değer için varsayılan kalır (bugüne dek sabit olan değerler; eğri adları config.yaml'daki gibi).
 //   animations:
 //     beziers:
 //       benim_egrim: [0.2, 0.9, 0.1, 1]
@@ -805,7 +805,7 @@ class Slider
         catch { }
         return BAR_H;
     }
-    const int BAR_H = 40;             // ii baseBarHeight — bar sabit kalır, altı kayar
+    const int BAR_H = 40;             // bar yüksekliği: bar sabit kalır, altı kayar
     // Süreler ve eğriler config.yaml'dan (Anims): kayma 520 ms menu_decel (Hyprland workspaces speed 7 ~700 ms, kuyruğu
     // kısaltıldı), taşı+takip 340 ms, pencere hareketi 300 ms emphasizedDecel, açılış popin %80
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
@@ -7076,7 +7076,7 @@ static class Mic
 
 // ---------------- Ekran klavyesi girişi ----------------
 // lunge.exe --osk : stdin'den satır okur ("tap <vk>", "down <vk>", "up <vk>", "text <karakterler>")
-// ve SendInput ile odaktaki pencereye yollar. shell'deki ii tarzı ekran klavyesi bunu kullanır.
+// ve SendInput ile odaktaki pencereye yollar. kabuğun ekran klavyesi bunu kullanır.
 static class Osk
 {
     static Native.INPUT Key(ushort vk, ushort scan, uint flags)
@@ -7118,8 +7118,8 @@ static class Osk
     }
 }
 
-// ---------------- Gece ışığı (ii: hyprsunset, gama tabanlı) ----------------
-// Windows'un kendi gece ışığı yerine ekranın gama eğrisini sıcak renge çeker; ii de böyle yapar.
+// ---------------- Gece ışığı (gama tabanlı) ----------------
+// Windows'un kendi gece ışığı yerine ekranın gama eğrisini sıcak renge çeker.
 // Durum %LOCALAPPDATA%\LogicalLunge\state\nightlight dosyasında; açıkken ana helper birkaç sn'de bir
 // yeniden uygular (Windows mod değişiminde / uykudan dönüşte gamayı sıfırlayabiliyor).
 static class NightLight
@@ -7128,8 +7128,8 @@ static class NightLight
     [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
     [DllImport("gdi32.dll")] static extern bool SetDeviceGammaRamp(IntPtr dc, ushort[] ramp);
 
-    // Seviye %0..100 -> renk sıcaklığı 6500K..1900K (ii Intensity kaydırıcısı 6500 -> 1200K).
-    // %35 civarı ii varsayılanı 5000K'ye denk gelir.
+    // Seviye %0..100 -> renk sıcaklığı 6500K..1900K.
+    // %35 civarı varsayılan 5000K'ye denk gelir.
     static void Rgb(int level, out double r, out double g, out double b)
     {
         double k = (6500 - (6500 - 1900) * Math.Max(0, Math.Min(100, level)) / 100.0) / 100.0;
@@ -7403,7 +7403,7 @@ static class NightLight
     static System.IO.FileSystemWatcher keepWatcher;
 }
 
-// ---------------- Bölge seçici + Google Lens (ii modules/ii/regionSelector) ----------------
+// ---------------- Bölge seçici + Google Lens ----------------
 // Ekranın donmuş görüntüsü karartılır, sürükleyerek seçilen alan aydınlık kalır; Esc / sağ tık iptal.
 // Seçilen alan Google Lens'e tarayıcıdan yüklenir: görüntü üçüncü bir sunucuya konmaz, yerel bir sayfa
 // dosyayı doğrudan lens.google.com'a POST eder.
@@ -8120,7 +8120,7 @@ static class SnipTool
     }
 }
 
-// ---------------- Pano geçmişi (Super+V: ii "overviewClipboardToggle" / cliphist) ----------------
+// ---------------- Pano geçmişi (Super+V) ----------------
 // Çalışan helper panoyu dinler (WM_CLIPBOARDUPDATE); metinler ve görüntüler %LOCALAPPDATA%\LogicalLunge\state\clipboard'a
 // yazılır (en çok 100 kayıt). Overview'da ";" öneki bu listeyi gösterir. Parola yöneticileri gibi geçmişe eklenmesini
 // istemeyen uygulamalar (ExcludeClipboardContentFromMonitorProcessing / CanIncludeInClipboardHistory) atlanır.
@@ -8676,7 +8676,7 @@ static class Updater
 }
 
 // ---------------- Alt+Tab pencere değiştirici ----------------
-// Super arama menüsü ve workspace önizlemesi gibi ii görünümünde: koyu yuvarlak panel, canlı DWM önizlemeli kartlar,
+// Super arama menüsü ve workspace önizlemesiyle aynı görünümde: koyu yuvarlak panel, canlı DWM önizlemeli kartlar,
 // seçili kart mor vurgulu. Tüm workspace'lerdeki pencereler (tiling) son kullanıma göre sıralı; Alt basılı tutulup
 // Tab ile ilerlenir (Shift+Tab geri, ok tuşları, Enter, Esc iptal, fare ile tık), Alt bırakılınca seçilen pencere açılır.
 // Arayüz lunge içinde çizilir (WebView yok): yük altında bile anında açılır.
@@ -9280,7 +9280,7 @@ static class Wallpaper
             try { LiveWallpaper.Clear(mode); }
             catch (Exception ex) { Slider.Log("canlı duvar kağıdı kapatılamadı: " + ex.Message); }
         }
-        // ii switchwall.sh gibi terminal renklerini yeni duvar kağıdından üret (varsa)
+        // terminal renklerini yeni duvar kağıdından üret (araç varsa)
         try
         {
             string exe = Paths.Tool(@"termcolors\lunge-termcolors.exe");
@@ -10357,7 +10357,7 @@ static class KillJob
         AssignProcessToJobObject(job, p.Handle);
     }
 }
-// ---------------- Varsayılan ses cihazı (ii ses menüsü: çıkış / giriş cihazı seçimi) ----------------
+// ---------------- Varsayılan ses cihazı (çıkış / giriş cihazı seçimi) ----------------
 // Windows'un belgelenmemiş ama Windows 7'den 11'e kadar aynı kalan IPolicyConfig arayüzü (Ses ayarları da bunu kullanır).
 [ComImport, Guid("f8679f50-850a-41cf-9c72-430f290290c8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IPolicyConfig
@@ -11462,7 +11462,7 @@ static class Program
             var la = new StringBuilder();
             for (int i = 2; i < args.Length; i++) la.Append(QuoteArg(args[i])).Append(' ');
             Environment.Exit(UserLaunch.Start(args[1], la.ToString().TrimEnd(), Paths.Home, args[0] == "--launch-hidden") ? 0 : 1);
-        }        // lunge.exe --lens: ii "region search" — alan seç, Google Lens'te aç
+        }        // lunge.exe --lens: alan seç, Google Lens'te aç
         if (args.Length == 1 && args[0] == "--lens")
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }

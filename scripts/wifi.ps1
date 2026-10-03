@@ -1,4 +1,4 @@
-﻿# ii WifiDialog karşılığı (netsh wlan). Çıktı JSON.
+﻿# Wi-Fi ağları ve bağlanma (netsh wlan). Çıktı JSON.
 #   wifi.ps1 list                     -> {"connected":"SSID","networks":[{"ssid","signal","secure","known"}]}
 #   wifi.ps1 connect "<ssid>" ["<şifre>"] -> kayıtlı profil varsa bağlanır, yoksa şifreyle profil oluşturup bağlanır
 #   wifi.ps1 disconnect

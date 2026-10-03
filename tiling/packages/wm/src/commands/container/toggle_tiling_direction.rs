@@ -43,7 +43,7 @@ pub fn toggle_tiling_direction(
   Ok(())
 }
 
-/// Logical Lunge: Hyprland's dwindle `togglesplit` (Super+J in ii). The
+/// Logical Lunge: Hyprland's dwindle `togglesplit` (Super+J). The
 /// split that the window is in turns the other way, e.g. two windows side
 /// by side become stacked. Upstream wrapped the window in a new split
 /// container with the other direction instead; in the binary dwindle

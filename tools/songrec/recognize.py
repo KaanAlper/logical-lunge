@@ -1,5 +1,4 @@
-# ii scripts/musicRecognition/recognize-music.sh + services/SongRec.qml karşılığı (Windows).
-# ii Linux'ta `songrec` (Shazam istemcisi) ile varsayılan çıkışın monitöründen dinler; burada aynı Shazam
+# Çalan şarkıyı tanır (Super menüsünün şarkı tanıma düğmesi): Shazam
 # servisine shazamio ile soruyoruz, sesi WASAPI loopback (hoparlörden çalan ses) ile alıyoruz.
 #   recognize.py [-i 2] [-t 30] [-s monitor|input]
 # Bulursa tek satır JSON: {"title","subtitle","url","cover"}; bulamazsa {"error":"notfound"}.

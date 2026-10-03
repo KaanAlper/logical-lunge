@@ -1,6 +1,5 @@
-# ii scripts/colors/terminal/kitty-theme.conf şablonunun WezTerm karşılığı.
-# ii'nin kendi üreticisini (generate_colors_material.py, materialyoucolor==2.0.10) duvar kağıdıyla
-# ii'nin varsayılanlarıyla çalıştırır ve ~/.config/wezterm/ll-colors.lua yazar. WezTerm bu dosyayı
+# Duvar kağıdından terminal renkleri: paketteki Material You renk üreticisini (generate_colors_material.py,
+# materialyoucolor==2.0.10; bkz. THIRD_PARTY_NOTICES.md) duvar kağıdıyla varsayılan ayarlarla çalıştırır ve ~/.config/wezterm/ll-colors.lua yazar. WezTerm bu dosyayı
 # izlediği için duvar kağıdı değişip betik yeniden çalışınca açık terminaller de anında güncellenir.
 #   python wezterm-colors.py [--path duvar.jpg] [--mode dark|light]
 import argparse, os, subprocess, sys, winreg
@@ -18,8 +17,8 @@ if not path:
 if not path or not os.path.exists(path):
     path = os.path.join(os.environ["APPDATA"], r"Microsoft\Windows\Themes\TranscodedWallpaper")
 
-# ii switchwall.sh + Config.qml varsayılanları: harmony 0.6, harmonizeThreshold 100, termFgBoost 0.35, --blend_bg_fg
-# ii'nin betiğini aynı süreçte çalıştır (tek exe olarak paketlenince ayrı python yok)
+# Üreticinin varsayılanları: harmony 0.6, harmonizeThreshold 100, termFgBoost 0.35, --blend_bg_fg
+# üreticiyi aynı süreçte çalıştır (tek exe olarak paketlenince ayrı python yok)
 import io, runpy, contextlib, warnings
 warnings.filterwarnings("ignore")
 base = getattr(sys, "_MEIPASS", HERE)
