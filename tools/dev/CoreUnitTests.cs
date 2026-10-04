@@ -34,6 +34,7 @@ static class CoreUnitTests
         MemoryLogTests(root);
         TempsFileTests();
         RounderRegionTests();
+        WinIconTests();
         StartupCoverTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
@@ -269,6 +270,53 @@ static class CoreUnitTests
         Check(log != null && log.Contains("gave up rounding"), "giving up was not logged");
         Check(transient == 0, "a window back in its tile within the grace was clipped anyway (" + transient + " region changes): it vanishes for a frame");
         Check(lasting > 0 && lastingKind > 1 && lastingBox.Right <= 640 / 2 + 1 && lastingBox.Bottom <= 420 / 2 + 1, "a window staying past its tile was not clipped to it (" + lasting + " changes, region kind " + lastingKind + ", box " + lastingBox.Right + "x" + lastingBox.Bottom + ")");
+    }
+
+    // Window icons follow the app's identity (AppUserModelID), not its exe: every Store app runs in
+    // ApplicationFrameHost.exe, and the icon cached for the first one (Calculator) was given to all of them (Roblox).
+    // Two hidden windows of this one process, each with another app's identity, must get their own apps' icons.
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)] struct TestKey { public Guid fmtid; public uint pid; }
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)] sealed class TestVariant { public ushort vt; public ushort r1, r2, r3; public IntPtr p; public IntPtr p2; }
+    [System.Runtime.InteropServices.ComImport, System.Runtime.InteropServices.Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+    interface ITestPropertyStore
+    {
+        [System.Runtime.InteropServices.PreserveSig] int GetCount(out uint count);
+        [System.Runtime.InteropServices.PreserveSig] int GetAt(uint index, out TestKey key);
+        [System.Runtime.InteropServices.PreserveSig] int GetValue(ref TestKey key, [System.Runtime.InteropServices.Out] TestVariant value);
+        [System.Runtime.InteropServices.PreserveSig] int SetValue(ref TestKey key, [System.Runtime.InteropServices.In] TestVariant value);
+        [System.Runtime.InteropServices.PreserveSig] int Commit();
+    }
+    [System.Runtime.InteropServices.DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr h, ref Guid iid, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Interface)] out ITestPropertyStore store);
+
+    static void SetAppId(IntPtr h, string id)
+    {
+        var iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+        ITestPropertyStore store;
+        if (SHGetPropertyStoreForWindow(h, ref iid, out store) != 0) return;
+        var key = new TestKey { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 };
+        var v = new TestVariant { vt = (ushort)(id == null ? 0 : 31), p = id == null ? IntPtr.Zero : System.Runtime.InteropServices.Marshal.StringToCoTaskMemUni(id) };
+        store.SetValue(ref key, v);
+        store.Commit();
+        if (v.p != IntPtr.Zero) System.Runtime.InteropServices.Marshal.FreeCoTaskMem(v.p);
+        System.Runtime.InteropServices.Marshal.ReleaseComObject(store);
+    }
+
+    static void WinIconTests()
+    {
+        const string settings = "windows.immersivecontrolpanel_cw5n1h2txyewy!microsoft.windows.immersivecontrolpanel", explorer = "Microsoft.Windows.Explorer";
+        string a = WinIcons.AppIcon(settings), b = WinIcons.AppIcon(explorer);
+        Check(a != null && b != null && a != b, "apps' own icons (Settings, File Explorer) were not found or are the same");
+        using (var one = new System.Windows.Forms.Form())
+        using (var two = new System.Windows.Forms.Form())
+        {
+            SetAppId(one.Handle, settings);
+            SetAppId(two.Handle, explorer);
+            Check(WinIcons.AppId(one.Handle) == settings, "a window's app identity is not read");
+            string first = WinIcons.For(one.Handle), second = WinIcons.For(two.Handle);
+            Check(first == a && second == b, "two apps of one exe got " + (first == second ? "the same icon" : "wrong icons"));
+            SetAppId(one.Handle, null);
+            SetAppId(two.Handle, null);
+        }
     }
 
     // The startup cover: its first frame comes before anything slow, it leaves only when the core says every part is
