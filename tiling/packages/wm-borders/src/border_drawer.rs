@@ -37,6 +37,8 @@ pub struct BorderDrawer {
     pub effects: Effects,
     pub last_render_time: Option<time::Instant>,
     pub last_anim_time: Option<time::Instant>,
+    /// Logical Lunge: an animation step was computed but not drawn yet (the frame came early)
+    pub unrendered: bool,
 }
 
 impl BorderDrawer {
@@ -555,6 +557,21 @@ impl BorderDrawer {
         let time_diff = render_elapsed.as_secs_f32() - render_interval;
         if update && (time_diff.abs() <= 0.001 || time_diff >= 0.0) {
             self.render(bounds, window_state)?;
+            self.unrendered = false;
+        } else if update {
+            self.unrendered = true;
+        }
+
+        // Logical Lunge: nothing left to animate (a fade has reached its colors, and no spiral runs): the timer
+        // stops, after drawing the last step if that was skipped. It ran at the display's rate for every shown
+        // border all the time: ~1400 wakeups a second with four borders on an idle desktop. A focus change
+        // starts it again (update_color), as do a show or a move.
+        if !update && !self.animations.continuous() {
+            if self.unrendered {
+                self.render(bounds, window_state)?;
+                self.unrendered = false;
+            }
+            self.animations.destroy_timer();
         }
 
         Ok(())
