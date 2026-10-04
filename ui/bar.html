@@ -198,7 +198,6 @@
       // Çekirdek yoksa / hata verirse doğrudan pencere yöneticisi komutu.
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       const ART = '{{INSTALL_ESC}}\\tools\\lunge-media.exe';
-      const TEMPS = '{{INSTALL_ESC}}\\tools\\temps\\lunge-temps.exe';
       // Önce çalışan helper'a yerel HTTP ile (anında; her tıklamada yeni süreç başlatmak ~100-300 ms sürüyordu),
       // olmazsa helper süreciyle, o da olmazsa doğrudan pencere yöneticisi komutuyla.
       function slide(target, run) {
@@ -568,13 +567,15 @@
 
       // ii ResourcesPopup.qml: RAM | Swap | CPU sütunları
       // Bizim payımız: CPU / GPU sıcaklığı (tools\temps\lunge-temps.exe, LibreHardwareMonitor). CPU için PawnIO + LogicalLunge\Temps görevi gerekir.
-      // Yalnızca kutu açıkken okunur (her okuma bir süreç: eskiden hep açık bar da 2 sn'de bir okuyordu, iki monitörde
-      // saniyede bir süreç). Kutu açılınca son değer hemen görünür, taze değer ~50 ms sonra gelir.
+      // Yalnızca kutu açıkken, çekirdekten okunur (POST /temps.json: süreç başlatmadan; eskiden her 2 sn'de bir
+      // lunge-temps --read süreci). Okumak servise "biri bakıyor" der: servis sensörleri yalnızca o zaman okur.
+      // Kutu açılınca son değer hemen görünür.
       let tempsCache = null;
       function useTemps() {
         const [t, setT] = useState(tempsCache);
         useEffect(() => {
-          const read = () => lunge.shellExec(TEMPS, ['--read']).then(r => { try { setT(tempsCache = JSON.parse(r.stdout)); } catch {} }).catch(() => {});
+          const read = () => fetch('http://127.0.0.1:6131/temps.json', { method: 'POST', cache: 'no-store' })
+            .then(r => r.json()).then(j => setT(tempsCache = j)).catch(() => {});
           read();
           const id = setInterval(read, 2000);
           return () => clearInterval(id);
