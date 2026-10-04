@@ -24,6 +24,8 @@ static class CoreUnitTests
     {
         string root = args.Length > 0 ? args[0] : ".";
         NotificationActivationTests();
+        FramePacingTests();
+        BlackboxAttachmentTests();
         CallbackTests(root);
         PipeWaitTests();
         InputLatencyTests(root);
@@ -34,6 +36,38 @@ static class CoreUnitTests
         StartupCoverTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    static void BlackboxAttachmentTests()
+    {
+        var saved = BugReports.CaptureBlackbox;
+        try
+        {
+            string captured = "KARA KUTU: hata raporu istendi\n  işlemci: test\n  gpu: 3D";
+            BugReports.CaptureBlackbox = why => captured;
+            var result = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>(BugReports.File("blackbox"));
+            Check((bool)result["ok"] && (string)result["text"] == captured, "blackbox attachment uses the complete capture, without racing an asynchronous or rotated log file");
+            BugReports.CaptureBlackbox = why => null;
+            result = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, object>>(BugReports.File("blackbox"));
+            Check(!(bool)result["ok"] && result.ContainsKey("error"), "a failed blackbox capture stays visible as an attachment error");
+        }
+        finally { BugReports.CaptureBlackbox = saved; }
+    }
+
+    static void FramePacingTests()
+    {
+        Check(FramePacer.NextDeadline(100, 0, 10) == 110, "first frame waits one refresh");
+        Check(FramePacer.NextDeadline(103, 110, 10) == 110, "frame work does not add to its refresh deadline");
+        Check(FramePacer.NextDeadline(110, 110, 10) == 120, "an exact deadline advances to the next refresh");
+        Check(FramePacer.NextDeadline(149, 110, 10) == 150, "a delayed frame skips missed refreshes without a catch-up burst");
+        Check(FramePacer.NextDeadline(151, 110, 10) == 160, "a delayed frame keeps the refresh phase");
+        Check(FramePacer.NextDeadline(100, 0, 0) == 101, "invalid refresh cannot cause a busy loop");
+        using (var pace = new FramePacer())
+        {
+            var time = Stopwatch.StartNew();
+            for (int i = 0; i < 3; i++) pace.Wait();
+            Check(time.ElapsedMilliseconds >= 2 && time.ElapsedMilliseconds < 1000, "native frame timer waits and returns without a compositor flush");
+        }
     }
 
     static void NotificationActivationTests()
