@@ -7908,10 +7908,14 @@ static class WinIcons
         if (!Native.IsWindow(h)) return null;
         uint pid; Native.GetWindowThreadProcessId(h, out pid);
         string exe = ExePath(pid);
-        string key = exe ?? ("pid:" + pid);
+        // Uygulamanın kimliği (AppUserModelID) exe'den önce: bütün Store uygulamaları ApplicationFrameHost.exe'de çalışır
+        // ve exe'ye göre önbellekte ilk hangisi alındıysa (Hesap Makinesi) sonrakiler (Roblox) onun simgesiyle kalıyordu;
+        // Steam'in pencereleri, web uygulamaları da exe paylaşır. Simge Başlat menüsünün kullandığı yerden gelir.
+        string app = AppId(h);
+        string key = app != null ? "app:" + app : exe ?? ("pid:" + pid);
         lock (cache) { string c; if (cache.TryGetValue(key, out c)) return c; }
-        string data = null;
-        try
+        string data = app != null ? AppIcon(app) : null;
+        if (data == null) try
         {
             IntPtr hi = IntPtr.Zero, r;
             if (SendMessageTimeout(h, 0x7F /*WM_GETICON*/, (IntPtr)1 /*ICON_BIG*/, IntPtr.Zero, 0x2 /*SMTO_ABORTIFHUNG*/, 150, out r) != IntPtr.Zero) hi = r;
@@ -7935,6 +7939,87 @@ static class WinIcons
             bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
             return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
         }
+    }
+
+    [StructLayout(LayoutKind.Sequential)] struct PROPERTYKEY { public Guid fmtid; public uint pid; }
+    [StructLayout(LayoutKind.Sequential)] sealed class PROPVARIANT { public ushort vt; public ushort r1, r2, r3; public IntPtr p; public IntPtr p2; }
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore
+    {
+        [PreserveSig] int GetCount(out uint count);
+        [PreserveSig] int GetAt(uint index, out PROPERTYKEY key);
+        [PreserveSig] int GetValue(ref PROPERTYKEY key, [Out] PROPVARIANT value);
+        [PreserveSig] int SetValue(ref PROPERTYKEY key, [In] PROPVARIANT value);
+        [PreserveSig] int Commit();
+    }
+    [ComImport, Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItemImageFactory { [PreserveSig] int GetImage(Size size, int flags, out IntPtr bitmap); }
+    [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr h, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern int SHCreateItemFromParsingName(string path, IntPtr ctx, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IShellItemImageFactory item);
+    [DllImport("ole32.dll")] static extern int PropVariantClear(PROPVARIANT v);
+    [DllImport("gdi32.dll")] static extern int GetDIBits(IntPtr dc, IntPtr bmp, uint start, uint lines, byte[] bits, ref BITMAPINFOHEADER info, uint usage);
+    [DllImport("gdi32.dll")] static extern int GetObject(IntPtr obj, int size, ref BITMAP bmp);
+    [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
+    [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+    [StructLayout(LayoutKind.Sequential)] struct BITMAP { public int type, width, height, widthBytes; public ushort planes, bitsPixel; public IntPtr bits; }
+    [StructLayout(LayoutKind.Sequential)] struct BITMAPINFOHEADER { public uint size; public int width, height; public ushort planes, bitCount; public uint compression, sizeImage; public int xppm, yppm; public uint clrUsed, clrImportant; }
+    static readonly Guid PropertyStoreIid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+    static readonly Guid ImageFactoryIid = new Guid("BCC18B79-BA16-442F-80C4-8A59C30C463B");
+    static PROPERTYKEY AppIdKey() { return new PROPERTYKEY { fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), pid = 5 }; }
+
+    // Pencerenin uygulama kimliği; yoksa null
+    internal static string AppId(IntPtr h)
+    {
+        IPropertyStore store = null;
+        var v = new PROPVARIANT();
+        try
+        {
+            var iid = PropertyStoreIid;
+            if (SHGetPropertyStoreForWindow(h, ref iid, out store) != 0 || store == null) return null;
+            var key = AppIdKey();
+            if (store.GetValue(ref key, v) != 0 || v.vt != 31 /*VT_LPWSTR*/ || v.p == IntPtr.Zero) return null;
+            string id = Marshal.PtrToStringUni(v.p);
+            return string.IsNullOrWhiteSpace(id) ? null : id;
+        }
+        catch { return null; }
+        finally { PropVariantClear(v); if (store != null) Marshal.ReleaseComObject(store); }
+    }
+
+    // Başlat menüsünün simgesi (shell:AppsFolder), saydamlığıyla PNG; yoksa null
+    internal static string AppIcon(string app)
+    {
+        IShellItemImageFactory item = null;
+        IntPtr hbmp = IntPtr.Zero;
+        try
+        {
+            var iid = ImageFactoryIid;
+            if (SHCreateItemFromParsingName(@"shell:AppsFolder\" + app, IntPtr.Zero, ref iid, out item) != 0 || item == null) return null;
+            if (item.GetImage(new Size(64, 64), 0x4 /*SIIGBF_ICONONLY*/, out hbmp) != 0 || hbmp == IntPtr.Zero) return null;
+            var bm = new BITMAP();
+            if (GetObject(hbmp, Marshal.SizeOf(typeof(BITMAP)), ref bm) == 0 || bm.width <= 0 || bm.height <= 0) return null;
+            // 32 bit, yukarıdan aşağıya: kanalı ön-çarpılmış ARGB (kabuk resimleri öyle)
+            var info = new BITMAPINFOHEADER { size = (uint)Marshal.SizeOf(typeof(BITMAPINFOHEADER)), width = bm.width, height = -bm.height, planes = 1, bitCount = 32 };
+            var bits = new byte[bm.width * bm.height * 4];
+            IntPtr dc = GetDC(IntPtr.Zero);
+            try { if (GetDIBits(dc, hbmp, 0, (uint)bm.height, bits, ref info, 0) == 0) return null; }
+            finally { ReleaseDC(IntPtr.Zero, dc); }
+            bool any = false;
+            for (int i = 3; i < bits.Length; i += 4) if (bits[i] != 0) { any = true; break; }
+            if (!any) return null;
+            using (var bmp = new Bitmap(bm.width, bm.height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+            {
+                var lk = bmp.LockBits(new Rectangle(0, 0, bm.width, bm.height), System.Drawing.Imaging.ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                for (int y = 0; y < bm.height; y++) Marshal.Copy(bits, y * bm.width * 4, lk.Scan0 + y * lk.Stride, bm.width * 4);
+                bmp.UnlockBits(lk);
+                using (var ms = new System.IO.MemoryStream())
+                {
+                    bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
+                    return "data:image/png;base64," + Convert.ToBase64String(ms.ToArray());
+                }
+            }
+        }
+        catch { return null; }
+        finally { if (hbmp != IntPtr.Zero) Native.DeleteObject(hbmp); if (item != null) Marshal.ReleaseComObject(item); }
     }
 
     // Yönetici haklarıyla çalışan süreçte de çalışır (PROCESS_QUERY_LIMITED_INFORMATION)
