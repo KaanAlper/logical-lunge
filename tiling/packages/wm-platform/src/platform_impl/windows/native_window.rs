@@ -30,7 +30,7 @@ use windows::{
         SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT,
       },
       WindowsAndMessaging::{
-        EnumWindows, GetAncestor, GetClassNameW, GetDesktopWindow,
+        EnumWindows, FindWindowExW, GetAncestor, GetClassNameW, GetDesktopWindow,
         GetForegroundWindow, GetLayeredWindowAttributes, GetShellWindow,
         GetWindow, GetWindowLongPtrW, GetWindowRect, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible,
@@ -93,10 +93,30 @@ impl NativeWindow {
   }
 
   /// Implements [`NativeWindow::process_name`].
+  ///
+  /// A Store app's frame (`ApplicationFrameWindow`) belongs to
+  /// ApplicationFrameHost, every Store app's alike; while the app runs, its
+  /// own window (`Windows.UI.Core.CoreWindow`) is the frame's child and
+  /// names the app. A suspended app's is detached: the host's name then.
   pub(crate) fn process_name(&self) -> crate::Result<String> {
+    let mut window = self.hwnd();
+    if self.class_name().is_ok_and(|c| c == "ApplicationFrameWindow") {
+      let app = unsafe {
+        FindWindowExW(
+          self.hwnd(),
+          HWND(0),
+          w!("Windows.UI.Core.CoreWindow"),
+          PCWSTR::null(),
+        )
+      };
+      if app.0 != 0 {
+        window = app;
+      }
+    }
+
     let mut process_id = 0u32;
     unsafe {
-      GetWindowThreadProcessId(self.hwnd(), Some(&raw mut process_id));
+      GetWindowThreadProcessId(window, Some(&raw mut process_id));
     }
 
     let process_handle = unsafe {
