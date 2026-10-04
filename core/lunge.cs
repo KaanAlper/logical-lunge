@@ -3176,9 +3176,19 @@ class MouseFocus
 
     bool desktopRight;
 
+    // Klavye kancası gibi ölçülür: yavaşsa nedeniyle log'a
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         LastHookTick = Environment.TickCount;
+        var mark = InputLatency.Start();
+        IntPtr r = HookInner(nCode, wParam, lParam);
+        string slow = InputLatency.Slow(mark);
+        if (slow != null) ThreadPool.QueueUserWorkItem(_ => Slider.Log("fare kancası yavaş: " + slow));
+        return r;
+    }
+
+    IntPtr HookInner(int nCode, IntPtr wParam, IntPtr lParam)
+    {
         int msg = wParam.ToInt32();
         if (nCode >= 0 && (msg == 0x204 || msg == 0x205)) // WM_RBUTTONDOWN / UP
         {
@@ -6958,13 +6968,13 @@ class Keys2
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         LastHookTick = Environment.TickCount;
-        long t0 = Stopwatch.GetTimestamp();
+        var mark = InputLatency.Start();
         IntPtr r = HookInner(nCode, wParam, lParam);
-        long ms = (Stopwatch.GetTimestamp() - t0) * 1000 / Stopwatch.Frequency;
-        if (ms > 100)
+        string slow = InputLatency.Slow(mark);
+        if (slow != null)
         {
             int vk = nCode >= 0 ? Marshal.ReadInt32(lParam) : -1;
-            ThreadPool.QueueUserWorkItem(_ => Slider.Log("klavye kancası yavaş: " + ms + " ms (tuş 0x" + vk.ToString("X") + ")"));
+            ThreadPool.QueueUserWorkItem(_ => Slider.Log("klavye kancası yavaş: " + slow + " (tuş 0x" + vk.ToString("X") + ")"));
         }
         return r;
     }
@@ -11605,6 +11615,79 @@ static class Callback
     }
 }
 
+// Düşük seviye klavye ve fare kancaları sistemin bütün girdisini bekletir: kancanın iş parçacığı bir an durursa (çöp
+// toplama, uzun boşlukta diske atılmış sayfaların geri okunması, işlemci sırası) her tuş ve fare hareketi o kadar gecikir.
+// Kancanın içindeyken 2,2 sn'ye kadar duruş ölçülmüştü (çekirdeğin kendi tuşunda, kanca hemen dönerken bile).
+static class InputLatency
+{
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+    [DllImport("kernel32.dll")] static extern bool SetThreadPriority(IntPtr thread, int priority);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetProcessWorkingSetSizeEx(IntPtr process, UIntPtr min, UIntPtr max, uint flags);
+    [DllImport("psapi.dll")] static extern bool GetProcessMemoryInfo(IntPtr process, out MemoryCounters counters, int size);
+    [StructLayout(LayoutKind.Sequential)]
+    struct MemoryCounters
+    {
+        public int cb; public uint PageFaultCount;
+        public UIntPtr PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage,
+            QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage;
+    }
+    const int THREAD_PRIORITY_TIME_CRITICAL = 15;
+    const uint QUOTA_LIMITS_HARDWS_MIN_DISABLE = 0x2, QUOTA_LIMITS_HARDWS_MAX_DISABLE = 0x8;
+    // Yumuşak taban: Windows çekirdeğin sayfalarını bunun altına ancak bellek sıkışınca indirir
+    public const long FloorBytes = 64L * 1024 * 1024;
+    public const long SlowMs = 100;
+
+    // Süreç: çöp toplayıcı her şeyi durduran tam toplama yapmasın (arka planda toplasın); uzun boşlukta sayfalar atılmasın
+    public static void PrepareProcess()
+    {
+        try { System.Runtime.GCSettings.LatencyMode = System.Runtime.GCLatencyMode.SustainedLowLatency; } catch { }
+        try
+        {
+            if (!SetProcessWorkingSetSizeEx(GetCurrentProcess(), (UIntPtr)(ulong)FloorBytes, (UIntPtr)(ulong)(1024L * 1024 * 1024),
+                    QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE))
+                Slider.Log("girdi gecikmesi: çalışma kümesi tabanı konamadı (" + Marshal.GetLastWin32Error() + ")");
+        }
+        catch { }
+    }
+
+    // Kanca iş parçacığı: gerçek zamanlı olmayan en yüksek öncelik (yalnızca girdi geldiğinde kısa süre çalışır)
+    public static void PrepareThread()
+    {
+        try { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL); } catch { }
+    }
+
+    public struct Mark { public long Time; public int Gen0, Gen1, Gen2; }
+
+    public static Mark Start()
+    {
+        return new Mark { Time = Stopwatch.GetTimestamp(), Gen0 = GC.CollectionCount(0), Gen1 = GC.CollectionCount(1), Gen2 = GC.CollectionCount(2) };
+    }
+
+    static uint faultsAtSample = Faults();
+    // Kanca iş parçacığının saniyelik bekçisinden: yavaş bir kancada aradaki sayfa hataları bununla karşılaştırılır
+    public static void Sample() { faultsAtSample = Faults(); }
+
+    static uint Faults()
+    {
+        try
+        {
+            MemoryCounters c;
+            return GetProcessMemoryInfo(GetCurrentProcess(), out c, Marshal.SizeOf(typeof(MemoryCounters))) ? c.PageFaultCount : 0;
+        }
+        catch { return 0; }
+    }
+
+    // Yavaşsa ("825 ms; çöp toplama 0/1/2 +1/+0/+0, son ölçümden beri sayfa hatası +512"), değilse null: hangisinin durdurduğu okunur
+    public static string Slow(Mark m)
+    {
+        long ms = (Stopwatch.GetTimestamp() - m.Time) * 1000 / Stopwatch.Frequency;
+        if (ms <= SlowMs) return null;
+        return ms + " ms; çöp toplama 0/1/2 +" + (GC.CollectionCount(0) - m.Gen0) + "/+" + (GC.CollectionCount(1) - m.Gen1) + "/+" +
+            (GC.CollectionCount(2) - m.Gen2) + ", son ölçümden beri sayfa hatası +" + unchecked(Faults() - faultsAtSample);
+    }
+}
+
 static class EventLag
 {
     static int lastLog, seen;
@@ -12948,8 +13031,10 @@ static class Program
         // Klavye kancası KENDİ thread'inde ve orada başka hiçbir iş yapılmaz: LL hook ~300ms'de
         // yanıt vermezse Windows kancayı söker ve o sırada klavye donar. (Eskiden köşe yuvarlama
         // aynı thread'deydi; SetWindowRgn askıdaki bir pencerede bekleyince klavye donuyordu.)
+        InputLatency.PrepareProcess();
         var hookThread = new Thread(() =>
         {
+            InputLatency.PrepareThread();
             Binds.Watch();
             var keys = new Keys2(ui, slider);
             keys.Start();
@@ -12963,6 +13048,7 @@ static class Program
             var health = new System.Windows.Forms.Timer { Interval = 1000 };
             health.Tick += (s, e) =>
             {
+                InputLatency.Sample();
                 keys.Unstick();
                 if (HooksStale()) { keys.Reinstall(true); Keys2.LastHookTick = Environment.TickCount; Slider.Log("klavye kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
             };
@@ -12979,6 +13065,7 @@ static class Program
         // sınırını aşınca o tuş kancasız geçiyor, tek başına bir Win basışı Başlat menüsünü açıyordu)
         var mouseThread = new Thread(() =>
         {
+            InputLatency.PrepareThread();
             var mouse = new MouseFocus(new TilingClient());
             mouse.InstallHook();
             mouse.StartWorker();
