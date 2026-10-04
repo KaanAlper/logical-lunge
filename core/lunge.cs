@@ -12167,40 +12167,135 @@ static class Splash
     }
     static byte[] ReadAll(System.IO.Stream s) { var m = new System.IO.MemoryStream(); s.CopyTo(m); return m.ToArray(); }
 
+    // Açılış ve yeniden başlatma örtüsü: bütün ekranları duvar kağıdıyla (sakin bir karartmayla) örter; ana ekranda yazı ve
+    // ince bir ilerleme çizgisi. Açılırken arkada pencereler açılıp kapanırken görünmez, kullanıcı yanlış bir yere tıklayamaz
+    // ya da bir tuşla (Alt+F4) açılmakta olan bir şeyi kapatamaz. Hazır olunca yazı hafifçe kalkıp söner, örtü çekilir.
     class Cover : Form
     {
         readonly Image img;
         readonly Rectangle virt; // span resmi bu dikdörtgene yayılır (boşsa her ekran kendi resmini doldurur)
-        public Cover(Rectangle b, Image img, Rectangle virt)
+        readonly string text;    // ana ekranda; diğerlerinde null
+        readonly Color accent;
+        Bitmap background;       // duvar kağıdı + karartma, bir kez hazırlanır (her karede 4K resim ölçeklenmesin)
+        public double TextAlpha, TextLift, Phase;   // Run'daki saat sürer
+        public Rectangle Indicator;                 // her karede yalnızca bu alan yeniden çizilir
+
+        public Cover(Rectangle b, Image img, Rectangle virt, string text, Color accent)
         {
-            this.img = img; this.virt = virt;
+            this.img = img; this.virt = virt; this.text = text; this.accent = accent;
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
             StartPosition = FormStartPosition.Manual; Bounds = b;
             BackColor = Color.FromArgb(20, 19, 24);
             DoubleBuffered = true;
+            Cursor = Cursors.AppStarting;
         }
         protected override CreateParams CreateParams
         {
             get { var p = base.CreateParams; p.ExStyle |= 0x80 | 0x08000000; return p; } // TOOLWINDOW | NOACTIVATE
         }
         protected override bool ShowWithoutActivation { get { return true; } }
+        // Kullanıcı kapatamaz (Alt+F4, görev çubuğu): yalnızca örtünün kendisi çekilir
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true;
+            base.OnFormClosing(e);
+        }
+        protected override void OnPaintBackground(PaintEventArgs e) { }
         protected override void OnPaint(PaintEventArgs e)
         {
-            try { PaintBody(e); } catch (Exception ex) { PaintErrors.Report("duvar kağıdı", ex); }
+            try { PaintBody(e); } catch (Exception ex) { PaintErrors.Report("açılış örtüsü", ex); }
         }
+
         void PaintBody(PaintEventArgs e)
         {
-            if (img == null) return;
-            e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-            // "Doldur" yerleşimi: en boy oranını koruyup alanı kapla, taşanı ortadan kırp. Span'da alan tüm
-            // masaüstüdür ve her ekran kendi dilimini gösterir (Windows'un "Yay" yerleşimi).
-            Rectangle area = virt.IsEmpty ? new Rectangle(0, 0, Width, Height) : virt;
-            double k = Math.Max((double)area.Width / img.Width, (double)area.Height / img.Height);
-            int w = (int)Math.Ceiling(img.Width * k), h = (int)Math.Ceiling(img.Height * k);
-            int x = area.X + (area.Width - w) / 2 - Left, y = area.Y + (area.Height - h) / 2 - Top;
-            if (virt.IsEmpty) { x = (Width - w) / 2; y = (Height - h) / 2; }
-            e.Graphics.DrawImage(img, x, y, w, h);
+            if (background == null) background = Background();
+            e.Graphics.DrawImageUnscaled(background, 0, 0);
+            if (text == null) return;
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            float size = Math.Max(20f, Height * 0.026f);
+            int alpha = (int)Math.Round(255 * Math.Max(0, Math.Min(1, TextAlpha)));
+            using (var font = new Font(FontFamily(), size, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var brush = new SolidBrush(Color.FromArgb(alpha, 230, 224, 233)))
+            {
+                var sz = g.MeasureString(text, font);
+                float x = (Width - sz.Width) / 2, y = Height / 2f - sz.Height - (float)TextLift;
+                g.DrawString(text, font, brush, x, y);
+                // İnce ilerleme çizgisi: yazının altında, vurgu renginde bir parça izin içinde gider gelir
+                int w = (int)Math.Max(140, Height * 0.11), h = Math.Max(3, (int)Math.Round(Height * 0.0028));
+                var track = new Rectangle((Width - w) / 2, (int)(Height / 2f + size * 0.9f - TextLift), w, h);
+                Indicator = Rectangle.Inflate(new Rectangle(track.X, (int)(Height / 2f + size * 0.9f) - (int)size, w, h + (int)size * 2), 2, 2);
+                using (var trackBrush = new SolidBrush(Color.FromArgb(alpha * 40 / 255, 230, 224, 233)))
+                    FillRound(g, trackBrush, track);
+                double t = (Math.Sin(Phase) + 1) / 2;              // 0..1 gidip gelir
+                int seg = w / 3;
+                var part = new Rectangle(track.X + (int)Math.Round((w - seg) * t), track.Y, seg, h);
+                using (var partBrush = new SolidBrush(Color.FromArgb(alpha, accent)))
+                    FillRound(g, partBrush, part);
+            }
         }
+
+        static void FillRound(Graphics g, Brush b, Rectangle r)
+        {
+            using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+            {
+                int d = r.Height;
+                path.AddArc(r.X, r.Y, d, d, 90, 180);
+                path.AddArc(r.Right - d, r.Y, d, d, 270, 180);
+                path.CloseFigure();
+                g.FillPath(b, path);
+            }
+        }
+
+        static string FontFamily()
+        {
+            foreach (var name in new[] { "Segoe UI Variable Display", "Segoe UI" })
+                using (var f = new Font(name, 12f))
+                    if (f.Name == name) return name;
+            return "Segoe UI";
+        }
+
+        Bitmap Background()
+        {
+            var bmp = new Bitmap(Math.Max(1, Width), Math.Max(1, Height), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(BackColor);
+                if (img != null)
+                {
+                    g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                    // "Doldur" yerleşimi: en boy oranını koruyup alanı kapla, taşanı ortadan kırp. Span'da alan tüm
+                    // masaüstüdür ve her ekran kendi dilimini gösterir (Windows'un "Yay" yerleşimi).
+                    Rectangle area = virt.IsEmpty ? new Rectangle(0, 0, Width, Height) : virt;
+                    double k = Math.Max((double)area.Width / img.Width, (double)area.Height / img.Height);
+                    int w = (int)Math.Ceiling(img.Width * k), h = (int)Math.Ceiling(img.Height * k);
+                    int x = area.X + (area.Width - w) / 2 - Left, y = area.Y + (area.Height - h) / 2 - Top;
+                    if (virt.IsEmpty) { x = (Width - w) / 2; y = (Height - h) / 2; }
+                    g.DrawImage(img, x, y, w, h);
+                }
+                // Sakin bir karartma: yazı her duvar kağıdında okunsun, ekranlar birbirine uysun
+                using (var scrim = new SolidBrush(Color.FromArgb(120, 12, 11, 15))) g.FillRectangle(scrim, 0, 0, Width, Height);
+            }
+            return bmp;
+        }
+    }
+
+    // Örtü varken bütün tuşlar yutulur: açılmakta olan bir şey kapatılamasın (Alt+F4), yanlış yere yazılmasın. Örtünün kendi
+    // süre sınırı var (30 sn, güncellemede 150 sn); süreç bitince kanca da gider.
+    static Native.LowLevelKeyboardProc swallow;
+    static IntPtr swallowHook;
+
+    static Color Accent()
+    {
+        try
+        {
+            object v;
+            string hex = Prefs.Read().TryGetValue("focusColor", out v) ? v as string : null;
+            if (hex != null && System.Text.RegularExpressions.Regex.IsMatch(hex, "^#[0-9a-fA-F]{6}$")) return ColorTranslator.FromHtml(hex);
+        }
+        catch { }
+        return Color.FromArgb(0xb6, 0x9d, 0xf8);
     }
 
     public static void Run()
@@ -12214,27 +12309,66 @@ static class Splash
             bool restartMode = Environment.GetEnvironmentVariable("LL_SPLASH_WAIT_RESTART") == "1";
             bool sawDown = !restartMode;
             int maxMs = restartMode ? 150000 : 30000;
+            // Masaüstü zaten ayaktaysa (yenileme, güncelleme) yeniden başlatılıyordur
+            string text = I18n.T(restartMode || Ready() ? "Sistem yeniden başlatılıyor" : "Sistem başlatılıyor");
             var img = Wallpaper();
+            var accent = Accent();
             var covers = new List<Cover>();
             var virt = SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
-            foreach (var s in Screen.AllScreens) { var f = new Cover(s.Bounds, img, virt); f.Show(); covers.Add(f); }
-            ShellTakeover.HideTaskbarForSplash(); // görev çubuğu açılıştan itibaren görünmesin
-            if (restartMode)
+            Cover main = null;
+            foreach (var s in Screen.AllScreens)
             {
-                foreach (var f in covers) f.Opacity = 0;
-                var fin = new System.Windows.Forms.Timer { Interval = 15 };
-                int fis = Environment.TickCount;
-                fin.Tick += (o3, e3) =>
-                {
-                    double t3 = Math.Min(1, (Environment.TickCount - fis) / 450.0);
-                    foreach (var f in covers) f.Opacity = 1 - Math.Pow(1 - t3, 3);
-                    if (t3 >= 1) fin.Stop();
-                };
-                fin.Start();
+                var f = new Cover(s.Bounds, img, virt, s.Primary ? text : null, accent);
+                if (s.Primary) main = f;
+                f.Show();
+                covers.Add(f);
             }
+            ShellTakeover.HideTaskbarForSplash(); // görev çubuğu açılıştan itibaren görünmesin
+            swallow = Callback.Guard("açılış örtüsü", (Native.LowLevelKeyboardProc)((n, w, l) => n >= 0 ? (IntPtr)1 : Native.CallNextHookEx(IntPtr.Zero, n, w, l)));
+            swallowHook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, swallow, Native.GetModuleHandle(null), 0);
+            if (restartMode) foreach (var f in covers) f.Opacity = 0;
 
             var start = Environment.TickCount;
-            int readyAt = -1;
+            int readyAt = -1, leaving = -1;
+            // Tek saat: belirme, yazı ve çizgi, çekilme. Ana ekranda yalnızca çizginin alanı yeniden çizilir.
+            var clock = new System.Windows.Forms.Timer { Interval = 16 };
+            clock.Tick += (o, e) =>
+            {
+                int now = Environment.TickCount;
+                if (restartMode && leaving < 0)
+                {
+                    double t3 = Math.Min(1, (now - start) / 450.0);
+                    foreach (var f in covers) f.Opacity = 1 - Math.Pow(1 - t3, 3);
+                }
+                if (main != null)
+                {
+                    main.Phase = (now - start) / 1000.0 * Math.PI * 0.9;
+                    if (leaving < 0) main.TextAlpha = Math.Min(1, (now - start) / 300.0);
+                    else
+                    {
+                        // Bölüm geçişi gibi: yazı hafifçe kalkıp söner, sonra örtü çekilir
+                        double tt = Math.Min(1, (now - leaving) / 220.0);
+                        main.TextAlpha = 1 - tt;
+                        main.TextLift = main.Height * 0.012 * (1 - Math.Pow(1 - tt, 3));
+                    }
+                    var r = main.Indicator;
+                    if (r.IsEmpty || leaving >= 0 || now - start < 400) main.Invalidate(); else main.Invalidate(r);
+                }
+                if (leaving >= 0)
+                {
+                    double t = Math.Min(1, Math.Max(0, (now - leaving - 160) / 450.0));
+                    double eased = 1 - Math.Pow(1 - t, 3);
+                    foreach (var f in covers) f.Opacity = 1 - eased;
+                    if (t >= 1)
+                    {
+                        clock.Stop();
+                        if (swallowHook != IntPtr.Zero) { Native.UnhookWindowsHookEx(swallowHook); swallowHook = IntPtr.Zero; }
+                        Application.ExitThread();
+                    }
+                }
+            };
+            clock.Start();
+
             var timer = new System.Windows.Forms.Timer { Interval = 100 };
             timer.Tick += (o, e) =>
             {
@@ -12247,19 +12381,11 @@ static class Splash
                 if (!done) return;
                 timer.Stop();
                 ThreadPool.QueueUserWorkItem(_ => SaveCache());
-                var fade = new System.Windows.Forms.Timer { Interval = 15 };
-                int fs = Environment.TickCount;
-                fade.Tick += (o2, e2) =>
-                {
-                    double t = Math.Min(1, (Environment.TickCount - fs) / 350.0);
-                    double eased = 1 - Math.Pow(1 - t, 3);
-                    foreach (var f in covers) f.Opacity = 1 - eased;
-                    if (t >= 1) { fade.Stop(); Application.ExitThread(); }
-                };
-                fade.Start();
+                leaving = Environment.TickCount;
             };
             timer.Start();
             Application.Run();
+            if (swallowHook != IntPtr.Zero) Native.UnhookWindowsHookEx(swallowHook);
         }
     }
 }
