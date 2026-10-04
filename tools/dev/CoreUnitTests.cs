@@ -34,6 +34,7 @@ static class CoreUnitTests
         LogWriterTests();
         MemoryLogTests(root);
         TempsFileTests();
+        RounderRegionTests();
         StartupCoverTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
@@ -82,9 +83,9 @@ static class CoreUnitTests
         {
             var expected = new Native.RECT { Left=10, Top=20, Right=110, Bottom=120 };
             var wrong = new Native.RECT { Left=0, Top=0, Right=1920, Bottom=1080 };
-            Check(!(bool)region.Invoke(null,new object[]{2,wrong,expected,true}), "an app's full-window replacement region cannot bypass the tile clip");
-            Check(!(bool)region.Invoke(null,new object[]{1,expected,expected,true}), "empty region is not a successful clip");
-            Check((bool)region.Invoke(null,new object[]{2,expected,expected,true}), "valid rectangular clip is retained");
+            Check(!(bool)region.Invoke(null,new object[]{2,wrong,2,expected}), "an app's full-window replacement region cannot bypass the tile clip");
+            Check(!(bool)region.Invoke(null,new object[]{1,expected,1,expected}), "empty region is not a successful clip");
+            Check((bool)region.Invoke(null,new object[]{2,expected,2,expected}), "valid rectangular clip is retained");
             Check(!(bool)due.Invoke(null,new object[]{101,100}) && (bool)due.Invoke(null,new object[]{116,100}), "repeated callbacks coalesce while repair resumes next frame");
             Check((bool)due.Invoke(null,new object[]{unchecked(int.MinValue+20), int.MaxValue-10}), "repair deadline survives tick count wrap");
         }
@@ -146,6 +147,116 @@ static class CoreUnitTests
         Check(ToastActivation.ShortcutActivator("vendor.app", "Vendor.App", callback) == new Guid(callback), "matching shortcut supplies the app's notification callback");
         Check(ToastActivation.ShortcutActivator("vendor.app", "other.app", callback) == Guid.Empty, "another shortcut cannot receive this notification's context");
         Check(ToastActivation.ShortcutActivator("vendor.app", "vendor.app", "not-a-guid") == Guid.Empty, "invalid shortcut activator is ignored");
+    }
+
+    // Rounded corners: the region the rounder sets must count as its own on the next event. It did not (a rounded region's
+    // box is a pixel smaller than its rectangle, a small window's region is not even rounded), so every event set it again,
+    // and SetWindowRgn raises another location event: thousands of rounds per window per second, a core while idle.
+    // The window lives on a desktop of its own: the running desktop's hooks and window manager never see it.
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    static extern IntPtr CreateDesktop(string name, IntPtr device, IntPtr mode, uint flags, uint access, IntPtr security);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr desk);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desk);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] static extern int GetRgnBox(IntPtr rgn, out Native.RECT box);
+
+    sealed class RegionProbe : System.Windows.Forms.Form
+    {
+        public int PosChanged;
+        protected override bool ShowWithoutActivation { get { return true; } }
+        protected override void WndProc(ref System.Windows.Forms.Message m)
+        {
+            if (m.Msg == 0x0083 && m.WParam != IntPtr.Zero) { m.Result = IntPtr.Zero; return; } // WM_NCCALCSIZE: draws its own title bar
+            if (m.Msg == 0x0047) PosChanged++;                                                    // WM_WINDOWPOSCHANGED: SetWindowRgn sends it
+            base.WndProc(ref m);
+        }
+    }
+
+    static void RounderRegionTests()
+    {
+        var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static;
+        var make = typeof(Rounder).GetMethod("MakeRegion", flags);
+        var shape = typeof(Rounder).GetMethod("RegionShape", flags);
+        var matches = typeof(Rounder).GetMethod("RegionMatches", flags);
+        var apply = typeof(Rounder).GetMethod("Apply", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        Check(make != null && shape != null && matches != null && apply != null, "the rounder's region helpers exist");
+        if (make == null || shape == null || matches == null || apply == null) return;
+
+        // Every size from a sliver to a wide window, both shapes: Windows reports our region the way the rounder expects it.
+        var sizes = Enumerable.Range(1, 64).Concat(new[] { 100, 333, 1000, 1919, 2560 }).ToArray();
+        int unrecognised = 0, emptied = 0;
+        foreach (bool square in new[] { true, false })
+            foreach (int w in sizes)
+                foreach (int hgt in sizes)
+                {
+                    IntPtr rgn = (IntPtr)make.Invoke(null, new object[] { square, 3, 5, 3 + w, 5 + hgt });
+                    Native.RECT box;
+                    int kind = GetRgnBox(rgn, out box);
+                    Native.DeleteObject(rgn);
+                    var args = new object[] { square, 3, 5, 3 + w, 5 + hgt, null };
+                    int expected = (int)shape.Invoke(null, args);
+                    if (kind <= 1) emptied++;
+                    if (!(bool)matches.Invoke(null, new object[] { kind, box, expected, args[5] })) unrecognised++;
+                }
+        Check(unrecognised == 0, "the rounder does not recognise its own region at " + unrecognised + " sizes");
+        Check(emptied == 0, "the rounder would hide " + emptied + " window sizes behind an empty region");
+
+        string error = null, log = null;
+        int first = -1, repeated = -1, repairs = -1, firstKind = 0, lastKind = 0;
+        Native.RECT last = new Native.RECT();
+        string oldLog = LogWriter.Path, tmp = Path.Combine(Path.GetTempPath(), "ll-rounder-test-" + Guid.NewGuid().ToString("N") + ".log");
+        LogWriter.Path = tmp;
+        var thread = new Thread(() =>
+        {
+            IntPtr desk = CreateDesktop("LLRounderTest" + Guid.NewGuid().ToString("N"), IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, IntPtr.Zero);
+            if (desk == IntPtr.Zero || !SetThreadDesktop(desk)) { error = "no test desktop: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error(); return; }
+            try
+            {
+                using (var f = new RegionProbe { StartPosition = System.Windows.Forms.FormStartPosition.Manual, Bounds = new System.Drawing.Rectangle(200, 150, 640, 420) })
+                {
+                    f.Show();
+                    System.Windows.Forms.Application.DoEvents();
+                    var rounder = new Rounder();
+                    Action run = () => { apply.Invoke(rounder, new object[] { f.Handle }); System.Windows.Forms.Application.DoEvents(); };
+                    Native.RECT box;
+                    int start = f.PosChanged;
+                    run();
+                    first = f.PosChanged - start;
+                    firstKind = Native.GetWindowRgnBox(f.Handle, out box);
+                    // the location events its own region raises, and the 0.7 s sweep
+                    start = f.PosChanged;
+                    for (int i = 0; i < 20; i++) run();
+                    repeated = f.PosChanged - start;
+                    // an app that puts its own region back after every change: a few repairs, then it is left alone
+                    repairs = 0;
+                    for (int i = 0; i < 12; i++)
+                    {
+                        Native.SetWindowRgn(f.Handle, Native.CreateRectRgn(0, 0, 300, 200), true);
+                        System.Windows.Forms.Application.DoEvents();
+                        start = f.PosChanged;
+                        run();
+                        if (f.PosChanged > start) repairs++;
+                    }
+                    lastKind = Native.GetWindowRgnBox(f.Handle, out last);
+                    f.Close();
+                }
+            }
+            catch (Exception ex) { error = ex.GetBaseException().Message; }
+            finally { CloseDesktop(desk); }
+        });
+        thread.SetApartmentState(ApartmentState.MTA); // an STA thread already owns a COM window: it could not change desktops
+        thread.Start();
+        bool done = thread.Join(20000);
+        LogWriter.Flush(3000);
+        try { log = File.Exists(tmp) ? File.ReadAllText(tmp) : ""; File.Delete(tmp); } catch { }
+        LogWriter.Path = oldLog;
+        Check(done, "the rounder's window test did not finish");
+        Check(error == null, "the rounder's window test failed: " + error);
+        if (!done || error != null) return;
+        Check(first > 0 && firstKind == 3, "a window with its own title bar was not rounded (" + first + " moves, region kind " + firstKind + ")");
+        Check(repeated == 0, "the rounder set the same region again " + repeated + " times: every location event would loop");
+        Check(repairs >= 1 && repairs <= 5, "an app replacing the region was repaired " + repairs + " times out of 12 (want a few, then stop)");
+        Check(lastKind == 2 && last.Right == 300 && last.Bottom == 200, "the rounder took away the app's own region after giving up");
+        Check(log != null && log.Contains("gave up rounding"), "giving up was not logged");
     }
 
     // The startup cover: its first frame comes before anything slow, it leaves only when the core says every part is
