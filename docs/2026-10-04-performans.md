@@ -10,6 +10,7 @@
 | Kare temposu (`2f49b4a`) | Zamanlayıcı, ekranda görünen akıcılığı %88'den %81'e düşürüyor; gecikme +1,7 ms | Geri alındı: `2927bae` |
 | Dwindle önbelleği, kara kutu eki, tiling eşitlemesi, sysinfo | Doğru | Kaldı |
 | Önizleme havuzunu küçültme | Bellek kazancı yok, zararı da yok | Kaldı |
+| Açılış örtüsünün oturum süresi (önceki iş) | ANSI çağrısı yüzünden 144 baytlık tamponun dışından okuyordu; yenilemede örtü "yeniden başlatılıyor" demiyordu | Düzeltildi: `5abd5c5` |
 
 ## 1. Köşe döngüsü (kritik)
 
@@ -88,7 +89,7 @@ Video çözmenin bedeli (duvar kağıdının Media Foundation yolunun aynısı, 
 
 1. **Kurulumdan sonra ölçmek.** `tools/dev/idle-cost.ps1` çalıştırılmalı. Hedef: boşta LL toplamı bir çekirdeğin %1'inin altında, DWM'in boştaki payı döngüden önceki düzeyde. Çekirdekte yapılan her değişiklik kurulduktan sonra bu ölçüm ve `frame-bench` çalıştırılmalı; birim testleri bu iki hatayı yakalamadı.
 2. **Duvar kağıdında ekran boyunda kopya.** Video bir kez arka planda, düşük öncelikle ve donanım kodlayıcıyla monitörün çözünürlüğüne indirilip saklanmalı (Media Foundation Transcode/SinkWriter). Bu, GPU çözme yükünü video başına yaklaşık üçte bire indirir. Laptoplarda bu doğrudan pil ve ısı demek.
-3. **Kapalı monitörde video durdurmak.** Daha önce DDC/CI'ya "açık" diye cevap veren monitör susarsa ya da `D6` ≥ 4 derse, o ekrandaki video durdurulmalı. Sorgu yaklaşık 50 ms sürüyor; arka planda, en fazla 30 sn'de bir yapılmalı. DDC/CI'yı hiç desteklemeyen monitörde video oynamaya devam eder.
+3. **Kapalı monitörde video durdurmak: yapıldı (`64f9864`).** Monitörlere 10 sn'de bir, ekranlar uyandığında ya da değiştiğinde de hemen, DDC/CI ile güç durumu soruluyor. Daha önce cevap vermiş monitör iki kez üst üste susarsa ya da "kapalı" derse o ekranın videosu duruyor; hiç cevap vermemiş monitör oynamaya devam ediyor.
 4. **Boştaki uyanmalar.** Döngü kalkınca ölçülmeli. Adaylar:
    - İletişim kutusu güvenlik zamanlayıcısı (500 ms) yalnızca bekleyen kutu varken çalışabilir.
    - Odak bekçisinin 250 ms'lik döngüsü `EVENT_SYSTEM_FOREGROUND`'a bağlanabilir.
@@ -99,4 +100,4 @@ Video çözmenin bedeli (duvar kağıdının Media Foundation yolunun aynısı, 
 
 ## Kurulum
 
-Düzeltilmiş çekirdek `C:\Temp\ll-rounder-fix-20261004` içinde. Paket Codex'in yerel paketiyle aynı biçimde; yalnızca `lunge.exe` değişti, commit `2927bae`. Yönetici olarak `apply-update.ps1` çalıştırılmalı; ardından `tools/dev/idle-cost.ps1`.
+Düzeltilmiş çekirdek `C:\Temp\ll-rounder-fix-20261004` içinde. Paket Codex'in yerel paketiyle aynı biçimde; yalnızca `lunge.exe` değişti, commit `5abd5c5` (köşe döngüsü, kare temposu, oturum süresi). Kapalı monitör özelliği duvar kağıdında, bu paketin dışında; bir sonraki sürümle gelir. Yönetici olarak `apply-update.ps1` çalıştırılmalı; ardından `tools/dev/idle-cost.ps1`.
