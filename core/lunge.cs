@@ -408,6 +408,7 @@ class RingLayer : Form
     Rectangle placed;
     bool ready;
     public readonly Stack<IntPtr[]> PoolA = new Stack<IntPtr[]>(), PoolI = new Stack<IntPtr[]>();
+    public int RetainA = 1, RetainI = 2;
 
     public RingLayer()
     {
@@ -1027,7 +1028,10 @@ class Slider
     // şablondan 8 DWM önizlemesi. Kenarlık katmanındaki havuzdan alınır (önceden, katman gizliyken kaydedilmiş); havuz
     // boşsa o an kaydedilir. Animasyon bitince takımlar gizlenip havuza döner.
     readonly List<Thumb> ringed = new List<Thumb>();
-    const int POOL_I = 12, POOL_A = 2;
+    static int RingPoolTarget(bool active, int windows)
+    {
+        return Math.Max(active ? 1 : 2, Math.Min(active ? 2 : 12, windows));
+    }
     static IntPtr[] RegisterRingSet(RingTemplate src, IntPtr dest)
     {
         if (src == null) return null;
@@ -1069,7 +1073,7 @@ class Slider
         {
             bool active = k == 0;
             var pool = active ? layer.PoolA : layer.PoolI;
-            int want = active ? POOL_A : POOL_I;
+            int want = active ? layer.RetainA : layer.RetainI;
             if (!active && ringSrcInactive == null) continue;
             while (true)
             {
@@ -1094,7 +1098,13 @@ class Slider
     {
         RingsClear();
         if (TestNoRings()) return;
-        foreach (var t in ts) if (t != null && t.IsWin) RingAdd(t, t.Src == focused);
+        var windows = new List<Thumb>();
+        foreach (var t in ts) if (t != null && t.IsWin) windows.Add(t);
+        overlay.Rings.RetainI = RingPoolTarget(false, windows.Count);
+        overlay.Rings.RetainA = RingPoolTarget(true, 1);
+        TrimRingPools(overlay.Rings);
+        FillRingPools(overlay.Rings); // hidden layer: warm this scene's actual demand before Reveal
+        foreach (var t in windows) RingAdd(t, t.Src == focused);
     }
     // Yalnızca ölçüm için (A/B): %LOCALAPPDATA%\LogicalLunge\state\test-no-rings varken animasyonlarda kenarlık halkası yok.
     // Kaydırma takılmasının halkaların (pencere başına 8 önizleme) mı pencere önizlemelerinin mi olduğunu ayırmak için.
@@ -1170,7 +1180,7 @@ class Slider
         if (layer == null) return;
         foreach (var pool in new[] { layer.PoolA, layer.PoolI })
         {
-            int want = pool == layer.PoolA ? POOL_A : POOL_I;
+            int want = pool == layer.PoolA ? layer.RetainA : layer.RetainI;
             var extra = new List<IntPtr[]>();
             lock (pool) while (pool.Count > want) extra.Add(pool.Pop());
             foreach (var ids in extra) foreach (var id in ids) Native.DwmUnregisterThumbnail(id);
@@ -2620,10 +2630,14 @@ class Dwindle
     Dictionary<string, Rectangle> monRects = new Dictionary<string, Rectangle>();
 
     // Önbellek yalnızca bir şey değişince tazelenir: pencere yöneticisinden bir olay ya da görünen bir pencerenin yer
-    // değiştirmesi (klavyeyle boyutlandırma vb.); olay yağmuru 30 ms'de birleşir, güvenlik için en geç 2 sn'de bir.
+    // değiştirmesi (klavyeyle boyutlandırma vb.); olay yağmuru 30 ms'de birleşir. Bağlıyken 30 sn'lik güvenlik ağı,
+    // bağlantı yokken 2 sn'lik kurtarma yoklaması; salt odak olayı geometriyi değiştirmez.
     // Önceden 300 ms'de bir tüm ağaç sorgulanıp JSON'u ayrıştırılıyordu: boşta bile iki süreçte sürekli iş, çekirdekte
     // sürekli çöp (kaymalarda çöp toplama duraklamaları).
     static readonly AutoResetEvent cacheDirty = new AutoResetEvent(true);
+    volatile bool cacheConnected;
+    static int CacheWaitMs(bool connected) { return connected ? 30000 : 2000; }
+    static bool SnapshotEvent(string eventType) { return eventType != "focus_changed"; }
     static volatile Dwindle current;
     public static void MarkDirty() { cacheDirty.Set(); }
     // Köşe yuvarlayıcının konum olayından (kendi thread'i): görünen, yönetilen bir pencereyse
@@ -2644,7 +2658,7 @@ class Dwindle
         {
             while (true)
             {
-                cacheDirty.WaitOne(2000);
+                cacheDirty.WaitOne(CacheWaitMs(cacheConnected));
                 Thread.Sleep(30);
                 while (Slider.Animating) Thread.Sleep(50); // animasyon bitince bir kez
                 try { RefreshCache(); } catch { }
@@ -3074,15 +3088,17 @@ class Dwindle
     {
         while (true)
         {
+            ClientWebSocket ws = null;
             try
             {
-                var ws = new ClientWebSocket();
+                ws = new ClientWebSocket();
                 ws.Options.Proxy = null;
-                ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(3000);
+                if (!ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(3000)) throw new TimeoutException("WM event connection timed out");
                 var sub = Encoding.UTF8.GetBytes("sub --events focus_changed window_managed window_unmanaged focused_container_moved " +
                     "workspace_activated workspace_deactivated workspace_updated monitor_added monitor_updated monitor_removed tiling_direction_changed");
                 cacheDirty.Set(); // yeniden bağlandı: aradaki değişiklikler
-                ws.SendAsync(new ArraySegment<byte>(sub), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1500);
+                if (!ws.SendAsync(new ArraySegment<byte>(sub), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1500)) throw new TimeoutException("WM event subscription timed out");
+                cacheConnected = true;
                 var buf = new byte[1 << 16];
                 while (ws.State == WebSocketState.Open)
                 {
@@ -3099,6 +3115,7 @@ class Dwindle
                 }
             }
             catch (Exception ex) { Slider.Log("dwindle: " + ex.GetBaseException().Message); }
+            finally { cacheConnected = false; cacheDirty.Set(); if (ws != null) ws.Dispose(); }
             Thread.Sleep(2000); // tiling yeniden başlarsa tekrar bağlan
         }
     }
@@ -3107,9 +3124,9 @@ class Dwindle
     {
         var msg = json.DeserializeObject(text) as Dictionary<string, object>;
         if (msg == null || J.Str(msg, "messageType") != "event_subscription") return;
-        cacheDirty.Set(); // yerleşim değişti: önbellek tazelensin
         var data = msg["data"] as Dictionary<string, object>;
         if (data == null) return;
+        if (SnapshotEvent(J.Str(data, "eventType"))) cacheDirty.Set();
         if (J.Str(data, "eventType") == "window_unmanaged")
         {
             OnClosed(J.Str(data, "unmanagedId"));
@@ -6460,6 +6477,13 @@ class Rounder
         return name;
     }
 
+    // Decorative corner repair can stop when an app repeatedly removes it.
+    // A managed tile's overflow constraint remains necessary independently.
+    static bool NeedsTileClip(Native.RECT frame, Native.RECT slot, bool tiledSlot)
+    {
+        return tiledSlot && (frame.Left < slot.Left || frame.Top < slot.Top || frame.Right > slot.Right || frame.Bottom > slot.Bottom);
+    }
+
     void Apply(IntPtr h)
     {
         if (Native.GetAncestor(h, 2) != h) return; // GA_ROOT: yalnızca üst düzey pencereler
@@ -6518,9 +6542,16 @@ class Rounder
         long prev;
         Native.RECT box;
         bool hasRgn = Native.GetWindowRgnBox(h, out box) != 0;
+        bool clipRequired = NeedsTileClip(fr, slot, tiledSlot);
         // Bazı uygulamalar (Terminal, Firefox/Zen) bölgeyi kendileri sıfırlıyor: yoksa yeniden uygula
         if (applied.TryGetValue(h, out prev) && prev == key && hasRgn) return;
-        if (giveUp.Contains(h)) return;
+        if (giveUp.Contains(h) && !clipRequired)
+        {
+            // A previous fullscreen clip is relative to the old HWND bounds.
+            // Remove only our region once the real window fits its tile again.
+            if (applied.Remove(h) && hasRgn) Native.SetWindowRgn(h, IntPtr.Zero, true);
+            return;
+        }
         if (prev == key && !hasRgn)
         {
             // Aynı boyutta bölge silinmiş -> uygulama kendisi sıfırlıyor. Kısa sürede çok tekrarlarsa
@@ -6531,13 +6562,17 @@ class Rounder
             hits.Add(now);
             hits.RemoveAll(x => unchecked((int)(now - x)) > 3000);
             // Vazgeçerken bizim koyduğumuz bölge de kalkar: eski (belki küçük) bir bölge pencereyi kesik bırakıyordu
-            if (hits.Count > 4) { giveUp.Add(h); applied.Remove(h); Native.SetWindowRgn(h, IntPtr.Zero, true); Slider.Log("gave up rounding " + ProcName(h)); return; }
+            if (hits.Count > 4)
+            {
+                if (giveUp.Add(h)) Slider.Log("gave up rounding " + ProcName(h) + " hwnd=" + h.ToInt64() + "; tile clipping retained");
+                if (!clipRequired) { applied.Remove(h); if (hasRgn) Native.SetWindowRgn(h, IntPtr.Zero, true); return; }
+            }
         }
         applied[h] = key;
 
         int l = vis.Left - wr.Left, t = vis.Top - wr.Top;
         int r = l + (vis.Right - vis.Left), b = t + (vis.Bottom - vis.Top);
-        IntPtr rgn = full || borderless ? Native.CreateRectRgn(l, t, r + 1, b + 1)
+        IntPtr rgn = full || borderless || giveUp.Contains(h) ? Native.CreateRectRgn(l, t, r + 1, b + 1)
             : Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
         if (Native.SetWindowRgn(h, rgn, true) == 0)
         {

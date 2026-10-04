@@ -20,6 +20,17 @@ use super::{
   ProviderFunctionResult, ProviderOutput, RuntimeType,
 };
 
+fn create_provider_system() -> sysinfo::System {
+  // Seed the first CPU usage sample and load RAM/swap, without a process
+  // census. CpuProvider's interval supplies the next sample; do not wait
+  // during startup.
+  sysinfo::System::new_with_specifics(
+    sysinfo::RefreshKind::new()
+      .with_cpu(sysinfo::CpuRefreshKind::everything())
+      .with_memory(sysinfo::MemoryRefreshKind::everything()),
+  )
+}
+
 /// Common fields for a provider.
 pub struct CommonProviderState {
   /// Wrapper around the sender channel of provider emissions.
@@ -161,7 +172,7 @@ impl ProviderManager {
         app_handle: app_handle.clone(),
         provider_refs: Arc::new(Mutex::new(HashMap::new())),
         emit_cache: Arc::new(Mutex::new(HashMap::new())),
-        sysinfo: Arc::new(Mutex::new(sysinfo::System::new_all())),
+        sysinfo: Arc::new(Mutex::new(create_provider_system())),
         emit_tx,
       }),
       emit_rx,
@@ -423,4 +434,73 @@ where
   }
 
   state.end()
+}
+
+#[cfg(test)]
+mod tests {
+  use super::create_provider_system;
+
+  #[test]
+  fn provider_system_does_not_collect_processes() {
+    let mut system = create_provider_system();
+    assert!(
+      system.processes().is_empty(),
+      "unused process census at startup"
+    );
+
+    // These are the refreshes performed by the CPU and memory providers.
+    system.refresh_cpu();
+    system.refresh_memory();
+    assert!(
+      system.processes().is_empty(),
+      "provider refresh collected processes"
+    );
+  }
+
+  #[test]
+  fn provider_system_initializes_cpu_and_memory() {
+    if !sysinfo::IS_SUPPORTED_SYSTEM {
+      return;
+    }
+
+    let mut system = create_provider_system();
+    assert!(!system.cpus().is_empty(), "CPU baseline missing at startup");
+    // sysinfo 0.30's Windows global CPU can have zero frequency/empty
+    // vendor.
+    assert!(system.cpus().iter().all(|cpu| cpu.frequency() > 0));
+    assert!(system.cpus().iter().all(|cpu| !cpu.vendor_id().is_empty()));
+    let logical_core_count = system.cpus().len();
+    let physical_core_count =
+      system.physical_core_count().unwrap_or(logical_core_count);
+    assert!(
+      physical_core_count > 0 && physical_core_count <= logical_core_count
+    );
+    assert_memory(&system);
+    let mut memory_reference = sysinfo::System::new();
+    memory_reference.refresh_memory();
+    assert_eq!(system.total_memory(), memory_reference.total_memory());
+    assert_eq!(system.total_swap(), memory_reference.total_swap());
+
+    // Startup seeds the first CPU sample; only the test waits for the next
+    // one.
+    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    system.refresh_cpu();
+    system.refresh_memory();
+    assert_eq!(system.cpus().len(), logical_core_count);
+    let usage = system.global_cpu_info().cpu_usage();
+    assert!(usage.is_finite() && (0.0..=100.0).contains(&usage));
+    assert_memory(&system);
+  }
+
+  fn assert_memory(system: &sysinfo::System) {
+    assert!(system.total_memory() > 0, "RAM missing at startup");
+    assert!(system.used_memory() <= system.total_memory());
+    assert!(system.free_memory() <= system.total_memory());
+    let usage =
+      system.used_memory() as f32 / system.total_memory() as f32 * 100.0;
+    assert!(usage.is_finite() && (0.0..=100.0).contains(&usage));
+    // A machine without swap is valid.
+    assert!(system.used_swap() <= system.total_swap());
+    assert!(system.free_swap() <= system.total_swap());
+  }
 }

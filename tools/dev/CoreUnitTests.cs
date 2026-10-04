@@ -24,6 +24,7 @@ static class CoreUnitTests
     {
         string root = args.Length > 0 ? args[0] : ".";
         NotificationActivationTests();
+        DesktopPerformancePolicyTests();
         FramePacingTests();
         BlackboxAttachmentTests();
         CallbackTests(root);
@@ -36,6 +37,43 @@ static class CoreUnitTests
         StartupCoverTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    static void DesktopPerformancePolicyTests()
+    {
+        var cache = typeof(Dwindle).GetMethod("CacheWaitMs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Check(cache != null, "connected cache has an event-driven wait policy");
+        if (cache != null)
+        {
+            Check((int)cache.Invoke(null, new object[] { true }) == 30000, "connected idle cache queries at most once per 30 seconds");
+            Check((int)cache.Invoke(null, new object[] { false }) == 2000, "disconnected cache retains recovery polling");
+        }
+        var snapshot = typeof(Dwindle).GetMethod("SnapshotEvent", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Check(snapshot != null, "focus bookkeeping does not trigger a geometry snapshot");
+        if (snapshot != null)
+        {
+            Check(!(bool)snapshot.Invoke(null, new object[] { "focus_changed" }), "focus-only changes keep the existing geometry cache");
+            foreach (var ev in new[] { "window_managed", "window_unmanaged", "focused_container_moved", "workspace_activated", "workspace_updated", "monitor_updated" })
+                Check((bool)snapshot.Invoke(null, new object[] { ev }), "layout cache responds immediately to " + ev);
+        }
+        var pool = typeof(Slider).GetMethod("RingPoolTarget", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Check(pool != null, "ring reserve follows actual demand rather than twelve windows per monitor");
+        if (pool != null)
+        {
+            Check((int)pool.Invoke(null, new object[] { false, 0 }) == 2 && (int)pool.Invoke(null, new object[] { true, 0 }) == 1, "idle monitor reserves only two inactive sets and one active set");
+            Check((int)pool.Invoke(null, new object[] { false, 7 }) == 7, "crowded workspace warms enough sets for its actual windows");
+            Check((int)pool.Invoke(null, new object[] { false, 100 }) == 12 && (int)pool.Invoke(null, new object[] { true, 100 }) == 2, "reserve growth remains bounded after crowded workspaces");
+        }
+        var clip = typeof(Rounder).GetMethod("NeedsTileClip", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Check(clip != null, "tile clipping is distinct from optional corner rounding");
+        if (clip != null)
+        {
+            var tile = new Native.RECT { Left=964, Top=45, Right=1915, Bottom=1075 };
+            var full = new Native.RECT { Left=0, Top=0, Right=1920, Bottom=1080 };
+            Check((bool)clip.Invoke(null,new object[]{ full,tile,true }), "monitor-sized video still needs clipping after decorative rounding gives up");
+            Check(!(bool)clip.Invoke(null,new object[]{ tile,tile,true }), "fitting tiles do not repeatedly fight an app's optional rounding");
+            Check(!(bool)clip.Invoke(null,new object[]{ full,tile,false }), "genuine fullscreen without a tile slot stays fullscreen");
+        }
     }
 
     static void BlackboxAttachmentTests()
