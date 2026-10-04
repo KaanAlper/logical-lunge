@@ -275,6 +275,12 @@ static class CoreUnitTests
         Check(show > 0 && show < wall && show < lang, "the cover waits for the wallpaper or the language before its first frame");
         Check(core.Contains("state.Ready = CoreSaysReady();") && core.Contains("target == \"/desktop-ready\""), "the cover does not ask the core whether the desktop is ready");
         Check(core.Contains("Text = Names.StartupCover;"), "the cover windows are not named");
+        // The time since logon decides "starting" or "restarting" and goes into the log: this session's, from Windows
+        long sinceLogon = (long)typeof(Splash).GetMethod("SinceLogonMs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).Invoke(null, null);
+        long explorer = -1;
+        foreach (var p in Process.GetProcessesByName("explorer"))
+            try { if (p.SessionId == Process.GetCurrentProcess().SessionId) explorer = Math.Max(explorer, (long)(DateTime.Now - p.StartTime).TotalMilliseconds); } catch { }
+        Check(sinceLogon > 0 && (explorer < 0 || sinceLogon >= explorer - 5000), "the time since logon is wrong: " + sinceLogon + " ms (Explorer runs for " + explorer + " ms)");
         string ui = File.ReadAllText(Path.Combine(root, "shell", "crates", "live-wallpaper", "src", "ui.rs"));
         var named = Regex.Match(core, "StartupCover = \"([^\"]+)\"").Groups[1].Value;
         Check(named.Length > 0 && ui.Contains("const STARTUP_COVER: &str = \"" + named + "\";"), "the wallpaper skips a different title than the cover's");
