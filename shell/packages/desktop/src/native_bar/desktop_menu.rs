@@ -363,7 +363,7 @@ impl Ui {
     ];
     self.menu_open(at, MenuFocus::Take, items, move |ui, id| match id {
       "taskmgr" => {
-        let _ = std::process::Command::new("taskmgr.exe").spawn();
+        super::launch::open("taskmgr.exe", "", super::launch::Verb::Open);
       }
       "settings" => ui.settings_toggle(),
       "restart" => core_api::run_core(&["--restart-desktop"]),
