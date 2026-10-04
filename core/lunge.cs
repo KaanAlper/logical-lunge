@@ -6333,7 +6333,7 @@ class Rounder
     }
     // Pencereye konan bölge, hep buradan. Köşesi yuvarlanamayacak kadar küçük pencerenin yuvarlak bölgesi düz ya da boş
     // çıkar (boş bölge pencereyi görünmez bırakır): o köşeli kesilir.
-    static IntPtr MakeRegion(bool square, int l, int t, int r, int b)
+    internal static IntPtr MakeRegion(bool square, int l, int t, int r, int b)
     {
         if (!square)
         {
@@ -12428,13 +12428,13 @@ static class Splash
 
     // Kilitli olabilir (Superpaper gibi araçlar dosyayı yeniden yazarken) -> paylaşımlı aç; olmazsa son iyi kopya.
     static string CachePath { get { return Paths.State(@"splash-wall.jpg"); } }
-    static bool SpanStyle()
+    internal static bool SpanStyle()
     {
         string st = (string)Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallpaperStyle", null);
         return st == "22";
     }
 
-    static Image Wallpaper()
+    internal static Image Wallpaper()
     {
         foreach (var f in new[] {
             (string)Microsoft.Win32.Registry.GetValue(@"HKEY_CURRENT_USER\Control Panel\Desktop", "WallPaper", null),
@@ -12475,7 +12475,7 @@ static class Splash
     // kullanıcı yanlış bir yere tıklayamaz ya da bir tuşla (Alt+F4) açılmakta olan bir şeyi kapatamaz. Hazır olunca yazı
     // hafifçe kalkıp söner, örtü çekilir. İlk karede (koyu zemin ve çember) hemen gelir: yazının dili, vurgu rengi ve duvar
     // kağıdı (4K bir resmi çözüp ölçeklemek yarım saniye sürebilir) arkada hazırlanıp belirir.
-    class Cover : Form
+    internal sealed class Cover : Form
     {
         readonly bool primary;
         string text;
@@ -12621,7 +12621,7 @@ static class Splash
     static Native.LowLevelKeyboardProc swallow;
     static IntPtr swallowHook;
 
-    static Color Accent()
+    internal static Color Accent()
     {
         try
         {
@@ -12931,6 +12931,11 @@ static class Program
         // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }
+        // lunge-uninstall.exe --uninstall <çalışma klasörü> <kurulum klasörü>: kaldırıcının penceresi (uninstall.ps1 geçici bir
+        // kopyayla başlatır: kurulum klasörü silinirken çalışmaya devam eder)
+        if (args.Length == 3 && args[0] == "--uninstall") { Uninstaller.Run(args[1], args[2]); return; }
+        // lunge.exe --repair-windows: masaüstü kapandıktan sonra başka uygulamaların pencerelerinde bizden kalanı onarır
+        if (args.Length == 1 && args[0] == "--repair-windows") { Console.WriteLine(WindowRepair.Run()); return; }
         // lunge.exe --focus-sink <çekirdeğin pid'i>: odak penceresi kullanıcı olarak (yönetici çekirdek başlatır), çekirdekle biter
         if (args.Length == 2 && args[0] == "--focus-sink") { int core; if (int.TryParse(args[1], out core)) FocusSink.RunHost(core); return; }
         // lunge.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}

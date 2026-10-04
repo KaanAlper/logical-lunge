@@ -329,3 +329,58 @@ public static class LLUninstallShell {
 }
 '@ -ErrorAction Stop
 }
+
+# Extras kept when Logical Lunge goes: what lives in the install folder (WezTerm with its tools, Everything) is copied
+# to the user's programs first, since that folder is deleted. Copied, not moved: an open terminal holds its files (they
+# go with the folder once it closes). Returns the new folder, or $null when there is nothing to keep.
+function Copy-LLKeptTerminal([string]$App, [string]$Local) {
+    $src = Join-Path $App 'tools\wezterm'
+    if (-not (Test-Path -LiteralPath (Join-Path $src 'wezterm-gui.exe'))) { return $null }
+    $dest = Assert-LLSafePath (Join-Path $Local 'Programs\WezTerm') $Local
+    New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null
+    Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force -ErrorAction Stop
+    $bin = Join-Path $App 'tools\bin'
+    if (Test-Path -LiteralPath $bin) {
+        $newBin = Join-Path $dest 'bin'
+        New-Item -ItemType Directory -Path $newBin -Force -ErrorAction Stop | Out-Null
+        Copy-Item -Path (Join-Path $bin '*') -Destination $newBin -Recurse -Force -ErrorAction Stop
+    }
+    return $dest
+}
+
+# Everything: its process and service hold the install folder; both stop, the copy goes to the user's programs and the
+# service comes back from there. Returns the new Everything.exe, or $null.
+function Copy-LLKeptEverything([string]$App, [string]$Local) {
+    $exe = Join-Path $App 'tools\everything\Everything.exe'
+    if (-not (Test-Path -LiteralPath $exe)) { return $null }
+    $dest = Assert-LLSafePath (Join-Path $Local 'Programs\Everything') $Local
+    Get-CimInstance Win32_Process -Filter "Name = 'Everything.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -eq $exe } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    [void](Invoke-LLBoundedCommand $exe @('-uninstall-service') 30000)
+    New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null
+    Copy-Item -Path (Join-Path (Split-Path $exe) '*') -Destination $dest -Recurse -Force -ErrorAction Stop
+    $new = Join-Path $dest 'Everything.exe'
+    [void](Invoke-LLBoundedCommand $new @('-install-service') 30000)
+    return $new
+}
+
+function New-LLShortcut([string]$Path, [string]$Target) {
+    $shell = New-Object -ComObject WScript.Shell
+    try {
+        $link = $shell.CreateShortcut($Path)
+        $link.TargetPath = $Target
+        $link.WorkingDirectory = Split-Path $Target
+        $link.Save()
+    }
+    finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+}
+
+# Everything of Logical Lunge's data but the logs (kept in every case: what happened stays readable after it is gone)
+function Remove-LLDataKeepLogs([string]$Data, [string]$Local) {
+    if (-not (Test-Path -LiteralPath $Data)) { return }
+    [void](Assert-LLSafePath $Data $Local)
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Data -Force -ErrorAction Stop)) {
+        if ($entry.Name -ieq 'logs') { continue }
+        Remove-LLTree $entry.FullName $Data
+    }
+}

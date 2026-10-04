@@ -52,7 +52,9 @@ using System.Reflection;
 [assembly: AssemblyInformationalVersion("$ver")]
 "@
 [IO.File]::WriteAllText($info, $infoText.Replace('{TITLE}', 'Logical Lunge'))
-& $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:Accessibility.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll "$root\core\lunge.cs" "$root\core\WorkspaceConfigText.cs" "$root\core\MonitorFriendlyNames.cs" "$root\core\SettingsFile.cs" "$root\core\Brightness.cs" "$root\core\ToastPayload.cs" "$root\core\WinNotifications.cs" "$root\core\QuickSettings.cs" "$root\core\RunCommand.cs" "$root\core\AppIndex.cs" "$root\core\Keymap.cs" "$root\core\ShellTakeover.cs" "$root\core\Dialogs.cs" "$root\core\Launcher.cs" "$root\core\Wifi.cs" "$root\core\EverythingIndex.cs" "$root\core\WidgetLocations.cs" $info
+# every core source file (a file left off a hand-written list built a core without it)
+$coreSources = @(Get-ChildItem (Join-Path $root 'core') -Filter *.cs | Sort-Object Name | ForEach-Object FullName)
+& $csc /nologo /target:winexe /optimize+ "/out:$app\lunge.exe" "/win32icon:$icon" /r:System.Web.Extensions.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Management.dll /r:Accessibility.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll $coreSources $info
 if ($LASTEXITCODE) { throw 'lunge.exe build failed' }
 
 Step 'lunge-media.exe (album art + seek, WinRT)'
