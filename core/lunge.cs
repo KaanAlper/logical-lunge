@@ -11878,11 +11878,18 @@ static class PerfGuard
 // yazılan tuşlar görünmeyen tarayıcıya gidiyordu (YouTube'da "i" mini oynatıcıyı açıyordu). Bu pencere görünmez, ekran
 // dışında, tıklanamaz ve tuşları yutar. Tiling boş workspace'te odağı buna verir (sınıf adıyla bulur, yoksa masaüstüne),
 // odak bekçisi de odak gizli bir pencereye düşerse ve workspace boşsa buraya alır.
+// Pencere normal yetkili bir süreçte yaşar: ön plandaki pencere yönetici yetkili bir sürecinken Windows, normal yetkili
+// araçların (ekran paylaşımı, uzaktan erişim, otomasyon) tıklama ve tuşlarını engeller (UIPI); boş workspace'te bu araçlar
+// tamamen kilitleniyordu. Çekirdek kullanıcı olarak çalışıyorsa pencere onda, yönetici olarak çalışıyorsa kullanıcı olarak
+// başlattığı "lunge.exe --focus-sink <pid>" yardımcısında; yardımcı çekirdekle biter.
 static class FocusSink
 {
     public const string ClassName = "LogicalLunge.FocusSink";
-    public static IntPtr Handle { get { return handle; } }
-    static volatile IntPtr handle;
+    public static IntPtr Handle { get { return Current(); } }
+    static volatile IntPtr handle;   // bu süreçteki pencere (yardımcı, kullanıcı olarak çalışan çekirdek ya da son çare)
+    static IntPtr remote;            // yardımcının penceresi
+    static int lastLaunch, launches;
+    static volatile bool launching, local;
     static WndProcDelegate proc; // çöpe gitmesin
 
     delegate IntPtr WndProcDelegate(IntPtr h, uint msg, IntPtr w, IntPtr l);
@@ -11905,13 +11912,82 @@ static class FocusSink
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr h);
     [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+    [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+    [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr process, out uint code);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
     const uint WM_APP_TAKE_FOCUS = 0x8000 + 7;
 
     public static void Start()
     {
+        if (UserLaunch.Elevated) { Current(); return; }
+        StartLocal();
+    }
+
+    static void StartLocal()
+    {
+        local = true;
         var t = new Thread(Run) { IsBackground = true, Name = "focus-sink" };
         t.SetApartmentState(ApartmentState.STA);
         t.Start();
+    }
+
+    // lunge.exe --focus-sink <pid>: pencere bu (kullanıcı olarak çalışan) süreçte, çekirdek bitene kadar. Tek kopya: başka biri
+    // zaten duruyorsa (çekirdek yeniden başlarken) o kalır; eskisi kendi çekirdeğiyle gidince yenisini çekirdek yeniden açar.
+    public static void RunHost(int corePid)
+    {
+        if (Native.FindWindow(ClassName, null) != IntPtr.Zero) return;
+        new Thread(() => { WaitForExit(corePid, 2000); Environment.Exit(0); }) { IsBackground = true, Name = "focus-sink-core" }.Start();
+        Run();
+    }
+
+    // Süreç bitene kadar bekler: normal yetkili bir süreç yönetici sürecini bekleyemez, yalnızca yoklayabilir
+    public static void WaitForExit(int pid, int pollMs)
+    {
+        while (true)
+        {
+            IntPtr p = OpenProcess(0x1000 /*PROCESS_QUERY_LIMITED_INFORMATION*/, false, pid);
+            if (p == IntPtr.Zero) return;
+            uint code;
+            bool ok = GetExitCodeProcess(p, out code);
+            CloseHandle(p);
+            if (!ok || code != 259 /*STILL_ACTIVE*/) return;
+            Thread.Sleep(pollMs);
+        }
+    }
+
+    // Kullanılacak pencere; yönetici çekirdekte yardımcınınki (yoksa yardımcıyı yeniden başlatır)
+    static IntPtr Current()
+    {
+        IntPtr h = handle;
+        if (h != IntPtr.Zero || !UserLaunch.Elevated || local) return h;
+        h = remote;
+        if (h != IntPtr.Zero && Native.IsWindow(h)) return h;
+        h = Native.FindWindow(ClassName, null);
+        remote = h;
+        if (h != IntPtr.Zero) { launches = 0; return h; }
+        LaunchHost();
+        return IntPtr.Zero;
+    }
+
+    static void LaunchHost()
+    {
+        int now = Environment.TickCount;
+        if (launching || (lastLaunch != 0 && now - lastLaunch < 10000)) return;
+        lastLaunch = now;
+        // Üç denemede pencere gelmediyse (masaüstü kabuğu yok vb.) eskisi gibi çekirdekte: tuşlar gizli pencerelere gitmesin
+        if (++launches > 3)
+        {
+            Slider.Log("odak penceresi: kullanıcı olarak açılamadı, çekirdekte tutuluyor");
+            StartLocal();
+            return;
+        }
+        launching = true;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try { UserLaunch.Start(Application.ExecutablePath, "--focus-sink " + Process.GetCurrentProcess().Id, Paths.Home, true); }
+            catch (Exception ex) { Slider.Log("odak penceresi yardımcısı başlatılamadı: " + ex.Message); }
+            finally { launching = false; }
+        });
     }
 
     static IntPtr WndProc(IntPtr h, uint msg, IntPtr w, IntPtr l)
@@ -11959,20 +12035,19 @@ static class FocusSink
     // tuş hilesiyle bile) ön plan başka süreçteyken reddediliyordu: gizlenen overview önde kalıyordu.
     public static bool Focus() { return Give(IntPtr.Zero); }
 
-    // Başka bir pencereyi öne al (overview kapanınca önceki pencere), aynı yöntemle; odak penceresi yoksa doğrudan dener
+    // Başka bir pencereyi öne al (overview kapanınca önceki pencere), aynı yöntemle. Pencere yoksa ya da alamadıysa (ön plan
+    // yönetici yetkili bir süreçteyse kullanıcı olarak çalışan yardımcı onu oradan alamaz) çekirdek doğrudan dener.
     public static bool Give(IntPtr target)
     {
-        IntPtr h = handle;
-        if (h == IntPtr.Zero)
-        {
-            if (target == IntPtr.Zero) return false;
-            Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
-            Native.SetForegroundWindow(target);
-            return Native.GetForegroundWindow() == target;
-        }
-        IntPtr r;
-        if (SendMessageTimeout(h, WM_APP_TAKE_FOCUS, target, IntPtr.Zero, 0x2 /*SMTO_ABORTIFHUNG*/, 300, out r) == IntPtr.Zero) return false;
-        return r != IntPtr.Zero;
+        IntPtr h = Current(), r;
+        if (h != IntPtr.Zero && SendMessageTimeout(h, WM_APP_TAKE_FOCUS, target, IntPtr.Zero, 0x2 /*SMTO_ABORTIFHUNG*/, 300, out r) != IntPtr.Zero
+            && r != IntPtr.Zero)
+            return true;
+        IntPtr to = target != IntPtr.Zero ? target : h;
+        if (to == IntPtr.Zero) return false;
+        Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
+        Native.SetForegroundWindow(to);
+        return Native.GetForegroundWindow() == to;
     }
 
     static bool TakeFocus(IntPtr h)
@@ -12418,6 +12493,8 @@ static class Program
             ShellMenu.Run(args[1], args.Length == 4 ? args[3] : null);
             return;
         }
+        // lunge.exe --focus-sink <çekirdeğin pid'i>: odak penceresi kullanıcı olarak (yönetici çekirdek başlatır), çekirdekle biter
+        if (args.Length == 2 && args[0] == "--focus-sink") { int core; if (int.TryParse(args[1], out core)) FocusSink.RunHost(core); return; }
         // lunge.exe --audio-default <endpoint kimliği>: varsayılan çıkış/giriş cihazını değiştir -> {"ok":true}
         if (args.Length == 2 && args[0] == "--audio-default")
         {

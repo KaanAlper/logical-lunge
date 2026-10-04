@@ -2,6 +2,7 @@
 //   powershell -NoProfile -File tools\dev\core-unit-tests.ps1
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
@@ -25,8 +26,31 @@ static class CoreUnitTests
         CallbackTests(root);
         PipeWaitTests();
         InputLatencyTests(root);
+        FocusSinkTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // The focus window lives in a process running as the user; that helper ends with the core it serves.
+    static void FocusSinkTests(string root)
+    {
+        var sw = Stopwatch.StartNew();
+        FocusSink.WaitForExit(int.MaxValue - 7, 50);
+        Check(sw.ElapsedMilliseconds < 1000, "waiting for a process that does not exist did not return at once");
+
+        var child = Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 2 127.0.0.1 >nul") { CreateNoWindow = true, UseShellExecute = false });
+        sw.Restart();
+        var waiter = new Thread(() => FocusSink.WaitForExit(child.Id, 50));
+        waiter.Start();
+        Check(waiter.Join(10000), "the helper did not notice its core ending");
+        Check(child.HasExited, "the helper stopped waiting before its core ended");
+
+        string text = File.ReadAllText(Path.Combine(root, "core", "lunge.cs"));
+        int mode = text.IndexOf("args[0] == \"--focus-sink\"", StringComparison.Ordinal);
+        int mutex = text.IndexOf("new Mutex(true, \"LogicalLunge.Core\"", StringComparison.Ordinal);
+        Check(mode > 0 && mutex > 0 && mode < mutex, "the --focus-sink helper would take the core's single-instance path");
+        Check(Regex.IsMatch(text, @"public static void Start\(\)\s*\{\s*if \(UserLaunch\.Elevated\) \{ Current\(\); return; \}"),
+            "an elevated core makes the focus window itself");
     }
 
     // A stalled input hook says what stopped it (garbage collection, paging), and both hooks are measured that way.
