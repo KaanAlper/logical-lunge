@@ -141,6 +141,7 @@ static class CoreUnitTests
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)] static extern bool SetThreadDesktop(IntPtr desk);
     [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desk);
     [System.Runtime.InteropServices.DllImport("gdi32.dll")] static extern int GetRgnBox(IntPtr rgn, out Native.RECT box);
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern bool SetProp(IntPtr h, string name, IntPtr value);
 
     sealed class RegionProbe : System.Windows.Forms.Form
     {
@@ -184,7 +185,8 @@ static class CoreUnitTests
         Check(emptied == 0, "the rounder would hide " + emptied + " window sizes behind an empty region");
 
         string error = null, log = null;
-        int first = -1, repeated = -1, repairs = -1, firstKind = 0, lastKind = 0;
+        int first = -1, repeated = -1, repairs = -1, firstKind = 0, lastKind = 0, transient = -1, lasting = -1, lastingKind = 0;
+        Native.RECT lastingBox = new Native.RECT();
         Native.RECT last = new Native.RECT();
         string oldLog = LogWriter.Path, tmp = Path.Combine(Path.GetTempPath(), "ll-rounder-test-" + Guid.NewGuid().ToString("N") + ".log");
         LogWriter.Path = tmp;
@@ -220,6 +222,31 @@ static class CoreUnitTests
                         if (f.PosChanged > start) repairs++;
                     }
                     lastKind = Native.GetWindowRgnBox(f.Handle, out last);
+
+                    // An app's own resize past its tile (the slot the window manager wrote): no clip while it comes back
+                    // within the grace, the clip once it stays out
+                    var tiler = new Rounder();
+                    Action<System.Drawing.Rectangle> slot = s =>
+                    {
+                        SetProp(f.Handle, "LungeSlotLT", new IntPtr(unchecked((long)(((ulong)(uint)(s.Left + 0x40000000) << 32) | (uint)(s.Top + 0x40000000)))));
+                        SetProp(f.Handle, "LungeSlotRB", new IntPtr(unchecked((long)(((ulong)(uint)(s.Right + 0x40000000) << 32) | (uint)(s.Bottom + 0x40000000)))));
+                    };
+                    Action tile = () => { apply.Invoke(tiler, new object[] { f.Handle }); System.Windows.Forms.Application.DoEvents(); };
+                    Action<int> wait = ms => { var w = Stopwatch.StartNew(); while (w.ElapsedMilliseconds < ms) { System.Windows.Forms.Application.DoEvents(); Thread.Sleep(5); } };
+                    Native.SetWindowRgn(f.Handle, IntPtr.Zero, true);
+                    var whole = f.Bounds;
+                    var smaller = new System.Drawing.Rectangle(whole.Left, whole.Top, whole.Width / 2, whole.Height / 2);
+                    slot(whole); tile();
+                    start = f.PosChanged;
+                    slot(smaller); tile();      // past its tile
+                    slot(whole); tile();        // back within a frame
+                    wait(150);
+                    transient = f.PosChanged - start;
+                    start = f.PosChanged;
+                    slot(smaller); tile();      // past its tile, and it stays
+                    wait(150);
+                    lasting = f.PosChanged - start;
+                    lastingKind = Native.GetWindowRgnBox(f.Handle, out lastingBox);
                     f.Close();
                 }
             }
@@ -240,6 +267,8 @@ static class CoreUnitTests
         Check(repairs >= 1 && repairs <= 5, "an app replacing the region was repaired " + repairs + " times out of 12 (want a few, then stop)");
         Check(lastKind == 2 && last.Right == 300 && last.Bottom == 200, "the rounder took away the app's own region after giving up");
         Check(log != null && log.Contains("gave up rounding"), "giving up was not logged");
+        Check(transient == 0, "a window back in its tile within the grace was clipped anyway (" + transient + " region changes): it vanishes for a frame");
+        Check(lasting > 0 && lastingKind > 1 && lastingBox.Right <= 640 / 2 + 1 && lastingBox.Bottom <= 420 / 2 + 1, "a window staying past its tile was not clipped to it (" + lasting + " changes, region kind " + lastingKind + ", box " + lastingBox.Right + "x" + lastingBox.Bottom + ")");
     }
 
     // The startup cover: its first frame comes before anything slow, it leaves only when the core says every part is
