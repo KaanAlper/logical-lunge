@@ -27,6 +27,7 @@ use windows::{
     Foundation::{
       BOOL, HANDLE, HWND, LPARAM, LRESULT, RECT, WPARAM,
     },
+    Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS},
     Graphics::Gdi::{
       EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW,
       MonitorFromWindow, DISPLAY_DEVICEW, HDC, HMONITOR, MONITORINFO,
@@ -51,6 +52,7 @@ use windows::{
     },
     UI::{
       Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
+      Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO},
       WindowsAndMessaging::*,
     },
   },
@@ -108,6 +110,8 @@ struct Screen {
   rect: RECT,
   hwnd: HWND,
   file: PathBuf,
+  /// nothing of its wallpaper can be seen: a fullscreen app, or windows
+  /// over all of it but the gaps
   covered: bool,
 }
 
@@ -577,9 +581,10 @@ impl App {
     if LOCKED.get() && !session_locked() {
       LOCKED.set(false);
     }
-    let covered = unsafe { fullscreen_monitor() };
+    let fullscreen = unsafe { fullscreen_monitor() };
+    let windows = unsafe { covering_windows() };
     for s in &mut self.screens {
-      s.covered = covered.is_some_and(|r| r == s.rect);
+      s.covered = fullscreen.is_some_and(|r| r == s.rect) || !crate::cover::shows(s.rect, &windows);
     }
     self.update_pause();
   }
@@ -589,7 +594,9 @@ impl App {
     let all = LOCKED.get()
       || DISCONNECTED.get()
       || DISPLAY_OFF.get()
-      || (self.config.pause_on_battery && ON_BATTERY.get());
+      || (self.config.pause_on_battery && ON_BATTERY.get())
+      || (self.config.pause_idle_minutes > 0
+        && idle() >= Duration::from_secs(u64::from(self.config.pause_idle_minutes) * 60));
     let paused: Vec<bool> = self
       .screens
       .iter()
@@ -699,6 +706,69 @@ fn monitors() -> Vec<(String, String, RECT)> {
     );
   }
   list
+}
+
+/// How long since the last keyboard or mouse input in this session.
+fn idle() -> Duration {
+  let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+  if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+    return Duration::ZERO;
+  }
+  let now = unsafe { windows::Win32::System::SystemInformation::GetTickCount() };
+  Duration::from_millis(u64::from(now.wrapping_sub(info.dwTime)))
+}
+
+/// The frames of the windows that hide what is behind them: shown, not
+/// minimized, not cloaked (other workspaces), not see-through (click-through
+/// overlays such as the focus borders, windows with a whole-window
+/// transparency), and not the desktop itself.
+unsafe fn covering_windows() -> Vec<RECT> {
+  unsafe extern "system" fn each(h: HWND, lp: LPARAM) -> BOOL {
+    let out = &mut *(lp.0 as *mut Vec<RECT>);
+    if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+      return true.into();
+    }
+    let mut cloaked = 0u32;
+    if DwmGetWindowAttribute(h, DWMWA_CLOAKED, &mut cloaked as *mut u32 as *mut _, 4).is_ok() && cloaked != 0 {
+      return true.into();
+    }
+    let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+    if ex & WS_EX_TRANSPARENT.0 != 0 {
+      return true.into();
+    }
+    if ex & WS_EX_LAYERED.0 != 0 {
+      let (mut alpha, mut flags) = (0u8, LAYERED_WINDOW_ATTRIBUTES_FLAGS(0));
+      // per-pixel alpha (no attributes) or a whole-window alpha below opaque: see-through
+      if GetLayeredWindowAttributes(h, None, Some(&mut alpha), Some(&mut flags)).is_err()
+        || flags.0 & LWA_ALPHA.0 == 0
+        || alpha < 255
+      {
+        return true.into();
+      }
+    }
+    let mut class = [0u16; 64];
+    let n = GetClassNameW(h, &mut class).max(0) as usize;
+    let class = String::from_utf16_lossy(&class[..n]);
+    if matches!(
+      class.as_str(),
+      "Progman" | "WorkerW" | "LogicalLunge.LiveWallpaper.Screen" | "LogicalLunge.LiveWallpaper"
+    ) {
+      return true.into();
+    }
+    let mut r = RECT::default();
+    if DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut RECT as *mut _, std::mem::size_of::<RECT>() as u32).is_err()
+      && GetWindowRect(h, &mut r).is_err()
+    {
+      return true.into();
+    }
+    if r.right > r.left && r.bottom > r.top {
+      out.push(r);
+    }
+    true.into()
+  }
+  let mut out: Vec<RECT> = Vec::new();
+  let _ = EnumWindows(Some(each), LPARAM(&mut out as *mut Vec<RECT> as isize));
+  out
 }
 
 /// The monitor a fullscreen app covers (games, videos in fullscreen): the
