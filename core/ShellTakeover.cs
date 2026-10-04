@@ -319,7 +319,7 @@ static class ShellTakeover
         {
             if (cb != null) return;
             failOpen = failOpenMode;
-            cb = (hook, ev, h, idObject, idChild, thread, time) => { EventLag.Note("görev çubuğu", time); if (idObject == 0 && h != IntPtr.Zero) Hide(h); };
+            cb = Callback.Guard("görev çubuğu olayı", (hook, ev, h, idObject, idChild, thread, time) => { EventLag.Note("görev çubuğu", time); if (idObject == 0 && h != IntPtr.Zero) Hide(h); });
             Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
             listener = new Listener();
             Sweep();

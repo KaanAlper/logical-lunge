@@ -2687,7 +2687,7 @@ class Dwindle
         if (ui == null) return;
         ui.BeginInvoke((Action)(() =>
         {
-            showCb = OnWinEvent;
+            showCb = Callback.Guard("yeni pencere olayı", OnWinEvent);
             // EVENT_OBJECT_DESTROY (0x8001) .. EVENT_OBJECT_SHOW (0x8002) .. EVENT_OBJECT_HIDE (0x8003)
             Native.SetWinEventHook(0x8001, 0x8003, IntPtr.Zero, showCb, 0, 0, 0x0002 | 0x0000); // OUTOFCONTEXT
         }));
@@ -3159,7 +3159,7 @@ class MouseFocus
     // Kanca, klavye kancasıyla aynı (başka iş yapmayan) thread'de kurulur; burada sadece sinyal verilir.
     public void InstallHook()
     {
-        proc = Hook;
+        proc = Callback.Guard("fare kancası", (Native.LowLevelMouseProc)Hook);
         hookHandle = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
     }
 
@@ -6118,7 +6118,7 @@ class DialogCatcher
     // Mesaj döngüsü olan kendi thread'inde çağrılır
     public void Start()
     {
-        cb = OnEvent;
+        cb = Callback.Guard("iletişim kutusu olayı", OnEvent);
         // CREATE..SHOW: kutu oluşturulduğu anda (gösterilmeden) görünmez yapılır, gösterilince karar verilir
         Native.SetWinEventHook(0x8000, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
         // Güvenlik ağı: 2 sn'de karar verilemeyen kutu (olay kaçtıysa) geri görünür olur; hiçbir pencere görünmez kalmaz
@@ -6287,7 +6287,7 @@ class Rounder
 
     public void Start()
     {
-        cb = OnEvent;
+        cb = Callback.Guard("köşe olayı", OnEvent);
         Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
         Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, cb, 0, 0, 0x0002);
         Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, cb, 0, 0, 0x0002);
@@ -6842,7 +6842,7 @@ class Keys2
 
     public void Start()
     {
-        proc = Hook;
+        proc = Callback.Guard("klavye kancası", (Native.LowLevelKeyboardProc)Hook);
         hookHandle = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
     }
 
@@ -6874,7 +6874,7 @@ class Keys2
     Native.WinEventDelegate desktopCb;
     public void WatchDesktopSwitch()
     {
-        desktopCb = (h, ev, hwnd, obj, child, thread, time) => { ForgetKeys(); Unstick(); };
+        desktopCb = Callback.Guard("masaüstü değişimi", (h, ev, hwnd, obj, child, thread, time) => { ForgetKeys(); Unstick(); });
         Native.SetWinEventHook(0x0020, 0x0020, IntPtr.Zero, desktopCb, 0, 0, 0x0000); // EVENT_SYSTEM_DESKTOPSWITCH, OUTOFCONTEXT
     }
 
@@ -9586,7 +9586,7 @@ class Switcher : Form
         {
             inst = new Switcher();
             inst.CreateControl(); var h = inst.Handle;
-            fgCb = OnForeground;
+            fgCb = Callback.Guard("alt-tab olayı", OnForeground);
             Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, fgCb, 0, 0, 0x0002);
             IntPtr cur = Native.GetAncestor(Native.GetForegroundWindow(), 2);
             if (cur != IntPtr.Zero) fgOrder.Add(cur.ToInt64());
@@ -11551,6 +11551,46 @@ static class WarmTerminal
 // Sistem genelindeki olay kancalarının (WinEvent) gecikmesi: olayın üretildiği an (dwmsEventTime) ile bize ulaştığı an
 // arası. Bir uygulama olay seli ürettiğinde (ör. Görev Yöneticisi'nin listesi yeniden sıralanırken) kuyruk birikirse
 // kaydedilir: bir dahaki kasmanın kaynağı tahminle değil kayıtla bulunsun. Ucuz: çağrı başına bir karşılaştırma.
+// Windows'un doğrudan çağırdığı fonksiyonlardan (kancalar, olay kancaları, pencere yordamları) istisna sızmaz: sızan
+// istisna süreci 0xc000041d ile, log'a hiçbir şey yazmadan öldürüyordu. Her kayıt buradan geçer: hata yığın iziyle (aynı
+// yer için dakikada bir) kaydedilir, çağrı varsayılan cevabıyla döner.
+static class Callback
+{
+    // Kancanın iş parçacığında diske dokunmamak için kayıt başka iş parçacığında yazılır (testler yakalayabilsin diye değiştirilebilir)
+    public static Action<string> Report = text => ThreadPool.QueueUserWorkItem(_ => Slider.Log(text));
+    static readonly Dictionary<string, int> lastReported = new Dictionary<string, int>();
+
+    public static void Failed(string where, Exception ex)
+    {
+        try
+        {
+            int now = Environment.TickCount, last;
+            lock (lastReported)
+            {
+                if (lastReported.TryGetValue(where, out last) && now - last < 60000) return;
+                lastReported[where] = now;
+            }
+            Report("geri çağrı hatası (" + where + "): " + ex);
+        }
+        catch { }
+    }
+
+    public static Native.LowLevelKeyboardProc Guard(string where, Native.LowLevelKeyboardProc f)
+    {
+        return (n, w, l) => { try { return f(n, w, l); } catch (Exception ex) { Failed(where, ex); return Native.CallNextHookEx(IntPtr.Zero, n, w, l); } };
+    }
+
+    public static Native.LowLevelMouseProc Guard(string where, Native.LowLevelMouseProc f)
+    {
+        return (n, w, l) => { try { return f(n, w, l); } catch (Exception ex) { Failed(where, ex); return Native.CallNextHookEx(IntPtr.Zero, n, w, l); } };
+    }
+
+    public static Native.WinEventDelegate Guard(string where, Native.WinEventDelegate f)
+    {
+        return (hook, ev, hwnd, obj, child, thread, time) => { try { f(hook, ev, hwnd, obj, child, thread, time); } catch (Exception ex) { Failed(where, ex); } };
+    }
+}
+
 static class EventLag
 {
     static int lastLog, seen;
@@ -11795,7 +11835,12 @@ static class FocusSink
     {
         try
         {
-            proc = WndProc;
+            // Callback kuralı (bu yordamın kendi tipi var): istisna dışarı sızmaz
+            proc = (ph, pm, pw, pl) =>
+            {
+                try { return WndProc(ph, pm, pw, pl); }
+                catch (Exception ex) { Callback.Failed("odak penceresi", ex); return DefWindowProc(ph, pm, pw, pl); }
+            };
             var wc = new WNDCLASSEX { cbSize = Marshal.SizeOf(typeof(WNDCLASSEX)), lpfnWndProc = proc, hInstance = GetModuleHandle(null), lpszClassName = ClassName };
             if (RegisterClassEx(ref wc) == 0) { Slider.Log("odak penceresi: sınıf kaydedilemedi " + Marshal.GetLastWin32Error()); return; }
             // Ekran dışı 1x1, tamamen saydam, tıklama geçirgen araç penceresi (görev çubuğu / alt-tab / tiling onu görmez)
