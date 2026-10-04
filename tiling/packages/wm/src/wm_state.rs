@@ -57,6 +57,10 @@ pub struct WmState {
   /// Native handles of apps displaying fullscreen content inside their tile.
   pub fake_fullscreen: std::collections::HashSet<isize>,
 
+  /// Last successful shell fullscreen mark, independent of toggle history.
+  #[cfg(target_os = "windows")]
+  pub fullscreen_marks: std::collections::HashMap<isize, bool>,
+
   /// Logical Lunge: windows hidden along with a hidden window (its
   /// companions, see `sync_companions`), by that window's handle; shown
   /// again with it, when it closes and when the WM exits.
@@ -109,6 +113,8 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       fake_fullscreen: std::collections::HashSet::new(),
+      #[cfg(target_os = "windows")]
+      fullscreen_marks: std::collections::HashMap::new(),
       hidden_companions: std::collections::HashMap::new(),
       self_resizes: std::collections::HashMap::new(),
       transition_moves: std::collections::HashMap::new(),

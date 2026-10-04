@@ -9,6 +9,8 @@ use wm_common::{
 use wm_platform::NativeWindowWindowsExt;
 #[cfg(target_os = "windows")]
 use wm_platform::{CornerStyle, OpacityValue};
+#[cfg(target_os = "windows")]
+use super::window_sync_policy;
 use wm_platform::{Rect, WindowZOrder};
 
 use crate::{
@@ -475,7 +477,22 @@ fn redraw_containers(
     );
 
     #[cfg(target_os = "windows")]
-    let sync_tiled_fullscreen = state.fake_fullscreen.contains(&window.native().hwnd().0);
+    let sync_tiled_fullscreen = {
+      let tiled = window.state() == WindowState::Tiling;
+      let marked = state.fake_fullscreen.contains(&window.native().hwnd().0);
+      // Cached geometry can lag an asynchronous move. Check the live frame
+      // before choosing whether a corrective move may wait on the app.
+      let escaped = if tiled && marked && is_visible {
+        let bounds = workspace.max_workspace_rect()?;
+        window.native().frame().map_or(true, |frame| {
+          frame.apply_delta(&window.border_delta().inverse(), None)
+            .inset(1).contains_rect(&bounds)
+        })
+      } else {
+        false
+      };
+      window_sync_policy::synchronous_tile_correction(tiled, marked, escaped, is_visible)
+    };
     #[cfg(not(target_os = "windows"))]
     let sync_tiled_fullscreen = false;
     if let Err(err) =
@@ -491,24 +508,23 @@ fn redraw_containers(
       sync_companions(window, state);
     }
 
-    // Whether the window is either transitioning to or from fullscreen.
-    // TODO: This check can be improved since `prev_state` can be
-    // fullscreen without it needing to be marked as not fullscreen.
+    // `prev_state` is toggle history, not a pending native transition.
+    // Cache successful marks so workspace redraws don't repeat COM calls.
     #[cfg(target_os = "windows")]
     {
-      let is_transitioning_fullscreen =
-        match (window.prev_state(), window.state()) {
-          (Some(_), WindowState::Fullscreen(s)) if !s.maximized => true,
-          (Some(WindowState::Fullscreen(_)), _) => true,
-          _ => false,
-        };
-
-      if is_transitioning_fullscreen {
-        if let Err(err) = window.native().mark_fullscreen(matches!(
-          window.state(),
-          WindowState::Fullscreen(_)
-        )) {
-          tracing::warn!("Failed to mark window as fullscreen: {}", err);
+      let handle = window.native().hwnd().0;
+      if let Some(fullscreen) = window_sync_policy::fullscreen_mark(
+        window.prev_state().as_ref(),
+        &window.state(),
+        state.fullscreen_marks.get(&handle).copied(),
+      ) {
+        match window.native().mark_fullscreen(fullscreen) {
+          Ok(()) => {
+            state.fullscreen_marks.insert(handle, fullscreen);
+          }
+          Err(err) => {
+            tracing::warn!("Failed to mark window as fullscreen: {}", err);
+          }
         }
       }
     }
@@ -573,8 +589,8 @@ fn reposition_window(
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   z_order: &WindowZOrder,
   is_visible: bool,
-  // An application-requested fullscreen has already escaped its tile.
-  // Wait for this corrective move before drawing another frame.
+  // Only an actual escape to fullscreen needs a synchronous correction.
+  // The fake-fullscreen marker also survives normal layout/exit moves.
   #[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
   sync_tiled_fullscreen: bool,
   config: &UserConfig,
@@ -649,21 +665,21 @@ fn reposition_window(
 
       // Restore window if it's minimized/maximized and shouldn't be. This
       // is needed to be able to move and resize it.
-      let should_restore = match &window.state() {
-        // Need to restore window if transitioning from maximized
-        // fullscreen to non-maximized fullscreen.
-        WindowState::Fullscreen(fullscreen) => {
-          !fullscreen.maximized && window.native().is_maximized()?
-        }
-        // No need to restore window if it'll be minimized. Transitioning
-        // from maximized to minimized works without having to
-        // restore.
-        WindowState::Minimized => false,
-        _ => {
-          window.native().is_minimized()?
-            || window.native().is_maximized()?
-        }
-      };
+      let target_state = window.state();
+      let is_minimized = window.native().is_minimized()?;
+      let is_maximized = window.native().is_maximized()?;
+      let has_maximize_box = window.native().has_window_style(WS_MAXIMIZEBOX);
+      let should_restore = window_sync_policy::should_restore(
+        &target_state, is_minimized, is_maximized,
+      );
+      let needs_geometry_sync = window_sync_policy::needs_geometry_sync(
+        &target_state,
+        is_minimized,
+        is_maximized,
+        has_maximize_box,
+        window.has_pending_dpi_adjustment(),
+        window.native().frame_with_shadows().ok().as_ref() == Some(&rect),
+      );
 
       if should_restore {
         // Restoring to position has the same effect as `ShowWindow` with
@@ -680,19 +696,26 @@ fn reposition_window(
 
       match &window.state() {
         WindowState::Minimized => {
-          if !window.native().is_minimized()? {
+          if !is_minimized {
             window.native().minimize()?;
           }
         }
         WindowState::Fullscreen(fullscreen)
           if fullscreen.maximized
-            && window.native().has_window_style(WS_MAXIMIZEBOX) =>
+            && has_maximize_box =>
         {
-          if !window.native().is_maximized()? {
+          if !is_maximized {
             window.native().maximize()?;
           }
 
-          window.native().set_window_pos(z_order, &rect, swp_flags)?;
+          if needs_geometry_sync {
+            window.native().set_window_pos(z_order, &rect, swp_flags)?;
+          } else if is_visible
+            && (*z_order != WindowZOrder::Normal
+              || window.native().has_window_style_ex(WS_EX_TOPMOST))
+          {
+            window.native().set_z_order(z_order)?;
+          }
         }
         _ => {
           // Skip `SetWindowPos` when the window is already at its target
@@ -700,12 +723,7 @@ fn reposition_window(
           // hidden, and `SWP_FRAMECHANGED` forces each app to recalculate
           // and repaint its frame and contents even if nothing moved,
           // which loads DWM during workspace animations.
-          let unchanged = !should_restore
-            && !window.has_pending_dpi_adjustment()
-            && window.native().frame_with_shadows().ok().as_ref()
-              == Some(&rect);
-
-          if unchanged {
+          if !needs_geometry_sync {
             // Only the z-order may still need updating (e.g. a window
             // that is no longer shown on top).
             let is_topmost =
