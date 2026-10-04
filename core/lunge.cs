@@ -4844,13 +4844,27 @@ static class DesktopRestart
         bool launched = false;
         while (clock.ElapsedMilliseconds < timeout)
         {
-            var connection = pipe.BeginWaitForConnection(null, null);
-            using (connection.AsyncWaitHandle)
+            // A wait that ends early (no successor in time, its launch failed) is cancelled and finished here. Left
+            // behind with its event disposed, it completed later on an I/O thread when the pipe closed, and the
+            // ObjectDisposedException there killed the core.
+            using (var cancel = new CancellationTokenSource())
             {
-                if (!launched) { launched = true; if (!launch()) return false; }
-                int remaining = Math.Max(0, timeout - (int)clock.ElapsedMilliseconds);
-                if (!connection.AsyncWaitHandle.WaitOne(remaining)) return false;
-                pipe.EndWaitForConnection(connection);
+                var connected = pipe.WaitForConnectionAsync(cancel.Token);
+                bool ok = false;
+                try
+                {
+                    if (!launched) { launched = true; if (!launch()) return false; }
+                    ok = connected.Wait(Math.Max(0, timeout - (int)clock.ElapsedMilliseconds));
+                }
+                finally
+                {
+                    if (!ok)
+                    {
+                        cancel.Cancel();
+                        try { connected.Wait(2000); } catch (AggregateException) { }
+                    }
+                }
+                if (!ok) return false;
             }
             try
             {

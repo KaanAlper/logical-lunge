@@ -3,8 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipes;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading;
 
 static class CoreUnitTests
 {
@@ -21,8 +23,39 @@ static class CoreUnitTests
     {
         string root = args.Length > 0 ? args[0] : ".";
         CallbackTests(root);
+        PipeWaitTests();
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // The restart's wait for its successor: ending early (no successor in time, or its launch failed) must not leave a
+    // wait behind that kills the process from an I/O thread once the pipe goes away (ObjectDisposedException).
+    static void PipeWaitTests()
+    {
+        foreach (bool launches in new[] { true, false })
+            for (int round = 0; round < 3; round++)
+            {
+                var pipe = new NamedPipeServerStream("lunge-unit-" + Guid.NewGuid().ToString("N"), PipeDirection.InOut, 1,
+                    PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                Check(!DesktopRestart.WaitCandidate(pipe, () => launches, () => true, 150), "a successor that never connected was accepted");
+                pipe.Dispose();
+            }
+        Thread.Sleep(500);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        Thread.Sleep(300);
+
+        string name = "lunge-unit-" + Guid.NewGuid().ToString("N");
+        using (var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
+        using (var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous))
+        {
+            Func<bool> launch = () =>
+            {
+                ThreadPool.QueueUserWorkItem(_ => { client.Connect(2000); client.WriteByte((byte)'R'); client.Flush(); });
+                return true;
+            };
+            Check(DesktopRestart.WaitCandidate(server, launch, () => true, 3000), "a successor that connected and said ready was refused");
+        }
     }
 
     // Nothing Windows calls directly lets an exception out (it killed the process without a trace).
