@@ -12770,8 +12770,19 @@ static class Splash
         return Color.FromArgb(0xb6, 0x9d, 0xf8);
     }
 
-    // Oturumun açıldığı an (Windows'un tuttuğu), açılıştan bu yana geçen ms için; bilinmiyorsa -1
-    [DllImport("wtsapi32.dll", SetLastError = true)] static extern bool WTSQuerySessionInformation(IntPtr server, int session, int infoClass, out IntPtr buffer, out int bytes);
+    // Oturumun açıldığı an (Windows'un tuttuğu), açılıştan bu yana geçen ms için; bilinmiyorsa -1. Unicode sürümü ve
+    // yapının kendisi: ANSI sürümü (CharSet belirtilmeyince o çağrılıyordu) 144 baytlık WTSINFOA döner, elle sayılan
+    // ofsetler de onun dışından okuyordu (her açılışta "?" ya da 0; yenilemede örtü "yeniden" demiyordu).
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    struct WTSINFOW
+    {
+        public int State, SessionId, IncomingBytes, OutgoingBytes, IncomingFrames, OutgoingFrames, IncomingCompressedBytes, OutgoingCompressedBytes;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string WinStationName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 17)] public string Domain;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 21)] public string UserName;
+        public long ConnectTime, DisconnectTime, LastInputTime, LogonTime, CurrentTime;
+    }
+    [DllImport("wtsapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool WTSQuerySessionInformation(IntPtr server, int session, int infoClass, out IntPtr buffer, out int bytes);
     [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr memory);
     static long SinceLogonMs()
     {
@@ -12779,12 +12790,9 @@ static class Splash
         if (!WTSQuerySessionInformation(IntPtr.Zero, -1 /*bu oturum*/, 24 /*WTSSessionInfo*/, out buf, out bytes) || buf == IntPtr.Zero) return -1;
         try
         {
-            // WTSINFOW: State, SessionId, 4 sayaç (her biri 4 bayt), WinStationName[32], Domain[17], UserName[21] (WCHAR),
-            // sonra ConnectTime, DisconnectTime, LastInputTime, LogonTime, CurrentTime (LARGE_INTEGER)
-            int logonAt = 4 + 4 + 16 + (32 + 17 + 21) * 2;
-            logonAt = (logonAt + 7) / 8 * 8 + 3 * 8;
-            long logon = Marshal.ReadInt64(buf, logonAt), now = Marshal.ReadInt64(buf, logonAt + 8);
-            return logon > 0 && now >= logon ? (now - logon) / 10000 : -1;
+            if (bytes < Marshal.SizeOf(typeof(WTSINFOW))) return -1;
+            var info = (WTSINFOW)Marshal.PtrToStructure(buf, typeof(WTSINFOW));
+            return info.LogonTime > 0 && info.CurrentTime >= info.LogonTime ? (info.CurrentTime - info.LogonTime) / 10000 : -1;
         }
         finally { WTSFreeMemory(buf); }
     }
