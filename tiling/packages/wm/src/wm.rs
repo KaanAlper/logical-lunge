@@ -686,12 +686,15 @@ impl WindowManager {
               .unwrap_or(floating_defaults.shown_on_top),
           });
 
-          let window = update_window_state(
-            window.clone(),
-            window.toggled_state(target_state, config),
-            state,
-            config,
-          )?;
+          // Floating and tiling are the two sides of this toggle (as
+          // Hyprland's togglefloating): leaving floating always tiles. The
+          // window's previous state could be fullscreen, and the toggle then
+          // made it fullscreen, as if Super+F had been pressed.
+          let next = match window.state() {
+            WindowState::Floating(_) => WindowState::Tiling,
+            _ => window.toggled_state(target_state, config),
+          };
+          let window = update_window_state(window.clone(), next, state, config)?;
 
           if !window.has_custom_floating_placement() && centered {
             set_window_position(
