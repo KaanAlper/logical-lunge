@@ -527,6 +527,9 @@ impl NativeWindow {
       return Vec::new();
     }
     let parents = process_parents();
+    // the visible frame too: an overlay is laid over that, without the invisible resize borders
+    let visible = self.frame().ok().map(|v| RECT { left: v.left, top: v.top, right: v.right, bottom: v.bottom });
+    let this_process = unsafe { windows::Win32::System::Threading::GetCurrentProcessId() };
 
     let mut handles: Vec<isize> = Vec::new();
     #[allow(clippy::items_after_statements)]
@@ -558,12 +561,25 @@ impl NativeWindow {
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
         let mut rect = RECT::default();
-        is_descendant(pid, own_pid, &parents)
-          && unsafe { GetWindowRect(hwnd, &raw mut rect) }.is_ok()
-          && rect.left < frame.right
-          && frame.left < rect.right
-          && rect.top < frame.bottom
-          && frame.top < rect.bottom
+        if unsafe { GetWindowRect(hwnd, &raw mut rect) }.is_err() {
+          return false;
+        }
+        if is_descendant(pid, own_pid, &parents) {
+          return rect.left < frame.right
+            && frame.left < rect.right
+            && rect.top < frame.bottom
+            && frame.top < rect.bottom;
+        }
+        // Another program's overlay over this window (a game overlay such
+        // as Discord's): not managed, so the workspace switch left it up
+        // over the next workspace until its program noticed. Not this
+        // process's own windows (the borders) nor Logical Lunge's.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ex = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
+        let own_frames = [Some(frame), visible];
+        pid != this_process
+          && own_frames.iter().flatten().any(|f| overlay_over(f, &rect, ex))
+          && !w.process_name().is_ok_and(|n| n.to_ascii_lowercase().starts_with("lunge"))
       })
       .map(Into::into)
       .collect()
@@ -1159,3 +1175,89 @@ fn own_integrity() -> u32 {
   })
 }
 
+/// A window laid exactly over `frame` (within 2 px on every side) that is a
+/// tool window or a click-through layered one: an overlay of that window.
+fn overlay_over(frame: &RECT, rect: &RECT, ex_style: u32) -> bool {
+  const TOOLWINDOW: u32 = 0x80;
+  const LAYERED: u32 = 0x8_0000;
+  const TRANSPARENT: u32 = 0x20;
+  let overlay_style = ex_style & TOOLWINDOW != 0 || (ex_style & LAYERED != 0 && ex_style & TRANSPARENT != 0);
+  let near = |a: i32, b: i32| (a - b).abs() <= 2;
+  overlay_style
+    && rect.right > rect.left
+    && rect.bottom > rect.top
+    && near(rect.left, frame.left)
+    && near(rect.top, frame.top)
+    && near(rect.right, frame.right)
+    && near(rect.bottom, frame.bottom)
+}
+
+#[cfg(test)]
+mod companion_tests {
+  use std::collections::HashMap;
+
+  use windows::Win32::Foundation::RECT;
+
+  use super::{is_descendant, overlay_over};
+
+  /// Every offset of a candidate's edges from -4 to 4 px and every style of
+  /// three flags: an overlay exactly when all edges are within 2 px and the
+  /// window is a tool window or click-through layered.
+  #[test]
+  fn overlays_are_laid_exactly_over_the_window() {
+    let frame = RECT { left: 5, top: 45, right: 956, bottom: 1075 };
+    let styles = [0u32, 0x80, 0x8_0000, 0x20, 0x8_0020, 0x8_00A0, 0x0800_0088];
+    for &ex in &styles {
+      let style_ok = ex & 0x80 != 0 || (ex & 0x8_0000 != 0 && ex & 0x20 != 0);
+      for dl in -4..=4 {
+        for dt in -4..=4 {
+          for dr in [-4, -2, 0, 2, 4] {
+            for db in [-4, -3, 0, 3, 4] {
+              let rect = RECT { left: frame.left + dl, top: frame.top + dt, right: frame.right + dr, bottom: frame.bottom + db };
+              let want = style_ok && [dl, dt, dr, db].iter().all(|d: &i32| d.abs() <= 2);
+              assert_eq!(overlay_over(&frame, &rect, ex), want, "ex {ex:#x} offsets {dl} {dt} {dr} {db}");
+            }
+          }
+        }
+      }
+    }
+    // Discord's overlay over a tiled game (recorded): its window, its style
+    let game = RECT { left: 5, top: 45, right: 956, bottom: 1075 };
+    assert!(overlay_over(&game, &game, 0x0008_00A0));
+    // a full-screen overlay (NVIDIA's) over a tile is not that tile's
+    assert!(!overlay_over(&game, &RECT { left: 0, top: 0, right: 1920, bottom: 1080 }, 0x0800_0088));
+  }
+
+  #[test]
+  fn descendants_follow_the_parent_chain() {
+    // generated trees: each of 8 processes has a lower id as its parent (0: none)
+    let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+    for _ in 0..500 {
+      let mut parents = HashMap::new();
+      for pid in 1..=8u32 {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+        #[allow(clippy::cast_possible_truncation)]
+        parents.insert(pid, (seed >> 33) as u32 % pid);
+      }
+      for pid in 1..=8u32 {
+        let mut ancestors = Vec::new();
+        let mut current = pid;
+        while let Some(&parent) = parents.get(&current).filter(|&&p| p != 0) {
+          ancestors.push(parent);
+          current = parent;
+        }
+        for ancestor in 1..=8u32 {
+          assert_eq!(is_descendant(pid, ancestor, &parents), ancestors.contains(&ancestor), "{pid} / {ancestor} in {parents:?}");
+        }
+      }
+    }
+  }
+
+  #[test]
+  fn a_reused_parent_id_ends_the_walk() {
+    let looped = HashMap::from([(1, 2), (2, 1), (5, 5)]);
+    assert!(!is_descendant(1, 3, &looped));
+    assert!(!is_descendant(5, 4, &looped));
+    assert!(is_descendant(1, 2, &looped));
+  }
+}
