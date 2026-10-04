@@ -31,7 +31,6 @@ shell-util = "0.0"
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
-tracing-appender = "0.2"
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 wm-cli = { path = "../wm-cli" }
