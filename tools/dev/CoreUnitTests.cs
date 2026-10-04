@@ -27,8 +27,53 @@ static class CoreUnitTests
         PipeWaitTests();
         InputLatencyTests(root);
         FocusSinkTests(root);
+        LogWriterTests();
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // Logging never makes the caller wait for the disk; every line still arrives, once and in order.
+    static void LogWriterTests()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "lunge-unit-log-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        LogWriter.Path = Path.Combine(dir, "core.log");
+        try
+        {
+            using (new FileStream(LogWriter.Path, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
+            {
+                var sw = Stopwatch.StartNew();
+                for (int i = 0; i < 200; i++) Slider.Log("tutulan dosya " + i);
+                Check(sw.ElapsedMilliseconds < 100, "logging waited for a file someone holds: " + sw.ElapsedMilliseconds + " ms");
+                Thread.Sleep(700);
+            }
+            var threads = Enumerable.Range(0, 4).Select(n => new Thread(() => { for (int i = 0; i < 250; i++) Slider.Log("iş " + n + " satır " + i); })).ToList();
+            threads.ForEach(th => th.Start());
+            threads.ForEach(th => th.Join());
+            Check(LogWriter.Flush(5000), "the log did not reach the disk in time");
+            string[] lines = File.ReadAllLines(LogWriter.Path);
+            Check(Regex.IsMatch(lines.FirstOrDefault() ?? "", @"^---- \d{4}-\d{2}-\d{2} ----$"), "the log starts without its date line");
+            var held = lines.Where(l => l.Contains(" tutulan dosya ")).Select(l => int.Parse(l.Substring(l.LastIndexOf(' ') + 1))).ToList();
+            Check(held.SequenceEqual(Enumerable.Range(0, 200)), "lines written while the file was held were lost or reordered (" + held.Count + ")");
+            for (int n = 0; n < 4; n++)
+            {
+                var mine = lines.Where(l => l.Contains(" iş " + n + " satır ")).Select(l => int.Parse(l.Substring(l.LastIndexOf(' ') + 1))).ToList();
+                Check(mine.SequenceEqual(Enumerable.Range(0, 250)), "thread " + n + "'s lines were lost, doubled or reordered (" + mine.Count + ")");
+            }
+            Check(lines.All(l => l.StartsWith("---- ") || Regex.IsMatch(l, @"^\d\d:\d\d:\d\d\.\d{3} ")), "a line lacks its time");
+
+            LogWriter.RotateBytes = 20000;
+            for (int i = 0; i < 400; i++) Slider.Log("dönüş " + i + " " + new string('x', 80));
+            LogWriter.Flush(5000);
+            Slider.Log("dönüşten sonra");
+            LogWriter.Flush(5000);
+            Check(File.Exists(LogWriter.Path + ".old") && new FileInfo(LogWriter.Path).Length < 2 * LogWriter.RotateBytes, "the log did not turn over at its size");
+        }
+        finally
+        {
+            LogWriter.RotateBytes = 4L * 1024 * 1024;
+            try { Directory.Delete(dir, true); } catch { }
+        }
     }
 
     // The focus window lives in a process running as the user; that helper ends with the core it serves.
