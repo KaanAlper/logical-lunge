@@ -12729,7 +12729,9 @@ static class Splash
             // Güncelleme sırasında (LL_SPLASH_WAIT_RESTART=1): örtü yumuşakça belirir, önce mevcut masaüstünün kapanmasını,
             // sonra yenisinin hazır olmasını bekler (en fazla 150 sn).
             bool restartMode = Environment.GetEnvironmentVariable("LL_SPLASH_WAIT_RESTART") == "1";
-            bool restart = restartMode || Ready();   // masaüstü zaten ayaktaysa (yenileme, güncelleme) yeniden başlatılıyordur
+            // Yeniden başlatma: güncelleme, masaüstü zaten ayakta, ya da oturum açılalı iki dakikadan fazla oldu (masaüstünü
+            // yenile: eski parçalar örtüden önce kapanır). "Sistem başlatılıyor" yalnızca oturum açılınca.
+            bool restart = restartMode || Ready() || sinceLogon > 120000;
             bool sawDown = !restartMode;
             int maxMs = restartMode ? 150000 : 30000;
             var covers = new List<Cover>();
