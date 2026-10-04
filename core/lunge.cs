@@ -11829,11 +11829,28 @@ static class PerfGuard
         return SHQueryUserNotificationState(out st) == 0 && (st == 2 || st == 3 || st == 4); // BUSY, D3D_FULL_SCREEN, PRESENTATION_MODE
     }
 
+    // Saatte bir parçaların belleği (ilki açılıştan bir dakika sonra): masaüstü aylarca açık kalır, bir sızıntı saatler içinde
+    // büyüyen bir sayı olarak görünür. Tam ekran oyunda da yazılır.
+    const int MemoryEveryMs = 3600000;
+    static int lastMemory;
+
     static void Loop()
     {
         Thread.Sleep(60000);
+        bool first = true;
         while (true)
         {
+            try
+            {
+                int now = Environment.TickCount;
+                if (first || now - lastMemory >= MemoryEveryMs)
+                {
+                    first = false;
+                    lastMemory = now;
+                    Slider.Log("bellek (saatlik): " + Parts());
+                }
+            }
+            catch { }
             Thread.Sleep(20000);
             try
             {
@@ -11934,7 +11951,7 @@ static class PerfGuard
     static string Parts()
     {
         var sb = new StringBuilder();
-        foreach (var name in new[] { Names.Tiling, Names.Shell, Names.Core, "dwm" })
+        foreach (var name in new[] { Names.Tiling, Names.Shell, Names.Core, LiveWallpaper.Name, "dwm" })
             foreach (var p in Process.GetProcessesByName(name))
             {
                 try
