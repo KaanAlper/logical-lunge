@@ -6386,11 +6386,38 @@ class Rounder
     // Kapanan pencerenin kayıtları (önceden hiç silinmiyordu)
     readonly Dictionary<IntPtr, int> clipRepairAt = new Dictionary<IntPtr, int>();
     static bool ClipRepairDue(int now, int last) { return unchecked(now - last) >= 16; }
-    static bool RegionMatches(int kind, Native.RECT actual, Native.RECT expected, bool square)
+    static bool RegionMatches(int kind, Native.RECT actual, int expectedKind, Native.RECT expected)
     {
-        return kind == (square ? 2 : 3) && actual.Left == expected.Left && actual.Top == expected.Top
+        return kind > 1 && kind == expectedKind && actual.Left == expected.Left && actual.Top == expected.Top
             && actual.Right == expected.Right && actual.Bottom == expected.Bottom;
     }
+    // Pencereye konan bölge, hep buradan. Köşesi yuvarlanamayacak kadar küçük pencerenin yuvarlak bölgesi düz ya da boş
+    // çıkar (boş bölge pencereyi görünmez bırakır): o köşeli kesilir.
+    static IntPtr MakeRegion(bool square, int l, int t, int r, int b)
+    {
+        if (!square)
+        {
+            IntPtr round = Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
+            Native.RECT box;
+            if (round != IntPtr.Zero && GetRgnBox(round, out box) == 3 /*COMPLEXREGION*/) return round;
+            if (round != IntPtr.Zero) Native.DeleteObject(round);
+        }
+        return Native.CreateRectRgn(l, t, r + 1, b + 1);
+    }
+    // O bölgenin Windows'un bildireceği türü (GetRgnBox dönüşü) ve kutusu. Tahmin edilmez: yuvarlak bölgenin kutusu
+    // köşelerinin dikdörtgeninden bir piksel küçük, küçük pencerede türü de değişir. Tahmin hiç tutmayınca bölge her olayda
+    // yeniden konuyordu; SetWindowRgn de yeni bir konum olayı doğurduğundan pencere başına saniyede binlerce tur (boşta
+    // bir çekirdek).
+    static int RegionShape(bool square, int l, int t, int r, int b, out Native.RECT box)
+    {
+        box = new Native.RECT();
+        IntPtr rgn = MakeRegion(square, l, t, r, b);
+        if (rgn == IntPtr.Zero) return 0;
+        int kind = GetRgnBox(rgn, out box);
+        Native.DeleteObject(rgn);
+        return kind;
+    }
+    [DllImport("gdi32.dll")] static extern int GetRgnBox(IntPtr rgn, out Native.RECT box);
     void Forget(IntPtr h) { applied.Remove(h); resets.Remove(h); giveUp.Remove(h); clipRepairAt.Remove(h); }
     void Prune()
     {
@@ -6528,10 +6555,10 @@ class Rounder
         bool clipRequired = NeedsTileClip(fr, slot, tiledSlot);
         int l = vis.Left - wr.Left, t = vis.Top - wr.Top;
         int r = l + (vis.Right - vis.Left), b = t + (vis.Bottom - vis.Top);
-        var expectedRegion = new Native.RECT { Left = l, Top = t, Right = r + 1, Bottom = b + 1 };
         bool square = full || borderless || giveUp.Contains(h);
         // Bazı uygulamalar (Terminal, Firefox/Zen) bölgeyi kendileri sıfırlıyor: yoksa yeniden uygula
-        if (applied.TryGetValue(h, out prev) && prev == key && RegionMatches(regionKind, box, expectedRegion, square)) return;
+        Native.RECT ours;
+        if (applied.TryGetValue(h, out prev) && prev == key && RegionMatches(regionKind, box, RegionShape(square, l, t, r, b, out ours), ours)) return;
         if (giveUp.Contains(h) && !clipRequired)
         {
             // A previous fullscreen clip is relative to the old HWND bounds.
@@ -6539,20 +6566,20 @@ class Rounder
             if (applied.Remove(h) && hasRgn) Native.SetWindowRgn(h, IntPtr.Zero, true);
             return;
         }
-        if (prev == key && !hasRgn)
+        if (prev == key)
         {
-            // Aynı boyutta bölge silinmiş -> uygulama kendisi sıfırlıyor. Kısa sürede çok tekrarlarsa
-            // kavga etme (titreme + CPU): o pencereyi köşesiz bırak.
+            // Aynı boyutta bölge silinmiş ya da uygulamanınkiyle değişmiş -> uygulama kendisi sıfırlıyor. Kısa sürede çok
+            // tekrarlarsa kavga etme (titreme + CPU): o pencereyi köşesiz bırak.
             long now = Environment.TickCount;
             List<long> hits;
             if (!resets.TryGetValue(h, out hits)) resets[h] = hits = new List<long>();
             hits.Add(now);
             hits.RemoveAll(x => unchecked((int)(now - x)) > 3000);
-            // Vazgeçerken bizim koyduğumuz bölge de kalkar: eski (belki küçük) bir bölge pencereyi kesik bırakıyordu
+            // Vazgeçerken uygulamanın kendi bölgesine dokunulmaz; yalnızca boş bölge (pencereyi görünmez bırakır) kalkar
             if (hits.Count > 4)
             {
                 if (giveUp.Add(h)) Slider.Log("gave up rounding " + ProcName(h) + " hwnd=" + h.ToInt64() + "; tile clipping retained");
-                if (!clipRequired) { applied.Remove(h); if (hasRgn) Native.SetWindowRgn(h, IntPtr.Zero, true); return; }
+                if (!clipRequired) { applied.Remove(h); if (regionKind == 1) Native.SetWindowRgn(h, IntPtr.Zero, true); return; }
             }
         }
         if (clipRequired)
@@ -6561,8 +6588,7 @@ class Rounder
             if (clipRepairAt.TryGetValue(h, out last) && !ClipRepairDue(now, last)) return;
             clipRepairAt[h] = now;
         }
-        IntPtr rgn = full || borderless || giveUp.Contains(h) ? Native.CreateRectRgn(l, t, r + 1, b + 1)
-            : Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
+        IntPtr rgn = MakeRegion(square || giveUp.Contains(h), l, t, r, b);
         if (Native.SetWindowRgn(h, rgn, true) == 0)
         {
             Slider.Log("SetWindowRgn failed " + ProcName(h) + " err=" + Marshal.GetLastWin32Error());
