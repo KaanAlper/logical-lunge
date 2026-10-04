@@ -70,6 +70,12 @@ use crate::{
 const MSG_CLASS: PCWSTR = w!("LogicalLunge.LiveWallpaper");
 const SCREEN_CLASS: PCWSTR = w!("LogicalLunge.LiveWallpaper.Screen");
 pub const WM_APP_RELOAD: u32 = WM_APP + 1;
+/// The core asks how many screens still wait for their first frame (the
+/// answer, 0 when every one shows its video): the startup cover stays until
+/// the wallpaper is there.
+pub const WM_APP_WAITING: u32 = WM_APP + 2;
+/// The startup cover's title (the core's Names.StartupCover).
+const STARTUP_COVER: &str = "Logical Lunge · açılış";
 /// is a fullscreen app on a monitor, are the windows still in place (and
 /// the other pause rules, again)
 const TIMER_CHECK: usize = 1;
@@ -113,6 +119,8 @@ struct Screen {
   /// nothing of its wallpaper can be seen: a fullscreen app, or windows
   /// over all of it but the gaps
   covered: bool,
+  /// its video's first frame is on screen
+  shown: bool,
 }
 
 struct Render {
@@ -365,6 +373,7 @@ impl App {
         hwnd,
         file,
         covered: false,
+        shown: false,
       });
     }
     // no monitor of the settings is there (undocked): the player waits for
@@ -755,6 +764,13 @@ unsafe fn covering_windows() -> Vec<RECT> {
     ) {
       return true.into();
     }
+    // the startup cover is over everything only until the desktop is there:
+    // the wallpaper draws its first frame behind it
+    let mut title = [0u16; 64];
+    let n = GetWindowTextW(h, &mut title).max(0) as usize;
+    if String::from_utf16_lossy(&title[..n]) == STARTUP_COVER {
+      return true.into();
+    }
     let mut r = RECT::default();
     if DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut RECT as *mut _, std::mem::size_of::<RECT>() as u32).is_err()
       && GetWindowRect(h, &mut r).is_err()
@@ -893,7 +909,18 @@ unsafe extern "system" fn msg_proc(
     }
     WM_APP_FIRST_FRAME => {
       log::line(&format!("first frame on screen {}", lp.0));
+      with_app(|a| {
+        for s in a.screens.iter_mut().filter(|s| s.id == lp.0 as u64) {
+          s.shown = true;
+        }
+      });
       LRESULT(0)
+    }
+    WM_APP_WAITING => {
+      // busy (asked while it was handling something else): not yet
+      let mut waiting = 1;
+      with_app(|a| waiting = a.screens.iter().filter(|s| !s.shown).count());
+      LRESULT(waiting as isize)
     }
     WM_APP_RENDER_DIED => {
       SetTimer(hwnd, TIMER_RENDER, 3000, None);

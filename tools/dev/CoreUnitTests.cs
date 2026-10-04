@@ -30,8 +30,47 @@ static class CoreUnitTests
         LogWriterTests();
         MemoryLogTests(root);
         TempsFileTests();
+        StartupCoverTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // The startup cover: its first frame comes before anything slow, it leaves only when the core says every part is
+    // there, it has its own logon task, and the wallpaper doesn't count it as hiding the desktop.
+    static void StartupCoverTests(string root)
+    {
+        var spinner = typeof(Splash).GetNestedType("Cover", System.Reflection.BindingFlags.NonPublic).GetMethod("Spinner");
+        float lastStart = -1; int moved = 0;
+        for (double ms = 0; ms < 8000; ms += 16)
+        {
+            var args = new object[] { ms, 0f, 0f };
+            spinner.Invoke(null, args);
+            float start = (float)args[1], sweep = (float)args[2];
+            if (!(sweep >= 18 && sweep <= 268.01 && start >= 0 && start < 360)) { Check(false, "the spinner's arc went out of shape at " + ms + " ms: " + start + "/" + sweep); break; }
+            if (lastStart >= 0 && Math.Abs(start - lastStart) > 0.01) moved++;
+            lastStart = start;
+        }
+        Check(moved > 400, "the spinner does not turn");
+
+        string xml = SplashTask.Xml("S-1-5-21-1", @"C:\Program Files\LogicalLunge\lunge.exe", @"C:\Users\x");
+        foreach (var part in new[] { "<LogonTrigger>", "<UserId>S-1-5-21-1</UserId>", "<RunLevel>LeastPrivilege</RunLevel>", "<Priority>1</Priority>",
+                                      "<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>", "<Arguments>--splash</Arguments>" })
+            Check(xml.Contains(part), "the splash task lacks " + part);
+        try { new System.Xml.XmlDocument().LoadXml(xml.Substring(xml.IndexOf("<Task", StringComparison.Ordinal))); }
+        catch (Exception ex) { Check(false, "the splash task is not valid XML: " + ex.Message); }
+
+        string core = File.ReadAllText(Path.Combine(root, "core", "lunge.cs"));
+        int run = core.IndexOf("public static void Run()\n    {\n        long sinceLogon", StringComparison.Ordinal);
+        if (run < 0) run = core.IndexOf("public static void Run()\r\n    {\r\n        long sinceLogon", StringComparison.Ordinal);
+        Check(run > 0, "the cover's Run() was not found");
+        int show = core.IndexOf("f.Show();", run, StringComparison.Ordinal), wall = core.IndexOf("Wallpaper();", run, StringComparison.Ordinal);
+        int lang = core.IndexOf("I18n.T(", run, StringComparison.Ordinal);
+        Check(show > 0 && show < wall && show < lang, "the cover waits for the wallpaper or the language before its first frame");
+        Check(core.Contains("state.Ready = CoreSaysReady();") && core.Contains("target == \"/desktop-ready\""), "the cover does not ask the core whether the desktop is ready");
+        Check(core.Contains("Text = Names.StartupCover;"), "the cover windows are not named");
+        string ui = File.ReadAllText(Path.Combine(root, "shell", "crates", "live-wallpaper", "src", "ui.rs"));
+        var named = Regex.Match(core, "StartupCover = \"([^\"]+)\"").Groups[1].Value;
+        Check(named.Length > 0 && ui.Contains("const STARTUP_COVER: &str = \"" + named + "\";"), "the wallpaper skips a different title than the cover's");
     }
 
     // The usage menu's temperatures come from the core without a process, and reading marks the demand.
