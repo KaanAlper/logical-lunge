@@ -1863,6 +1863,7 @@
       // Kapatma: başlıktaki × (grup), genişletince her bildirimdeki × (yalnız o), sağa sürükleme ya da touchpad'de iki
       // parmakla sağa kaydırma (bildirim parmağı izler; yeterince giderse kayarak kapanır, gitmezse yerine yaylanır), orta tık.
       const SWIPE_DISMISS = 0.33; // grubun genişliğinin bu kadarı kaydırılınca kapanır
+      const openNotification = id => fetch(`http://127.0.0.1:6131/notification-open?id=${encodeURIComponent(id)}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
       function NotificationGroup({ group, onDismiss, leaving, delay }) {
         const [expanded, setExpanded] = useState(false);
         const [gone, setGone] = useState(false);
@@ -1887,7 +1888,7 @@
         // ve düğme tıklamaları bozulmaz)
         const onPointerDown = e => {
           if (e.button !== 0 || e.target.closest('button')) return;
-          drag.current = { x: e.clientX, y: e.clientY, active: false };
+            drag.current = { x: e.clientX, y: e.clientY, active: false, id: e.target.closest('[data-notification-id]')?.dataset.notificationId ?? shown[0]?.id };
           e.currentTarget.setPointerCapture(e.pointerId);
         };
         const onPointerMove = e => {
@@ -1904,6 +1905,7 @@
           const d = drag.current;
           drag.current = null;
           if (d?.active) release(Math.max(0, e.clientX - d.x));
+          else if (e.type !== 'pointercancel' && d?.id && Math.abs(e.clientX - d.x) < 6 && Math.abs(e.clientY - d.y) < 6) openNotification(d.id);
         };
         // Touchpad iki parmak yatay kaydırma: parmak sağa gidince Windows deltaX < 0 verir; bildirim parmakla birlikte gider
         const onWheel = e => {
@@ -1937,6 +1939,8 @@
               </div>
               {shown.map((n, i) => (
                 <div key={n.id} className={`nitem ${goneItems.includes(n.id) ? 'gone' : ''}`}
+                     data-notification-id={n.id} role="button" tabIndex={0}
+                     onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openNotification(n.id); } }}
                      style={!expanded && i === 1 && count > 2 ? { opacity: 0.5 } : undefined}>
                   {(multiple || !expanded) && <span className="nsummary">{n.title}</span>}
                   <span className={`ntext ${expanded ? 'full' : ''}`}>{n.body}</span>

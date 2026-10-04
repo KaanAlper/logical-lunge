@@ -1,0 +1,58 @@
+// Real notification-group component; isolated transport and headless input, no running desktop access.
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const require = createRequire(path.join(root, 'ui/package.json'));
+const esbuild = require('esbuild');
+const { chromium } = require(process.env.LL_PLAYWRIGHT || 'playwright');
+const html = fs.readFileSync(path.join(root, 'ui/sidebar.html'), 'utf8');
+const start = html.indexOf('      const SWIPE_DISMISS =');
+const end = html.indexOf('      // ---- BottomWidgetGroup', start);
+assert.ok(start > 0 && end > start);
+const source = `import React, {useState,useRef} from 'react'; import {createRoot} from 'react-dom/client';
+const Icon=({name})=><span>{name}</span>, friendlyTime=()=>'';
+${html.slice(start,end)}
+window.dismissed=[];
+const group={app:'App',items:[{id:11,title:'First',body:'First target',time:0},{id:12,title:'Second',body:'Second target',time:0}]};
+createRoot(document.getElementById('root')).render(<NotificationGroup group={group} onDismiss={ids=>window.dismissed.push(...ids)} leaving={false} delay={0}/>);`;
+const bundle = await esbuild.build({stdin:{contents:source,resolveDir:path.join(root,'ui'),loader:'jsx'},bundle:true,format:'esm',write:false,define:{'process.env.NODE_ENV':'"production"'}});
+const server=http.createServer((req,res)=>{res.setHeader('Content-Type',req.url==='/app.js'?'text/javascript':'text/html');res.end(req.url==='/app.js'?bundle.outputFiles[0].text:'<style>.ngroup{width:400px;padding:15px}.nitem{padding:15px}.nhead{height:35px}</style><div id="root"></div><script type="module" src="/app.js"></script>');});
+await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+const browser=await chromium.launch({headless:true});
+try {
+  const page=await browser.newPage();
+  const requests=[],errors=[];
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.route('http://127.0.0.1:6131/**',async route=>{requests.push({url:route.request().url(),method:route.request().method()});await route.fulfill({status:204,headers:{'Access-Control-Allow-Origin':'*'}});});
+  await page.goto(`http://127.0.0.1:${server.address().port}`);
+  const row=page.locator('[data-notification-id="12"]');
+  await row.click();
+  await page.waitForFunction(()=>true);
+  await page.waitForRequest(()=>false,{timeout:50}).catch(()=>{});
+  assert.deepEqual(requests.map(r=>[new URL(r.url).searchParams.get('id'),r.method]),[['12','POST']],'clicked item opens its own target');
+  requests.length=0;
+  await page.locator('.nhead').click({position:{x:20,y:10}});
+  await page.waitForTimeout(50);
+  assert.deepEqual(requests.map(r=>new URL(r.url).searchParams.get('id')),['11'],'group header opens the newest notification');
+  requests.length=0;
+  await row.focus();await page.keyboard.press('Enter');
+  await page.waitForTimeout(50);
+  assert.equal(requests.length,1,'keyboard opens focused notification');
+  requests.length=0;
+  const drag=async(dx,dy)=>{const b=await row.boundingBox();await page.mouse.move(b.x+30,b.y+15);await page.mouse.down();await page.mouse.move(b.x+30+dx,b.y+15+dy,{steps:5});await page.mouse.up();};
+  await drag(35,0);await page.waitForTimeout(50);
+  assert.equal(requests.length,0,'short swipe does not open notification');
+  await drag(0,12);await page.waitForTimeout(50);
+  assert.equal(requests.length,0,'vertical movement does not open notification');
+  await page.locator('.nexpand').click();await page.waitForTimeout(50);
+  assert.equal(requests.length,0,'expand button does not open notification');
+  await page.locator('[data-notification-id="12"] .nitem-close').click();await page.waitForTimeout(300);
+  assert.equal(requests.length,0,'close button does not open notification');
+  assert.deepEqual(await page.evaluate(()=>window.dismissed),[12]);
+  assert.deepEqual(errors,[]);
+  console.log('PASS notification UI: item-specific click, keyboard, short swipe, vertical movement, expand and dismiss');
+} finally {await browser.close();await new Promise(resolve=>server.close(resolve));}

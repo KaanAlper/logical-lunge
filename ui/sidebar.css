@@ -317,6 +317,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .nclose:hover, .nitem-close:hover { background: var(--colLayer3); }
 .nclose .icon, .nitem-close .icon { font-size: 16px; }
 .nitem { transition: opacity 200ms, transform 200ms var(--emphAccel); }
+.nitem[role="button"] { cursor: pointer; }
+.nitem[role="button"]:focus-visible { outline: 1px solid currentColor; outline-offset: 2px; border-radius: 3px; }
 .nitem.gone { opacity: 0; transform: translateX(40px); }
 
 /* ButtonGroup + NotificationStatusButton */
