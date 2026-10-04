@@ -96,7 +96,9 @@ static class Names
     public const string Core = "lunge", Tiling = "lunge-tiling", Shell = "lunge-shell";
     public const string Bar = "Logical Lunge · bar", Toast = "Logical Lunge · toast", Update = "Logical Lunge · update",
         Osk = "Logical Lunge · osk", Sidebar = "Logical Lunge · sidebar-right", Settings = "Logical Lunge · settings",
-        TitlePrefix = "Logical Lunge ·", DesktopWidget = "Logical Lunge · widget";
+        TitlePrefix = "Logical Lunge ·", DesktopWidget = "Logical Lunge · widget",
+        // açılış örtüsü (canlı duvar kağıdı onu "masaüstünü örten pencere" saymaz: arkasında ilk karesini çizsin)
+        StartupCover = "Logical Lunge · açılış";
 }
 
 static class Native
@@ -3428,6 +3430,20 @@ static class ShellWatchdog
             }
         }
     }
+    // Kabuğun açtığı her bar bu açılışta "canlıyım" dedi mi: null evet; değilse ne bekleniyor. Eski kabuğun barları (yeniden
+    // başlatmadan önce) sayılmaz.
+    public static string BarsReady()
+    {
+        var shell = Find(Names.Shell);
+        if (shell == null) return "kabuk";
+        DateTime started;
+        try { started = shell.StartTime; } catch { return "kabuk"; }
+        long since = aliveClock.ElapsedMilliseconds - (long)(DateTime.Now - started).TotalMilliseconds;
+        int windows = BarWindows(shell.Id), alive = 0;
+        lock (barAlive) foreach (var kv in barAlive) if (kv.Value >= since) alive++;
+        if (windows == 0) return "bar";
+        return alive >= windows ? null : "bar " + alive + "/" + windows;
+    }
     static int AliveBars()
     {
         int n = 0;
@@ -4914,12 +4930,12 @@ static class DesktopRestart
         catch { return false; }
     }
 
-    static object Com(object obj, string member, bool property, params object[] args)
+    internal static object Com(object obj, string member, bool property, params object[] args)
     {
         return obj.GetType().InvokeMember(member, property ? System.Reflection.BindingFlags.GetProperty : System.Reflection.BindingFlags.InvokeMethod,
             null, obj, args);
     }
-    static void ReleaseCom(object obj) { if (obj != null && Marshal.IsComObject(obj)) Marshal.FinalReleaseComObject(obj); }
+    internal static void ReleaseCom(object obj) { if (obj != null && Marshal.IsComObject(obj)) Marshal.FinalReleaseComObject(obj); }
     static bool StartTask()
     {
         object service = null, folder = null, task = null, instances = null, run = null;
@@ -5068,7 +5084,7 @@ static class Supervisor
         Maint.Unmark();
     }
 
-    static bool TilingIpcUp()
+    internal static bool TilingIpcUp()
     {
         try { using (var c = new System.Net.Sockets.TcpClient()) return c.ConnectAsync("127.0.0.1", 6123).Wait(150) && c.Connected; }
         catch { return false; }
@@ -5680,7 +5696,7 @@ static class Toasts
                 new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
                 return;
             }
-            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/temps.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/temps.json") || verbless.StartsWith("/desktop-ready") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -5813,6 +5829,8 @@ static class Toasts
             else if (target == "/prefs.json" || target.StartsWith("/prefs.json?")) { body = Prefs.Json(); status = "200 OK"; }
             // Kullanım menüsünün sıcaklıkları: süreç başlatmadan (eskiden her 2 sn'de bir lunge-temps --read)
             else if (target == "/temps.json") { body = TempsFile.Json(); status = "200 OK"; }
+            // Açılış örtüsü: masaüstünün bütün parçaları geldi mi
+            else if (target == "/desktop-ready") { body = DesktopReady.Json(); status = "200 OK"; }
             else if (target.StartsWith("/focus-color?v="))
             {
                 if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
@@ -11550,6 +11568,90 @@ static class WarmTerminal
 // Sistem genelindeki olay kancalarının (WinEvent) gecikmesi: olayın üretildiği an (dwmsEventTime) ile bize ulaştığı an
 // arası. Bir uygulama olay seli ürettiğinde (ör. Görev Yöneticisi'nin listesi yeniden sıralanırken) kuyruk birikirse
 // kaydedilir: bir dahaki kasmanın kaynağı tahminle değil kayıtla bulunsun. Ucuz: çağrı başına bir karşılaştırma.
+// Masaüstü hazır mı (açılış örtüsü sorar, POST /desktop-ready): çekirdeğin çalıştırdığı her parça gelmiş olmalı. Pencere
+// yöneticisi cevap veriyor; kabuğun açtığı her bar bu açılışta "canlıyım" demiş; canlı duvar kağıdı ayarlıysa oynatıcı
+// bütün ekranlarında ilk karesini göstermiş. Örtü ancak hepsi gelince kalkar: bar, pencereler, duvar kağıdı gözün önünde
+// tek tek gelmez.
+static class DesktopReady
+{
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+    const uint WM_APP_WAITING = 0x8000 + 2;   // lunge-wallpaper: ilk karesini bekleyen ekran sayısı
+
+    // null: hazır; değilse beklenenler
+    public static string Waiting()
+    {
+        var missing = new List<string>();
+        if (!Supervisor.TilingIpcUp()) missing.Add("pencere yöneticisi");
+        string bars = ShellWatchdog.BarsReady();
+        if (bars != null) missing.Add(bars);
+        string wall = Wallpaper();
+        if (wall != null) missing.Add(wall);
+        return missing.Count == 0 ? null : string.Join(", ", missing.ToArray());
+    }
+
+    public static string Json()
+    {
+        string w = Waiting();
+        return w == null ? "{\"ready\":true}" : "{\"ready\":false,\"waiting\":" + new JavaScriptSerializer().Serialize(w) + "}";
+    }
+
+    static string Wallpaper()
+    {
+        string config;
+        try { config = System.IO.File.ReadAllText(Paths.State("live-wallpaper.json")); } catch { return null; }
+        // ayarlı bir video yoksa beklenecek bir şey yok
+        if (!System.Text.RegularExpressions.Regex.IsMatch(config, @"""file""\s*:\s*""[^""]+""")) return null;
+        IntPtr player = FindWindow("LogicalLunge.LiveWallpaper", null);
+        if (player == IntPtr.Zero) return "canlı duvar kağıdı";
+        IntPtr waiting;
+        if (SendMessageTimeout(player, WM_APP_WAITING, IntPtr.Zero, IntPtr.Zero, 0x2 /*SMTO_ABORTIFHUNG*/, 300, out waiting) == IntPtr.Zero) return "canlı duvar kağıdı";
+        return waiting == IntPtr.Zero ? null : "canlı duvar kağıdı " + waiting + " ekran";
+    }
+}
+
+// Açılış örtüsünün kendi oturum açma görevi (\LogicalLunge\Splash): oturum açılınca çekirdeği beklemeden, kullanıcı olarak
+// ve yüksek öncelikle gelir; çekirdek yönetici olarak ayağa kalkarken (yük altında saniyeler sürebiliyor) örtü çoktan ekranda.
+// Çekirdek de açılışta örtüyü başlatır (yedek; tek kopya kilidi ikisini birleştirir). Görevi yönetici çekirdek her açılışta
+// yazar (yol güncel kalsın); kaldırıcı \LogicalLunge\ klasörünün bütün görevlerini siler.
+static class SplashTask
+{
+    public const string Name = "Splash";
+
+    public static string Xml(string sid, string exe, string home)
+    {
+        Func<string, string> e = System.Security.SecurityElement.Escape;
+        return "<?xml version=\"1.0\" encoding=\"UTF-16\"?>" +
+            "<Task version=\"1.3\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">" +
+            "<RegistrationInfo><Description>Logical Lunge: açılış ekranı</Description></RegistrationInfo>" +
+            "<Triggers><LogonTrigger><Enabled>true</Enabled><UserId>" + e(sid) + "</UserId></LogonTrigger></Triggers>" +
+            "<Principals><Principal id=\"A\"><UserId>" + e(sid) + "</UserId><LogonType>InteractiveToken</LogonType>" +
+            "<RunLevel>LeastPrivilege</RunLevel></Principal></Principals>" +
+            "<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>" +
+            "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>" +
+            "<ExecutionTimeLimit>PT5M</ExecutionTimeLimit><Priority>1</Priority>" +
+            "<UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine></Settings>" +
+            "<Actions Context=\"A\"><Exec><Command>" + e(exe) + "</Command><Arguments>--splash</Arguments>" +
+            "<WorkingDirectory>" + e(home) + "</WorkingDirectory></Exec></Actions></Task>";
+    }
+
+    public static void Ensure()
+    {
+        if (!UserLaunch.Elevated) return;
+        object service = null, folder = null;
+        try
+        {
+            service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+            DesktopRestart.Com(service, "Connect", false, null, null, null, null);
+            folder = DesktopRestart.Com(service, "GetFolder", false, @"\LogicalLunge");
+            using (var own = System.Security.Principal.WindowsIdentity.GetCurrent())
+                DesktopRestart.ReleaseCom(DesktopRestart.Com(folder, "RegisterTask", false, Name, Xml(own.User.Value, Application.ExecutablePath, Paths.Home), 6 /*CREATE_OR_UPDATE*/, null, null, 3 /*INTERACTIVE_TOKEN*/, null));
+        }
+        catch (Exception ex) { Slider.Log("açılış örtüsü görevi yazılamadı: " + ex.GetBaseException().Message); }
+        finally { DesktopRestart.ReleaseCom(folder); DesktopRestart.ReleaseCom(service); }
+    }
+}
+
 // Sıcaklık servisinin dosyası (lunge-temps.exe), arayüze süreç başlatmadan. Okuyanın işaretini de koyar (servis sensörleri
 // yalnızca son 10 sn'de biri okumak istediyse okur); servis çalışmıyorsa en fazla dakikada bir --read ile uyandırılır.
 static class TempsFile
@@ -12419,21 +12521,27 @@ static class Splash
     static byte[] ReadAll(System.IO.Stream s) { var m = new System.IO.MemoryStream(); s.CopyTo(m); return m.ToArray(); }
 
     // Açılış ve yeniden başlatma örtüsü: bütün ekranları duvar kağıdıyla (sakin bir karartmayla) örter; ana ekranda yazı ve
-    // ince bir ilerleme çizgisi. Açılırken arkada pencereler açılıp kapanırken görünmez, kullanıcı yanlış bir yere tıklayamaz
-    // ya da bir tuşla (Alt+F4) açılmakta olan bir şeyi kapatamaz. Hazır olunca yazı hafifçe kalkıp söner, örtü çekilir.
+    // altında bir yükleme çemberi. Açılırken arkada bar, pencere yöneticisi ve pencereler gelip yerleşirken görünmez,
+    // kullanıcı yanlış bir yere tıklayamaz ya da bir tuşla (Alt+F4) açılmakta olan bir şeyi kapatamaz. Hazır olunca yazı
+    // hafifçe kalkıp söner, örtü çekilir. İlk karede (koyu zemin ve çember) hemen gelir: yazının dili, vurgu rengi ve duvar
+    // kağıdı (4K bir resmi çözüp ölçeklemek yarım saniye sürebilir) arkada hazırlanıp belirir.
     class Cover : Form
     {
-        readonly Image img;
-        readonly Rectangle virt; // span resmi bu dikdörtgene yayılır (boşsa her ekran kendi resmini doldurur)
-        readonly string text;    // ana ekranda; diğerlerinde null
-        readonly Color accent;
-        Bitmap background;       // duvar kağıdı + karartma, bir kez hazırlanır (her karede 4K resim ölçeklenmesin)
-        public double TextAlpha, TextLift, Phase;   // Run'daki saat sürer
+        readonly bool primary;
+        string text;
+        Color accent = Color.FromArgb(0xb6, 0x9d, 0xf8);
+        Bitmap background, incoming;  // duvar kağıdı + karartma; gelen, belirene kadar üstüne karışır
+        int incomingAt;
+        public int TextAt;                          // yazının geldiği an (0: henüz yok)
+        public int FirstPaint;                      // ilk karenin çizildiği an
+        public double TextAlpha, SpinnerAlpha, TextLift, Clock;   // Run'daki saat sürer (Clock: ms)
         public Rectangle Indicator;                 // her karede yalnızca bu alan yeniden çizilir
+        public const int BlendMs = 300;
 
-        public Cover(Rectangle b, Image img, Rectangle virt, string text, Color accent)
+        public Cover(Rectangle b, bool primary)
         {
-            this.img = img; this.virt = virt; this.text = text; this.accent = accent;
+            this.primary = primary;
+            Text = Names.StartupCover;
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true;
             StartPosition = FormStartPosition.Manual; Bounds = b;
             BackColor = Color.FromArgb(20, 19, 24);
@@ -12454,50 +12562,75 @@ static class Splash
         protected override void OnPaintBackground(PaintEventArgs e) { }
         protected override void OnPaint(PaintEventArgs e)
         {
+            if (FirstPaint == 0) FirstPaint = Environment.TickCount;
             try { PaintBody(e); } catch (Exception ex) { PaintErrors.Report("açılış örtüsü", ex); }
         }
 
+        // Arkadan gelenler (UI iş parçacığında çağrılır)
+        public void SetText(string t, Color a) { text = t; accent = a; TextAt = Environment.TickCount; Invalidate(); }
+        public void SetBackground(Bitmap bmp) { incoming = bmp; incomingAt = Environment.TickCount; Invalidate(); }
+
+        // Duvar kağıdı belirirken her kare yeniden çizilmeli
+        public bool Blending { get { return incoming != null; } }
+
         void PaintBody(PaintEventArgs e)
         {
-            if (background == null) background = Background();
-            e.Graphics.DrawImageUnscaled(background, 0, 0);
-            if (text == null) return;
             var g = e.Graphics;
+            if (background != null) g.DrawImageUnscaled(background, 0, 0); else g.Clear(BackColor);
+            if (incoming != null)
+            {
+                double a = Math.Min(1, (Environment.TickCount - incomingAt) / (double)BlendMs);
+                if (a >= 1) { var old = background; background = incoming; incoming = null; g.DrawImageUnscaled(background, 0, 0); if (old != null) old.Dispose(); }
+                else
+                    using (var attrs = new System.Drawing.Imaging.ImageAttributes())
+                    {
+                        attrs.SetColorMatrix(new System.Drawing.Imaging.ColorMatrix { Matrix33 = (float)a });
+                        g.DrawImage(incoming, new Rectangle(0, 0, incoming.Width, incoming.Height), 0, 0, incoming.Width, incoming.Height, GraphicsUnit.Pixel, attrs);
+                    }
+            }
+            if (!primary) return;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
             float size = Math.Max(20f, Height * 0.026f);
-            int alpha = (int)Math.Round(255 * Math.Max(0, Math.Min(1, TextAlpha)));
-            using (var font = new Font(FontFamily(), size, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var brush = new SolidBrush(Color.FromArgb(alpha, 230, 224, 233)))
+            float lift = (float)TextLift;
+            if (text != null)
             {
-                var sz = g.MeasureString(text, font);
-                float x = (Width - sz.Width) / 2, y = Height / 2f - sz.Height - (float)TextLift;
-                g.DrawString(text, font, brush, x, y);
-                // İnce ilerleme çizgisi: yazının altında, vurgu renginde bir parça izin içinde gider gelir
-                int w = (int)Math.Max(140, Height * 0.11), h = Math.Max(3, (int)Math.Round(Height * 0.0028));
-                var track = new Rectangle((Width - w) / 2, (int)(Height / 2f + size * 0.9f - TextLift), w, h);
-                Indicator = Rectangle.Inflate(new Rectangle(track.X, (int)(Height / 2f + size * 0.9f) - (int)size, w, h + (int)size * 2), 2, 2);
-                using (var trackBrush = new SolidBrush(Color.FromArgb(alpha * 40 / 255, 230, 224, 233)))
-                    FillRound(g, trackBrush, track);
-                double t = (Math.Sin(Phase) + 1) / 2;              // 0..1 gidip gelir
-                int seg = w / 3;
-                var part = new Rectangle(track.X + (int)Math.Round((w - seg) * t), track.Y, seg, h);
-                using (var partBrush = new SolidBrush(Color.FromArgb(alpha, accent)))
-                    FillRound(g, partBrush, part);
+                int ta = (int)Math.Round(255 * Math.Max(0, Math.Min(1, TextAlpha)));
+                using (var font = new Font(FontFamily(), size, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (var brush = new SolidBrush(Color.FromArgb(ta, 230, 224, 233)))
+                {
+                    var sz = g.MeasureString(text, font);
+                    g.DrawString(text, font, brush, (Width - sz.Width) / 2, Height / 2f - sz.Height - lift);
+                }
             }
+            // Yükleme çemberi: yazının altında, vurgu renginde; ilk karede bile
+            int sa = (int)Math.Round(255 * Math.Max(0, Math.Min(1, SpinnerAlpha)));
+            int d = (int)Math.Round(Math.Max(26, Height * 0.03));
+            float stroke = Math.Max(3f, d * 0.12f);
+            var ring = new RectangleF((Width - d) / 2f, Height / 2f + size * 0.8f - lift, d, d);
+            Indicator = Rectangle.Inflate(Rectangle.Round(new RectangleF(ring.X, Height / 2f + size * 0.8f - Height * 0.02f, d, d + Height * 0.02f)), (int)stroke + 2, (int)stroke + 2);
+            using (var track = new Pen(Color.FromArgb(sa * 36 / 255, 230, 224, 233), stroke))
+                g.DrawEllipse(track, ring);
+            float start, sweep;
+            Spinner(Clock, out start, out sweep);
+            using (var pen = new Pen(Color.FromArgb(sa, accent), stroke) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
+                g.DrawArc(pen, ring, start, sweep);
         }
 
-        static void FillRound(Graphics g, Brush b, Rectangle r)
+        // Material'in belirsiz çemberi: yay dönerken uzar, sonra kuyruğu başına yetişip kısalır; her turda biraz daha ilerler
+        public static void Spinner(double ms, out float start, out float sweep)
         {
-            using (var path = new System.Drawing.Drawing2D.GraphicsPath())
-            {
-                int d = r.Height;
-                path.AddArc(r.X, r.Y, d, d, 90, 180);
-                path.AddArc(r.Right - d, r.Y, d, d, 270, 180);
-                path.CloseFigure();
-                g.FillPath(b, path);
-            }
+            const double cycle = 1333, grow = 250, least = 18;
+            double n = Math.Floor(ms / cycle), t = (ms - n * cycle) / cycle;
+            double head, tail;
+            if (t < 0.5) { head = Ease(t * 2) * grow; tail = 0; }
+            else { head = grow; tail = Ease((t - 0.5) * 2) * grow; }
+            double turn = ms / 1600.0 * 360 + n * grow;
+            start = (float)((turn + tail) % 360);
+            sweep = (float)(least + head - tail);
         }
+
+        static double Ease(double t) { return t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2; }
 
         static string FontFamily()
         {
@@ -12507,26 +12640,27 @@ static class Splash
             return "Segoe UI";
         }
 
-        Bitmap Background()
+        // Duvar kağıdı bu ekrana ölçeklenmiş ve karartılmış hâlde (arka plan iş parçacığında da çalışır)
+        public static Bitmap Prepare(Image img, Rectangle bounds, Rectangle virt, Color back)
         {
-            var bmp = new Bitmap(Math.Max(1, Width), Math.Max(1, Height), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+            var bmp = new Bitmap(Math.Max(1, bounds.Width), Math.Max(1, bounds.Height), System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
             using (var g = Graphics.FromImage(bmp))
             {
-                g.Clear(BackColor);
+                g.Clear(back);
                 if (img != null)
                 {
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     // "Doldur" yerleşimi: en boy oranını koruyup alanı kapla, taşanı ortadan kırp. Span'da alan tüm
                     // masaüstüdür ve her ekran kendi dilimini gösterir (Windows'un "Yay" yerleşimi).
-                    Rectangle area = virt.IsEmpty ? new Rectangle(0, 0, Width, Height) : virt;
+                    Rectangle area = virt.IsEmpty ? new Rectangle(0, 0, bounds.Width, bounds.Height) : virt;
                     double k = Math.Max((double)area.Width / img.Width, (double)area.Height / img.Height);
                     int w = (int)Math.Ceiling(img.Width * k), h = (int)Math.Ceiling(img.Height * k);
-                    int x = area.X + (area.Width - w) / 2 - Left, y = area.Y + (area.Height - h) / 2 - Top;
-                    if (virt.IsEmpty) { x = (Width - w) / 2; y = (Height - h) / 2; }
+                    int x = area.X + (area.Width - w) / 2 - bounds.Left, y = area.Y + (area.Height - h) / 2 - bounds.Top;
+                    if (virt.IsEmpty) { x = (bounds.Width - w) / 2; y = (bounds.Height - h) / 2; }
                     g.DrawImage(img, x, y, w, h);
                 }
                 // Sakin bir karartma: yazı her duvar kağıdında okunsun, ekranlar birbirine uysun
-                using (var scrim = new SolidBrush(Color.FromArgb(120, 12, 11, 15))) g.FillRectangle(scrim, 0, 0, Width, Height);
+                using (var scrim = new SolidBrush(Color.FromArgb(120, 12, 11, 15))) g.FillRectangle(scrim, 0, 0, bounds.Width, bounds.Height);
             }
             return bmp;
         }
@@ -12549,8 +12683,45 @@ static class Splash
         return Color.FromArgb(0xb6, 0x9d, 0xf8);
     }
 
+    // Oturumun açıldığı an (Windows'un tuttuğu), açılıştan bu yana geçen ms için; bilinmiyorsa -1
+    [DllImport("wtsapi32.dll", SetLastError = true)] static extern bool WTSQuerySessionInformation(IntPtr server, int session, int infoClass, out IntPtr buffer, out int bytes);
+    [DllImport("wtsapi32.dll")] static extern void WTSFreeMemory(IntPtr memory);
+    static long SinceLogonMs()
+    {
+        IntPtr buf; int bytes;
+        if (!WTSQuerySessionInformation(IntPtr.Zero, -1 /*bu oturum*/, 24 /*WTSSessionInfo*/, out buf, out bytes) || buf == IntPtr.Zero) return -1;
+        try
+        {
+            // WTSINFOW: State, SessionId, 4 sayaç (her biri 4 bayt), WinStationName[32], Domain[17], UserName[21] (WCHAR),
+            // sonra ConnectTime, DisconnectTime, LastInputTime, LogonTime, CurrentTime (LARGE_INTEGER)
+            int logonAt = 4 + 4 + 16 + (32 + 17 + 21) * 2;
+            logonAt = (logonAt + 7) / 8 * 8 + 3 * 8;
+            long logon = Marshal.ReadInt64(buf, logonAt), now = Marshal.ReadInt64(buf, logonAt + 8);
+            return logon > 0 && now >= logon ? (now - logon) / 10000 : -1;
+        }
+        finally { WTSFreeMemory(buf); }
+    }
+
+    // Masaüstü hazır mı: çekirdeğe sorulur (POST /desktop-ready: pencere yöneticisi, bütün barlar, canlı duvar kağıdı)
+    static bool CoreSaysReady()
+    {
+        try
+        {
+            var rq = (System.Net.HttpWebRequest)System.Net.WebRequest.Create("http://127.0.0.1:6131/desktop-ready");
+            rq.Method = "POST"; rq.ContentLength = 0; rq.Timeout = 1000; rq.ReadWriteTimeout = 1000; rq.Proxy = null;
+            using (var resp = rq.GetResponse())
+            using (var rd = new System.IO.StreamReader(resp.GetResponseStream()))
+                return rd.ReadToEnd().Contains("\"ready\":true");
+        }
+        catch { return false; }
+    }
+
+    sealed class ReadyState { public volatile bool Ready, Stop; }
+
     public static void Run()
     {
+        long sinceLogon = SinceLogonMs();
+        int start = Environment.TickCount;
         bool created;
         using (var m = new Mutex(true, "lunge-splash", out created))
         {
@@ -12558,30 +12729,58 @@ static class Splash
             // Güncelleme sırasında (LL_SPLASH_WAIT_RESTART=1): örtü yumuşakça belirir, önce mevcut masaüstünün kapanmasını,
             // sonra yenisinin hazır olmasını bekler (en fazla 150 sn).
             bool restartMode = Environment.GetEnvironmentVariable("LL_SPLASH_WAIT_RESTART") == "1";
+            bool restart = restartMode || Ready();   // masaüstü zaten ayaktaysa (yenileme, güncelleme) yeniden başlatılıyordur
             bool sawDown = !restartMode;
             int maxMs = restartMode ? 150000 : 30000;
-            // Masaüstü zaten ayaktaysa (yenileme, güncelleme) yeniden başlatılıyordur
-            string text = I18n.T(restartMode || Ready() ? "Sistem yeniden başlatılıyor" : "Sistem başlatılıyor");
-            var img = Wallpaper();
-            var accent = Accent();
             var covers = new List<Cover>();
-            var virt = SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
             Cover main = null;
+            // Önce örtü: koyu zemin ve çember, hemen
             foreach (var s in Screen.AllScreens)
             {
-                var f = new Cover(s.Bounds, img, virt, s.Primary ? text : null, accent);
+                var f = new Cover(s.Bounds, s.Primary);
                 if (s.Primary) main = f;
                 f.Show();
                 covers.Add(f);
             }
+            if (main != null) main.Update();   // ilk kare şimdi, mesaj döngüsünü beklemeden
+            int shownMs = Environment.TickCount - start;
             ShellTakeover.HideTaskbarForSplash(); // görev çubuğu açılıştan itibaren görünmesin
             swallow = Callback.Guard("açılış örtüsü", (Native.LowLevelKeyboardProc)((n, w, l) => n >= 0 ? (IntPtr)1 : Native.CallNextHookEx(IntPtr.Zero, n, w, l)));
             swallowHook = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, swallow, Native.GetModuleHandle(null), 0);
             if (restartMode) foreach (var f in covers) f.Opacity = 0;
+            // Açılışta ne kadar sonra geldi: bir sonraki açılışta gecikme olup olmadığı tahminle değil kayıtla bilinsin
+            if (!restart) Slider.Log("açılış örtüsü: oturum açılışından " + (sinceLogon < 0 ? "?" : sinceLogon.ToString()) + " ms sonra başladı, ilk kare +" + shownMs + " ms");
 
-            var start = Environment.TickCount;
+            // Arkada: yazının dili, vurgu rengi, duvar kağıdı (dil dosyası, ayarlar ve 4K resim ilk kareyi bekletmesin)
+            var targets = new List<KeyValuePair<Cover, Rectangle>>();
+            foreach (var f in covers) targets.Add(new KeyValuePair<Cover, Rectangle>(f, f.Bounds));
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    string text = I18n.T(restart ? "Sistem yeniden başlatılıyor" : "Sistem başlatılıyor");
+                    var accent = Accent();
+                    if (main != null) main.BeginInvoke((Action)(() => main.SetText(text, accent)));
+                    var img = Wallpaper();
+                    if (img == null) return;
+                    var virt = SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
+                    foreach (var t in targets)
+                    {
+                        var bmp = Cover.Prepare(img, t.Value, virt, t.Key.BackColor);
+                        var f = t.Key;
+                        try { f.BeginInvoke((Action)(() => f.SetBackground(bmp))); } catch { bmp.Dispose(); }
+                    }
+                    img.Dispose();
+                }
+                catch { }
+            });
+
+            // Arkada sorulur: çekirdek meşgulse çember takılmasın
+            var state = new ReadyState();
+            new Thread(() => { while (!state.Stop) { state.Ready = CoreSaysReady(); Thread.Sleep(150); } }) { IsBackground = true, Name = "splash-ready" }.Start();
+
             int readyAt = -1, leaving = -1;
-            // Tek saat: belirme, yazı ve çizgi, çekilme. Ana ekranda yalnızca çizginin alanı yeniden çizilir.
+            // Tek saat: belirme, yazı ve çember, çekilme. Ana ekranda yalnızca çemberin alanı yeniden çizilir.
             var clock = new System.Windows.Forms.Timer { Interval = 16 };
             clock.Tick += (o, e) =>
             {
@@ -12591,19 +12790,26 @@ static class Splash
                     double t3 = Math.Min(1, (now - start) / 450.0);
                     foreach (var f in covers) f.Opacity = 1 - Math.Pow(1 - t3, 3);
                 }
+                foreach (var f in covers) if (f != main && f.Blending) f.Invalidate();
                 if (main != null)
                 {
-                    main.Phase = (now - start) / 1000.0 * Math.PI * 0.9;
-                    if (leaving < 0) main.TextAlpha = Math.Min(1, (now - start) / 300.0);
+                    main.Clock = now - start;
+                    if (leaving < 0)
+                    {
+                        main.SpinnerAlpha = Math.Min(1, (now - start) / 200.0);
+                        main.TextAlpha = main.TextAt == 0 ? 0 : Math.Min(1, (now - main.TextAt) / 300.0);
+                    }
                     else
                     {
-                        // Bölüm geçişi gibi: yazı hafifçe kalkıp söner, sonra örtü çekilir
+                        // Bölüm geçişi gibi: yazı ve çember hafifçe kalkıp söner, sonra örtü çekilir
                         double tt = Math.Min(1, (now - leaving) / 220.0);
-                        main.TextAlpha = 1 - tt;
+                        main.TextAlpha = Math.Min(main.TextAlpha, 1 - tt);
+                        main.SpinnerAlpha = Math.Min(main.SpinnerAlpha, 1 - tt);
                         main.TextLift = main.Height * 0.012 * (1 - Math.Pow(1 - tt, 3));
                     }
                     var r = main.Indicator;
-                    if (r.IsEmpty || leaving >= 0 || now - start < 400) main.Invalidate(); else main.Invalidate(r);
+                    bool textFading = main.TextAt != 0 && now - main.TextAt < 350;
+                    if (r.IsEmpty || leaving >= 0 || textFading || main.Blending) main.Invalidate(); else main.Invalidate(r);
                 }
                 if (leaving >= 0)
                 {
@@ -12625,12 +12831,15 @@ static class Splash
             {
                 int now = Environment.TickCount;
                 foreach (var f in covers) Native.SetWindowPos(f.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // en üstte kal
-                if (!sawDown) { if (!Ready()) sawDown = true; }
-                else if (readyAt < 0 && Ready()) readyAt = now;
+                bool ready = state.Ready;
+                if (!sawDown) { if (!ready) sawDown = true; }
+                else if (readyAt < 0 && ready) readyAt = now;
                 // Hazır olduktan sonra pencerelerin yerleşip bar'ın çizilmesi için kısa bir süre; en fazla 30 sn bekle
                 bool done = (readyAt >= 0 && now - readyAt > 1500) || now - start > maxMs;
                 if (!done) return;
                 timer.Stop();
+                state.Stop = true;
+                if (!restart) Slider.Log("açılış örtüsü: masaüstü " + (readyAt >= 0 ? (readyAt - start) + " ms'de hazır" : "hazır olmadan süre doldu") + ", örtü kalkıyor");
                 ThreadPool.QueueUserWorkItem(_ => SaveCache());
                 leaving = Environment.TickCount;
             };
@@ -13496,6 +13705,7 @@ static class Program
         TempSweep.Start();
         TilingWatchdog.Start();
         FocusSink.Start();
+        ThreadPool.QueueUserWorkItem(_ => SplashTask.Ensure());
         FocusGuard.Start();
         PerfGuard.Start();
         SelfHeal.WatchUi(ui);
