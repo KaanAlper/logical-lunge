@@ -24,8 +24,28 @@ static class CoreUnitTests
         string root = args.Length > 0 ? args[0] : ".";
         CallbackTests(root);
         PipeWaitTests();
+        InputLatencyTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // A stalled input hook says what stopped it (garbage collection, paging), and both hooks are measured that way.
+    static void InputLatencyTests(string root)
+    {
+        Check(InputLatency.Slow(InputLatency.Start()) == null, "a hook that returned at once was reported slow");
+        var mark = InputLatency.Start();
+        GC.Collect();
+        Thread.Sleep((int)InputLatency.SlowMs + 50);
+        string slow = InputLatency.Slow(mark);
+        Check(slow != null && Regex.IsMatch(slow, @"^\d+ ms; çöp toplama 0/1/2 \+1/\+1/\+1, son ölçümden beri sayfa hatası \+\d+$"),
+            "a slow hook's line does not carry its causes: " + slow);
+
+        string text = File.ReadAllText(Path.Combine(root, "core", "lunge.cs"));
+        var hooks = Regex.Matches(text, @"IntPtr Hook\(int nCode, IntPtr wParam, IntPtr lParam\)\s*\{(?<body>[^}]*)\}");
+        Check(hooks.Count == 2, "expected the keyboard and the mouse hook, found " + hooks.Count);
+        foreach (Match h in hooks)
+            Check(h.Groups["body"].Value.Contains("InputLatency.Start()") && h.Groups["body"].Value.Contains("InputLatency.Slow(mark)"), "a hook is not measured");
+        Check(Regex.Matches(text, @"InputLatency\.PrepareThread\(\);").Count == 2, "both hook threads take the input priority");
     }
 
     // The restart's wait for its successor: ending early (no successor in time, or its launch failed) must not leave a
