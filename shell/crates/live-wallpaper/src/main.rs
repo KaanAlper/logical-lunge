@@ -15,6 +15,8 @@ mod fit;
 mod log;
 
 #[cfg(windows)]
+mod copies;
+#[cfg(windows)]
 mod cover;
 #[cfg(windows)]
 mod desktop;

@@ -60,6 +60,7 @@ use windows::{
 
 use crate::{
   config::Config,
+  copies,
   desktop::{self, Layer},
   log, monitor_power,
   render::{self, Cmd, Target, WM_APP_FIRST_FRAME, WM_APP_RENDER_DIED},
@@ -77,6 +78,9 @@ pub const WM_APP_WAITING: u32 = WM_APP + 2;
 /// The set of monitors switched off at their button changed
 /// (monitor_power's thread).
 const WM_APP_MONITOR_POWER: u32 = WM_APP + 3;
+/// A video's copy at its monitors' size is ready (copies.rs): the windows
+/// are built again on it.
+const WM_APP_COPY_MADE: u32 = WM_APP + 4;
 /// The startup cover's title (the core's Names.StartupCover).
 const STARTUP_COVER: &str = "Logical Lunge · açılış";
 /// is a fullscreen app on a monitor, are the windows still in place (and
@@ -245,6 +249,7 @@ pub fn run() {
     if GetSystemPowerStatus(&mut power).is_ok() {
       ON_BATTERY.set(power.ACLineStatus == 0);
     }
+    copies::set_on_battery(ON_BATTERY.get());
     // the core may start it while the session is locked (a reload)
     LOCKED.set(session_locked());
     SetTimer(msg, TIMER_CHECK, 500, None);
@@ -288,6 +293,7 @@ pub fn run() {
     // the core no longer finds this process; then the video stops before
     // the windows go
     MSG_HWND.store(0, Ordering::Release);
+    copies::stop();
     let _ = DestroyWindow(msg);
     let app = APP.with(|a| a.borrow_mut().take());
     if let Some(mut app) = app {
@@ -360,6 +366,7 @@ impl App {
     }
     self.missing = false;
     log::line(&format!("desktop layout: {:?}", self.layer));
+    let mut shown = Vec::new();
     for (device, id, rect) in self.monitors.clone() {
       let Some(file) = self.config.file_for(&[&device, &id]).cloned()
       else {
@@ -369,6 +376,46 @@ impl App {
         log::line(&format!("missing video {}", file.display()));
         continue;
       }
+      shown.push((device, rect, file));
+    }
+    // each video plays from its copy at the size of the monitors it fills,
+    // once there is one; the copies still missing are made meanwhile
+    let index = copies::Index::load();
+    let (mut jobs, mut keys) = (Vec::new(), Vec::new());
+    let sizes = |file: &PathBuf| -> Vec<(u32, u32)> {
+      shown
+        .iter()
+        .filter(|(_, _, f)| f == file)
+        .map(|(_, r, _)| ((r.right - r.left) as u32, (r.bottom - r.top) as u32))
+        .collect()
+    };
+    let mut plays = Vec::new();
+    for (_, _, file) in &shown {
+      let screens = sizes(file);
+      let key = copies::key(file, &screens).filter(|_| self.config.reduce_video);
+      let play = match key.as_ref().and_then(|k| index.known(k, &copies::dir())) {
+        Some(copies::Known::Copy(copy)) => copy,
+        Some(copies::Known::Original) => file.clone(),
+        None => {
+          if let Some(k) = &key {
+            if !jobs.iter().any(|j: &copies::Job| &j.key == k) {
+              jobs.push(copies::Job { key: k.clone(), source: file.clone(), screens });
+            }
+          }
+          file.clone()
+        }
+      };
+      if let Some(k) = key {
+        if !keys.contains(&k) {
+          keys.push(k);
+        }
+      }
+      plays.push(play);
+    }
+    if self.config.reduce_video {
+      copies::request(jobs, keys, copy_made);
+    }
+    for ((device, rect, _), file) in shown.into_iter().zip(plays) {
       let Some(hwnd) = create_screen(rect) else {
         continue;
       };
@@ -381,7 +428,7 @@ impl App {
       self.screens.push(Screen {
         id: self.next_id,
         rect,
-        device: device.clone(),
+        device,
         hwnd,
         file,
         covered: false,
@@ -628,6 +675,14 @@ impl App {
       self.last_paused = paused.clone();
       self.send(Cmd::Paused(paused));
     }
+  }
+}
+
+/// From the copies' thread: post, the UI thread builds the windows again.
+fn copy_made() {
+  let h = MSG_HWND.load(Ordering::Acquire);
+  if h != 0 {
+    let _ = unsafe { PostMessageW(HWND(h as _), WM_APP_COPY_MADE, WPARAM(0), LPARAM(0)) };
   }
 }
 
@@ -948,6 +1003,10 @@ unsafe extern "system" fn msg_proc(
       with_app(|a| a.update_pause());
       LRESULT(0)
     }
+    WM_APP_COPY_MADE => {
+      with_app(|a| a.rebuild());
+      LRESULT(0)
+    }
     WM_WTSSESSION_CHANGE => {
       match wp.0 as u32 {
         WTS_SESSION_LOCK => LOCKED.set(true),
@@ -976,6 +1035,7 @@ unsafe extern "system" fn msg_proc(
       } else if setting.PowerSetting == GUID_ACDC_POWER_SOURCE {
         // 0 mains, 1 battery, 2 short-term (UPS)
         ON_BATTERY.set(setting.Data[0] != 0);
+        copies::set_on_battery(ON_BATTERY.get());
       }
       with_app(|a| a.update_pause());
       LRESULT(1)

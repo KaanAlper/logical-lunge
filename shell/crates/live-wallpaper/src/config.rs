@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! {"wallpapers":[{"monitor":"\\\\.\\DISPLAY1","file":"C:\\...\\a.mp4"}],
-//!  "pauseFullscreen":true,"pauseOnBattery":true,"pauseIdleMinutes":10}
+//!  "pauseFullscreen":true,"pauseOnBattery":true,"pauseIdleMinutes":10,
+//!  "reduceVideo":true}
 //! ```
 //!
 //! `monitor` is a monitor's GDI device name or its device interface path
@@ -29,6 +30,9 @@ pub struct Config {
   /// no input for this many minutes pauses every wallpaper on its frame
   /// (nobody is watching); 0: never
   pub pause_idle_minutes: u32,
+  /// a video much bigger than its monitors plays from a copy at their size
+  /// (copies.rs)
+  pub reduce_video: bool,
 }
 
 impl Default for Config {
@@ -38,6 +42,7 @@ impl Default for Config {
       pause_fullscreen: true,
       pause_on_battery: true,
       pause_idle_minutes: 10,
+      reduce_video: true,
     }
   }
 }
@@ -99,6 +104,9 @@ impl Config {
     }
     if let Some(m) = v["pauseIdleMinutes"].as_u64() {
       c.pause_idle_minutes = m.min(24 * 60) as u32;
+    }
+    if let Some(b) = v["reduceVideo"].as_bool() {
+      c.reduce_video = b;
     }
     Some(c)
   }
