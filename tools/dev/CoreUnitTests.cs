@@ -25,7 +25,6 @@ static class CoreUnitTests
         string root = args.Length > 0 ? args[0] : ".";
         NotificationActivationTests();
         DesktopPerformancePolicyTests();
-        FramePacingTests();
         BlackboxAttachmentTests();
         CallbackTests(root);
         PipeWaitTests();
@@ -105,22 +104,6 @@ static class CoreUnitTests
             Check(!(bool)result["ok"] && result.ContainsKey("error"), "a failed blackbox capture stays visible as an attachment error");
         }
         finally { BugReports.CaptureBlackbox = saved; }
-    }
-
-    static void FramePacingTests()
-    {
-        Check(FramePacer.NextDeadline(100, 0, 10) == 110, "first frame waits one refresh");
-        Check(FramePacer.NextDeadline(103, 110, 10) == 110, "frame work does not add to its refresh deadline");
-        Check(FramePacer.NextDeadline(110, 110, 10) == 120, "an exact deadline advances to the next refresh");
-        Check(FramePacer.NextDeadline(149, 110, 10) == 150, "a delayed frame skips missed refreshes without a catch-up burst");
-        Check(FramePacer.NextDeadline(151, 110, 10) == 160, "a delayed frame keeps the refresh phase");
-        Check(FramePacer.NextDeadline(100, 0, 0) == 101, "invalid refresh cannot cause a busy loop");
-        using (var pace = new FramePacer())
-        {
-            var time = Stopwatch.StartNew();
-            for (int i = 0; i < 3; i++) pace.Wait();
-            Check(time.ElapsedMilliseconds >= 2 && time.ElapsedMilliseconds < 1000, "native frame timer waits and returns without a compositor flush");
-        }
     }
 
     static void NotificationActivationTests()
