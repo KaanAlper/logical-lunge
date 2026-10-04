@@ -48,13 +48,19 @@ static class CoreUnitTests
         string name = "lunge-unit-" + Guid.NewGuid().ToString("N");
         using (var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
         using (var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous))
+        using (var said = new ManualResetEvent(false))
         {
             Func<bool> launch = () =>
             {
-                ThreadPool.QueueUserWorkItem(_ => { client.Connect(2000); client.WriteByte((byte)'R'); client.Flush(); });
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try { client.Connect(2000); client.WriteByte((byte)'R'); client.Flush(); } catch (Exception) { }
+                    said.Set();
+                });
                 return true;
             };
             Check(DesktopRestart.WaitCandidate(server, launch, () => true, 3000), "a successor that connected and said ready was refused");
+            said.WaitOne(3000);
         }
     }
 
