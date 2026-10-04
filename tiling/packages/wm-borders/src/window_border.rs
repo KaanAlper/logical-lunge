@@ -486,7 +486,8 @@ impl WindowBorder {
                     .animations
                     .update_fade_progress(self.window_state)
             }
-            true => {} // We will rely on the animations callback to update color
+            // The animations callback updates the color; its timer stops when idle, so it starts here
+            true => self.drawer.set_anims_timer_if_needed(self.border_window.0),
         }
     }
 

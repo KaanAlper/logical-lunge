@@ -205,6 +205,14 @@ impl Animations {
         }
     }
 
+    /// A spiral runs as long as its border shows; a fade ends at its colors.
+    pub fn continuous(&self) -> bool {
+        self.active
+            .iter()
+            .chain(self.inactive.iter())
+            .any(|a| matches!(a.anim_type, AnimType::Spiral | AnimType::ReverseSpiral))
+    }
+
     pub fn destroy_timer(&mut self) {
         self.timer = None;
     }
