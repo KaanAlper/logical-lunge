@@ -1,5 +1,26 @@
 //! Decisions kept separate from Win32 calls so redraws can be tested offline.
 use wm_common::WindowState;
+use wm_platform::Rect;
+
+/// Chromium's background-fullscreen workaround uses the physical monitor
+/// bounds, with exactly its last row removed (not the working area).
+pub(crate) fn is_background_fullscreen_frame(frame: &Rect, monitor: &Rect) -> bool {
+  monitor.width() > 0
+    && monitor.height() > 1
+    && frame.left == monitor.left
+    && frame.top == monitor.top
+    && frame.right == monitor.right
+    && frame.bottom == monitor.bottom - 1
+}
+
+pub(super) fn should_notify_background_fullscreen(
+  observed: Option<&Rect>,
+  live: Option<&Rect>,
+  synchronous: bool,
+  foreground: bool,
+) -> bool {
+  synchronous && !foreground && observed.is_some() && observed == live
+}
 
 pub(super) fn synchronous_tile_correction(
   tiled: bool,
@@ -74,6 +95,34 @@ mod tests {
       maximized,
       ..Default::default()
     })
+  }
+
+  #[test]
+  fn background_fullscreen_requires_exact_monitor_minus_one_pixel() {
+    use wm_platform::Rect;
+    for monitor in [Rect::from_xy(0, 0, 1920, 1080), Rect::from_xy(-2560, -200, 2560, 1440)] {
+      let background = Rect::from_xy(monitor.x(), monitor.y(), monitor.width(), monitor.height() - 1);
+      assert!(is_background_fullscreen_frame(&background, &monitor));
+      assert!(!is_background_fullscreen_frame(&monitor, &monitor));
+      assert!(!is_background_fullscreen_frame(&Rect::from_xy(monitor.x(), monitor.y() + 1, monitor.width(), monitor.height() - 1), &monitor));
+      assert!(!is_background_fullscreen_frame(&Rect::from_xy(monitor.x(), monitor.y(), monitor.width() - 1, monitor.height() - 1), &monitor));
+      assert!(!is_background_fullscreen_frame(&Rect::from_xy(964, 45, 951, 1030), &monitor));
+    }
+  }
+
+  #[test]
+  fn background_frame_notification_requires_current_observation_and_sync_move() {
+    use wm_platform::Rect;
+    let background = Rect::from_xy(0, 0, 1920, 1079);
+    let active = Rect::from_xy(0, 0, 1920, 1080);
+    let tile = Rect::from_xy(964, 45, 951, 1030);
+    assert!(should_notify_background_fullscreen(Some(&background), Some(&background), true, false));
+    assert!(!should_notify_background_fullscreen(None, Some(&background), true, false));
+    assert!(!should_notify_background_fullscreen(Some(&background), None, true, false));
+    assert!(!should_notify_background_fullscreen(Some(&background), Some(&active), true, false));
+    assert!(!should_notify_background_fullscreen(Some(&background), Some(&tile), true, false));
+    assert!(!should_notify_background_fullscreen(Some(&background), Some(&background), false, false));
+    assert!(!should_notify_background_fullscreen(Some(&background), Some(&background), true, true));
   }
 
   #[test]

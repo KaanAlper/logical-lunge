@@ -247,6 +247,25 @@ impl NativeWindow {
     Ok(())
   }
 
+  /// Recalculate a corrected background-fullscreen client's frame.
+  pub(crate) fn notify_background_frame_changed(&self, expected_frame: &Rect) -> crate::Result<bool> {
+    // An active Chromium fullscreen window would interpret FRAMECHANGED
+    // as a request to cover the monitor. Recheck after the tile move.
+    if unsafe { GetForegroundWindow() } == self.hwnd()
+      || self.frame_with_shadows()? != *expected_frame
+    {
+      return Ok(false);
+    }
+    unsafe {
+      SetWindowPos(
+        self.hwnd(), HWND::default(), 0, 0, 0, 0,
+        SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE
+          | SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS,
+      )
+    }?;
+    Ok(true)
+  }
+
   /// Implements [`NativeWindow::resize`].
   pub(crate) fn resize(
     &self,
@@ -1176,6 +1195,74 @@ fn overlay_over(frame: &RECT, rect: &RECT, ex_style: u32) -> bool {
     && near(rect.top, frame.top)
     && near(rect.right, frame.right)
     && near(rect.bottom, frame.bottom)
+}
+
+#[cfg(test)]
+mod background_frame_tests {
+  use super::*;
+  use std::cell::RefCell;
+  use windows::Win32::{
+    Foundation::{LRESULT, WPARAM},
+    UI::WindowsAndMessaging::{
+      CreateWindowExW, DefWindowProcW, DestroyWindow, RegisterClassW,
+      UnregisterClassW, WM_NCCALCSIZE, WM_WINDOWPOSCHANGING, WNDCLASSW,
+      WS_EX_NOACTIVATE, WS_POPUP,
+    },
+  };
+
+  thread_local! {
+    static MESSAGES: RefCell<Vec<(u32, Rect)>> = const { RefCell::new(Vec::new()) };
+  }
+
+  unsafe extern "system" fn procedure(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    if msg == WM_WINDOWPOSCHANGING || msg == WM_NCCALCSIZE {
+      if let Ok(frame) = NativeWindow::new(hwnd.0).frame_with_shadows() {
+        MESSAGES.with(|messages| messages.borrow_mut().push((msg, frame)));
+      }
+    }
+    DefWindowProcW(hwnd, msg, w, l)
+  }
+
+  #[test]
+  fn background_frame_delivers_size_notification_after_correction_without_moving() {
+    // Hidden, non-activating fixture; no user window or focus is changed.
+    let class = WNDCLASSW {
+      lpszClassName: w!("LLBackgroundFrameTest"),
+      lpfnWndProc: Some(procedure),
+      ..Default::default()
+    };
+    assert_ne!(unsafe { RegisterClassW(&class) }, 0);
+    let hwnd = unsafe { CreateWindowExW(WS_EX_NOACTIVATE, class.lpszClassName,
+      w!(""), WS_POPUP, 0, 0, 1920, 1079, None, None, class.hInstance, None) };
+    assert_ne!(hwnd.0, 0);
+    struct Cleanup(HWND, WNDCLASSW);
+    impl Drop for Cleanup {
+      fn drop(&mut self) {
+        unsafe {
+          let _ = DestroyWindow(self.0);
+          let _ = UnregisterClassW(self.1.lpszClassName, self.1.hInstance);
+        }
+      }
+    }
+    let _cleanup = Cleanup(hwnd, class);
+    let window = NativeWindow::new(hwnd.0);
+    let tile = Rect::from_xy(964, 45, 951, 1030);
+    window.set_window_pos(&WindowZOrder::Normal, &tile,
+      SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSENDCHANGING | SWP_FRAMECHANGED).unwrap();
+    MESSAGES.with(|messages| messages.borrow_mut().clear());
+    assert!(!window.notify_background_frame_changed(&Rect::from_xy(0, 0, 1920, 1079)).unwrap());
+    MESSAGES.with(|messages| assert!(messages.borrow().is_empty()));
+    assert!(window.notify_background_frame_changed(&tile).unwrap());
+    assert_eq!(window.frame_with_shadows().unwrap(), tile);
+    assert_ne!(unsafe { GetForegroundWindow() }, hwnd);
+    MESSAGES.with(|messages| {
+      let messages = messages.borrow();
+      let changing = messages.iter().position(|(msg, _)| *msg == WM_WINDOWPOSCHANGING).expect("WINDOWPOSCHANGING delivered");
+      let calc = messages.iter().position(|(msg, _)| *msg == WM_NCCALCSIZE).expect("client frame recalculated");
+      assert!(changing < calc);
+      assert!(messages.iter().all(|(_, frame)| *frame == tile));
+    });
+  }
 }
 
 #[cfg(test)]

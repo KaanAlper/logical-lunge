@@ -477,27 +477,50 @@ fn redraw_containers(
     );
 
     #[cfg(target_os = "windows")]
-    let sync_tiled_fullscreen = {
+    let (sync_tiled_fullscreen, notify_background_frame) = {
       let tiled = window.state() == WindowState::Tiling;
-      let marked = state.fake_fullscreen.contains(&window.native().hwnd().0);
+      let handle = window.native().hwnd().0;
+      let marked = state.fake_fullscreen.contains(&handle);
+      // Consume once, even if hidden, paused, dragged, or superseded by a
+      // newer native position. A later layout must not reuse this signal.
+      let observed = state.background_fullscreen_frames.remove(&handle);
+      let live = observed.as_ref().and_then(|_| window.native().frame_with_shadows().ok());
+      let background_escape = observed.is_some() && observed == live;
       // Cached geometry can lag an asynchronous move. Check the live frame
       // before choosing whether a corrective move may wait on the app.
       let escaped = if tiled && marked && is_visible {
         let bounds = workspace.max_workspace_rect()?;
-        window.native().frame().map_or(true, |frame| {
+        background_escape || window.native().frame().map_or(true, |frame| {
           frame.apply_delta(&window.border_delta().inverse(), None)
             .inset(1).contains_rect(&bounds)
         })
       } else {
         false
       };
-      window_sync_policy::synchronous_tile_correction(tiled, marked, escaped, is_visible)
+      let synchronous = window_sync_policy::synchronous_tile_correction(tiled, marked, escaped, is_visible);
+      let foreground = state.dispatcher.focused_window()
+        .map_or(true, |focused| focused.id() == window.native().id());
+      let notify = !state.is_paused && window.active_drag().is_none()
+        && window_sync_policy::should_notify_background_fullscreen(
+          observed.as_ref(), live.as_ref(), synchronous, foreground,
+        );
+      (synchronous, notify)
     };
     #[cfg(not(target_os = "windows"))]
     let sync_tiled_fullscreen = false;
-    if let Err(err) =
-      reposition_window(window, *hide_corner, &z_order, is_visible, sync_tiled_fullscreen, config)
-    {
+    let reposition_result = reposition_window(window, *hide_corner, &z_order, is_visible, sync_tiled_fullscreen, config);
+    #[cfg(target_os = "windows")]
+    if reposition_result.is_ok() && notify_background_frame {
+      // The NOSENDCHANGING correction above must finish first. Only then
+      // let the background app recalculate its client area without sizing.
+      let tile = window.to_rect()?.apply_delta(&window.total_border_delta()?, None);
+      match window.native().notify_background_frame_changed(&tile) {
+        Ok(true) => tracing::debug!("Notified background fullscreen client size: {window}"),
+        Ok(false) => {},
+        Err(err) => tracing::warn!("Failed to notify background fullscreen frame: {}", err),
+      }
+    }
+    if let Err(err) = reposition_result {
       tracing::warn!("Failed to set window position: {}", err);
     }
 

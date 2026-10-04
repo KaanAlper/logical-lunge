@@ -57,6 +57,10 @@ pub struct WmState {
   /// Native handles of apps displaying fullscreen content inside their tile.
   pub fake_fullscreen: std::collections::HashSet<isize>,
 
+  /// One-shot native monitor-minus-one observations awaiting tile correction.
+  #[cfg(target_os = "windows")]
+  pub background_fullscreen_frames: std::collections::HashMap<isize, Rect>,
+
   /// Last successful shell fullscreen mark, independent of toggle history.
   #[cfg(target_os = "windows")]
   pub fullscreen_marks: std::collections::HashMap<isize, bool>,
@@ -113,6 +117,8 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       fake_fullscreen: std::collections::HashSet::new(),
+      #[cfg(target_os = "windows")]
+      background_fullscreen_frames: std::collections::HashMap::new(),
       #[cfg(target_os = "windows")]
       fullscreen_marks: std::collections::HashMap::new(),
       hidden_companions: std::collections::HashMap::new(),
