@@ -443,6 +443,7 @@ impl Ui {
   /// tool runs only when the file is stale, to wake the service, at most
   /// every 30 s.
   fn read_temps(&mut self) {
+    want_temps();
     const FILE: &str = r"C:\Users\Public\lunge-temps.json";
     let fresh = std::fs::metadata(FILE)
       .and_then(|m| m.modified())
@@ -982,5 +983,13 @@ impl Ui {
     let x = cx - ((size.0 / 2.0 + PAD) * scale).round() as i32;
     let y = top - (PAD * scale).round() as i32;
     let _ = win.show_at(gfx, x, y);
+  }
+}
+
+/// Tells the temperature service someone is reading: it reads the sensors
+/// only for ten seconds after this (no sensor is touched while nobody looks).
+pub(super) fn want_temps() {
+  if let Ok(f) = std::fs::OpenOptions::new().create(true).write(true).open(r"C:\Users\Public\lunge-temps.want") {
+    let _ = f.set_modified(std::time::SystemTime::now());
   }
 }
