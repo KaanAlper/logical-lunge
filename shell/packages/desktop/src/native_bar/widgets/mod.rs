@@ -643,6 +643,7 @@ impl Ui {
   /// The temperature service's file (fresh: written every 2 s); when it is
   /// stale the tool runs once to wake the service, at most every minute.
   fn widgets_read_temps(&mut self) {
+    super::pops::want_temps();
     let fresh = std::fs::metadata(TEMPS_FILE).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|a| a.as_secs() < 15);
     if fresh {
       if let Some(t) = std::fs::read_to_string(TEMPS_FILE).ok().and_then(|s| Temps::parse(&s)) {
