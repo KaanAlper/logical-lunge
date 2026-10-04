@@ -35,6 +35,7 @@ static class CoreUnitTests
         TempsFileTests();
         RounderRegionTests();
         WinIconTests();
+        UninstallerTests(root);
         StartupCoverTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
@@ -317,6 +318,92 @@ static class CoreUnitTests
             SetAppId(one.Handle, null);
             SetAppId(two.Handle, null);
         }
+    }
+
+    // The uninstaller: which extras it offers comes from the install record, its steps from uninstall.ps1's steps.txt,
+    // its pages are drawn (for a look), and its window repair touches only what Logical Lunge left on other windows.
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateWindowEx(int ex, string cls, string title, uint style, int x, int y, int w, int h, IntPtr parent, IntPtr menu, IntPtr inst, IntPtr param);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr h);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] static extern IntPtr CreateEllipticRgn(int l, int t, int r, int b);
+
+    static void UninstallerTests(string root)
+    {
+        var extras = Uninstaller.InstalledExtras(@"{""installed"":[""path:C:\\Program Files\\LogicalLunge\\tools\\bin"",""terminal"",""runtime-shell-settings"",""everything"",""terminal""]}");
+        Check(string.Join(",", extras.ToArray()) == "terminal,everything", "extras from the install record: " + string.Join(",", extras.ToArray()));
+        Check(Uninstaller.InstalledExtras("not json").Count == 0 && Uninstaller.InstalledExtras(null).Count == 0, "an unreadable install record offers no extras");
+        string result, message;
+        var steps = Uninstaller.ReadSteps("\uFEFFshell run\r\ntaskbar run\ntaskbar done\nmessage some files are in use\nresult done\n", out result, out message);
+        Check(steps["taskbar"] == "done" && steps["shell"] == "run" && result == "done" && message == "some files are in use", "steps.txt: the last state of each step, the result and its message");
+
+        string shots = Path.Combine(root, @"build\tests\uninstall-shots");
+        UninstallCard.Shots(shots);
+        foreach (var name in new[] { "1-confirm", "2-confirm-keep", "3-confirm-no-extras", "4-progress", "5-done" })
+            Check(File.Exists(Path.Combine(shots, name + ".png")), "the uninstaller's " + name + " page was not drawn");
+
+        string error = null;
+        bool llRemoved = false, appKept = false, slotRemoved = false, moved = false, onScreenKept = false, revealed = false;
+        var thread = new Thread(() =>
+        {
+            IntPtr desk = CreateDesktop("LLRepairTest" + Guid.NewGuid().ToString("N"), IntPtr.Zero, IntPtr.Zero, 0, 0x10000000, IntPtr.Zero);
+            if (desk == IntPtr.Zero || !SetThreadDesktop(desk)) { error = "no test desktop"; return; }
+            try
+            {
+                using (var a = new RegionProbe { StartPosition = System.Windows.Forms.FormStartPosition.Manual, Bounds = new System.Drawing.Rectangle(100, 100, 500, 400) })
+                using (var b = new RegionProbe { StartPosition = System.Windows.Forms.FormStartPosition.Manual, Bounds = new System.Drawing.Rectangle(150, 150, 500, 400) })
+                using (var c = new RegionProbe { StartPosition = System.Windows.Forms.FormStartPosition.Manual, Bounds = new System.Drawing.Rectangle(200, 200, 500, 400) })
+                {
+                    a.Show(); b.Show(); c.Show();
+                    System.Windows.Forms.Application.DoEvents();
+                    Native.RECT box;
+                    // the rounder's own region (set by the rounder) on a window it no longer tiles: goes
+                    typeof(Rounder).GetMethod("Apply", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).Invoke(new Rounder(), new object[] { a.Handle });
+                    bool rounded = Native.GetWindowRgnBox(a.Handle, out box) > 1;
+                    WindowRepair.Region(a.Handle, false);
+                    llRemoved = rounded && Native.GetWindowRgnBox(a.Handle, out box) == 0;
+                    // an app's own shape: stays
+                    Native.SetWindowRgn(b.Handle, CreateEllipticRgn(0, 0, 500, 400), true);
+                    WindowRepair.Region(b.Handle, false);
+                    appKept = Native.GetWindowRgnBox(b.Handle, out box) > 1;
+                    // a tiled window (slot mark) with any region: goes
+                    Native.SetWindowRgn(c.Handle, Native.CreateRectRgn(0, 0, 250, 200), true);
+                    SetProp(c.Handle, "LungeSlotLT", new IntPtr(0x4000000040000000));
+                    WindowRepair.Region(c.Handle, true);
+                    slotRemoved = Native.GetWindowRgnBox(c.Handle, out box) == 0;
+                    // a tiled window left off every screen comes into view; one already on a screen stays
+                    onScreenKept = !WindowRepair.IntoView(c.Handle);
+                    Native.SetWindowPos(c.Handle, IntPtr.Zero, -20000, -20000, 500, 400, 0x0004 | 0x0010);
+                    moved = WindowRepair.IntoView(c.Handle);
+                    Native.RECT r; Native.GetWindowRect(c.Handle, out r);
+                    moved = moved && r.Left > -20000 && System.Windows.Forms.Screen.FromRectangle(System.Drawing.Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom)).WorkingArea.Contains(r.Left + 10, r.Top + 10);
+                    a.Close(); b.Close(); c.Close();
+                }
+                // a dialog box left fully transparent while it was being caught: shown again
+                IntPtr dlg = CreateWindowEx(0x00080000 /*LAYERED*/, "#32770", "test", 0x90000000 /*POPUP|VISIBLE*/, 100, 100, 300, 200, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+                if (dlg != IntPtr.Zero)
+                {
+                    Native.SetLayeredWindowAttributes(dlg, 0, 0, 0x2);
+                    WindowRepair.Reveal(dlg);
+                    uint key, flags; byte alpha;
+                    revealed = GetLayeredWindowAttributes(dlg, out key, out alpha, out flags) && alpha == 255;
+                    DestroyWindow(dlg);
+                }
+                else error = "no dialog window: " + System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            }
+            catch (Exception ex) { error = ex.GetBaseException().Message; }
+            finally { CloseDesktop(desk); }
+        });
+        thread.SetApartmentState(ApartmentState.MTA);
+        thread.Start();
+        Check(thread.Join(20000), "the window repair test did not finish");
+        Check(error == null, "the window repair test failed: " + error);
+        Check(llRemoved, "the rounder's region on a window was not removed");
+        Check(appKept, "an app's own window region was removed");
+        Check(slotRemoved, "a tiled window's region was not removed");
+        Check(onScreenKept, "a tiled window on a screen was moved");
+        Check(moved, "a tiled window off every screen was not brought into view");
+        Check(revealed, "a transparent dialog box was not shown again");
     }
 
     // The startup cover: its first frame comes before anything slow, it leaves only when the core says every part is

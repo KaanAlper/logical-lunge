@@ -87,6 +87,39 @@ try {
     Assert (-not (Test-Path -LiteralPath $safe)) 'Verified product tree was not removed'
     Assert (Test-Path -LiteralPath $foreign) 'Safe product deletion touched a sibling directory'
 
+    # Kept extras: WezTerm and its tools leave the install folder for the user's programs before the folder goes
+    $fakeApp = Join-Path $sandbox 'kept-app'
+    $fakeLocal = Join-Path $sandbox 'kept-local'
+    New-Item -ItemType Directory -Path (Join-Path $fakeApp 'tools\wezterm'), (Join-Path $fakeApp 'tools\bin'), $fakeLocal -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fakeApp 'tools\wezterm\wezterm-gui.exe'), 'wezterm')
+    [IO.File]::WriteAllText((Join-Path $fakeApp 'tools\bin\starship.exe'), 'starship')
+    $kept = Copy-LLKeptTerminal $fakeApp $fakeLocal
+    Assert ($kept -eq (Join-Path $fakeLocal 'Programs\WezTerm')) 'Kept terminal went to an unexpected folder'
+    Assert ([IO.File]::ReadAllText((Join-Path $kept 'wezterm-gui.exe')) -eq 'wezterm') 'Kept WezTerm was not copied'
+    Assert ([IO.File]::ReadAllText((Join-Path $kept 'bin\starship.exe')) -eq 'starship') 'Kept terminal tools were not copied'
+    Assert (Test-Path -LiteralPath (Join-Path $fakeApp 'tools\wezterm\wezterm-gui.exe')) 'Keeping the terminal moved files an open terminal holds'
+    Assert ($null -eq (Copy-LLKeptTerminal (Join-Path $sandbox 'no-app') $fakeLocal)) 'A missing terminal was reported as kept'
+
+    # The logs stay when the data goes
+    $fakeData = Join-Path $fakeLocal 'LogicalLunge'
+    New-Item -ItemType Directory -Path (Join-Path $fakeData 'logs'), (Join-Path $fakeData 'state'), (Join-Path $fakeData 'clipboard') -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fakeData 'logs\core.log'), 'what happened')
+    [IO.File]::WriteAllText((Join-Path $fakeData 'state\prefs.json'), '{}')
+    [IO.File]::WriteAllText((Join-Path $fakeData 'notes.json'), '[]')
+    Remove-LLDataKeepLogs $fakeData $fakeLocal
+    Assert ([IO.File]::ReadAllText((Join-Path $fakeData 'logs\core.log')) -eq 'what happened') 'Removing the data deleted the logs'
+    Assert (@(Get-ChildItem -LiteralPath $fakeData -Force).Count -eq 1) 'Removing the data left more than the logs'
+    $refused = $false
+    try { Remove-LLDataKeepLogs $fakeData (Join-Path $sandbox 'elsewhere') } catch { $refused = $true }
+    Assert $refused 'Data removal outside its root was allowed'
+
+    # uninstall.ps1 never deletes the logs folder itself, and reports its steps to the window
+    $uninstallText = [IO.File]::ReadAllText((Join-Path $root 'uninstall.ps1'))
+    Assert ($uninstallText -notmatch "in\s+'logs'") 'uninstall.ps1 deletes the logs'
+    foreach ($step in 'uac', 'taskbar', 'icons', 'settings', 'tasks', 'extras', 'files', 'result') {
+        Assert ($uninstallText -match "Step '$step'") "uninstall.ps1 does not report its $step step"
+    }
+
     $nativeRefresh = ${function:Invoke-LLShellRefresh}
 
     # Every system boundary below is a fake. File operations continue to use this test's temp directory.
