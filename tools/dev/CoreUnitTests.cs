@@ -28,8 +28,21 @@ static class CoreUnitTests
         InputLatencyTests(root);
         FocusSinkTests(root);
         LogWriterTests();
+        MemoryLogTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // The black box writes every part's memory once an hour, also during fullscreen games (a leak shows as a growing figure).
+    static void MemoryLogTests(string root)
+    {
+        string text = File.ReadAllText(Path.Combine(root, "core", "lunge.cs"));
+        Check(text.Contains("const int MemoryEveryMs = 3600000;"), "the memory line is not hourly");
+        int memory = text.IndexOf("Slider.Log(\"bellek (saatlik): \" + Parts());", StringComparison.Ordinal);
+        int quiet = text.IndexOf("if (Quiet()) { slowProbes = 0; continue; }", StringComparison.Ordinal);
+        Check(memory > 0 && quiet > memory, "the memory line is skipped while a fullscreen game runs");
+        var parts = typeof(PerfGuard).GetMethod("Parts", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Check(parts != null && Regex.IsMatch((string)parts.Invoke(null, null) ?? "", @"dwm#\d+ özel \d+ MB"), "the parts line does not list the processes' memory");
     }
 
     // Logging never makes the caller wait for the disk; every line still arrives, once and in order.
