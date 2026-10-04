@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! {"wallpapers":[{"monitor":"\\\\.\\DISPLAY1","file":"C:\\...\\a.mp4"}],
-//!  "pauseFullscreen":true,"pauseOnBattery":true}
+//!  "pauseFullscreen":true,"pauseOnBattery":true,"pauseIdleMinutes":10}
 //! ```
 //!
 //! `monitor` is a monitor's GDI device name or its device interface path
@@ -21,10 +21,14 @@ pub struct Entry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
   pub wallpapers: Vec<Entry>,
-  /// a fullscreen app on a monitor pauses its wallpaper
+  /// a monitor whose wallpaper can't be seen (a fullscreen app, or windows
+  /// covering it all but the gaps) pauses its video
   pub pause_fullscreen: bool,
   /// running on battery pauses every wallpaper
   pub pause_on_battery: bool,
+  /// no input for this many minutes pauses every wallpaper on its frame
+  /// (nobody is watching); 0: never
+  pub pause_idle_minutes: u32,
 }
 
 impl Default for Config {
@@ -33,6 +37,7 @@ impl Default for Config {
       wallpapers: Vec::new(),
       pause_fullscreen: true,
       pause_on_battery: true,
+      pause_idle_minutes: 10,
     }
   }
 }
@@ -92,6 +97,9 @@ impl Config {
     if let Some(b) = v["pauseOnBattery"].as_bool() {
       c.pause_on_battery = b;
     }
+    if let Some(m) = v["pauseIdleMinutes"].as_u64() {
+      c.pause_idle_minutes = m.min(24 * 60) as u32;
+    }
     Some(c)
   }
 
@@ -145,6 +153,10 @@ mod tests {
       Some(&PathBuf::from(r"C:\b.mp4"))
     );
     assert!(c.pause_fullscreen && !c.pause_on_battery);
+    assert_eq!(c.pause_idle_minutes, 10, "unset: the default");
+    for (text, minutes) in [(r#"{"pauseIdleMinutes":0}"#, 0), (r#"{"pauseIdleMinutes":3}"#, 3), (r#"{"pauseIdleMinutes":-1}"#, 10), (r#"{"pauseIdleMinutes":"5"}"#, 10), (r#"{"pauseIdleMinutes":999999}"#, 24 * 60)] {
+      assert_eq!(Config::parse(text).unwrap().pause_idle_minutes, minutes, "{text}");
+    }
   }
 
   #[test]
