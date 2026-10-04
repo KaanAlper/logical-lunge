@@ -1969,6 +1969,9 @@ class Slider
             }));
         }
     }
+    // Satır çağıran iş parçacığında yalnızca kuyruğa girer; diske tek bir arka plan yazıcı toplu yazar. Eskiden her satır
+    // çağıranın iş parçacığında (animasyon, kanca işleri) dosyayı açıp yazıp kapatıyordu: yavaş disk ya da tarayan bir
+    // antivirüs kare kaçırtıyordu.
     public static void Log(string s)
     {
         try
@@ -1982,43 +1985,13 @@ class Slider
                 if (repeats > 0) repeated = "  (önceki satır " + repeats + " kez daha)";
                 lastLine = s; lastLineAt = logClock.ElapsedMilliseconds; repeats = 0;
             }
-            if (repeated != null) s = repeated + Environment.NewLine + DateTime.Now.ToString("HH:mm:ss.fff ") + s;
-            string path = System.IO.Path.Combine(Paths.LogsDir, "core.log");
-            // 4 MB'yi geçince eskisi .old olur (animasyon başına satır yazılıyor; sınırsız büyümesin). Bir okuyucu dosyayı
-            // silinemez tutuyorsa taşınamaz: o zaman 8 MB'de baştan başlar
-            var fi = new System.IO.FileInfo(path);
-            if (fi.Exists && fi.Length > 4 * 1024 * 1024)
-            {
-                try { System.IO.File.Delete(path + ".old"); System.IO.File.Move(path, path + ".old"); }
-                catch
-                {
-                    if (fi.Length > 8 * 1024 * 1024)
-                        try { using (new System.IO.FileStream(path, System.IO.FileMode.Truncate, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete)) { } } catch { }
-                }
-            }
-            // Aynı anda birden çok thread / süreç yazabiliyor (ör. iki HTTP isteği): paylaşımlı aç, kısa yeniden dene;
-            // yoksa satırlar sessizce kayboluyordu
-            // Satırlarda yalnızca saat var: gün değişince (ve her açılışta) bir tarih satırı; dün ile bugün karışmasın
-            var nowT = DateTime.Now;
-            string day = nowT.Date != logDay ? "---- " + nowT.ToString("yyyy-MM-dd") + " ----" + Environment.NewLine : "";
-            logDay = nowT.Date;
-            var bytes = Encoding.UTF8.GetBytes(day + nowT.ToString("HH:mm:ss.fff ") + s + Environment.NewLine);
-            lock (logLock)
-                for (int i = 0; i < 5; i++)
-                {
-                    try
-                    {
-                        using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Append, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
-                            fs.Write(bytes, 0, bytes.Length);
-                        break;
-                    }
-                    catch (System.IO.IOException) { Thread.Sleep(3); }
-                }
+            var now = DateTime.Now;
+            if (repeated != null) s = repeated + Environment.NewLine + now.ToString("HH:mm:ss.fff ") + s;
+            LogWriter.Add(now, s);
         }
         catch { }
     }
     static readonly object logLock = new object();
-    static DateTime logDay = DateTime.MinValue;
     static readonly Stopwatch logClock = Stopwatch.StartNew();
     static string lastLine;
     static long lastLineAt;
@@ -11324,6 +11297,111 @@ static class WarmTerminal
 // Sistem genelindeki olay kancalarının (WinEvent) gecikmesi: olayın üretildiği an (dwmsEventTime) ile bize ulaştığı an
 // arası. Bir uygulama olay seli ürettiğinde (ör. Görev Yöneticisi'nin listesi yeniden sıralanırken) kuyruk birikirse
 // kaydedilir: bir dahaki kasmanın kaynağı tahminle değil kayıtla bulunsun. Ucuz: çağrı başına bir karşılaştırma.
+// core.log'u yazan tek iş parçacığı: satırlar kuyruktan toplu yazılır. Birden çok süreç (çekirdek, yardımcı kipleri) aynı
+// dosyaya yazdığı için dosya her toplu yazımda ekleme kipinde açılır. 4 MB'yi geçince eskisi .old olur; taşınamazsa (bir
+// okuyucu tutuyorsa) 8 MB'de baştan başlar. Disk takılırsa kuyruk sınırlı kalır, atılanların sayısı yazılır.
+static class LogWriter
+{
+    public static string Path = System.IO.Path.Combine(Paths.LogsDir, "core.log");   // testler değiştirir
+    public static long RotateBytes = 4L * 1024 * 1024;
+    const int MaxQueued = 20000;
+    static readonly Queue<KeyValuePair<DateTime, string>> queue = new Queue<KeyValuePair<DateTime, string>>();
+    static readonly object gate = new object();
+    static int dropped, writing;
+    static DateTime day = DateTime.MinValue;
+    static Thread thread;
+
+    public static void Add(DateTime at, string line)
+    {
+        lock (gate)
+        {
+            if (queue.Count >= MaxQueued) { queue.Dequeue(); dropped++; }
+            queue.Enqueue(new KeyValuePair<DateTime, string>(at, line));
+            if (thread == null)
+            {
+                thread = new Thread(Run) { IsBackground = true, Name = "core-log", Priority = ThreadPriority.BelowNormal };
+                thread.Start();
+                AppDomain.CurrentDomain.ProcessExit += (s, e) => Flush(2000);
+            }
+            Monitor.PulseAll(gate);
+        }
+    }
+
+    // Kuyruk diske inene kadar bekler (en fazla timeoutMs): kapanırken ve çökme kaydından sonra son satırlar kaybolmasın
+    public static bool Flush(int timeoutMs)
+    {
+        var clock = Stopwatch.StartNew();
+        lock (gate)
+        {
+            while (queue.Count > 0 || writing > 0 || unwritten)
+            {
+                long left = timeoutMs - clock.ElapsedMilliseconds;
+                if (left <= 0) return false;
+                Monitor.PulseAll(gate);
+                Monitor.Wait(gate, (int)Math.Min(left, 50));
+            }
+        }
+        return true;
+    }
+
+    static bool unwritten;   // yazılamayan bir toplu yazım elde (dosyayı biri tutuyor): yarım saniyede bir yeniden denenir
+
+    static void Run()
+    {
+        var pending = new StringBuilder();
+        while (true)
+        {
+            lock (gate)
+            {
+                while (queue.Count == 0 && pending.Length == 0) Monitor.Wait(gate);
+                if (queue.Count == 0) Monitor.Wait(gate, 500);
+                if (dropped > 0)
+                {
+                    pending.Append(DateTime.Now.ToString("HH:mm:ss.fff ")).Append("(disk yetişemedi: " + dropped + " satır atıldı)").Append(Environment.NewLine);
+                    dropped = 0;
+                }
+                while (queue.Count > 0)
+                {
+                    var e = queue.Dequeue();
+                    if (e.Key.Date != day) { pending.Append("---- ").Append(e.Key.ToString("yyyy-MM-dd")).Append(" ----").Append(Environment.NewLine); day = e.Key.Date; }
+                    pending.Append(e.Key.ToString("HH:mm:ss.fff ")).Append(e.Value).Append(Environment.NewLine);
+                }
+                writing++;
+            }
+            bool ok = false;
+            try { ok = Write(Encoding.UTF8.GetBytes(pending.ToString())); } catch { }
+            if (ok) pending.Clear();
+            else if (pending.Length > 4 * 1024 * 1024) pending.Remove(0, pending.Length - 2 * 1024 * 1024);   // en eskisi gider
+            lock (gate) { writing--; unwritten = pending.Length > 0; Monitor.PulseAll(gate); }
+        }
+    }
+
+    static bool Write(byte[] bytes)
+    {
+        var fi = new System.IO.FileInfo(Path);
+        if (fi.Exists && fi.Length > RotateBytes)
+        {
+            try { System.IO.File.Delete(Path + ".old"); System.IO.File.Move(Path, Path + ".old"); }
+            catch
+            {
+                if (fi.Length > 2 * RotateBytes)
+                    try { using (new System.IO.FileStream(Path, System.IO.FileMode.Truncate, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete)) { } } catch { }
+            }
+        }
+        for (int i = 0; i < 5; i++)
+        {
+            try
+            {
+                using (var fs = new System.IO.FileStream(Path, System.IO.FileMode.Append, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite | System.IO.FileShare.Delete))
+                    fs.Write(bytes, 0, bytes.Length);
+                return true;
+            }
+            catch (System.IO.IOException) { Thread.Sleep(20); }
+        }
+        return false;
+    }
+}
+
 // Windows'un doğrudan çağırdığı fonksiyonlardan (kancalar, olay kancaları, pencere yordamları) istisna sızmaz: sızan
 // istisna süreci 0xc000041d ile, log'a hiçbir şey yazmadan öldürüyordu. Her kayıt buradan geçer: hata yığın iziyle (aynı
 // yer için dakikada bir) kaydedilir, çağrı varsayılan cevabıyla döner.
@@ -12775,6 +12853,7 @@ static class Program
         AppDomain.CurrentDomain.UnhandledException += (s, e) =>
         {
             Slider.Log("CRASH: " + e.ExceptionObject);
+            LogWriter.Flush(2000);
             if (startup != null && !startup.Accepted) { startup.Fail(); startup.Wait(3500); }
             else if (e.IsTerminating) SelfHeal.Respawn("çöktü: " + (e.ExceptionObject is Exception ? e.ExceptionObject.GetType().Name : "?"));
         };
