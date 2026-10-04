@@ -42,6 +42,7 @@ mod ipc_server;
 mod layout_memory;
 mod models;
 mod pending_sync;
+mod sized_log;
 mod traits;
 mod user_config;
 mod wm;
@@ -298,11 +299,11 @@ async fn start_wm(
 ///
 /// Warnings and errors are saved to Logical Lunge's common log folder
 /// (`%LOCALAPPDATA%/LogicalLunge/logs/tiling.log`), next to the other
-/// parts' logs.
+/// parts' logs; past 4 MB it turns over to `tiling.log.old`.
 fn setup_logging(verbosity: &Verbosity) -> anyhow::Result<()> {
   let log_dir = logs_dir()?;
 
-  let file_writer = tracing_appender::rolling::never(log_dir, "tiling.log");
+  let file_writer = sized_log::SizedLog::new(log_dir.join("tiling.log"), sized_log::TURN_OVER_AT);
 
   let subscriber = tracing_subscriber::registry()
     .with(

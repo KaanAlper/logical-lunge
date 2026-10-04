@@ -183,8 +183,9 @@ impl WindowListener {
       _ => return,
     };
 
+    // Fails only once the window manager stopped listening (shutting down).
     if let Err(err) = event_tx.send(event) {
-      tracing::warn!("Failed to send window event: {}.", err);
+      tracing::debug!("Failed to send window event: {}.", err);
     }
   }
 }

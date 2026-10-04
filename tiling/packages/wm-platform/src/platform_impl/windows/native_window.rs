@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use tokio::task;
-use tracing::warn;
 use windows::{
   core::{w, PCWSTR, PWSTR},
   Win32::{
@@ -152,7 +151,8 @@ impl NativeWindow {
         rect.bottom,
       ))
     } else {
-      warn!("Failed to get window's frame position. Falling back to border position.");
+      // Common (windows being created or destroyed) and handled: no warning.
+      tracing::debug!("Failed to get window's frame position. Falling back to border position.");
       self.frame_with_shadows()
     }
   }

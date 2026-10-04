@@ -8,8 +8,12 @@ use tokio::{
   sync::{broadcast, mpsc},
   task,
 };
-use tokio_tungstenite::{accept_async, tungstenite::Message};
-use tracing::{info, warn};
+use tokio_tungstenite::{
+  accept_async,
+  tungstenite::{error::ProtocolError, Error as WsError, Message},
+  WebSocketStream,
+};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 use wm_common::{
   AppCommand, AppMetadataData, BindingModesData, ClientResponseData,
@@ -82,8 +86,18 @@ impl IpcServer {
         let message_tx = message_tx.clone();
 
         task::spawn(async move {
+          // A connection without a WebSocket request is no client: the
+          // core's port probes connect and close (thousands of warnings).
+          let ws_stream = match accept_async(stream).await {
+            Ok(ws_stream) => ws_stream,
+            Err(err) => {
+              debug!("IPC connection from {} without a WebSocket handshake: {}", addr, err);
+              return;
+            }
+          };
+
           if let Err(err) =
-            Self::handle_connection(stream, addr, message_tx).await
+            Self::handle_connection(ws_stream, addr, message_tx).await
           {
             warn!("Error handling connection: {}", err);
           }
@@ -104,7 +118,7 @@ impl IpcServer {
   }
 
   async fn handle_connection(
-    stream: TcpStream,
+    ws_stream: WebSocketStream<TcpStream>,
     addr: SocketAddr,
     message_tx: mpsc::UnboundedSender<(
       String,
@@ -113,10 +127,6 @@ impl IpcServer {
     )>,
   ) -> anyhow::Result<()> {
     info!("Incoming IPC connection from: {}.", addr);
-
-    let ws_stream = accept_async(stream)
-      .await
-      .context("Error during websocket handshake.")?;
 
     let (mut outgoing, mut incoming) = ws_stream.split();
     let (response_tx, mut response_rx) = mpsc::unbounded_channel();
@@ -139,6 +149,14 @@ impl IpcServer {
                   ))?;
                 }
               }
+              // A client that just went away (closed, reset or killed
+              // without the closing handshake) is a disconnection.
+              Some(Err(
+                WsError::ConnectionClosed
+                | WsError::AlreadyClosed
+                | WsError::Io(_)
+                | WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake),
+              )) => break Ok(()),
               Some(Err(err)) => bail!("WebSocket error: {}", err),
               None => {
                 // WebSocket connection closed.
@@ -153,9 +171,8 @@ impl IpcServer {
 
     info!("IPC disconnection from: {}.", addr);
 
-    if let Err(err) = disconnection_tx.send(()) {
-      warn!("Failed to broadcast disconnection: {}", err);
-    }
+    // Nobody listening for it (no subscription) is the usual case.
+    let _ = disconnection_tx.send(());
 
     res
   }
