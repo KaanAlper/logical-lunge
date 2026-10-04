@@ -1,8 +1,9 @@
 ﻿# Logical Lunge - uninstaller. Restores every Windows setting that the installer changed and removes
 # everything it installed. Configuration files that existed before the install always come back.
-# Logical Lunge's own settings and data (~\.config\logical-lunge, its WezTerm/fish/starship configs, clipboard
+# Logical Lunge's own settings and data (~\.config\logical-lunge, clipboard
 # history, widget data, shortcut and night-light settings, downloaded wallpapers) are kept or removed:
 #   -KeepConfig / -RemoveConfig, or a Yes/No/Cancel question when neither is given.
+# Shared WezTerm/fish/starship configs without ownership evidence are kept; originals and later edits are preserved.
 param([string]$UserProfile = $env:USERPROFILE, [string]$UserSid = '', [switch]$Elevated, [switch]$KeepConfig, [switch]$RemoveConfig)
 $ErrorActionPreference = 'Continue'
 
@@ -11,6 +12,30 @@ $APP = Join-Path $env:ProgramFiles 'LogicalLunge'
 $DATA = Join-Path $LOCAL 'LogicalLunge'
 $STATE = Join-Path $DATA 'state'
 $CONF = Join-Path $UserProfile '.config\logical-lunge'
+. (Join-Path $PSScriptRoot 'scripts\uninstall-restore.ps1')
+# Preflight intended deletion roots before even stopping the desktop. Each deletion rechecks its entire tree.
+$APP = Assert-LLSafePath $APP $env:ProgramFiles
+$DATA = Assert-LLSafePath $DATA $LOCAL
+$STATE = Assert-LLSafePath $STATE $DATA
+$CONF = Assert-LLSafePath $CONF (Join-Path $UserProfile '.config')
+[void](Assert-LLSafePath (Join-Path $PSScriptRoot 'scripts\uninstall-restore.ps1') $PSScriptRoot)
+
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $UserSid) {
+    if ([IO.Path]::GetFullPath($UserProfile).TrimEnd('\') -ne [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')) { throw 'Specify UserSid when uninstalling for another profile.' }
+    $UserSid = $identity.User.Value
+}
+if ($UserSid -notmatch '^S-1-5-\d+(-\d+)+$') { throw 'Invalid target user SID.' }
+$isAdmin = ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$sameUser = $UserSid -eq $identity.User.Value
+$registeredProfile = (Get-ItemProperty -LiteralPath "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSid" -ErrorAction SilentlyContinue).ProfileImagePath
+if (-not $registeredProfile -or [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($registeredProfile)).TrimEnd('\') -ne [IO.Path]::GetFullPath($UserProfile).TrimEnd('\')) { throw 'UserSid and UserProfile do not identify the same Windows profile.' }
+$HKU = "Registry::HKEY_USERS\$UserSid"
+if (-not (Test-Path -LiteralPath $HKU)) { throw 'The target user registry is not loaded. Run uninstall from that user session.' }
+if (-not $sameUser -and -not $isAdmin) { throw 'Uninstall for another account requires administrator rights.' }
+$sessionId = [Diagnostics.Process]::GetCurrentProcess().SessionId
+# Capture before the core consumes its runtime records; fallback still needs the originals after a partial stop.
+$recovery = Read-LLRestoreSnapshot $STATE
 
 if (-not $KeepConfig -and -not $RemoveConfig) {
     $tr = (Get-UICulture).Name -like 'tr*'
@@ -38,24 +63,22 @@ if (-not $KeepConfig -and -not $RemoveConfig) {
     if ($answer -eq 'Yes') { $RemoveConfig = $true } else { $KeepConfig = $true }
 }
 
-if (-not $UserSid) { $UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
 if (-not $isAdmin) {
     # Stop the desktop as the user first: the window manager brings the windows of hidden workspaces back when it
     # exits gracefully (and the core brings back anything left invisible)
-    $core = Join-Path $APP 'lunge.exe'
-    $wasRunning = [bool](Get-Process lunge-tiling -ErrorAction SilentlyContinue)
-    if (Test-Path $core) { & $core --stop-desktop | Out-Null }
-    # Windows' own notification banners, turned off while Logical Lunge showed notifications as its cards: back to
-    # how they were, in this user's registry (the elevated copy may run as another account)
-    if (Test-Path $core) { & $core --restore-banners | Out-Null }
-    # The Windows parts Logical Lunge took over (taskbar, snap suggestions ...) back to their saved values; --stop-desktop
-    # did it already, this covers a desktop that was not running
-    if (Test-Path $core) { & $core --takeover-restore | Out-Null }
+    $wasRunning = [bool]@(Get-LLOwnedProcesses $APP)
+    Stop-LLDesktop $APP $STATE $sameUser $sessionId $false
+    # Carry original runtime records through credential elevation even if the core already deleted them.
+    foreach ($name in 'shell-takeover.json', 'toast-banners.json') {
+        $record = $recovery[$name]
+        if ($record -and $record.Valid) { [IO.File]::WriteAllText($record.Path, $record.Raw, (New-Object Text.UTF8Encoding $false)) }
+    }
     # one UAC prompt; the elevated copy needs to know whose settings to restore
-    $self = Join-Path $env:TEMP 'logical-lunge-uninstall.ps1'
-    Copy-Item $PSCommandPath $self -Force
+    $selfDir = Join-Path $env:TEMP ('logical-lunge-uninstall-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path (Join-Path $selfDir 'scripts') -Force | Out-Null
+    $self = Join-Path $selfDir 'uninstall.ps1'
+    Copy-Item -LiteralPath $PSCommandPath -Destination $self -Force
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'scripts\uninstall-restore.ps1') -Destination (Join-Path $selfDir 'scripts\uninstall-restore.ps1')
     $choice = if ($RemoveConfig) { '-RemoveConfig' } else { '-KeepConfig' }
     try { Start-Process powershell.exe -Verb RunAs -Wait -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$self`"", '-UserProfile', "`"$UserProfile`"", '-UserSid', $UserSid, '-Elevated', $choice }
     catch {
@@ -63,20 +86,21 @@ if (-not $isAdmin) {
         Remove-Item (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
         if ($wasRunning) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue }
     }
+    finally {
+        Remove-LLTree $selfDir $env:TEMP
+    }
     return
 }
 
-$HKU = "Registry::HKEY_USERS\$UserSid"
 $cu = "$HKU\Software\Microsoft\Windows\CurrentVersion"
 function Log([string]$m) { Write-Host $m }
 
 $backup = $null
 $bf = Join-Path $STATE 'install-backup.json'
-if (Test-Path $bf) { $backup = Get-Content $bf -Raw | ConvertFrom-Json }
+if ($recovery['install-backup.json'] -and $recovery['install-backup.json'].Valid) { $backup = $recovery['install-backup.json'].Value }
 
 Log '==> Stopping Logical Lunge'
-# the core first: its watchdogs would restart the other parts
-foreach ($n in 'lunge', 'lunge-tiling', 'lunge-tiling-watcher', 'lunge-shell', 'lunge-wallpaper', 'LogicalLunge', 'lunge-temps', 'lunge-songrec', 'lunge-termcolors') { Get-Process $n -ErrorAction SilentlyContinue | Stop-Process -Force }
+Stop-LLDesktop $APP $STATE $sameUser $sessionId
 # Our video screen saver goes with the app: Windows must not keep pointing at a removed LogicalLunge.scr
 $desk = "$HKU\Control Panel\Desktop"
 $saver = (Get-ItemProperty $desk -Name 'SCRNSAVE.EXE' -ErrorAction SilentlyContinue).'SCRNSAVE.EXE'
@@ -87,27 +111,20 @@ if ($saver) {
         Set-ItemProperty $desk -Name 'ScreenSaveActive' -Value '0' -ErrorAction SilentlyContinue
     }
 }
-# Started elevated by the user themselves: the banners are restored here (see the non-elevated part above)
-if (-not $Elevated -and (Test-Path (Join-Path $APP 'lunge.exe'))) { & (Join-Path $APP 'lunge.exe') --restore-banners | Out-Null; & (Join-Path $APP 'lunge.exe') --takeover-restore | Out-Null }
-# The takeover record is still there (the elevated copy runs as another account, or lunge.exe could not run): its
-# saved values go back into the user's registry (they apply at the next sign-in)
-$takeover = Join-Path $STATE 'shell-takeover.json'
-if (Test-Path $takeover) {
-    try {
-        foreach ($e in @((Get-Content $takeover -Raw | ConvertFrom-Json).reg)) {
-            $path = "$HKU\$($e.k)"
-            if ($e.had -and $null -ne $e.old) {
-                if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
-                $type = if ($e.old -is [string]) { 'String' } else { 'DWord' }
-                Set-ItemProperty -Path $path -Name $e.n -Value $e.old -Type $type
-            }
-            else { Remove-ItemProperty -Path $path -Name $e.n -ErrorAction SilentlyContinue }
-        }
-        Remove-Item $takeover -Force
-    }
-    catch { Log "    taken-over Windows settings: $($_.Exception.Message)" }
+$restored = Restore-LLWindowsState $recovery $HKU $sameUser
+if (-not $restored) {
+    # Keep a runnable recovery copy before deleting the installed uninstaller and its helper.
+    $retryDir = Join-Path $STATE 'uninstall-recovery'
+    [void](Assert-LLSafePath (Join-Path $retryDir 'scripts') $STATE)
+    New-Item -ItemType Directory -Path (Join-Path $retryDir 'scripts') -Force -ErrorAction Stop | Out-Null
+    $retryScript = Assert-LLSafePath (Join-Path $retryDir 'uninstall.ps1') $STATE
+    $retryHelper = Assert-LLSafePath (Join-Path $retryDir 'scripts\uninstall-restore.ps1') $STATE
+    if ([IO.Path]::GetFullPath($PSCommandPath) -ne $retryScript) { Copy-Item -LiteralPath $PSCommandPath -Destination $retryScript -Force -ErrorAction Stop }
+    $sourceHelper = Join-Path $PSScriptRoot 'scripts\uninstall-restore.ps1'
+    if ([IO.Path]::GetFullPath($sourceHelper) -ne $retryHelper) { Copy-Item -LiteralPath $sourceHelper -Destination $retryHelper -Force -ErrorAction Stop }
 }
-Remove-Item (Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue
+$startMenu = Join-Path $UserProfile 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs'
+if (Test-Path -LiteralPath (Join-Path $startMenu 'Logical Lunge')) { Remove-LLTree (Join-Path $startMenu 'Logical Lunge') $startMenu }
 
 Log '==> Removing startup tasks'
 foreach ($folder in 'LogicalLunge', 'LL') {
@@ -116,26 +133,9 @@ foreach ($folder in 'LogicalLunge', 'LL') {
 }
 
 Log '==> Restoring Windows settings'
-if ($backup) {
-    foreach ($r in @($backup.registry)) {
-        try {
-            if ($r.existed) {
-                $v = if ($r.binary) { [Convert]::FromBase64String($r.old) } else { $r.old }
-                Set-ItemProperty -Path $r.path -Name $r.name -Value $v -Type $r.type
-            }
-            else { Remove-ItemProperty -Path $r.path -Name $r.name -ErrorAction SilentlyContinue }
-        }
-        catch { Log "    could not restore $($r.path)\$($r.name): $($_.Exception.Message)" }
-    }
-}
-Remove-Item "$cu\Uninstall\LogicalLunge" -Recurse -Force -ErrorAction SilentlyContinue
-
-Log '==> Showing the Windows taskbar again'
-Add-Type @'
-using System; using System.Runtime.InteropServices;
-public static class LLTB { [DllImport("user32.dll")] public static extern IntPtr FindWindow(string c, string t); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n); }
-'@
-foreach ($c in 'Shell_TrayWnd', 'Shell_SecondaryTrayWnd') { $h = [LLTB]::FindWindow($c, [NullString]::Value); if ($h -ne [IntPtr]::Zero) { [LLTB]::ShowWindow($h, 5) | Out-Null } }
+# Restored from the captured installer/runtime records above, including the live desktop view and taskbar state.
+# Registry removal has no filesystem traversal. The target hive was validated before shutdown.
+Remove-Item -LiteralPath "$cu\Uninstall\LogicalLunge" -Recurse -Force -ErrorAction SilentlyContinue
 
 $installed = if ($backup) { @($backup.installed) } else { @() }
 # remove only the PATH entries the installer added
@@ -165,28 +165,30 @@ if ($installed -contains 'fonts') {
         Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
     }
 }
-if ($installed -contains 'msys2') { Log '==> Removing MSYS2 (fish)'; Remove-Item 'C:\msys64' -Recurse -Force -ErrorAction SilentlyContinue }
+if ($installed -contains 'msys2' -and (Test-Path -LiteralPath 'C:\msys64')) { Log '==> Removing MSYS2 (fish)'; Remove-LLTree 'C:\msys64' 'C:\' }
 
 Log $(if ($RemoveConfig) { '==> Removing program files and Logical Lunge settings' } else { '==> Removing program files (your settings are kept)' })
-foreach ($f in "$UserProfile\.wezterm.lua", "$UserProfile\.config\fish\config.fish", "$UserProfile\.config\starship.toml") {
-    if (Test-Path "$f.before-ll") { Move-Item "$f.before-ll" $f -Force }   # your pre-install version always comes back
-    elseif ($RemoveConfig) { Remove-Item $f -Force -ErrorAction SilentlyContinue }   # ours: there was none before the install
+Restore-LLUserConfigs $UserProfile ([bool]$RemoveConfig)
+if (Test-Path -LiteralPath $APP) {
+    # The running script's own install directory is checked just like every other target.
+    try { Remove-LLTree $APP $env:ProgramFiles } catch { Write-Warning $_.Exception.Message }
 }
-Remove-Item $APP -Recurse -Force -ErrorAction SilentlyContinue
 if (Test-Path $APP) { Log "    some files are in use (an open terminal?) and stay in $APP; delete it after signing out" }
-foreach ($d in 'logs', 'update', 'rollback') { Remove-Item (Join-Path $DATA $d) -Recurse -Force -ErrorAction SilentlyContinue }
-Remove-Item $bf -Force -ErrorAction SilentlyContinue
+foreach ($d in 'logs', 'update', 'rollback') {
+    $target = Join-Path $DATA $d
+    if (Test-Path -LiteralPath $target) { Remove-LLTree $target $DATA }
+}
+if ($restored) { Remove-Item -LiteralPath $bf -Force -ErrorAction SilentlyContinue }
 if ($RemoveConfig) {
-    Remove-Item $CONF -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item $DATA -Recurse -Force -ErrorAction SilentlyContinue   # clipboard history, widget data, night light
+    if (Test-Path -LiteralPath $CONF) { Remove-LLTree $CONF (Join-Path $UserProfile '.config') }
+    if ($restored -and (Test-Path -LiteralPath $DATA)) { Remove-LLTree $DATA $LOCAL } # keep recovery records on failure
     # downloaded wallpapers: the user's Pictures folder (it may be redirected, e.g. to OneDrive)
     $pics = (Get-ItemProperty "$HKU\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -Name 'My Pictures' -ErrorAction SilentlyContinue).'My Pictures'
     $pics = if ($pics) { $pics.Replace('%USERPROFILE%', $UserProfile) } else { Join-Path $UserProfile 'Pictures' }
-    Remove-Item (Join-Path $pics 'Wallpapers\Logical Lunge') -Recurse -Force -ErrorAction SilentlyContinue
+    $wallpapers = Join-Path $pics 'Wallpapers\Logical Lunge'
+    if (Test-Path -LiteralPath $wallpapers) { Remove-LLTree $wallpapers $pics }
 }
 
-Log '==> Restarting Explorer'
-Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
 Log ''
-Log 'Logical Lunge has been removed. Sign out and back in to finish.'
-Start-Sleep 3
+if ($restored) { Log 'Logical Lunge has been removed. Shared terminal configs and pre-install backups are preserved.' }
+else { Write-Warning "Program files removed, but some Windows settings need recovery. Records are kept in $STATE; run $retryDir\uninstall.ps1 from the target user session before reinstalling." }
