@@ -23,6 +23,7 @@ static class CoreUnitTests
     static int Main(string[] args)
     {
         string root = args.Length > 0 ? args[0] : ".";
+        NotificationActivationTests();
         CallbackTests(root);
         PipeWaitTests();
         InputLatencyTests(root);
@@ -33,6 +34,32 @@ static class CoreUnitTests
         StartupCoverTests(root);
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    static void NotificationActivationTests()
+    {
+        var protocol = ToastPayload.Parse("<toast activationType=\"protocol\" launch=\"nvidiaapp://route/#nvapp/rewards\"><visual><binding><text>Reward</text></binding></visual></toast>");
+        var launch = typeof(ToastPayload).GetField("Launch");
+        var type = typeof(ToastPayload).GetField("ActivationType");
+        Check(launch != null && (string)launch.GetValue(protocol) == "nvidiaapp://route/#nvapp/rewards", "notification-specific launch target is preserved");
+        Check(type != null && (string)type.GetValue(protocol) == "protocol", "notification activation contract is preserved");
+        var conversation = ToastPayload.Parse("<toast launch=\"type=click&amp;tag=14317607570838471237\"/>");
+        Check(launch != null && (string)launch.GetValue(conversation) == "type=click&tag=14317607570838471237", "opaque conversation click arguments are preserved without treating them as a URL");
+        string delivered = null;
+        Check(ToastActivation.Dispatch(protocol, "com.vendor.app", url => { delivered = url; return true; }, (id, context) => { throw new Exception("protocol routed as native activation"); }, id => { throw new Exception("protocol lost its destination"); })
+            && delivered == "nvidiaapp://route/#nvapp/rewards", "protocol click opens the supplied destination with its fragment");
+        Check(ToastActivation.Dispatch(conversation, "Vendor.App!App", url => { throw new Exception("opaque argument launched as URL"); }, (id, context) => { delivered = context; return true; }, id => false)
+            && delivered == "type=click&tag=14317607570838471237", "native activation receives the exact conversation context");
+        int calls = 0;
+        Check(!ToastActivation.Dispatch(protocol, "com.vendor.app", url => false, (id, context) => false, id => { calls++; return true; }) && calls == 0, "failed deep link does not silently launch the app's unrelated home page");
+        foreach (string target in new[] { "file:///C:/x.exe", "C:\\x.exe", "shell:AppsFolder\\x", "javascript:alert(1)", "data:text/plain,x", "https://example.com/\nrun", "cmd.exe /c start x" })
+            Check(ToastActivation.ProtocolTarget(ToastPayload.Parse("<toast activationType=\"protocol\" launch=\"" + System.Security.SecurityElement.Escape(target).Replace("\n", "&#10;") + "\"/>")) == null, "unsafe notification target rejected: " + target);
+        Check(!ToastActivation.Dispatch(ToastPayload.Parse("<toast activationType=\"background\" launch=\"delete=1\"/>"), "vendor.app", url => { calls++; return true; }, (id, context) => { calls++; return true; }, id => { calls++; return true; }) && calls == 0, "body click cannot replay background actions");
+        Check(!ToastActivation.ValidSender(@"a\b") && !ToastActivation.ValidSender("x\0y") && ToastActivation.ValidSender("Vendor.App!App"), "sender IDs cannot alter shell or registry paths");
+        string callback = "{3F3C2DFD-1EDC-4F47-8CDE-7567D9CE7C92}";
+        Check(ToastActivation.ShortcutActivator("vendor.app", "Vendor.App", callback) == new Guid(callback), "matching shortcut supplies the app's notification callback");
+        Check(ToastActivation.ShortcutActivator("vendor.app", "other.app", callback) == Guid.Empty, "another shortcut cannot receive this notification's context");
+        Check(ToastActivation.ShortcutActivator("vendor.app", "vendor.app", "not-a-guid") == Guid.Empty, "invalid shortcut activator is ignored");
     }
 
     // The startup cover: its first frame comes before anything slow, it leaves only when the core says every part is

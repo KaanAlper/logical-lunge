@@ -35,6 +35,8 @@ const MOVE: Curve = SPRING_IN;
 pub(super) enum NHit {
   /// the group's body (drag, right click, middle click)
   Group(String),
+  /// An individual notification and its swipe group.
+  Open(String, String),
   Expand(String),
   Close(String),
   CloseItem(String),
@@ -351,6 +353,7 @@ impl Notifs {
         ia *= 0.5;
       }
       let row = Rect::new(bx + ix, y, body_w, h);
+      cx.hit(row, Hit::Notif(NHit::Open(n.id.clone(), app.to_string())));
       let mut tx = row.x;
       let mut text_w = row.w;
       if multiple || !expanded {
@@ -392,6 +395,10 @@ impl Notifs {
   pub fn press(&mut self, app: &str, x: f32, y: f32) {
     self.swipe = Some(Swipe { app: app.to_string(), x0: x, y0: y, active: false });
     self.back.remove(app);
+  }
+
+  pub fn clicked(&self, x: f32, y: f32) -> bool {
+    self.swipe.as_ref().is_some_and(|s| !s.active && (x - s.x0).abs() < 6.0 && (y - s.y0).abs() < 6.0)
   }
 
   /// true while a group follows the pointer
@@ -534,6 +541,15 @@ impl Ui {
 
   pub(super) fn sb_notif_click(&mut self, h: NHit, button: u8) {
     match (h, button) {
+      (NHit::Open(id, _), 0) => self.sb_open_notif(id),
+      (NHit::Group(app), 0) => {
+        let dismissed = self.sidebar.store.notif_dismissed.clone();
+        if let Some(id) = self.sidebar.notifs.visible(&dismissed).iter().find(|n| n.app == app).map(|n| n.id.clone()) {
+          self.sb_open_notif(id);
+        }
+      }
+      (NHit::Open(_, app), 1) => self.sidebar.notifs.toggle_expand(&app),
+      (NHit::Open(_, app), 2) => self.sb_kill_group(app),
       (NHit::Group(app), 1) | (NHit::Expand(app), 0) => self.sidebar.notifs.toggle_expand(&app),
       (NHit::Group(app), 2) | (NHit::Close(app), 0) => self.sb_kill_group(app),
       (NHit::CloseItem(id), 0) => self.sb_kill_item(id),
@@ -556,6 +572,12 @@ impl Ui {
       _ => {}
     }
     self.sb_render();
+  }
+
+  fn sb_open_notif(&mut self, id: String) {
+    if id.is_empty() || id.len() > 18 || !id.bytes().all(|b| b.is_ascii_digit()) { return; }
+    self.sidebar_close();
+    std::thread::spawn(move || { let _ = core_api::post(&format!("/notification-open?id={id}")); });
   }
 
   /// A drag or a swipe ended: the group goes or springs back.
@@ -630,5 +652,17 @@ mod tests {
     let mut n = Notifs::default();
     n.press("Mail", 0.0, 0.0);
     assert!(!n.drag(3.0, 40.0));
+    assert!(!n.clicked(3.0, 40.0));
+  }
+
+  #[test]
+  fn only_a_stationary_press_can_activate_a_notification() {
+    let mut n = Notifs { width: 400.0, ..Default::default() };
+    n.press("Mail", 10.0, 20.0);
+    assert!(n.clicked(11.0, 21.0));
+    assert!(n.drag(50.0, 21.0));
+    assert!(!n.clicked(50.0, 21.0));
+    assert_eq!(n.release(), None); // A short swipe springs back, but mustn't open anything.
+    assert!(!n.clicked(10.0, 20.0));
   }
 }

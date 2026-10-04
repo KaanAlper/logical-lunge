@@ -68,12 +68,29 @@ static class WinNotifications
         return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(new Dictionary<string, object> { { "items", outItems }, { "icons", icons } });
     }
 
-    // /notification-open?id=: bildirimi gönderen uygulamayı açar (Super menüsündeki gibi). false: bildirim ya da uygulaması yok.
+    // Only a notification ID crosses the UI boundary. Resolve and activate its original context as the user,
+    // never through the elevated core's COM identity. Arrival guards reused notification IDs.
     public static bool Open(long id)
     {
         Item it;
         lock (gate) items.TryGetValue(id, out it);
-        return it != null && it.Open != null && UserLaunch.Start(it.Open, "", Paths.Home);
+        if (it == null) return false;
+        return UserLaunch.Start(Paths.Core, "--notification-activate " + it.Id + " " + it.Arrival, Paths.Home, true);
+    }
+
+    public static bool ActivateLocal(long id, long arrival)
+    {
+        if (UserLaunch.Elevated || id <= 0 || arrival <= 0) return false;
+        string sender = null, xml = null;
+        long actualArrival = 0;
+        if (!WithDatabase(db => {
+            WinSqlite.Each(db, "SELECT n.ArrivalTime, h.PrimaryId, CAST(n.Payload AS TEXT) FROM Notification n JOIN NotificationHandler h ON n.HandlerId=h.RecordId WHERE n.Id=?1 AND n.Type='toast'", id, st => {
+                actualArrival = WinSqlite.sqlite3_column_int64(st, 0);
+                sender = WinSqlite.Text(st, 1); xml = WinSqlite.Text(st, 2);
+            });
+            return true;
+        }) || actualArrival != arrival || !ToastActivation.ValidSender(sender)) return false;
+        return ToastActivation.Open(ToastPayload.Parse(xml), sender);
     }
 
     static void Tick()
@@ -256,7 +273,7 @@ static class WinNotifications
         string image = Image(p.Logo, it.Aumid) ?? it.Icon;
         if (image != null) card["image"] = image;
         // Karta tıklayınca uygulama açılır: kart yalnızca kimliği taşır, hedefi çekirdek kendi listesinden bulur
-        if (it.Open != null) card["notification"] = it.Id;
+        card["notification"] = it.Id;
         // Yanıt / erteleme düğmeleri ve arama, alarm gibi bekleyen bildirimler Windows'un Bildirim Merkezi'nde yanıtlanır
         if (p.Interactive || p.Urgent)
             card["actions"] = new object[] { new Dictionary<string, object> { { "label", "Bildirim merkezi" }, { "url", "ms-actioncenter:" } } };
@@ -504,6 +521,168 @@ static class ToastBanners
     static void TryDelete()
     {
         try { System.IO.File.Delete(BackupFile); } catch { }
+    }
+}
+
+// Windows activation contracts shared by both shells. Payload strings are passed unchanged to Windows,
+// never concatenated into an executable command. This code runs only in the unelevated click helper.
+static class ToastActivation
+{
+    public static bool ValidSender(string sender)
+    {
+        return !string.IsNullOrWhiteSpace(sender) && sender.Length <= 255 && sender.IndexOfAny(new[] { '\\', '/', '\r', '\n', '\0' }) < 0;
+    }
+
+    public static string ProtocolTarget(ToastPayload payload)
+    {
+        if (payload == null || payload.ActivationType != "protocol" || string.IsNullOrWhiteSpace(payload.Launch)) return null;
+        string target = payload.Launch;
+        if (target.Length > 8192 || target.IndexOfAny(new[] { '\r', '\n', '\0' }) >= 0 || target != target.Trim()) return null;
+        Uri uri;
+        if (!Uri.TryCreate(target, UriKind.Absolute, out uri) || uri.Scheme.Length < 2 || uri.IsFile) return null;
+        foreach (string blocked in new[] { "shell", "javascript", "vbscript", "data", "powershell", "mshta" })
+            if (uri.Scheme.Equals(blocked, StringComparison.OrdinalIgnoreCase)) return null;
+        return target; // Preserve escaping and fragment: the receiving application owns the route.
+    }
+
+    public static bool Dispatch(ToastPayload payload, string sender, Func<string, bool> protocol,
+        Func<string, string, bool> activate, Func<string, bool> fallback)
+    {
+        if (payload == null || !ValidSender(sender)) return false;
+        if (payload.ActivationType == "protocol")
+        {
+            string target = ProtocolTarget(payload);
+            return target != null && protocol(target);
+        }
+        if (payload.ActivationType != "foreground") return false; // Don't replay background, dismiss or reply actions.
+        if (activate(sender, payload.Launch)) return true;
+        return fallback(sender);
+    }
+
+    public static bool Open(ToastPayload payload, string sender)
+    {
+        if (UserLaunch.Elevated) return false;
+        return Dispatch(payload, sender, url => UserLaunch.Start(url, "", Paths.Home),
+            ActivateWindows, id => UserLaunch.Start(@"shell:AppsFolder\" + id, "", Paths.Home));
+    }
+
+    [ComImport, Guid("53E31837-6600-4A81-9395-75CFFE746F94"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface INotificationActivationCallback
+    {
+        [PreserveSig] int Activate([MarshalAs(UnmanagedType.LPWStr)] string sender,
+            [MarshalAs(UnmanagedType.LPWStr)] string arguments, IntPtr input, uint count);
+    }
+    [ComImport, Guid("2E941141-7F97-4756-BA1D-9DECDE894A3D"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IApplicationActivationManager
+    {
+        [PreserveSig] int ActivateApplication([MarshalAs(UnmanagedType.LPWStr)] string sender,
+            [MarshalAs(UnmanagedType.LPWStr)] string arguments, uint options, out uint pid);
+    }
+    [DllImport("ole32.dll")]
+    static extern int CoCreateInstance(ref Guid clsid, IntPtr outer, uint context, ref Guid iid, out IntPtr instance);
+
+    static object Invoke(object value, string name, System.Reflection.BindingFlags flags, params object[] args)
+    {
+        return value.GetType().InvokeMember(name, flags, null, value, args);
+    }
+    static void Release(object value) { if (value != null && Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value); }
+
+    internal static Guid ShortcutActivator(string sender, string shortcutSender, string value)
+    {
+        Guid clsid;
+        return string.Equals(sender, shortcutSender, StringComparison.OrdinalIgnoreCase)
+            && Guid.TryParse(value, out clsid) ? clsid : Guid.Empty;
+    }
+
+    // Prefer the sender's registered COM notification callback. Some desktop apps put it on their Start menu
+    // shortcut only; AppsFolder does not necessarily expose that property. No application names are special cased.
+    internal static Guid ActivatorFor(string sender)
+    {
+        if (!ValidSender(sender)) return Guid.Empty;
+        Guid clsid;
+        foreach (var root in new[] { Registry.CurrentUser, Registry.LocalMachine })
+            using (var key = root.OpenSubKey(@"Software\Classes\AppUserModelId\" + sender))
+                if (key != null && Guid.TryParse(key.GetValue("ToastActivatorCLSID") as string, out clsid) && clsid != Guid.Empty) return clsid;
+        object shell = null, folder = null, item = null;
+        try
+        {
+            shell = Activator.CreateInstance(Type.GetTypeFromProgID("Shell.Application"));
+            folder = Invoke(shell, "Namespace", System.Reflection.BindingFlags.InvokeMethod, "shell:AppsFolder");
+            if (folder != null)
+            {
+                item = Invoke(folder, "ParseName", System.Reflection.BindingFlags.InvokeMethod, sender);
+                if (item != null)
+                {
+                    object value = Invoke(item, "ExtendedProperty", System.Reflection.BindingFlags.InvokeMethod, "System.AppUserModel.ToastActivatorCLSID");
+                    if (Guid.TryParse(Convert.ToString(value), out clsid) && clsid != Guid.Empty) return clsid;
+                }
+            }
+            foreach (var root in new[] { Environment.SpecialFolder.StartMenu, Environment.SpecialFolder.CommonStartMenu })
+            {
+                string path = Environment.GetFolderPath(root);
+                if (string.IsNullOrEmpty(path) || !System.IO.Directory.Exists(path)) continue;
+                var dirs = new Queue<string>(); dirs.Enqueue(path);
+                while (dirs.Count > 0)
+                {
+                    string dir = dirs.Dequeue();
+                    try
+                    {
+                        foreach (string child in System.IO.Directory.GetDirectories(dir))
+                            if ((System.IO.File.GetAttributes(child) & System.IO.FileAttributes.ReparsePoint) == 0) dirs.Enqueue(child);
+                        foreach (string link in System.IO.Directory.GetFiles(dir, "*.lnk"))
+                        {
+                            object linkFolder = null, linkItem = null;
+                            try
+                            {
+                                linkFolder = Invoke(shell, "Namespace", System.Reflection.BindingFlags.InvokeMethod, dir);
+                                if (linkFolder == null) continue;
+                                linkItem = Invoke(linkFolder, "ParseName", System.Reflection.BindingFlags.InvokeMethod, System.IO.Path.GetFileName(link));
+                                if (linkItem == null) continue;
+                                string linkSender = Convert.ToString(Invoke(linkItem, "ExtendedProperty", System.Reflection.BindingFlags.InvokeMethod, "System.AppUserModel.ID"));
+                                if (!string.Equals(sender, linkSender, StringComparison.OrdinalIgnoreCase)) continue;
+                                clsid = ShortcutActivator(sender, linkSender, Convert.ToString(Invoke(linkItem, "ExtendedProperty", System.Reflection.BindingFlags.InvokeMethod, "System.AppUserModel.ToastActivatorCLSID")));
+                                if (clsid != Guid.Empty) return clsid;
+                            }
+                            catch { /* A broken shortcut cannot hide the next matching shortcut. */ }
+                            finally { Release(linkItem); Release(linkFolder); }
+                        }
+                    }
+                    catch { /* The other Start menu may still be accessible. */ }
+                }
+            }
+            return Guid.Empty;
+        }
+        finally { Release(item); Release(folder); Release(shell); }
+    }
+
+    static bool ActivateWindows(string sender, string arguments)
+    {
+        object activator = null;
+        try
+        {
+            Guid clsid = ActivatorFor(sender);
+            if (clsid != Guid.Empty)
+            {
+                Guid iid = typeof(INotificationActivationCallback).GUID;
+                IntPtr pointer;
+                if (CoCreateInstance(ref clsid, IntPtr.Zero, 4 /* local server */, ref iid, out pointer) >= 0)
+                {
+                    try { activator = Marshal.GetObjectForIUnknown(pointer); } finally { Marshal.Release(pointer); }
+                    return ((INotificationActivationCallback)activator).Activate(sender, arguments, IntPtr.Zero, 0) >= 0;
+                }
+            }
+            // Generic Windows.Launch fallback. This preserves the opaque arguments but is not a toast callback;
+            // only the receiving app can interpret them as a destination.
+            if (sender.IndexOf('!') > 0)
+            {
+                activator = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("45BA127D-10A8-46EA-8AB7-56EA9078943C")));
+                uint pid;
+                return ((IApplicationActivationManager)activator).ActivateApplication(sender, arguments, 2 /* AO_NOERRORUI */, out pid) >= 0;
+            }
+        }
+        catch (Exception ex) { Slider.Log("notification activation: " + ex.GetBaseException().Message); }
+        finally { Release(activator); }
+        return false;
     }
 }
 

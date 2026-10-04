@@ -12707,6 +12707,19 @@ static class Program
         // Windows'un "sürücü hazır değil / dosya açılamadı" kutuları bu süreçte (ve başlattıklarında, Gezgin'deki gibi)
         // açılmaz: hatayı çağıran görür ve kendi kartımızla söyler
         ErrorUi.Quiet();
+        // Notification click helper: resolve the original database record as the desktop user, without starting a core.
+        if (args.Length > 0 && args[0] == "--notification-activate")
+        {
+            if (args.Length != 3) { Environment.Exit(1); return; }
+            long id, arrival;
+            bool opened = false;
+            // A hung third-party COM activator cannot leave an unbounded helper behind.
+            using (var limit = new System.Threading.Timer(_ => Environment.Exit(1), null, 20000, Timeout.Infinite))
+                if (long.TryParse(args[1], out id) && long.TryParse(args[2], out arrival))
+                    try { opened = WinNotifications.ActivateLocal(id, arrival); } catch (Exception ex) { Slider.Log("notification click: " + ex.GetBaseException().Message); }
+            if (!opened) Supervisor.PostToCore("/notify?kind=warning&title=" + Uri.EscapeDataString("Bildirim açılamadı") + "&body=" + Uri.EscapeDataString("Bildirim kaldırılmış olabilir veya uygulama hedefi açamadı."), 2000);
+            Environment.Exit(opened ? 0 : 1); return;
+        }
         // lunge.exe --splash: oturum açılınca (LL\Splash görevi) masaüstünü duvar kağıdıyla örter;
         // tiling ve bar hazır olup pencereler dizilince yumuşakça kaybolur. Windows'un çıplak hali hiç görünmez.
         if (args.Length == 1 && args[0] == "--splash") { Splash.Run(); return; }

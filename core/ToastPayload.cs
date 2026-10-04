@@ -7,6 +7,8 @@ using System.Xml;
 sealed class ToastPayload
 {
     public string Title = "", Body = "";
+    // Body click context is application data, never a command line.
+    public string Launch = "", ActivationType = "foreground";
     // appLogoOverride görseli (ör. mesajı gönderenin fotoğrafı): dosya yolu, ms-appdata:/// ya da http(s) adresi
     public string Logo;
     // reminder | alarm | incomingCall | urgent; Windows bunları kullanıcı kapatana kadar ekranda tutar
@@ -37,6 +39,8 @@ sealed class ToastPayload
         if (toast == null || toast.Name != "toast") return p;
 
         p.Scenario = toast.GetAttribute("scenario");
+        p.Launch = toast.GetAttribute("launch");
+        if (toast.HasAttribute("activationType")) p.ActivationType = toast.GetAttribute("activationType");
         var texts = new List<string>();
         foreach (XmlNode n in toast.SelectNodes("visual//text"))
         {

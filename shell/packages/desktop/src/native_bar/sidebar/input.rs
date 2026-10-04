@@ -234,7 +234,7 @@ impl Ui {
         // a long press lifts it: frames watch the time
         self.sb_frames();
       }
-      Some(Hit::Notif(NHit::Group(app))) => {
+      Some(Hit::Notif(NHit::Group(app) | NHit::Open(_, app))) => {
         self.sidebar.notifs.press(&app, x, y);
         self.sidebar.drag = Some(Drag::Notif);
       }
@@ -277,11 +277,13 @@ impl Ui {
         }
       }
       Some(Drag::Notif) => {
+        let clicked = self.sidebar.notifs.clicked(x, y);
         if let Some(app) = self.sidebar.notifs.release() {
           return self.sb_notif_settled(Some(app));
         }
         // released without a drag: a click on the group
         self.sb_notif_settled(None);
+        if !clicked { return; }
       }
       Some(Drag::Page(h)) => {
         if self.sb_page_release(&h, x, y) {
@@ -345,7 +347,7 @@ impl Ui {
         }
         _ => {}
       }
-    } else if let Some(Hit::Notif(NHit::Group(app) | NHit::Expand(app) | NHit::Close(app))) = &hit {
+    } else if let Some(Hit::Notif(NHit::Group(app) | NHit::Open(_, app) | NHit::Expand(app) | NHit::Close(app))) = &hit {
       // a two-finger swipe moves the group with the fingers
       self.sidebar.notifs.hwheel(app, delta);
       unsafe { SetTimer(self.msg_hwnd, TIMER_SB_WHEEL, 140, None) };
