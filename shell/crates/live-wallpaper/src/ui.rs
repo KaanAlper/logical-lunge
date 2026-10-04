@@ -61,7 +61,7 @@ use windows::{
 use crate::{
   config::Config,
   desktop::{self, Layer},
-  log,
+  log, monitor_power,
   render::{self, Cmd, Target, WM_APP_FIRST_FRAME, WM_APP_RENDER_DIED},
 };
 
@@ -74,6 +74,9 @@ pub const WM_APP_RELOAD: u32 = WM_APP + 1;
 /// answer, 0 when every one shows its video): the startup cover stays until
 /// the wallpaper is there.
 pub const WM_APP_WAITING: u32 = WM_APP + 2;
+/// The set of monitors switched off at their button changed
+/// (monitor_power's thread).
+const WM_APP_MONITOR_POWER: u32 = WM_APP + 3;
 /// The startup cover's title (the core's Names.StartupCover).
 const STARTUP_COVER: &str = "Logical Lunge · açılış";
 /// is a fullscreen app on a monitor, are the windows still in place (and
@@ -114,6 +117,8 @@ struct Screen {
   /// the video thread's name for it (window handles are reused)
   id: u64,
   rect: RECT,
+  /// its monitor's GDI device name (`\.\DISPLAY1`)
+  device: String,
   hwnd: HWND,
   file: PathBuf,
   /// nothing of its wallpaper can be seen: a fullscreen app, or windows
@@ -243,6 +248,12 @@ pub fn run() {
     // the core may start it while the session is locked (a reload)
     LOCKED.set(session_locked());
     SetTimer(msg, TIMER_CHECK, 500, None);
+    monitor_power::watch(|| {
+      let h = MSG_HWND.load(Ordering::Acquire);
+      if h != 0 {
+        let _ = PostMessageW(HWND(h as _), WM_APP_MONITOR_POWER, WPARAM(0), LPARAM(0));
+      }
+    });
 
     APP.with(|a| {
       *a.borrow_mut() = Some(App {
@@ -370,6 +381,7 @@ impl App {
       self.screens.push(Screen {
         id: self.next_id,
         rect,
+        device: device.clone(),
         hwnd,
         file,
         covered: false,
@@ -606,10 +618,11 @@ impl App {
       || (self.config.pause_on_battery && ON_BATTERY.get())
       || (self.config.pause_idle_minutes > 0
         && idle() >= Duration::from_secs(u64::from(self.config.pause_idle_minutes) * 60));
+    let off = monitor_power::off();
     let paused: Vec<bool> = self
       .screens
       .iter()
-      .map(|s| all || (self.config.pause_fullscreen && s.covered))
+      .map(|s| all || (self.config.pause_fullscreen && s.covered) || off.contains(&s.device))
       .collect();
     if paused != self.last_paused {
       self.last_paused = paused.clone();
@@ -928,6 +941,11 @@ unsafe extern "system" fn msg_proc(
     }
     WM_DISPLAYCHANGE => {
       SetTimer(hwnd, TIMER_DISPLAY, 500, None);
+      monitor_power::ask_now();
+      LRESULT(0)
+    }
+    WM_APP_MONITOR_POWER => {
+      with_app(|a| a.update_pause());
       LRESULT(0)
     }
     WM_WTSSESSION_CHANGE => {
@@ -953,6 +971,8 @@ unsafe extern "system" fn msg_proc(
       if setting.PowerSetting == GUID_CONSOLE_DISPLAY_STATE {
         // 0 off, 1 on, 2 dimmed
         DISPLAY_OFF.set(setting.Data[0] == 0);
+        // woken monitors answer again: asked now, not in up to ten seconds
+        monitor_power::ask_now();
       } else if setting.PowerSetting == GUID_ACDC_POWER_SOURCE {
         // 0 mains, 1 battery, 2 short-term (UPS)
         ON_BATTERY.set(setting.Data[0] != 0);

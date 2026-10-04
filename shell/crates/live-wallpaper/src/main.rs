@@ -2,8 +2,8 @@
 //! window per monitor, decoded on the GPU by Media Foundation. The core
 //! starts it when a live wallpaper is set (state\live-wallpaper.json) and
 //! tells it to reload or stop through its window; it pauses while a
-//! fullscreen app covers a monitor, the screen is locked or off,
-//! or the computer runs on battery.
+//! fullscreen app covers a monitor, the screen is locked or off (a monitor
+//! switched off at its button too), or the computer runs on battery.
 //! `lunge-wallpaper --frame <video> <png>` saves one frame as a picture
 //! (the static wallpaper under the live one). Copied as LogicalLunge.scr
 //! it is the video screen saver (saver.rs).
@@ -20,6 +20,8 @@ mod cover;
 mod desktop;
 #[cfg(windows)]
 mod frame;
+#[cfg(windows)]
+mod monitor_power;
 #[cfg(windows)]
 mod render;
 #[cfg(windows)]

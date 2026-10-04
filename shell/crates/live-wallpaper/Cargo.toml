@@ -15,6 +15,7 @@ serde_json = { workspace = true }
 windows-core = { workspace = true }
 # everything it uses, so it builds in either edition's workspace (features add up)
 windows = { workspace = true, features = [
+  "Win32_Devices_Display",
   "Win32_Foundation",
   "Win32_Globalization",
   "Win32_Graphics_Direct3D",
