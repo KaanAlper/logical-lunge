@@ -45,8 +45,9 @@ static class CoreUnitTests
         Check(cache != null, "connected cache has an event-driven wait policy");
         if (cache != null)
         {
-            Check((int)cache.Invoke(null, new object[] { true }) == 30000, "connected idle cache queries at most once per 30 seconds");
-            Check((int)cache.Invoke(null, new object[] { false }) == 2000, "disconnected cache retains recovery polling");
+            Check((int)cache.Invoke(null, new object[] { true, true }) == 30000, "connected idle cache queries at most once per 30 seconds");
+            Check((int)cache.Invoke(null, new object[] { false, true }) == 2000, "disconnected cache retains recovery polling");
+            Check((int)cache.Invoke(null, new object[] { true, false }) == 2000, "failed query recovers quickly despite a live event socket");
         }
         var snapshot = typeof(Dwindle).GetMethod("SnapshotEvent", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
         Check(snapshot != null, "focus bookkeeping does not trigger a geometry snapshot");
@@ -60,8 +61,8 @@ static class CoreUnitTests
         Check(pool != null, "ring reserve follows actual demand rather than twelve windows per monitor");
         if (pool != null)
         {
-            Check((int)pool.Invoke(null, new object[] { false, 0 }) == 2 && (int)pool.Invoke(null, new object[] { true, 0 }) == 1, "idle monitor reserves only two inactive sets and one active set");
-            Check((int)pool.Invoke(null, new object[] { false, 7 }) == 7, "crowded workspace warms enough sets for its actual windows");
+            Check((int)pool.Invoke(null, new object[] { false, 0 }) == 2 && (int)pool.Invoke(null, new object[] { true, 0 }) == 2, "idle monitor reserves two inactive sets and focus handoff sets");
+            Check((int)pool.Invoke(null, new object[] { false, 7 }) == 8, "crowded workspace reserves an arriving window before reveal");
             Check((int)pool.Invoke(null, new object[] { false, 100 }) == 12 && (int)pool.Invoke(null, new object[] { true, 100 }) == 2, "reserve growth remains bounded after crowded workspaces");
         }
         var clip = typeof(Rounder).GetMethod("NeedsTileClip", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
@@ -73,6 +74,19 @@ static class CoreUnitTests
             Check((bool)clip.Invoke(null,new object[]{ full,tile,true }), "monitor-sized video still needs clipping after decorative rounding gives up");
             Check(!(bool)clip.Invoke(null,new object[]{ tile,tile,true }), "fitting tiles do not repeatedly fight an app's optional rounding");
             Check(!(bool)clip.Invoke(null,new object[]{ full,tile,false }), "genuine fullscreen without a tile slot stays fullscreen");
+        }
+        var region = typeof(Rounder).GetMethod("RegionMatches", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var due = typeof(Rounder).GetMethod("ClipRepairDue", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Check(region != null && due != null, "clip repair validates geometry and bounds callback bursts");
+        if (region != null && due != null)
+        {
+            var expected = new Native.RECT { Left=10, Top=20, Right=110, Bottom=120 };
+            var wrong = new Native.RECT { Left=0, Top=0, Right=1920, Bottom=1080 };
+            Check(!(bool)region.Invoke(null,new object[]{2,wrong,expected,true}), "an app's full-window replacement region cannot bypass the tile clip");
+            Check(!(bool)region.Invoke(null,new object[]{1,expected,expected,true}), "empty region is not a successful clip");
+            Check((bool)region.Invoke(null,new object[]{2,expected,expected,true}), "valid rectangular clip is retained");
+            Check(!(bool)due.Invoke(null,new object[]{101,100}) && (bool)due.Invoke(null,new object[]{116,100}), "repeated callbacks coalesce while repair resumes next frame");
+            Check((bool)due.Invoke(null,new object[]{unchecked(int.MinValue+20), int.MaxValue-10}), "repair deadline survives tick count wrap");
         }
     }
 
