@@ -17,11 +17,27 @@ button { display: inline-flex; align-items: center; justify-content: center; bor
 button:hover { background: color-mix(in srgb, var(--m3onSurface) 10%, transparent); }
 button:active { background: color-mix(in srgb, var(--m3primary) 22%, transparent); }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--m3primary); outline-offset: -2px; }
-.widget { position: absolute; border-radius: 18px; overflow: hidden; background: color-mix(in srgb, var(--colLayer0) 88%, transparent); border: 1px solid color-mix(in srgb, var(--colLayer0Border) 80%, transparent); user-select: none; touch-action: none; }
-.widget:hover, .widget:focus-within { border-color: color-mix(in srgb, var(--m3primary) 40%, var(--colLayer0Border)); }
-.widget.dragging { border-color: var(--m3primary); cursor: grabbing; }
+.widget { position: absolute; border-radius: 18px; overflow: hidden; isolation: isolate; background: transparent; border: 1px solid transparent; user-select: none; touch-action: none; }
+.widget::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit; background: color-mix(in srgb, var(--colLayer0) 88%, transparent); border: 1px solid color-mix(in srgb, var(--colLayer0Border) 80%, transparent); opacity: var(--widget-background-opacity, 1); }
+.widget:hover::before, .widget:focus-within::before { border-color: color-mix(in srgb, var(--m3primary) 40%, var(--colLayer0Border)); }
+.widget.dragging { outline: 1px solid var(--m3primary); cursor: grabbing; }
 .widget.ghost-out { opacity: 0; }
-.widget-content { height: 100%; padding: 14px 16px; overflow: hidden; }
+.widget-content { height: 100%; padding: 14px 16px; overflow: hidden; opacity: var(--widget-content-opacity, 1); }
+.widget[data-appearance="transparent"]::before { background: transparent; border-color: transparent; }
+.widget[data-appearance="outline"]::before { background: transparent; border: 0; box-shadow: none; }
+.widget[data-appearance="glass"]::before { background: linear-gradient(135deg, color-mix(in srgb, var(--m3onSurface) 16%, transparent), color-mix(in srgb, var(--colLayer0) 46%, transparent)); border-color: color-mix(in srgb, var(--m3onSurface) 30%, transparent); backdrop-filter: blur(16px); }
+.widget[data-appearance="futuristic"] { border-radius: 4px 20px 4px 20px; }
+.widget[data-appearance="futuristic"]::before { background: repeating-linear-gradient(0deg, transparent 0 3px, color-mix(in srgb, var(--m3primary) 6%, transparent) 3px 4px), color-mix(in srgb, var(--colLayer0) 92%, transparent); border-color: var(--m3primary); box-shadow: inset 0 0 18px color-mix(in srgb, var(--m3primary) 22%, transparent); }
+.widget[data-appearance="cartoon"] { border-radius: 24px 14px 22px 12px; }
+.widget[data-appearance="cartoon"]::before { background: var(--m3primaryContainer); border: 3px solid var(--m3onSurface); box-shadow: inset -4px -4px 0 color-mix(in srgb, var(--m3onSurface) 25%, transparent); }
+.widget[data-appearance="cartoon"] .widget-content { font-family: 'Comic Sans MS', 'Comic Sans', 'Google Sans Flex', 'Rubik', sans-serif; font-weight: 650; }
+.widget[data-appearance="paper"] { border-radius: 3px; --m3onSurface: #302b24; --m3onSurfaceVariant: #655a4b; --m3primary: #786545; color: var(--m3onSurface); }
+.widget[data-appearance="paper"]::before { background: repeating-linear-gradient(0deg, transparent 0 23px, #baa88540 23px 24px), #f4ead3; border: 1px solid #c5b48e; box-shadow: inset -5px 0 0 #e3d5b8; }
+.widget[data-appearance="paper"] .widget-content { font-family: Georgia, 'Segoe UI', serif; }
+.widget[data-appearance="pixel"] { border-radius: 0; }
+.widget[data-appearance="pixel"]::before { background: var(--colLayer0); border: 3px double var(--m3primary); box-shadow: inset 4px 4px 0 color-mix(in srgb, var(--m3primary) 12%, transparent); }
+.widget[data-appearance="pixel"] .widget-content { font-family: 'Pixelify Sans', 'Google Sans Flex', 'Rubik', sans-serif; }
+.widget[data-appearance="futuristic"] .widget-content { font-family: Consolas, 'Google Sans Flex', 'Rubik', monospace; }
 .widget-tools { position: absolute; right: 5px; top: 3px; opacity: 0; }
 .widget:hover .widget-tools, .widget:focus-within .widget-tools { opacity: 1; }
 .widget-tools button { background: var(--colLayer0); }
@@ -60,11 +76,43 @@ progress { display: block; width: 100%; height: 4px; margin-top: 5px; border: 0;
 progress::-webkit-progress-bar { background: color-mix(in srgb, var(--m3onSurface) 12%, transparent); }
 progress::-webkit-progress-value { background: var(--m3primary); }
 .weather-card { height: 100%; display: flex; flex-direction: column; justify-content: center; gap: 5px; font-size: 12px; }
+.widget-weather:is([data-shape="card"], [data-shape="bubble"]) > .widget-content { display: flex; align-items: center; justify-content: center; }
+.widget-weather:is([data-shape="card"], [data-shape="bubble"]) .weather-card { height: auto; width: min(100%, 320px); }
 .weather-main { display: flex; align-items: center; gap: 18px; }
 .weather-main > .icon { color: var(--m3primary); font-size: 42px; }
 .weather-main > span:last-child { font-size: 34px; }
-.city-editor { position: absolute; bottom: 8px; left: 8px; right: 8px; display: flex; background: var(--colLayer0); border-radius: 8px; padding: 2px; }
-.city-editor input { min-width: 0; width: 100%; padding: 4px 8px; border: 0; background: transparent; }
+.widget-location-popup { position: absolute; z-index: 60; width: 420px; overflow: auto; padding: 20px; border-radius: 18px; border: 1px solid var(--colLayer0Border); background: var(--colLayer0); box-shadow: 0 12px 32px #0004; user-select: text; }
+.location-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.location-heading-text { display: flex; flex-direction: column; gap: 5px; }
+.location-heading strong { font-size: 18px; font-weight: 600; line-height: 26px; }
+.location-heading .subtext { font-size: 11px; }
+.location-close { font-size: 22px; line-height: 1; width: 28px; height: 28px; padding: 0; color: var(--m3onSurfaceVariant); }
+.location-field { position: relative; margin-top: 8px; padding: 7px 12px 6px; border: 1px solid transparent; border-radius: 12px; background: var(--colLayer2); }
+.location-field:focus-within { border-color: var(--m3primary); }
+.location-field:has(input:disabled) { opacity: .6; }
+.location-field label { display: block; margin-bottom: 4px; font-size: 11px; line-height: 14px; color: var(--m3onSurfaceVariant); }
+.location-field input { width: 100%; height: 22px; border: 0; border-radius: 0; padding: 0; background: transparent; font-size: 13.5px; user-select: text; }
+.location-field input:focus-visible { outline: 0; }
+button:disabled, input:disabled { opacity: .45; cursor: default; }
+.location-results { position: absolute; left: -1px; right: -1px; top: calc(100% + 4px); z-index: 3; max-height: 130px; overflow: auto; padding: 4px; border: 1px solid var(--m3outlineVariant, var(--colLayer0Border)); border-radius: 12px; background: color-mix(in srgb, var(--colLayer2) 88%, var(--m3onSurface) 12%); box-shadow: 0 2px 5px #0003, 0 12px 28px #0005; }
+.location-field[data-location-field="district"] .location-results { top: auto; bottom: calc(100% + 4px); }
+.location-results button { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; width: 100%; padding: 4px 9px; height: 40px; text-align: left; border-radius: 8px; }
+.location-result-name, .location-result-detail { width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.location-result-name { font-size: 13px; font-weight: 500; line-height: 19px; }
+.location-result-detail { font-size: 10.5px; font-weight: 400; line-height: 14px; color: var(--m3onSurfaceVariant); }
+.location-results [aria-selected="true"] { background: var(--m3primaryContainer); color: var(--m3onPrimaryContainer); }
+.location-search-status { min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--m3onSurfaceVariant); padding-top: 6px; }
+.location-search-status button { font-size: 12px; color: var(--m3primary); }
+.location-recents { display: flex; flex-direction: column; gap: 2px; max-height: 108px; overflow: auto; margin: 10px 0 0; }
+.location-recents > .subtext { font-size: 11px; margin-bottom: 4px; }
+.location-recents button { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 4px 10px; min-height: 40px; flex-shrink: 0; text-align: left; }
+.location-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--colLayer0Border); }
+.location-actions button { padding: 7px 16px; min-width: 94px; height: 36px; border-radius: 10px; font-size: 13px; }
+.location-save { background: var(--m3primary); color: var(--m3onPrimary); }
+.location-save:hover { background: color-mix(in srgb, var(--m3primary) 90%, var(--m3onSurface)); }
+.location-save-error { font-size: 12px; overflow-wrap: anywhere; }
+.location-attribution { display: block; margin-top: 16px; font-size: 10px; color: var(--m3onSurfaceVariant); }
+.location-attribution a { color: inherit; text-underline-offset: 2px; }
 .agenda-card { height: 100%; display: flex; flex-direction: column; }
 .agenda-day { display: flex; align-items: center; gap: 14px; padding-bottom: 12px; border-bottom: 1px solid var(--colLayer0Border); }
 .day-number { display: grid; place-items: center; width: 48px; height: 48px; flex-shrink: 0; border-radius: 14px; background: var(--m3primaryContainer); color: var(--m3onPrimaryContainer); font-size: 30px; }
@@ -78,4 +126,145 @@ progress::-webkit-progress-value { background: var(--m3primary); }
 .widget-menu button { display: flex; width: 100%; min-height: 28px; justify-content: flex-start; gap: 8px; font-size: 13px; text-align: left; padding: 4px 8px; }
 .widget-menu .icon, .menu-spacer { width: 18px; font-size: 16px; }
 .widget-menu hr { border: 0; height: 1px; background: var(--colLayer0Border); margin: 5px 4px; }
+.menu-heading { font-size: 11px; color: var(--m3onSurfaceVariant); padding: 8px; }
+.opacity-control { display: block; padding: 8px; font-size: 12px; }
+.opacity-control > span { display: flex; justify-content: space-between; gap: 8px; }
+.opacity-control output { color: var(--m3onSurfaceVariant); font-variant-numeric: tabular-nums; }
+.opacity-control input { width: 100%; margin: 8px 0 0; accent-color: var(--m3primary); cursor: pointer; }
 .host-error { position: absolute; left: 24px; bottom: 24px; z-index: 100; max-width: 480px; display: flex; align-items: center; padding: 8px 12px; gap: 12px; border: 1px solid var(--m3primary); border-radius: 12px; background: var(--colLayer0); font-size: 12px; overflow-wrap: anywhere; }
+
+/* Contour, hierarchy and controls are independent of the material. The SVG clip
+   and native region share exact geometry; detached panes have a real empty gap. */
+.widget-content { position: relative; z-index: 1; }
+.widget:not([data-shape="card"]) > .widget-content { position: absolute; padding: 0; min-width: 0; }
+.widget:not([data-shape="card"])::before { border-radius: 0; border: 0; }
+.widget-shape-svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 0; pointer-events: none; opacity: var(--widget-background-opacity, 1); }
+.shape-outline { fill: none; stroke: color-mix(in srgb, var(--m3onSurface) 30%, transparent); stroke-width: 1.5; }
+.shape-perforation { stroke: color-mix(in srgb, var(--m3onSurface) 32%, transparent); stroke-width: 1; stroke-dasharray: 3 5; }
+.shape-orbit { fill: none; stroke: color-mix(in srgb, var(--m3primary) 22%, transparent); stroke-width: 1; stroke-dasharray: 1 7; }
+.shape-tape { fill: color-mix(in srgb, var(--m3onSurface) 25%, var(--colLayer0)); stroke: color-mix(in srgb, var(--m3onSurface) 35%, transparent); stroke-width: 1; }
+.widget-tools, .resize-grip { z-index: 3; }
+.widget:not([data-shape="card"]) .subtext { overflow-wrap: anywhere; }
+.widget:not([data-shape="card"]) .clock-date { line-height: 1.3; }
+.widget:not([data-shape="card"]) .note-editor { font-size: 13px; line-height: 1.65; }
+
+.widget[data-shape="capsule"] .weather-card { display: grid; grid-template-columns: 46% 1fr; grid-template-rows: 1fr 1fr; align-items: center; gap: 4px 12px; }
+.widget[data-shape="capsule"] .weather-main { grid-row: 1 / 3; gap: 10px; }
+.widget[data-shape="capsule"] .clock { flex-direction: row; justify-content: space-between; gap: 18px; }
+.widget[data-shape="capsule"] .clock-date { max-width: 46%; text-align: left; border-left: 1px solid var(--colLayer0Border); padding-left: 16px; }
+.widget[data-shape="capsule"] .media-card { gap: 16px; }
+.widget[data-shape="capsule"] .art { width: 56px; height: 56px; border-radius: 50%; }
+.widget[data-shape="capsule"] .system-card { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: center; }
+.widget[data-shape="capsule"] .metric-label { flex-direction: column; align-items: flex-start; gap: 2px; }
+.widget[data-shape="capsule"] .metric-label > :last-child { margin-left: 0; font-size: 21px; }
+.widget[data-shape="capsule"] .agenda-card { flex-direction: row; gap: 16px; }
+.widget[data-shape="capsule"] .agenda-day { width: 42%; flex-direction: column; justify-content: center; gap: 6px; border: 0; padding: 0; }
+.widget[data-shape="capsule"] .agenda-list { padding: 0; }
+.widget[data-shape="capsule"] .note-editor { padding: 8px 16px; border-left: 2px solid var(--m3primary); }
+
+.widget[data-shape="circle"] .weather-card { align-items: center; text-align: center; gap: 6px; }
+.widget[data-shape="circle"] .weather-main { flex-direction: column; gap: 2px; }
+.widget[data-shape="circle"] .weather-main > .icon { font-size: 46px; }
+.widget[data-shape="circle"] .weather-main > span:last-child { font-size: 42px; line-height: 1; }
+.widget[data-shape="circle"] .analog { flex-direction: column; gap: 6px; }
+.widget[data-shape="circle"] .analog svg { height: calc(100% - 38px); max-width: 130px; }
+.widget[data-shape="circle"] .analog .clock-date { max-width: 100%; }
+.widget[data-shape="circle"] .media-card { flex-direction: column; gap: 6px; justify-content: center; }
+.widget[data-shape="circle"] .art { width: 48px; height: 48px; border-radius: 50%; }
+.widget[data-shape="circle"] .media-info { width: 100%; flex: 0; text-align: center; }
+.widget[data-shape="circle"] .media-controls { margin-left: 0; }
+.widget[data-shape="circle"] .system-card { gap: 8px; }
+.widget[data-shape="circle"] .metric-label { gap: 5px; }
+.widget[data-shape="circle"] .agenda-day { justify-content: center; flex-direction: column; gap: 5px; padding-bottom: 5px; text-align: center; }
+.widget[data-shape="circle"] .day-number { width: 38px; height: 38px; border-radius: 50%; font-size: 26px; }
+.widget[data-shape="circle"] .agenda-list { padding-top: 5px; }
+.widget[data-shape="circle"] .note-editor { text-align: center; padding: 8px 3px; }
+
+.widget[data-shape="ticket"] .weather-card { display: grid; grid-template-columns: 30% 1fr; grid-template-rows: auto auto auto; align-items: center; align-content: center; gap: 4px 16px; }
+.widget[data-shape="ticket"] .weather-main { display: contents; }
+.widget[data-shape="ticket"] .weather-main > .icon { grid-column: 1; grid-row: 1 / 4; justify-self: center; font-size: 46px; }
+.widget[data-shape="ticket"] .weather-main > span:last-child { grid-column: 2; grid-row: 1; font-size: 40px; }
+.widget[data-shape="ticket"] .weather-card > div:not(.weather-main) { grid-column: 2; }
+.widget[data-shape="ticket"] .clock { flex-direction: row; justify-content: space-between; gap: 20px; }
+.widget[data-shape="ticket"] .clock-date { width: 52%; text-align: left; }
+.widget[data-shape="ticket"] .media-card { gap: 24px; }
+.widget[data-shape="ticket"] .art { width: 56px; height: 80px; border-radius: 3px; }
+.widget[data-shape="ticket"] .system-card { gap: 14px; }
+.widget[data-shape="ticket"] .metric-label { font-variant-numeric: tabular-nums; }
+.widget[data-shape="ticket"] .agenda-card { flex-direction: row; gap: 22px; }
+.widget[data-shape="ticket"] .agenda-day { flex-direction: column; width: 34%; justify-content: center; text-align: center; border: 0; padding: 0; gap: 5px; }
+.widget[data-shape="ticket"] .agenda-list { padding: 0; }
+.widget[data-shape="ticket"] .note-editor { padding: 5px 10px; background: repeating-linear-gradient(transparent 0 21px, color-mix(in srgb, var(--m3onSurface) 10%, transparent) 21px 22px); }
+
+.widget[data-shape="bubble"] .weather-main > span:last-child { font-size: 44px; }
+.widget[data-shape="bubble"] .weather-card > .subtext { margin-top: 0; align-self: flex-start; }
+.widget[data-shape="bubble"] .clock { align-items: flex-start; justify-content: space-between; padding-top: 8px; }
+.widget[data-shape="bubble"] .clock-date { align-self: flex-end; max-width: 70%; text-align: right; }
+.widget[data-shape="bubble"] .analog { flex-direction: row; align-items: center; }
+.widget[data-shape="bubble"] .art { border-radius: 50%; }
+.widget[data-shape="bubble"] .media-card { align-items: flex-start; padding-top: 16px; }
+.widget[data-shape="bubble"] .system-card { justify-content: space-around; }
+.widget[data-shape="bubble"] .agenda-day { border: 0; padding-bottom: 6px; }
+.widget[data-shape="bubble"] .day-number { border-radius: 50%; }
+.widget[data-shape="bubble"] .note-editor { padding: 4px 8px; }
+
+.widget[data-shape="hexagon"] .weather-card { align-items: center; text-align: center; }
+.widget[data-shape="hexagon"] .weather-main { flex-direction: column; gap: 4px; }
+.widget[data-shape="hexagon"] .weather-main > .icon { font-size: 46px; }
+.widget[data-shape="hexagon"] .analog { flex-direction: column; gap: 8px; }
+.widget[data-shape="hexagon"] .analog svg { height: calc(100% - 38px); max-width: 130px; }
+.widget[data-shape="hexagon"] .analog .clock-date { max-width: 100%; }
+.widget[data-shape="hexagon"] .media-card { flex-direction: column; gap: 6px; justify-content: center; }
+.widget[data-shape="hexagon"] .art { width: 54px; height: 54px; border-radius: 3px; }
+.widget[data-shape="hexagon"] .media-info { width: 100%; flex: 0; }
+.widget[data-shape="hexagon"] .system-card { gap: 14px; }
+.widget[data-shape="hexagon"] .agenda-day { flex-direction: column; justify-content: center; text-align: center; gap: 4px; padding-bottom: 5px; }
+.widget[data-shape="hexagon"] .day-number { border-radius: 3px; height: 38px; width: 38px; font-size: 26px; }
+.widget[data-shape="hexagon"] .agenda-list { padding-top: 5px; }
+.widget[data-shape="hexagon"] .note-editor { padding: 5px 0; }
+
+.widget[data-shape="polaroid"] .weather-card, .widget[data-shape="polaroid"] .clock { display: grid; grid-template-rows: 1fr 24px 24px; text-align: center; gap: 4px; }
+.widget[data-shape="polaroid"] .weather-main { justify-content: center; background: color-mix(in srgb, var(--m3primary) 7%, transparent); border: 1px solid var(--colLayer0Border); }
+.widget[data-shape="polaroid"] .clock { grid-template-rows: 1fr 28px; align-items: stretch; }
+.widget[data-shape="polaroid"] .clock-time { display: grid; place-items: center; border: 1px solid var(--colLayer0Border); }
+.widget[data-shape="polaroid"] .analog svg { height: 100%; max-width: 160px; justify-self: center; }
+.widget[data-shape="polaroid"] .analog .clock-date { max-width: 100%; }
+.widget[data-shape="polaroid"] .media-card { flex-direction: column; gap: 8px; }
+.widget[data-shape="polaroid"] .art { width: 100%; height: 100px; border-radius: 2px; }
+.widget[data-shape="polaroid"] .media-info { width: 100%; }
+.widget[data-shape="polaroid"] .system-card { height: calc(100% - 24px); background: color-mix(in srgb, var(--m3primary) 5%, transparent); padding: 12px; border: 1px solid var(--colLayer0Border); }
+.widget[data-shape="polaroid"] .agenda-day { justify-content: center; text-align: center; padding-bottom: 16px; }
+.widget[data-shape="polaroid"] .day-number { height: 64px; width: 64px; border-radius: 2px; font-size: 40px; }
+.widget[data-shape="polaroid"] .note-editor { height: calc(100% - 24px); border: 1px solid var(--colLayer0Border); padding: 10px; }
+.shape-caption { font-size: 12px; text-align: center; height: 24px; line-height: 24px; color: var(--m3onSurfaceVariant); }
+
+.widget[data-shape="split"] .weather-card, .widget[data-shape="split"] .clock, .widget[data-shape="split"] .media-card, .widget[data-shape="split"] .agenda-card { display: grid; grid-template-columns: var(--shape-leading-width) 1fr; column-gap: var(--shape-pane-gap); }
+.widget[data-shape="split"] .weather-card { grid-template-rows: 1fr 1fr 1fr; align-items: center; }
+.widget[data-shape="split"] .weather-main { display: contents; }
+.widget[data-shape="split"] .weather-main > .icon { grid-column: 1; grid-row: 1 / 4; justify-self: center; font-size: 48px; }
+.widget[data-shape="split"] .weather-main > span:last-child { grid-column: 2; grid-row: 1; font-size: 40px; }
+.widget[data-shape="split"] .weather-card > div:not(.weather-main) { grid-column: 2; }
+.widget[data-shape="split"] .clock { grid-template-rows: 1fr; align-items: center; }
+.widget[data-shape="split"] .clock-date { grid-column: 2; font-size: 17px; text-align: left; }
+.widget[data-shape="split"] .analog svg { width: 100%; height: auto; max-width: 100%; }
+.widget[data-shape="split"] .analog .clock-date { max-width: 100%; }
+.widget[data-shape="split"] .media-card { grid-template-rows: 1fr; }
+.widget[data-shape="split"] .art { width: 100%; height: 64px; border-radius: 4px; }
+.widget[data-shape="split"] .agenda-card { grid-template-rows: 40px 1fr; }
+.widget[data-shape="split"] .agenda-day { display: contents; }
+.widget[data-shape="split"] .day-number { grid-column: 1; grid-row: 1 / 3; width: 100%; height: 64px; align-self: center; background: transparent; color: var(--m3primary); }
+.widget[data-shape="split"] .agenda-day > span:last-child { grid-column: 2; grid-row: 1; font-size: 13px; }
+.widget[data-shape="split"] .agenda-list { grid-column: 2; grid-row: 2; padding-top: 0; }
+.shape-lead { position: absolute; left: 0; top: 0; width: var(--shape-leading-width); height: 100%; display: grid; place-items: center; color: var(--m3primary); }
+.shape-lead .icon { font-size: 44px; }
+.widget[data-shape="split"] .system-card, .widget[data-shape="split"] .note-editor { margin-left: calc(var(--shape-leading-width) + var(--shape-pane-gap)); width: calc(100% - var(--shape-leading-width) - var(--shape-pane-gap)); }
+
+/* A sharp opposing outline belongs to glyphs, never to the transparent card.
+   paint-order keeps the fill intact; eight subpixel shadows are the fallback. */
+.widget[data-appearance="outline"]::before { background: transparent; border: 0; box-shadow: none; }
+.widget[data-appearance="outline"] .widget-shape-svg { visibility: hidden; }
+.widget[data-appearance="outline"] .widget-content, .widget[data-appearance="outline"] .widget-content * { -webkit-text-stroke: .65px var(--widget-glyph-outline, #101016); paint-order: stroke fill; text-shadow: .75px 0 var(--widget-glyph-outline, #101016), -.75px 0 var(--widget-glyph-outline, #101016), 0 .75px var(--widget-glyph-outline, #101016), 0 -.75px var(--widget-glyph-outline, #101016), .6px .6px var(--widget-glyph-outline, #101016), -.6px -.6px var(--widget-glyph-outline, #101016), .6px -.6px var(--widget-glyph-outline, #101016), -.6px .6px var(--widget-glyph-outline, #101016); }
+.widget[data-appearance="outline"] .widget-content .icon { -webkit-text-stroke-width: .5px; }
+.widget[data-appearance="outline"] .widget-content .art:not(:has(img)), .widget[data-appearance="outline"] .widget-content .day-number, .widget[data-appearance="outline"] .widget-content .weather-main, .widget[data-appearance="outline"] .widget-content .clock-time, .widget[data-appearance="outline"] .widget-content .system-card, .widget[data-appearance="outline"] .widget-content .note-editor { background: transparent; border-color: transparent; box-shadow: none; }
+.widget[data-appearance="outline"] .face { fill: transparent; }
+.widget[data-appearance="outline"] .note-editor { caret-color: currentColor; }

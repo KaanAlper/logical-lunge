@@ -21,7 +21,22 @@ pub struct DesktopMonitor {
   pub scale: f64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Region { pub x: f64, pub y: f64, pub w: f64, pub h: f64 }
+pub struct RegionPoint { pub x: f64, pub y: f64 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Region {
+  pub x: f64, pub y: f64, pub w: f64, pub h: f64,
+  #[serde(default)] pub shape: String,
+  #[serde(default)] pub radius: f64,
+  #[serde(default)] pub points: Vec<RegionPoint>,
+  #[serde(default)] pub holes: Vec<Region>,
+}
+fn valid_region(r: &Region, depth: usize) -> bool {
+  depth <= 2 && [r.x,r.y,r.w,r.h,r.radius].iter().all(|n| n.is_finite()) && r.w >= 0. && r.h >= 0. && r.radius >= 0.
+    && ["","rect","roundRect","ellipse","polygon"].contains(&r.shape.as_str())
+    && r.points.len() <= 32 && (r.shape != "polygon" || r.points.len() >= 3)
+    && r.points.iter().all(|p| p.x.is_finite() && p.y.is_finite())
+    && r.holes.len() <= 8 && r.holes.iter().all(|h| valid_region(h,depth+1))
+}
 #[derive(Clone)]
 struct Host { device: String, regions: Vec<Region>, editing: bool, geometry: String, active: bool }
 static HOSTS: OnceLock<Mutex<HashMap<String, Host>>> = OnceLock::new();
@@ -46,19 +61,60 @@ fn sizes(kind: &str) -> Option<((f64, f64), (f64, f64))> {
   })
 }
 fn number(v: &Value, k: &str, default: f64) -> f64 { v[k].as_f64().filter(|n| n.is_finite()).unwrap_or(default) }
+fn shape_minimum(shape: &str, min: (f64,f64)) -> (f64,f64) {
+  let (w,h): (f64,f64) = match shape {
+    "capsule" => (320.,144.), "circle" => (224.,224.), "ticket" => (288.,168.), "bubble" => (248.,200.),
+    "hexagon" => (288.,240.), "polaroid" => (248.,288.), "split" => (320.,168.), _ => (0.,0.),
+  };
+  (w.max(min.0),h.max(min.1))
+}
+fn normalize_location(v: &Value) -> Option<Value> {
+  let code = v["countryCode"].as_str()?;
+  if code.len() != 2 || !code.bytes().all(|c| c.is_ascii_alphabetic()) { return None; }
+  let country = v["country"].as_str().filter(|s| !s.trim().is_empty())?;
+  let city = v["city"].as_str().filter(|s| !s.trim().is_empty())?;
+  let coord = |key: &str, limit: f64| v[key].as_f64().filter(|n| n.is_finite() && n.abs() <= limit);
+  Some(json!({"countryCode":code.to_ascii_uppercase(),"country":country,"city":city,
+    "district":v["district"].as_str().unwrap_or(""),"latitude":coord("latitude",90.)?,"longitude":coord("longitude",180.)?,
+    "cityLatitude":coord("cityLatitude",90.)?,"cityLongitude":coord("cityLongitude",180.)?}))
+}
+fn normalize_recents(v: &Value) -> Vec<Value> {
+  let mut places = Vec::new();
+  if let Some(raw) = v.as_array() {
+    for value in raw {
+      if let Some(place) = normalize_location(value) {
+        if !places.contains(&place) { places.push(place); }
+        if places.len() == 8 { break; }
+      }
+    }
+  }
+  places
+}
 fn normalize(v: &Value) -> Option<Value> {
   let id = v["id"].as_u64().filter(|n| *n > 0 && *n <= 9_007_199_254_740_991)?;
   let kind = v["kind"].as_str()?;
   let ((w, h), _) = sizes(kind)?;
   let clock = v["clock"].as_str().filter(|s| ["digital", "large", "analog"].contains(s)).unwrap_or("digital");
+  let appearance = v["appearance"].as_str().filter(|s| ["standard","transparent","outline","glass","futuristic","cartoon","paper","pixel"].contains(s)).unwrap_or("standard");
+  let shape = v["shape"].as_str().filter(|s| ["card","capsule","circle","ticket","bubble","hexagon","polaroid","split"].contains(s)).unwrap_or("card");
+  let mut width = if number(v,"w",w) > 0. { number(v,"w",w) } else { w };
+  let mut height = if number(v,"h",h) > 0. { number(v,"h",h) } else { h };
+  if shape == "circle" { width = width.max(height).max(224.).max(sizes(kind)?.1.0); height = width; }
+  let mut shape_sizes = serde_json::Map::new();
+  for form in ["card","capsule","circle","ticket","bubble","hexagon","polaroid","split"] {
+    if let Some(size) = v["shapeSizes"][form].as_array().filter(|a| a.len() == 2 && a.iter().all(|n| n.as_f64().is_some_and(|n| n.is_finite() && n > 0. && n <= 10000.))) {
+      shape_sizes.insert(form.into(),Value::Array(size.clone()));
+    }
+  }
   Some(json!({"id": id, "kind": kind, "monitor": v["monitor"].as_str().unwrap_or(""),
     "x": number(v, "x", 24.), "y": number(v, "y", 24.),
-    "w": if number(v,"w",w) > 0. { number(v,"w",w) } else { w },
-    "h": if number(v,"h",h) > 0. { number(v,"h",h) } else { h },
+    "w": width, "h": height, "shape":shape, "shapeSizes":shape_sizes,
     "clock": clock, "seconds": v["seconds"].as_bool().unwrap_or(false),
     "date": v["date"].as_bool().unwrap_or(true), "temps": v["temps"].as_bool().unwrap_or(true),
     "city": v["city"].as_str().unwrap_or(""), "fahrenheit": v["fahrenheit"].as_bool().unwrap_or(false),
-    "note": v["note"].as_str().unwrap_or("")}))
+    "note": v["note"].as_str().unwrap_or(""), "appearance":appearance,
+    "backgroundOpacity":number(v,"backgroundOpacity",1.).clamp(0.,1.), "contentOpacity":number(v,"contentOpacity",1.).clamp(0.,1.),
+    "location":normalize_location(&v["location"]), "recentLocations":normalize_recents(&v["recentLocations"])}))
 }
 fn parse_store(text: &str) -> Result<Value, String> {
   let v: Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
@@ -111,9 +167,12 @@ fn monitor_for<'a>(monitors: &'a [DesktopMonitor], device: &str) -> Option<&'a D
     .or_else(|| monitors.iter().find(|m| m.primary)).or(monitors.first())
 }
 fn clamp(spec: &mut Value, mon: &DesktopMonitor) {
-  let (_, (mw, mh)) = sizes(spec["kind"].as_str().unwrap()).unwrap();
+  let (_, minimum) = sizes(spec["kind"].as_str().unwrap()).unwrap();
+  let shape = spec["shape"].as_str().unwrap_or("card"); let (mw,mh) = shape_minimum(shape,minimum);
   let (aw, ah) = (mon.width as f64 / mon.scale, mon.height as f64 / mon.scale);
-  let w = number(spec,"w",mw).max(mw).min(aw); let h = number(spec,"h",mh).max(mh).min(ah);
+  let mut w = number(spec,"w",mw).max(mw).min(aw); let mut h = number(spec,"h",mh).max(mh).min(ah);
+  if shape == "circle" { w = w.max(h).max(mw).max(mh).min(aw).min(ah); h = w; }
+  if shape == "capsule" { w = w.max(h*1.8).min(aw); h = h.min(w/1.8); }
   let x = number(spec,"x",0.).min(aw-w).max(0.); let y = number(spec,"y",0.).min(ah-h).max(0.);
   spec["x"] = json!(x); spec["y"] = json!(y); spec["w"] = json!(w); spec["h"] = json!(h);
 }
@@ -200,7 +259,7 @@ pub fn desktop_widgets_bootstrap(window: WebviewWindow) -> Result<Value, String>
 }
 #[tauri::command]
 pub fn desktop_widgets_regions(window: WebviewWindow, regions: Vec<Region>) -> Result<(),String> {
-  if regions.len() > 512 || regions.iter().any(|r| ![r.x,r.y,r.w,r.h].iter().all(|n| n.is_finite()) || r.w < 0. || r.h < 0.) { return Err("Invalid desktop regions".into()); }
+  if regions.len() > 512 || regions.iter().any(|r| !valid_region(r,0)) { return Err("Invalid desktop regions".into()); }
   let mut map = hosts().lock().map_err(|e| e.to_string())?;
   let host = map.get_mut(window.label()).ok_or("Desktop host not initialized")?;
   platform::set_regions(&window,&regions)?; host.regions = regions;
@@ -336,13 +395,28 @@ mod platform {
     if edit { win.set_focus().map_err(|e|e.to_string())?; }
     Ok(())
   }
+  unsafe fn region_handle(r: &Region) -> Result<HRGN,String> {
+    let (x,y,right,bottom) = (r.x.floor() as i32,r.y.floor() as i32,(r.x+r.w).ceil() as i32,(r.y+r.h).ceil() as i32);
+    let part = match r.shape.as_str() {
+      "ellipse" => CreateEllipticRgn(x,y,right,bottom),
+      "roundRect" => { let diameter = (2.*r.radius.min(r.w/2.).min(r.h/2.)).round() as i32; CreateRoundRectRgn(x,y,right,bottom,diameter,diameter) },
+      "polygon" => { let points:Vec<POINT> = r.points.iter().map(|p| POINT{x:(r.x+p.x).round() as i32,y:(r.y+p.y).round() as i32}).collect(); CreatePolygonRgn(&points,WINDING) },
+      _ => CreateRectRgn(x,y,right,bottom),
+    };
+    if part.is_invalid() { return Err("Region allocation failed".into()); }
+    for hole in &r.holes {
+      let cut = match region_handle(hole) { Ok(h)=>h,Err(e)=>{let _=DeleteObject(part);return Err(e);} };
+      let result = CombineRgn(part,part,cut,RGN_DIFF); let _=DeleteObject(cut);
+      if result == RGN_ERROR { let _=DeleteObject(part);return Err("Region subtraction failed".into()); }
+    }
+    Ok(part)
+  }
   pub fn set_regions(win:&WebviewWindow,regions:&[Region])->Result<(),String> {
     unsafe {
       let all = CreateRectRgn(0,0,0,0);
       if all.is_invalid() { return Err("Region allocation failed".into()); }
       for r in regions {
-        let part = CreateRectRgn(r.x.floor() as i32,r.y.floor() as i32,(r.x+r.w).ceil() as i32,(r.y+r.h).ceil() as i32);
-        if part.is_invalid() { let _=DeleteObject(all); return Err("Region allocation failed".into()); }
+        let part = match region_handle(r) { Ok(h)=>h,Err(e)=>{let _=DeleteObject(all);return Err(e);} };
         let result = CombineRgn(all,all,part,RGN_OR); let _ = DeleteObject(part);
         if result == RGN_ERROR { let _ = DeleteObject(all); return Err("Region union failed".into()); }
       }

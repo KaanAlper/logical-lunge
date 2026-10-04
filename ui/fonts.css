@@ -216,3 +216,13 @@
   font-display: block;
   src: url(./fonts/material-symbols-rounded-100-700-fallback.woff2) format('woff2');
 }
+
+/* Pixelify Sans: SIL OFL 1.1; license in fonts/pixelify-sans-OFL.txt.
+   Full Latin/Latin-ext/Cyrillic face, selected only by widget appearance. */
+@font-face {
+  font-family: 'Pixelify Sans';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('./fonts/pixelify-sans-400-700.woff2') format('woff2');
+}

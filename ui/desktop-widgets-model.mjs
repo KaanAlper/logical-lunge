@@ -1,4 +1,5 @@
 // Pure layout and persistence rules shared by the desktop surface and its tests.
+import { SHAPES, constrainShapeRect, normalizeShapeSizes } from './widget-geometry.mjs';
 export const GRID = 8, MARGIN = 24;
 export const KINDS = {
   clock: { label: 'Saat', icon: 'schedule', size: [264, 120], min: [136, 72] },
@@ -8,12 +9,32 @@ export const KINDS = {
   agenda: { label: 'Ajanda', icon: 'event', size: [264, 232], min: [176, 136] },
   note: { label: 'Not', icon: 'sticky_note_2', size: [248, 200], min: [144, 96] },
 };
+const weatherShapeSizes={capsule:[320,144],ticket:[320,168],bubble:[264,168],circle:[248,248],hexagon:[288,240],polaroid:[248,288],split:[320,168]};
+export function preferredShapeSize(kind,shape) { return kind === 'weather' && weatherShapeSizes[shape] || KINDS[kind].size; }
 const finite = (v, fallback) => Number.isFinite(v) ? v : fallback;
+export const APPEARANCES = { standard: 'Standart', transparent: 'Şeffaf', outline: 'Konturlu şeffaf', glass: 'Cam', futuristic: 'Fütüristik', cartoon: 'Çizgi film', paper: 'Kağıt', pixel: 'Piksel' };
+export function normalizeLocation(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  for (const k of ['countryCode', 'country', 'city']) if (typeof raw[k] !== 'string' || !raw[k].trim()) return null;
+  if (!/^[A-Za-z]{2}$/.test(raw.countryCode)) return null;
+  for (const [k, limit] of [['latitude', 90], ['longitude', 180], ['cityLatitude', 90], ['cityLongitude', 180]]) {
+    if (!Number.isFinite(raw[k]) || Math.abs(raw[k]) > limit) return null;
+  }
+  return { countryCode: raw.countryCode.toUpperCase(), country: raw.country, city: raw.city, district: typeof raw.district === 'string' ? raw.district : '', latitude: raw.latitude, longitude: raw.longitude, cityLatitude: raw.cityLatitude, cityLongitude: raw.cityLongitude };
+}
+export function normalizeRecents(raw) {
+  const seen = new Set();
+  return (Array.isArray(raw) ? raw : []).map(normalizeLocation).filter(place => {
+    if (!place) return false;
+    const key = JSON.stringify(place); if (seen.has(key)) return false;
+    seen.add(key); return true;
+  }).slice(0, 8);
+}
 export const snap = v => Math.round(v / GRID) * GRID;
 export function createSpec(id, kind, monitor = '') {
   if (!Object.hasOwn(KINDS, kind)) throw new Error('Unknown widget kind');
   const [w, h] = KINDS[kind].size;
-  return { id, kind, monitor, x: MARGIN, y: MARGIN, w, h, clock: 'digital', seconds: false, date: true, temps: true, city: '', fahrenheit: false, note: '' };
+  return { id, kind, monitor, x: MARGIN, y: MARGIN, w, h, clock: 'digital', seconds: false, date: true, temps: true, city: '', fahrenheit: false, note: '', appearance: 'standard', shape: 'card', shapeSizes: {}, backgroundOpacity: 1, contentOpacity: 1, location: null, recentLocations: [] };
 }
 export function normalizeSpec(raw) {
   const spec = createSpec(raw.id, raw.kind, typeof raw.monitor === 'string' ? raw.monitor : '');
@@ -21,8 +42,15 @@ export function normalizeSpec(raw) {
   for (const k of ['seconds', 'date', 'temps', 'fahrenheit']) if (typeof raw[k] === 'boolean') spec[k] = raw[k];
   for (const k of ['city', 'note']) if (typeof raw[k] === 'string') spec[k] = raw[k];
   if (['digital', 'large', 'analog'].includes(raw.clock)) spec.clock = raw.clock;
+  if (Object.hasOwn(APPEARANCES, raw.appearance)) spec.appearance = raw.appearance;
+  if (Object.hasOwn(SHAPES, raw.shape)) spec.shape = raw.shape;
+  spec.shapeSizes = normalizeShapeSizes(raw.shapeSizes);
+  for (const k of ['backgroundOpacity', 'contentOpacity']) spec[k] = Math.min(1, Math.max(0, finite(raw[k], 1)));
+  spec.location = normalizeLocation(raw.location);
+  spec.recentLocations = normalizeRecents(raw.recentLocations);
   if (spec.w <= 0) spec.w = KINDS[spec.kind].size[0];
   if (spec.h <= 0) spec.h = KINDS[spec.kind].size[1];
+  if (spec.shape === 'circle') spec.w = spec.h = Math.max(spec.w, spec.h, 224, KINDS[spec.kind].min[0]);
   return spec;
 }
 export function parseStore(text) {
@@ -38,8 +66,7 @@ export function serializeStore(store) { return JSON.stringify({ ...parseStore(st
 export function clampRect(kind, rect, aw, ah) {
   const [mw, mh] = KINDS[kind].min;
   aw = Math.max(0, finite(aw, 0)); ah = Math.max(0, finite(ah, 0));
-  const w = Math.min(aw, Math.max(mw, finite(rect.w, mw))), h = Math.min(ah, Math.max(mh, finite(rect.h, mh)));
-  return { x: Math.max(0, Math.min(finite(rect.x, 0), aw - w)), y: Math.max(0, Math.min(finite(rect.y, 0), ah - h)), w, h };
+  return constrainShapeRect(rect.shape || 'card', { x: finite(rect.x, 0), y: finite(rect.y, 0), w: finite(rect.w, mw), h: finite(rect.h, mh) }, aw, ah, [mw, mh]);
 }
 export function overlaps(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
 export function freeSpot(size, taken, aw, ah) {

@@ -4,7 +4,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, emit } from '@tauri-apps/api/event';
 import * as shell from './lib/shell-client.js';
 import { trackMedia, mediaPosition } from './lib/media-clock.mjs';
-import { KINDS, parseStore, projectWidgets, dragRect, monitorFor, dipArea, settleRect } from './desktop-widgets-model.mjs';
+import { KINDS, APPEARANCES, preferredShapeSize, parseStore, projectWidgets, dragRect, monitorFor, dipArea, settleRect } from './desktop-widgets-model.mjs';
+import { weatherParams } from './widget-location.mjs';
+import { LocationPicker } from './widget-location-picker.mjs';
+import { SHAPES, selectShape, shapeGeometry, physicalRegions, constrainShapeRect } from './widget-geometry.mjs';
+import { ShapeChrome, shapeContentStyle, shapeControlStyle } from './widget-shape-view.mjs';
+import { observeGlyphOutlines } from './widget-glyph-outline.mjs';
 
 const h = React.createElement, T = s => window.LL_T?.(s) ?? s;
 const win = shell.currentWidget().tauriWindow;
@@ -15,8 +20,9 @@ const Button = ({ icon, label, ...props }) => h('button', { type: 'button', titl
 const Empty = ({ icon, text, children }) => h('div', { className: 'empty', role: 'status' }, h(Icon, { name: icon }), h('span', null, T(text)), children);
 const read = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const locale = () => window.LL_LOCALE || navigator.language;
-async function core(route) {
-  const r = await fetch(`http://127.0.0.1:6131${route}`, { method: 'POST', cache: 'no-store', signal: AbortSignal.timeout(18000) });
+async function core(route, signal) {
+  const timeout = AbortSignal.timeout(18000);
+  const r = await fetch(`http://127.0.0.1:6131${route}`, { method: 'POST', cache: 'no-store', signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const v = await r.json();
   if (v?.error) throw new Error(v.error);
@@ -58,6 +64,8 @@ function useResource(load, key, active, successMs, failureMs = 60000) {
   return { ...state, refresh: () => refresh(n => n + 1) };
 }
 function Clock({ spec, active }) {
+  const geometry = shapeGeometry(spec.shape, spec.w, spec.h);
+  const available = spec.shape === 'card' ? spec.w - 32 : spec.shape === 'split' ? geometry.leading - 24 : ['capsule', 'ticket'].includes(spec.shape) ? geometry.inner.w * .42 : geometry.inner.w;
   const now = useTick(active, spec.seconds || spec.clock === 'analog' ? 1000 : 30000);
   const date = now.toLocaleDateString(locale(), { weekday: 'long', day: 'numeric', month: 'long' });
   const time = now.toLocaleTimeString(locale(), { hour: '2-digit', minute: '2-digit', ...(spec.seconds ? { second: '2-digit' } : {}), hour12: !!window.LL_HOUR12 });
@@ -71,7 +79,7 @@ function Clock({ spec, active }) {
       spec.seconds && hand(now.getSeconds() * 6, 12, 1.2, 'second'), h('circle', { cx: 50, cy: 50, r: 3, className: 'hub' })),
       spec.date && h('div', { className: 'clock-date' }, date));
   }
-  return h('div', { className: `clock ${spec.clock}` }, h('time', { className: 'clock-time', dateTime: now.toISOString(), style: { fontSize: `${Math.max(24, Math.min(spec.clock === 'large' ? 72 : 48, (spec.w - 32) / (spec.seconds ? 5.5 : 3.7), spec.h - (spec.date ? 44 : 20)))}px` } }, time), spec.date && h('div', { className: 'clock-date' }, date));
+  return h('div', { className: `clock ${spec.clock}` }, h('time', { className: 'clock-time', dateTime: now.toISOString(), style: { fontSize: `${Math.max(spec.shape === 'split' ? 16 : 24, Math.min(spec.clock === 'large' ? 72 : 48, available / (spec.seconds ? 5.5 : 3.7), spec.h - (spec.date ? 44 : 20)))}px` } }, time), spec.date && h('div', { className: 'clock-date' }, date));
 }
 function Media({ output, error, active, onError }) {
   const session = output?.currentSession, [art, setArt] = useState(null), [seeking, setSeeking] = useState(null);
@@ -115,24 +123,28 @@ function System({ spec, providers, active }) {
     h('progress', { max: 100, value: Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0, 'aria-label': name }))),
     (providers.errors.cpu || providers.errors.memory) && h('small', { className: 'subtext' }, T('Veri alınamadı')));
 }
-function Weather({ spec, active, patch, editing }) {
-  const [placeOpen, setPlaceOpen] = useState(false), [city, setCity] = useState(spec.city);
-  useEffect(() => setCity(spec.city), [spec.city]);
-  const weather = useResource(() => core(`/widgets/weather?${new URLSearchParams({ city: spec.city, language: locale(), fahrenheit: spec.fahrenheit ? '1' : '0' })}`), `${spec.city}/${spec.fahrenheit}`, active, 900000);
-  useEffect(() => { const refresh = e => { if (e.detail === spec.id) weather.refresh(); }; window.addEventListener('ll-widget-weather-refresh', refresh); return () => window.removeEventListener('ll-widget-weather-refresh', refresh); }, [spec.id]);
-  useEffect(() => { const handler = e => { if (e.detail === spec.id) { setPlaceOpen(true); editing(true); } }; window.addEventListener('ll-widget-weather-edit', handler); return () => window.removeEventListener('ll-widget-weather-edit', handler); }, [spec.id]);
+function Weather({ spec, active }) {
+  const forceRefresh = useRef(false);
+  const query = weatherParams(spec, locale()).toString();
+  const weather = useResource(() => {
+    const params = new URLSearchParams(query);
+    if (forceRefresh.current) { params.set('refresh', '1'); forceRefresh.current = false; }
+    return core(`/widgets/weather?${params}`);
+  }, query, active, 900000);
+  const refreshWeather = () => { forceRefresh.current = true; weather.refresh(); };
+  useEffect(() => { const refresh = e => { if (e.detail === spec.id) refreshWeather(); }; window.addEventListener('ll-widget-weather-refresh', refresh); return () => window.removeEventListener('ll-widget-weather-refresh', refresh); }, [spec.id]);
   const data = weather.data;
   // The core returns the native Report shape, or {report: Report}.
   const report = data?.report ?? data;
   const sky = report ? weatherDescription(report.code, report.day) : null;
-  return h('div', { className: 'weather-card' }, report ? h(React.Fragment, null,
+  const [width,height]=preferredShapeSize('weather',spec.shape);
+  const base=constrainShapeRect(spec.shape,{x:0,y:0,w:width,h:height},10000,10000,KINDS.weather.min);
+  const zoom=Math.max(1,Math.min(1.75,spec.w/base.w,spec.h/base.h));
+  return h('div', { className: 'weather-card', style: { zoom, width:'100%', height:'100%' } }, report ? h(React.Fragment, null,
     h('div', { className: 'weather-main' }, h(Icon, { name: sky.icon }), h('span', null, `${Math.round(report.temp)}${spec.fahrenheit ? '°F' : '°'}`)),
     h('div', null, T(sky.text), Number.isFinite(report.high) && Number.isFinite(report.low) ? ` · ↑${Math.round(report.high)}° ↓${Math.round(report.low)}°` : ''),
-    h('div', { className: 'subtext' }, report.place)) : h(Empty, { icon: weather.error ? 'cloud_off' : 'partly_cloudy_day', text: weather.error ? 'Hava durumu alınamadı' : 'Yükleniyor…' }, weather.error && h(Button, { icon: 'refresh', label: 'Yenile', onClick: weather.refresh })),
-    weather.error && report && h('small', { className: 'subtext', title: weather.error }, T('Hava durumu alınamadı')),
-    placeOpen && h('form', { className: 'city-editor', onSubmit: e => { e.preventDefault(); patch({ city: city.trim() }); setPlaceOpen(false); editing(false); } },
-      h('input', { value: city, placeholder: T('Konum'), 'aria-label': T('Konum'), autoFocus: true, onChange: e => setCity(e.target.value), onKeyDown: e => { if (e.key === 'Escape') { setCity(spec.city); setPlaceOpen(false); editing(false); e.stopPropagation(); } } }),
-      h(Button, { icon: 'check', label: 'Kaydet', type: 'submit' })));
+    h('div', { className: 'subtext' }, report.place)) : h(Empty, { icon: weather.error ? 'cloud_off' : 'partly_cloudy_day', text: weather.error ? 'Hava durumu alınamadı' : 'Yükleniyor…' }, weather.error && h(Button, { icon: 'refresh', label: 'Yenile', onClick: refreshWeather })),
+    weather.error && report && h('small', { className: 'subtext', title: weather.error }, T('Hava durumu alınamadı'), h(Button, { icon: 'refresh', label: 'Yenile', onClick: refreshWeather })));
 }
 // Keep the same WMO descriptions as the native Open-Meteo implementation.
 import { weatherDescription } from './desktop-widgets-model.mjs';
@@ -174,6 +186,7 @@ function App() {
   const [error, setError] = useState(null), [menu, setMenu] = useState(null), [preview, setPreview] = useState(null);
   const hostRef = useRef(null), storeRef = useRef(store), drag = useRef(null), serial = useRef(Promise.resolve()), menuRef = useRef(null);
   const regionSerial = useRef(Promise.resolve());
+  const [popup, setPopup] = useState(null), popupRef = useRef(null), popupElement = useRef(null);
   const showError = e => setError(String(e));
   const accept = value => {
     try { const next = parseStore(value); if (next.revision >= storeRef.current.revision) { storeRef.current = next; setStore(next); } if (value.warning) showError(value.warning); } catch (e) { showError(e); }
@@ -182,7 +195,10 @@ function App() {
     const job = serial.current.catch(() => {}).then(() => invoke('desktop_widgets_update', { operation }));
     serial.current = job; job.then(accept).catch(showError); return job;
   };
-  const editing = value => invoke('desktop_widgets_editing', { editing: value });
+  // Native editing(true) also requests focus. In-window blur can retain a
+  // popup's activation; global window blur disables it directly below.
+  const editing = value => !value && popupRef.current ? Promise.resolve() : invoke('desktop_widgets_editing', { editing: value });
+  const closeLocation = () => { popupRef.current = null; setPopup(null); editing(false).catch(showError); };
   const active = host?.active !== false && !document.hidden;
   const projected = host ? projectWidgets(store, host.monitors, host.monitor) : [];
   const previewHere = preview?.spec && host && monitorFor(host.monitors, preview.spec.monitor)?.device === host.monitor;
@@ -213,10 +229,18 @@ function App() {
       }),
       on('ll:desktop-widgets-drag', e => { if (e.payload.source !== win.label) setPreview(e.payload.spec ? e.payload : null); }),
     ]).then(init).catch(showError);
-    const key = e => { if (e.key === 'Escape') { finishDrag(true); setMenu(null); } };
-    const blur = () => { finishDrag(true); setMenu(null); editing(false).catch(() => {}); };
+    const key = e => { if (e.key === 'Escape') { finishDrag(true); setMenu(null); editing(false).catch(showError); } };
+    const blur = () => { finishDrag(true); setMenu(null); invoke('desktop_widgets_editing', { editing: false }).catch(() => {}); };
+    const location = e => {
+      if (popupRef.current?.id === e.detail) { editing(true).catch(showError); return; }
+      const spec = storeRef.current.widgets.find(s => s.id === e.detail);
+      if (!spec) return;
+      const next = { id: spec.id, x: spec.x, y: spec.y + spec.h + 8 };
+      popupRef.current = next; setPopup(next); setMenu(null);
+    };
     window.addEventListener('keydown', key); window.addEventListener('blur', blur);
-    return () => { live = false; clearTimeout(retry); off.forEach(fn => fn()); window.removeEventListener('keydown', key); window.removeEventListener('blur', blur); };
+    window.addEventListener('ll-widget-weather-edit', location);
+    return () => { live = false; clearTimeout(retry); off.forEach(fn => fn()); window.removeEventListener('keydown', key); window.removeEventListener('blur', blur); window.removeEventListener('ll-widget-weather-edit', location); };
   }, []);
   useEffect(() => { const change = () => setHost(s => s ? { ...s } : s); document.addEventListener('visibilitychange', change); return () => document.removeEventListener('visibilitychange', change); }, []);
   useEffect(() => {
@@ -241,27 +265,40 @@ function App() {
   }, [host]);
   useLayoutEffect(() => {
     if (!host) return;
+    let frame;
     const collect = () => {
-      const rects = [...document.querySelectorAll('.widget, .widget-menu, .host-error')].map(el => {
+      const [aw, ah] = dipArea(monitorFor(host.monitors, host.monitor));
+      const zoom = monitorFor(host.monitors, host.monitor).scale / (window.devicePixelRatio || 1);
+      for (const [element, anchor] of [[menuRef.current, menu], [popupElement.current, popup]]) {
+        if (!element || !anchor) continue;
+        element.style.maxWidth = `${aw}px`; element.style.maxHeight = `${Math.max(0, ah - 8)}px`;
+        const r = element.getBoundingClientRect();
+        element.style.left = `${Math.max(0, Math.min(anchor.x, aw - r.width / zoom))}px`;
+        element.style.top = `${Math.max(0, Math.min(anchor.y, ah - r.height / zoom))}px`;
+      }
+      const rects = [...document.querySelectorAll('.widget, .widget-menu, .widget-location-popup, .host-error')].flatMap(el => {
         const r = el.getBoundingClientRect(), dpi = window.devicePixelRatio || 1;
+        if (el.matches('.widget')) {
+          const spec = shown.find(s => s.id === +el.dataset.widgetId);
+          return physicalRegions(shapeGeometry(spec.shape, spec.w, spec.h), { x: r.left * dpi, y: r.top * dpi, scaleX: r.width * dpi / spec.w, scaleY: r.height * dpi / spec.h });
+        }
         return { x: r.left * dpi, y: r.top * dpi, w: r.width * dpi, h: r.height * dpi };
       });
       // Retain the press rectangle while captured; empty space stays outside HRGN.
-      if (drag.current?.initialRegion) rects.push(drag.current.initialRegion);
+      if (drag.current?.initialRegions) rects.push(...drag.current.initialRegions);
       regionSerial.current = regionSerial.current.catch(() => {}).then(() => invoke('desktop_widgets_regions', { regions: rects })).catch(showError);
     };
-    const frame = requestAnimationFrame(collect);
-    return () => cancelAnimationFrame(frame);
-  }, [host, store, menu, preview, error]);
+    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(collect); };
+    const observer = new ResizeObserver(schedule);
+    document.querySelectorAll('.widget, .widget-menu, .widget-location-popup, .host-error').forEach(el => observer.observe(el));
+    schedule(); window.addEventListener('resize', schedule);
+    return () => { observer.disconnect(); cancelAnimationFrame(frame); window.removeEventListener('resize', schedule); };
+  }, [host, store, menu, popup, preview, error]);
   useLayoutEffect(() => {
-    if (!menuRef.current || !host) return;
-    const [aw, ah] = dipArea(monitorFor(host.monitors, host.monitor));
-    const element = menuRef.current;
-    const zoom = monitorFor(host.monitors, host.monitor).scale / (window.devicePixelRatio || 1);
-    const r = element.getBoundingClientRect();
-    element.style.left = `${Math.max(0, Math.min(menu.x, aw - r.width / zoom))}px`;
-    element.style.top = `${Math.max(0, Math.min(menu.y, ah - r.height / zoom))}px`;
-  }, [menu, host]);
+    const cleanups = [...document.querySelectorAll('.widget[data-appearance="outline"] .widget-content')].map(observeGlyphOutlines);
+    return () => cleanups.forEach(cleanup => cleanup());
+  }, [host, store, preview]);
+  useEffect(() => { if (popup && !store.widgets.some(s => s.id === popup.id)) closeLocation(); }, [store, popup]);
   const pointerDown = async (e, spec, resize = false) => {
     if (e.button !== 0 || drag.current || !hostRef.current) return;
     if (!resize && e.target.closest('button, input, textarea, form')) return;
@@ -270,7 +307,8 @@ function App() {
     const pointerId = e.pointerId;
     // Capture synchronously before awaiting IPC; a fast release still cancels.
     element.setPointerCapture(pointerId);
-    const d = { spec, resize, element, pointerId, initialRegion: { x: rect.left * dpi, y: rect.top * dpi, w: rect.width * dpi, h: rect.height * dpi }, pending: false, latest: spec, moved: false };
+    const initialRegions = physicalRegions(shapeGeometry(spec.shape, spec.w, spec.h), { x: rect.left * dpi, y: rect.top * dpi, scaleX: rect.width * dpi / spec.w, scaleY: rect.height * dpi / spec.h });
+    const d = { spec, resize, element, pointerId, initialRegions, pending: false, latest: spec, moved: false };
     drag.current = d;
     try { d.start = await invoke('desktop_widgets_cursor'); } catch (error) { showError(error); finishDrag(true); }
   };
@@ -301,24 +339,36 @@ function App() {
     setMenu({ id: spec.id, x: e.clientX / zoom, y: e.clientY / zoom }); editing(true).catch(showError);
   };
   const menuSpec = store.widgets.find(s => s.id === menu?.id);
+  const popupSpec = store.widgets.find(s => s.id === popup?.id);
   return h('main', { className: 'desktop-surface', onPointerDown: () => { if (menu) { setMenu(null); editing(false).catch(showError); } } },
-    ...shown.map(spec => h('article', { key: spec.id, className: `widget widget-${spec.kind}${preview?.spec?.id === spec.id ? ' dragging' : ''}${spec.ghostOut ? ' ghost-out' : ''}`, 'data-widget-id': spec.id, 'aria-label': T(KINDS[spec.kind].label),
-      style: { left: spec.x, top: spec.y, width: spec.w, height: spec.h }, onPointerDown: e => pointerDown(e, spec), onPointerMove: moveDrag,
+    ...shown.map(spec => { const geometry = shapeGeometry(spec.shape, spec.w, spec.h), clipId = `widget-clip-${spec.id}`;
+      return h('article', { key: spec.id, className: `widget widget-${spec.kind}${preview?.spec?.id === spec.id ? ' dragging' : ''}${spec.ghostOut ? ' ghost-out' : ''}`, 'data-widget-id': spec.id, 'data-appearance': spec.appearance, 'data-shape': spec.shape, 'aria-label': T(KINDS[spec.kind].label),
+      style: { left: spec.x, top: spec.y, width: spec.w, height: spec.h, borderRadius: spec.shape === 'card' ? 18 : 0, clipPath: `url(#${clipId})`, '--widget-background-opacity': spec.backgroundOpacity, '--widget-content-opacity': spec.contentOpacity }, onPointerDown: e => pointerDown(e, spec), onPointerMove: moveDrag,
       onPointerUp: () => finishDrag(), onPointerCancel: () => finishDrag(true), onLostPointerCapture: () => { if (drag.current) finishDrag(); }, onContextMenu: e => openMenu(e, spec) },
-      h('div', { className: 'widget-content' },
+      h(ShapeChrome, { geometry, id: clipId }),
+      h('div', { className: 'widget-content', style: shapeContentStyle(geometry) },
+        spec.shape === 'split' && ['system', 'note'].includes(spec.kind) && h('div', { className: 'shape-lead' }, h(Icon, { name: KINDS[spec.kind].icon })),
         spec.kind === 'clock' && h(Clock, { spec, active }),
         spec.kind === 'media' && h(Media, { output: providers.output.media, error: providers.errors.media, active, onError: showError }),
         spec.kind === 'system' && h(System, { spec, providers, active }),
-        spec.kind === 'weather' && h(Weather, { spec, active, patch: patch => update({ action: 'patch', id: spec.id, patch }), editing }),
+        spec.kind === 'weather' && h(Weather, { spec, active }),
         spec.kind === 'agenda' && h(Agenda, { active }),
-        spec.kind === 'note' && h(Note, { spec, patch: patch => update({ action: 'patch', id: spec.id, patch }), editing, onError: showError })),
-      h('div', { className: 'widget-tools' }, h(Button, { icon: 'more_horiz', label: 'Ayarlar', onClick: e => openMenu(e, spec) })),
-      h('button', { className: 'resize-grip', title: T('Boyutlandır'), 'aria-label': T('Boyutlandır'), onPointerDown: e => { e.stopPropagation(); pointerDown(e, spec, true); }, onKeyDown: e => {
+        spec.kind === 'note' && h(Note, { spec, patch: patch => update({ action: 'patch', id: spec.id, patch }), editing, onError: showError }),
+        spec.shape === 'polaroid' && ['system', 'note'].includes(spec.kind) && h('div', { className: 'shape-caption' }, T(KINDS[spec.kind].label))),
+      h('div', { className: 'widget-tools', style: shapeControlStyle(geometry.toolbar) }, h(Button, { icon: 'more_horiz', label: 'Ayarlar', onClick: e => openMenu(e, spec) })),
+      h('button', { className: 'resize-grip', style: shapeControlStyle(geometry.grip), title: T('Boyutlandır'), 'aria-label': T('Boyutlandır'), onPointerDown: e => { e.stopPropagation(); pointerDown(e, spec, true); }, onKeyDown: e => {
         const moves = { ArrowLeft: [-8, 0], ArrowRight: [8, 0], ArrowUp: [0, -8], ArrowDown: [0, 8] }; if (!moves[e.key]) return;
-        e.preventDefault(); const [dw, dh] = moves[e.key]; update({ action: 'patch', id: spec.id, patch: { w: spec.w + dw, h: spec.h + dh } });
-      } }, h(Icon, { name: 'south_east' })))),
+        e.preventDefault(); const [dw, dh] = moves[e.key];
+        const side = spec.w + dw + dh;
+        update({ action: 'patch', id: spec.id, patch: spec.shape === 'circle' ? { w: side, h: side } : { w: spec.w + dw, h: spec.h + dh } });
+      } }, h(Icon, { name: 'south_east' }))); }),
     menu && menuSpec && h('div', { className: 'widget-menu', role: 'menu', ref: menuRef, style: { left: menu.x, top: menu.y }, onPointerDown: e => e.stopPropagation() },
-      ...menuItems(menuSpec).map(item => item.sep ? h('hr', { key: item.key }) : h('button', { key: item.key, role: item.checked == null ? 'menuitem' : 'menuitemcheckbox', 'aria-checked': item.checked, onClick: () => {
+      menu.shape ? h(React.Fragment, null, h('button', { role: 'menuitem', onClick: () => setMenu({ ...menu, shape: false }) }, h(Icon, { name: 'arrow_back' }), T('Geri')),
+        h('div', { className: 'menu-heading' }, T('Biçim')), ...Object.entries(SHAPES).map(([shape, label]) => h('button', { key: shape, role: 'menuitemradio', 'aria-checked': menuSpec.shape === shape, onClick: () => {
+          const patch = selectShape(menuSpec, shape, ...dipArea(monitorFor(host.monitors, menuSpec.monitor)), KINDS[menuSpec.kind].min, preferredShapeSize(menuSpec.kind,shape)); update({ action: 'patch', id: menuSpec.id, patch });
+        } }, menuSpec.shape === shape ? h(Icon, { name: 'check' }) : h('span', { className: 'menu-spacer' }), T(label)))) : menu.appearance ? h(AppearanceMenu, { key: menuSpec.id, spec: menuSpec, patch: patch => update({ action: 'patch', id: menuSpec.id, patch }), back: () => setMenu({ ...menu, appearance: false }) }) : menuItems(menuSpec).map(item => item.sep ? h('hr', { key: item.key }) : h('button', { key: item.key, role: item.checked == null ? 'menuitem' : 'menuitemcheckbox', 'aria-checked': item.checked, onClick: () => {
+        if (item.key === 'appearance') { setMenu({ ...menu, appearance: true }); return; }
+        if (item.key === 'shape') { setMenu({ ...menu, shape: true }); return; }
         setMenu(null); editing(false).catch(showError);
         if (item.patch) update({ action: 'patch', id: menuSpec.id, patch: item.patch });
         else if (item.kind) update({ action: 'add', kind: item.kind, monitor: host.monitor });
@@ -327,6 +377,8 @@ function App() {
         else if (item.key === 'city:edit') window.dispatchEvent(new CustomEvent('ll-widget-weather-edit', { detail: menuSpec.id }));
         else if (item.key === 'refresh') { update({ action: 'patch', id: menuSpec.id, patch: {} }); window.dispatchEvent(new CustomEvent('ll-widget-weather-refresh', { detail: menuSpec.id })); }
       } }, item.checked ? h(Icon, { name: 'check' }) : h('span', { className: 'menu-spacer' }), T(item.label)))),
+    popup && popupSpec && h(LocationPicker, { key: popup.id, elementRef: popupElement, spec: popupSpec, load: core, language: locale(), translate: T, editing,
+      position: { left: popup.x, top: popup.y }, cancel: closeLocation, save: async patch => { await update({ action: 'patch', id: popupSpec.id, patch }); closeLocation(); } }),
     error && host && h('div', { className: 'host-error', role: 'alert' }, h('span', null, T('İşlem tamamlanamadı'), ': ', error), h(Button, { icon: 'close', label: 'Kapat', onClick: () => setError(null) })));
 }
 function menuItems(s) {
@@ -336,11 +388,19 @@ function menuItems(s) {
     items.push({ key: 'seconds', label: 'Saniyeleri göster', checked: s.seconds, patch: { seconds: !s.seconds } }, { key: 'date', label: 'Tarihi göster', checked: s.date, patch: { date: !s.date } });
   }
   if (s.kind === 'system') items.push({ key: 'temps', label: 'Sıcaklıkları göster', checked: s.temps, patch: { temps: !s.temps } });
-  if (s.kind === 'weather') items.push({ key: 'city:auto', label: 'Konumu saat diliminden al', checked: !s.city, patch: { city: '' } }, { key: 'city:edit', label: 'Konumu değiştir…' }, { key: 'fahrenheit', label: '°F', checked: s.fahrenheit, patch: { fahrenheit: !s.fahrenheit } }, { key: 'refresh', label: 'Yenile' });
+  if (s.kind === 'weather') items.push({ key: 'city:auto', label: 'Konumu saat diliminden al', checked: !s.city && !s.location, patch: { city: '', location: null } }, { key: 'city:edit', label: 'Konumu değiştir…' }, { key: 'fahrenheit', label: '°F', checked: s.fahrenheit, patch: { fahrenheit: !s.fahrenheit } }, { key: 'refresh', label: 'Yenile' });
   if (s.kind === 'note') items.push({ key: 'edit', label: 'Düzenle' });
-  items.push({ key: 'add-heading', sep: true });
+  items.push({ key: 'appearance', label: 'Görünüş' }, { key: 'shape', label: 'Biçim' }, { key: 'add-heading', sep: true });
   for (const [kind, meta] of Object.entries(KINDS)) items.push({ key: `add:${kind}`, label: `${T('Widget ekle')}: ${T(meta.label)}`, kind });
   items.push({ key: 'end', sep: true }, { key: 'remove', label: 'Widget’ı kaldır' });
   return items;
+}
+function AppearanceMenu({ spec, patch, back }) {
+  const [opacity, setOpacity] = useState(() => ({ backgroundOpacity: spec.backgroundOpacity, contentOpacity: spec.contentOpacity }));
+  return h(React.Fragment, null, h('button', { role: 'menuitem', onClick: back }, h(Icon, { name: 'arrow_back' }), T('Geri')),
+    h('div', { className: 'menu-heading' }, T('Görünüş')),
+    ...Object.entries(APPEARANCES).map(([id, label]) => h('button', { key: id, role: 'menuitemradio', 'aria-checked': spec.appearance === id, onClick: () => patch({ appearance: id }) }, spec.appearance === id ? h(Icon, { name: 'check' }) : h('span', { className: 'menu-spacer' }), T(label))),
+    h('hr'), ...[['backgroundOpacity', 'Arka plan opaklığı'], ['contentOpacity', 'İçerik opaklığı']].map(([key, label]) => h('label', { className: 'opacity-control', key }, h('span', null, T(label), h('output', null, `${Math.round(opacity[key] * 100)}%`)),
+      h('input', { type: 'range', min: 0, max: 1, step: .01, 'aria-label': T(label), value: opacity[key], onChange: e => { const value = +e.target.value; setOpacity(s => ({ ...s, [key]: value })); patch({ [key]: value }); } }))));
 }
 createRoot(document.getElementById('root')).render(h(App));

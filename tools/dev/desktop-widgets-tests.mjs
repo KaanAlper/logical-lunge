@@ -74,4 +74,36 @@ test('weather descriptions preserve day/night and WMO categories', () => {
   assert.equal(weatherDescription(95, true).icon, 'thunderstorm');
   assert.equal(weatherDescription(85, true).icon, 'weather_snowy');
 });
+const location = { countryCode: 'TR', country: 'Türkiye', city: 'İstanbul', district: 'Kadıköy', latitude: 40.99, longitude: 29.03, cityLatitude: 41.01, cityLongitude: 28.98 };
+test('old layouts acquire appearance and location defaults without losing legacy city', () => {
+  const spec = parseStore({ widgets: [{ id: 1, kind: 'weather', city: 'İzmir' }] }).widgets[0];
+  assert.equal(spec.city, 'İzmir'); assert.equal(spec.appearance, 'standard');
+  assert.equal(spec.backgroundOpacity, 1); assert.equal(spec.contentOpacity, 1);
+  assert.equal(spec.location, null); assert.deepEqual(spec.recentLocations, []);
+});
+test('all appearances and separate opacity values survive store roundtrip and partial edits', () => {
+  for (const appearance of ['standard', 'transparent', 'outline', 'glass', 'futuristic', 'cartoon', 'paper', 'pixel']) {
+    const spec = { ...createSpec(1, 'weather'), appearance, backgroundOpacity: .23, contentOpacity: .79, location, recentLocations: [location] };
+    assert.deepEqual(parseStore(serializeStore({ widgets: [spec] })).widgets[0], spec);
+    const patched = applyOperation({ widgets: [spec] }, { action: 'patch', id: 1, patch: { backgroundOpacity: 0 } }, monitors).widgets[0];
+    assert.equal(patched.contentOpacity, .79); assert.deepEqual(patched.location, location);
+  }
+});
+test('unknown style falls back per card and invalid coordinates cannot become a saved place', () => {
+  const normalized = raw => parseStore({ widgets: [{ id: 1, kind: 'weather', ...raw }, { id: 2, kind: 'clock' }] });
+  const s = normalized({ appearance: 'future-style', backgroundOpacity: -2, contentOpacity: 9, recentLocations: Array(12).fill(location), location });
+  assert.equal(s.widgets.length, 2); assert.equal(s.widgets[0].appearance, 'standard');
+  assert.equal(s.widgets[0].backgroundOpacity, 0); assert.equal(s.widgets[0].contentOpacity, 1);
+  assert.equal(s.widgets[0].recentLocations.length, 1);
+  for (const bad of [null, '41', Infinity, NaN, 91]) assert.equal(normalized({ location: { ...location, latitude: bad } }).widgets[0].location, null);
+  assert.equal(normalized({ location: { ...location, cityLongitude: 181 } }).widgets[0].location, null);
+  assert.equal(normalized({ location: { ...location, city: '' } }).widgets[0].location, null);
+  assert.deepEqual(normalized({ recentLocations: [{ ...location, longitude: null }, location] }).widgets[0].recentLocations, [location]);
+  assert.equal(normalized({ location: { ...location, countryCode: 'Türkiye' } }).widgets[0].location, null);
+  assert.equal(normalized({ location: { ...location, countryCode: 'ΤR' } }).widgets[0].location, null);
+  assert.equal(normalized({ location: { ...location, countryCode: 'tr' } }).widgets[0].location.countryCode, 'TR');
+  const recents = [location, { ...location, countryCode: 'tr' }, ...Array.from({ length: 10 }, (_, i) => ({ ...location, district: `District ${i}` }))];
+  const r = normalized({ recentLocations: recents }).widgets[0].recentLocations;
+  assert.equal(r.length, 8); assert.equal(r[1].district, 'District 0'); assert.equal(r[7].district, 'District 6');
+});
 if (process.argv.includes('--ui')) test('headless desktop surface integration', async () => { await import('./desktop-widgets-ui-tests.mjs'); });
