@@ -6390,13 +6390,32 @@ class Rounder
         return kind;
     }
     [DllImport("gdi32.dll")] static extern int GetRgnBox(IntPtr rgn, out Native.RECT box);
-    void Forget(IntPtr h) { applied.Remove(h); resets.Remove(h); giveUp.Remove(h); clipRepairAt.Remove(h); }
+    void Forget(IntPtr h) { applied.Remove(h); resets.Remove(h); giveUp.Remove(h); clipRepairAt.Remove(h); overflowSince.Remove(h); }
+
+    // An app's own resize past its tile is undone by the window manager within a frame or two: Chromium in its
+    // fullscreen mode (Discord's voice channel, Chrome) sets the monitor's size at every focus change. A clip set
+    // meanwhile lands after the window is back and, cut for the old position, hides it for a frame; recorded at every
+    // one of Discord's focus changes (it covered the top bar for one frame, then vanished for one). So the clip waits
+    // CLIP_GRACE_MS: a window still past its tile then is clipped.
+    const int CLIP_GRACE_MS = 60;
+    readonly Dictionary<IntPtr, int> overflowSince = new Dictionary<IntPtr, int>();
+    System.Windows.Forms.Timer grace;
+    void CheckAfterGrace()
+    {
+        if (grace == null)
+        {
+            grace = new System.Windows.Forms.Timer { Interval = CLIP_GRACE_MS + 10 };
+            grace.Tick += (s, e) => { grace.Stop(); foreach (var w in new List<IntPtr>(overflowSince.Keys)) Apply(w); };
+        }
+        if (!grace.Enabled) grace.Start();
+    }
     void Prune()
     {
         foreach (var h in new List<IntPtr>(applied.Keys)) if (!Native.IsWindow(h)) Forget(h);
         foreach (var h in new List<IntPtr>(resets.Keys)) if (!Native.IsWindow(h)) resets.Remove(h);
         giveUp.RemoveWhere(h => !Native.IsWindow(h));
         foreach (var h in new List<IntPtr>(clipRepairAt.Keys)) if (!Native.IsWindow(h)) clipRepairAt.Remove(h);
+        foreach (var h in new List<IntPtr>(overflowSince.Keys)) if (!Native.IsWindow(h)) overflowSince.Remove(h);
     }
 
     // Bar, bildirim ve ekran klavyesi pencereleri (başlıklarıyla, tüm pencereleri gezmeden)
@@ -6525,6 +6544,7 @@ class Rounder
         int regionKind = Native.GetWindowRgnBox(h, out box);
         bool hasRgn = regionKind > 1;
         bool clipRequired = NeedsTileClip(fr, slot, tiledSlot);
+        if (!clipRequired) overflowSince.Remove(h);
         int l = vis.Left - wr.Left, t = vis.Top - wr.Top;
         int r = l + (vis.Right - vis.Left), b = t + (vis.Bottom - vis.Top);
         bool square = full || borderless || giveUp.Contains(h);
@@ -6556,7 +6576,9 @@ class Rounder
         }
         if (clipRequired)
         {
-            int last, now = Environment.TickCount;
+            int since, last, now = Environment.TickCount;
+            if (!overflowSince.TryGetValue(h, out since)) overflowSince[h] = since = now;
+            if (unchecked(now - since) < CLIP_GRACE_MS) { CheckAfterGrace(); return; }
             if (clipRepairAt.TryGetValue(h, out last) && !ClipRepairDue(now, last)) return;
             clipRepairAt[h] = now;
         }
