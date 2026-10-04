@@ -27,6 +27,21 @@ use windows::{
 pub const TEXT_FAMILY: &str = "Google Sans Flex";
 pub const ICON_FAMILY: &str = "Material Symbols Rounded";
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Hash)]
+enum Typeface { #[default] Default, Pixel, Cartoon, Paper, Futuristic }
+
+thread_local! { static WIDGET_TYPEFACE: std::cell::Cell<Typeface> = const { std::cell::Cell::new(Typeface::Default) }; }
+
+/// Scope the face to widget content, including measurement and editable note
+/// layouts. Restore on errors/unwind; the bar, menus and icons stay independent.
+pub fn with_widget_font<T>(appearance: &str, draw: impl FnOnce() -> T) -> T {
+  let face = match appearance { "pixel" => Typeface::Pixel, "cartoon" => Typeface::Cartoon, "paper" => Typeface::Paper, "futuristic" => Typeface::Futuristic, _ => Typeface::Default };
+  struct Reset(Typeface);
+  impl Drop for Reset { fn drop(&mut self) { WIDGET_TYPEFACE.with(|f| f.set(self.0)); } }
+  let _reset = Reset(WIDGET_TYPEFACE.with(|f| f.replace(face)));
+  draw()
+}
+
 struct Face {
   family: String,
   file: String,
@@ -39,8 +54,10 @@ pub struct Fonts {
   loader: IDWriteInMemoryFontFileLoader,
   text: IDWriteFontCollection2,
   icons: IDWriteFontCollection2,
+  pixel: Option<IDWriteFontCollection2>,
+  system: IDWriteFontCollection2,
   fallback: IDWriteFontFallback,
-  formats: HashMap<(bool, u32, u32, bool), IDWriteTextFormat>,
+  formats: HashMap<(bool, Typeface, u32, u32, bool), IDWriteTextFormat>,
   /// Windows' "Text size" (Accessibility): 1.0 to 2.25. Browsers (the web
   /// widgets) enlarge their text by it; native text follows it too.
   text_scale: f32,
@@ -141,6 +158,8 @@ impl Fonts {
       };
       let text = find(TEXT_FAMILY, true).context("Google Sans Flex missing")?;
       let icons = find(ICON_FAMILY, false).context("Material Symbols missing")?;
+      let pixel = find("Pixelify Sans", false);
+      let system = dwrite.GetSystemFontCollection(false, DWRITE_FONT_FAMILY_MODEL_TYPOGRAPHIC)?;
 
       let builder = dwrite.CreateFontFallbackBuilder()?;
       for (family, collection, ranges) in &by_family {
@@ -155,7 +174,7 @@ impl Fonts {
       builder.AddMappings(&dwrite.GetSystemFontFallback()?)?;
       let fallback = builder.CreateFontFallback()?;
 
-      Ok(Self { dwrite: dwrite.clone(), loader, text, icons, fallback, formats: HashMap::new(), text_scale: read_text_scale() })
+      Ok(Self { dwrite: dwrite.clone(), loader, text, icons, pixel, system, fallback, formats: HashMap::new(), text_scale: read_text_scale() })
     }
   }
 
@@ -201,7 +220,8 @@ impl Fonts {
     fill: bool,
     axes: &[DWRITE_FONT_AXIS_VALUE],
   ) -> anyhow::Result<IDWriteTextFormat> {
-    let key = (icon, (size * 10.0) as u32, weight as u32, fill);
+    let face = if icon { Typeface::Default } else { WIDGET_TYPEFACE.with(|f| f.get()) };
+    let key = (icon, face, (size * 10.0) as u32, weight as u32, fill);
     if let Some(f) = self.formats.get(&key) {
       return Ok(f.clone());
     }
@@ -209,7 +229,13 @@ impl Fonts {
       let (family, collection) = if icon {
         (ICON_FAMILY, &self.icons)
       } else {
-        (TEXT_FAMILY, &self.text)
+        match face {
+          Typeface::Pixel => self.pixel.as_ref().map(|c| ("Pixelify Sans",c)).unwrap_or((TEXT_FAMILY,&self.text)),
+          Typeface::Cartoon => ("Comic Sans MS", &self.system),
+          Typeface::Paper => ("Georgia", &self.system),
+          Typeface::Futuristic => ("Consolas", &self.system),
+          Typeface::Default => (TEXT_FAMILY, &self.text),
+        }
       };
       let collection: IDWriteFontCollection = collection.cast()?;
       let f3 = self.dwrite.CreateTextFormat(

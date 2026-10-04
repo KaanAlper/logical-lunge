@@ -100,6 +100,84 @@ pub enum ClockStyle {
   Analog,
 }
 
+pub const APPEARANCES: [(&str, &str); 8] = [
+  ("standard", "Standart"), ("transparent", "Şeffaf"), ("outline", "Konturlu şeffaf"),
+  ("glass", "Cam"), ("futuristic", "Fütüristik"), ("cartoon", "Çizgi film"),
+  ("paper", "Kâğıt"), ("pixel", "Piksel"),
+];
+
+fn appearance<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+  let value = serde_json::Value::deserialize(d)?;
+  Ok(value.as_str().filter(|id| APPEARANCES.iter().any(|(a, _)| a == id)).unwrap_or("standard").into())
+}
+
+fn opacity<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+  let value = serde_json::Value::deserialize(d)?;
+  Ok(value.as_f64().filter(|n| n.is_finite()).unwrap_or(1.0).clamp(0.0, 1.0) as f32)
+}
+
+fn shape<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+  let value = serde_json::Value::deserialize(d)?;
+  Ok(value.as_str().filter(|id| super::shape::SHAPES.iter().any(|(shape,_)| shape == id)).unwrap_or("card").into())
+}
+
+fn shape_sizes<'de, D: serde::Deserializer<'de>>(d: D) -> Result<std::collections::BTreeMap<String,(f32,f32)>, D::Error> {
+  let value = serde_json::Value::deserialize(d)?;
+  let mut sizes = std::collections::BTreeMap::new();
+  for (form,_) in super::shape::SHAPES {
+    if let Ok((w,h)) = serde_json::from_value::<(f32,f32)>(value[form].clone()) {
+      if w.is_finite() && h.is_finite() && w > 0.0 && h > 0.0 && w <= 10000.0 && h <= 10000.0 { sizes.insert(form.into(),(w,h)); }
+    }
+  }
+  Ok(sizes)
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Location {
+  pub country_code: String,
+  pub country: String,
+  pub city: String,
+  pub district: String,
+  pub latitude: f64,
+  pub longitude: f64,
+  pub city_latitude: f64,
+  pub city_longitude: f64,
+}
+
+impl Location {
+  pub fn valid(&self) -> bool {
+    self.country_code.len() == 2 && self.country_code.bytes().all(|c| c.is_ascii_alphabetic())
+      && !self.country.trim().is_empty() && !self.city.trim().is_empty()
+      && valid_coords(self.latitude, self.longitude) && valid_coords(self.city_latitude, self.city_longitude)
+  }
+
+  pub fn display(&self) -> String {
+    if self.district.is_empty() { self.city.clone() } else { format!("{}, {}", self.district, self.city) }
+  }
+}
+
+pub fn valid_coords(lat: f64, lon: f64) -> bool {
+  lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)
+}
+
+fn location<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Location>, D::Error> {
+  let value = serde_json::Value::deserialize(d)?;
+  Ok(serde_json::from_value::<Location>(value).ok().filter(Location::valid))
+}
+
+fn recents<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Location>, D::Error> {
+  let value = serde_json::Value::deserialize(d)?;
+  let mut out = Vec::new();
+  for value in value.as_array().into_iter().flatten() {
+    if let Ok(location) = serde_json::from_value::<Location>(value.clone()) {
+      if location.valid() && !out.contains(&location) { out.push(location); }
+    }
+    if out.len() == 8 { break; }
+  }
+  Ok(out)
+}
+
 /// One widget as it is saved.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -121,6 +199,21 @@ pub struct Spec {
   // weather: a place name (empty: the city of the Windows time zone)
   pub city: String,
   pub fahrenheit: bool,
+  #[serde(deserialize_with = "appearance")]
+  pub appearance: String,
+  #[serde(deserialize_with = "shape")]
+  pub shape: String,
+  /// Each silhouette keeps its own size; changing shapes is not a resize.
+  #[serde(deserialize_with = "shape_sizes")]
+  pub shape_sizes: std::collections::BTreeMap<String,(f32,f32)>,
+  #[serde(deserialize_with = "opacity")]
+  pub background_opacity: f32,
+  #[serde(deserialize_with = "opacity")]
+  pub content_opacity: f32,
+  #[serde(deserialize_with = "location")]
+  pub location: Option<Location>,
+  #[serde(deserialize_with = "recents")]
+  pub recent_locations: Vec<Location>,
   // note
   pub note: String,
 }
@@ -141,6 +234,13 @@ impl Default for Spec {
       temps: true,
       city: String::new(),
       fahrenheit: false,
+      appearance: "standard".into(),
+      shape: "card".into(),
+      shape_sizes: std::collections::BTreeMap::new(),
+      background_opacity: 1.0,
+      content_opacity: 1.0,
+      location: None,
+      recent_locations: Vec::new(),
       note: String::new(),
     }
   }
@@ -154,6 +254,25 @@ impl Spec {
 
   pub fn rect(&self) -> (f32, f32, f32, f32) {
     (self.x, self.y, self.w, self.h)
+  }
+
+  pub fn select_shape(&mut self, form: &str, aw: f32, ah: f32) {
+    let form = super::shape::SHAPES.iter().find(|(id,_)| *id == form).map(|(id,_)| *id).unwrap_or("card");
+    if self.shape == form { return; }
+    self.shape_sizes.insert(self.shape.clone(),(self.w,self.h));
+    let (w,h) = self.shape_sizes.get(form).copied()
+      .unwrap_or_else(|| super::shape::preferred(self.kind,form));
+    self.shape = form.into();
+    (self.x,self.y,self.w,self.h) = super::shape::clamp(self.kind,form,(self.x,self.y,w,h),aw,ah);
+  }
+
+  pub fn save_location(&mut self, location: Location) {
+    if !location.valid() { return; }
+    self.city = location.display();
+    self.recent_locations.retain(|r| r != &location);
+    self.recent_locations.insert(0, location.clone());
+    self.recent_locations.truncate(8);
+    self.location = Some(location);
   }
 
   /// Ticks once a second (seconds on a clock face).
@@ -304,5 +423,40 @@ mod tests {
       assert_eq!(Kind::from_id(k.id()), Some(k));
     }
     assert_eq!(Kind::from_id("nope"), None);
+  }
+
+  #[test]
+  fn appearance_defaults_and_unknown_styles_do_not_lose_the_store() {
+    let store = Store::parse(r#"{"widgets":[{"id":1,"appearance":"future-unknown","backgroundOpacity":-2,"contentOpacity":4}]}"#).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&store.to_json()).unwrap();
+    assert_eq!(saved["widgets"][0]["appearance"], "standard");
+    assert_eq!(saved["widgets"][0]["backgroundOpacity"].as_f64(), Some(0.0));
+    assert_eq!(saved["widgets"][0]["contentOpacity"].as_f64(), Some(1.0));
+    let old = Store::parse(r#"{"widgets":[{"id":2,"city":"İzmir"}]}"#).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&old.to_json()).unwrap();
+    assert_eq!(saved["widgets"][0]["backgroundOpacity"].as_f64(), Some(1.0));
+    assert_eq!(saved["widgets"][0]["contentOpacity"].as_f64(), Some(1.0));
+    assert_eq!(saved["widgets"][0]["location"], serde_json::Value::Null);
+    assert_eq!(saved["widgets"][0]["city"], "İzmir");
+  }
+
+  #[test]
+  fn invalid_coordinates_clear_only_the_location() {
+    let store = Store::parse(r#"{"widgets":[{"id":1,"kind":"weather","location":{"countryCode":"TR","country":"Türkiye","city":"İzmir","district":"","latitude":null,"longitude":27,"cityLatitude":38,"cityLongitude":27}}]}"#).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&store.to_json()).unwrap();
+    assert!(saved["widgets"][0]["location"].is_null());
+    assert_eq!(store.widgets.len(), 1);
+  }
+
+  #[test]
+  fn shapes_round_trip_independently_and_unknown_shapes_fall_back() {
+    let store = Store::parse(r#"{"widgets":[{"id":1,"shape":"circle","appearance":"paper","backgroundOpacity":0.25,"contentOpacity":0.75,"city":"Berlin"},{"id":2,"shape":"future-shape"},{"id":3}]}"#).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&store.to_json()).unwrap();
+    assert_eq!(json["widgets"][0]["shape"], "circle");
+    assert_eq!(json["widgets"][0]["appearance"], "paper");
+    assert_eq!(json["widgets"][0]["contentOpacity"].as_f64(), Some(0.75));
+    assert_eq!(json["widgets"][0]["city"], "Berlin");
+    assert_eq!(json["widgets"][1]["shape"], "card");
+    assert_eq!(json["widgets"][2]["shape"], "card");
   }
 }

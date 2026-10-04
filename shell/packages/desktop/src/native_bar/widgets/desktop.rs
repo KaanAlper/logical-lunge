@@ -196,6 +196,24 @@ pub(super) fn key_down(vk: u16) -> bool {
   unsafe { GetKeyState(vk as i32) < 0 }
 }
 
+/// The region and the Direct2D clipping path use identical polygon points.
+/// Windows owns the region after SetWindowRgn; detached panes and cut-outs
+/// therefore let desktop clicks through, even while the widget is editing.
+pub(super) fn shape_region(hwnd: HWND, plan: &super::shape::Plan, scale: f32) {
+  use windows::Win32::Graphics::Gdi::{CreatePolygonRgn, CreateRectRgn, CombineRgn, DeleteObject, SetWindowRgn, RGN_OR, WINDING};
+  unsafe {
+    let region = CreateRectRgn(0,0,0,0);
+    if region.0.is_null() { return; }
+    for contour in &plan.contours {
+      let points: Vec<POINT> = contour.iter().map(|&(x,y)| POINT { x: (x*scale).round() as i32, y: (y*scale).round() as i32 }).collect();
+      let part = CreatePolygonRgn(&points, WINDING);
+      if part.0.is_null() { let _ = DeleteObject(region); return; }
+      CombineRgn(region,region,part,RGN_OR); let _ = DeleteObject(part);
+    }
+    if SetWindowRgn(hwnd,region,true) == 0 { let _ = DeleteObject(region); }
+  }
+}
+
 pub(super) fn tools_dir() -> PathBuf {
   std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("tools"))).unwrap_or_default()
 }

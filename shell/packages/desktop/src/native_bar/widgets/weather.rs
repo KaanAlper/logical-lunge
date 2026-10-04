@@ -1,12 +1,13 @@
-//! The weather widget's data: Open-Meteo (no key, no account). A place
-//! name is looked up with its geocoding service; with no name the city of
+//! The weather widget's data via the shared core API (Open-Meteo).
+//! A saved location supplies coordinates; a legacy city is still supported.
+//! With no name the city of
 //! the Windows time zone is used (ICU, part of Windows 10 1903 and later,
 //! turns "Turkey Standard Time" into "Europe/Istanbul"). Runs on a worker
 //! thread; the UI gets one `Report`.
 
 use serde_json::Value;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 pub struct Report {
   pub place: String,
   pub temp: f32,
@@ -15,6 +16,29 @@ pub struct Report {
   pub code: u32,
   pub day: bool,
   pub fahrenheit: bool,
+}
+
+/// The complete request identity also guards delayed weather answers.
+pub fn query(spec: &super::layout::Spec, language: &str) -> String {
+  let city = if spec.city.trim().is_empty() { zone_city().unwrap_or_default() } else { spec.city.clone() };
+  let mut path = format!("/widgets/weather?city={}&language={}&fahrenheit={}", encode(&city), encode(language), u8::from(spec.fahrenheit));
+  if let Some(location) = spec.location.as_ref().filter(|l| l.valid()) {
+    path.push_str(&format!("&latitude={}&longitude={}&place={}", location.latitude, location.longitude, encode(&location.display())));
+  }
+  path
+}
+
+pub fn fetch_query(path: &str) -> Result<Report, String> {
+  let (status, body) = super::core_api::post_waiting(path, std::time::Duration::from_secs(18))
+    .map_err(|e| e.to_string())?.ok_or("Hava durumu bağlantısı zaman aşımına uğradı")?;
+  if status != 200 { return Err(format!("HTTP {status}")); }
+  let value: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+  if let Some(error) = value["error"].as_str() { return Err(error.into()); }
+  serde_json::from_value(value).map_err(|e| e.to_string())
+}
+
+pub fn request_uri(identity: &str, refresh: bool) -> String {
+  if refresh { format!("{identity}&refresh=1") } else { identity.into() }
 }
 
 /// What the sky's WMO code looks like: an icon of our symbol font and the
@@ -50,11 +74,13 @@ pub fn city_of_zone(zone: &str) -> Option<String> {
 }
 
 /// The first place of a geocoding answer: (latitude, longitude, name).
+#[cfg(test)]
 pub fn parse_place(v: &Value) -> Option<(f64, f64, String)> {
   let r = v["results"].get(0)?;
   Some((r["latitude"].as_f64()?, r["longitude"].as_f64()?, r["name"].as_str().unwrap_or("").to_string()))
 }
 
+#[cfg(test)]
 pub fn parse_forecast(v: &Value, place: &str, fahrenheit: bool) -> Option<Report> {
   let c = &v["current"];
   let d = &v["daily"];
@@ -69,28 +95,12 @@ pub fn parse_forecast(v: &Value, place: &str, fahrenheit: bool) -> Option<Report
   })
 }
 
-/// The weather now at `city` (empty: the time zone's city). Blocks: call it
-/// on a worker thread.
-#[cfg(windows)]
-pub fn fetch(city: &str, language: &str, fahrenheit: bool) -> Result<Report, String> {
-  let name = if city.trim().is_empty() { zone_city().ok_or_else(|| "no place".to_string())? } else { city.trim().to_string() };
-  let lang = language.split('-').next().unwrap_or("en");
-  let geo = get("geocoding-api.open-meteo.com", &format!("/v1/search?name={}&count=1&language={}&format=json", encode(&name), encode(lang)))?;
-  let (lat, lon, found) = parse_place(&serde_json::from_str(&geo).map_err(|e| e.to_string())?).ok_or_else(|| format!("no place named {name}"))?;
-  let unit = if fahrenheit { "&temperature_unit=fahrenheit" } else { "" };
-  let path = format!(
-    "/v1/forecast?latitude={lat:.4}&longitude={lon:.4}&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1{unit}"
-  );
-  let body = get("api.open-meteo.com", &path)?;
-  let place = if found.is_empty() { name } else { found };
-  parse_forecast(&serde_json::from_str(&body).map_err(|e| e.to_string())?, &place, fahrenheit).ok_or_else(|| "bad answer".to_string())
-}
-
 /// The IANA city of the Windows time zone (ICU's mapping).
 #[cfg(windows)]
 fn zone_city() -> Option<String> {
   use windows::{
     core::{s, w},
+    Win32::Foundation::FreeLibrary,
     Win32::System::{
       LibraryLoader::{GetProcAddress, LoadLibraryW},
       Time::{GetDynamicTimeZoneInformation, DYNAMIC_TIME_ZONE_INFORMATION},
@@ -105,85 +115,17 @@ fn zone_city() -> Option<String> {
       return None;
     }
     let icu = LoadLibraryW(w!("icu.dll")).ok()?;
-    let f = GetProcAddress(icu, s!("ucal_getTimeZoneIDForWindowsID"))?;
+    let Some(f) = GetProcAddress(icu, s!("ucal_getTimeZoneIDForWindowsID")) else { let _ = FreeLibrary(icu); return None; };
     let f: ForWindowsId = std::mem::transmute(f);
     let mut out = [0u16; 64];
     let mut status = 0i32;
     let n = f(key.as_ptr(), key.len() as i32, std::ptr::null(), out.as_mut_ptr(), out.len() as i32, &mut status);
+    let _ = FreeLibrary(icu);
     if status > 0 || n <= 0 {
       return None;
     }
     city_of_zone(&String::from_utf16_lossy(&out[..n as usize]))
   }
-}
-
-/// HTTPS GET (WinHTTP); the body of a 200 answer.
-#[cfg(windows)]
-fn get(host: &str, path: &str) -> Result<String, String> {
-  use windows::{
-    core::{w, HSTRING, PCWSTR},
-    Win32::Networking::WinHttp::*,
-  };
-  unsafe {
-    let session = WinHttpOpen(w!("LogicalLunge"), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0);
-    if session.is_null() {
-      return Err("session".into());
-    }
-    let _ = WinHttpSetTimeouts(session, 10_000, 10_000, 15_000, 15_000);
-    let result = (|| -> Result<String, String> {
-      let conn = WinHttpConnect(session, &HSTRING::from(host), INTERNET_DEFAULT_HTTPS_PORT as u16, 0);
-      if conn.is_null() {
-        return Err("connect".into());
-      }
-      let req = WinHttpOpenRequest(conn, w!("GET"), &HSTRING::from(path), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), WINHTTP_FLAG_SECURE);
-      if req.is_null() {
-        let _ = WinHttpCloseHandle(conn);
-        return Err("request".into());
-      }
-      let done = (|| -> Result<String, String> {
-        WinHttpSendRequest(req, None, None, 0, 0, 0).map_err(|e| e.message())?;
-        WinHttpReceiveResponse(req, std::ptr::null_mut()).map_err(|e| e.message())?;
-        let mut status = 0u32;
-        let mut len = 4u32;
-        WinHttpQueryHeaders(
-          req,
-          WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-          PCWSTR::null(),
-          Some((&mut status as *mut u32).cast()),
-          &mut len,
-          std::ptr::null_mut(),
-        )
-        .map_err(|e| e.message())?;
-        let mut out = Vec::new();
-        loop {
-          let mut avail = 0u32;
-          if WinHttpQueryDataAvailable(req, &mut avail).is_err() || avail == 0 || out.len() > 256 * 1024 {
-            break;
-          }
-          let mut buf = vec![0u8; avail as usize];
-          let mut read = 0u32;
-          if WinHttpReadData(req, buf.as_mut_ptr().cast(), avail, &mut read).is_err() || read == 0 {
-            break;
-          }
-          out.extend_from_slice(&buf[..read as usize]);
-        }
-        if status != 200 {
-          return Err(format!("HTTP {status}"));
-        }
-        Ok(String::from_utf8_lossy(&out).to_string())
-      })();
-      let _ = WinHttpCloseHandle(req);
-      let _ = WinHttpCloseHandle(conn);
-      done
-    })();
-    let _ = WinHttpCloseHandle(session);
-    result
-  }
-}
-
-#[cfg(not(windows))]
-pub fn fetch(_city: &str, _language: &str, _fahrenheit: bool) -> Result<Report, String> {
-  Err("Windows only".into())
 }
 
 #[cfg(test)]
@@ -225,5 +167,24 @@ mod tests {
       assert!(!icon.is_empty() && !text.is_empty());
     }
     assert_eq!(describe(0, false).0, "bedtime");
+  }
+  #[test]
+  fn weather_identity_tracks_coordinates_place_units_and_language() {
+    let mut spec = super::super::layout::Spec::new(1, super::super::layout::Kind::Weather, "");
+    spec.location = Some(super::super::layout::Location { country_code: "TR".into(), country: "Türkiye".into(), city: "İzmir".into(), district: "Konak".into(),
+      latitude: 38.4, longitude: 27.1, city_latitude: 38.42, city_longitude: 27.14 });
+    let before = query(&spec, "tr");
+    assert!(before.contains("latitude=38.4&longitude=27.1&place=Konak%2C%20%C4%B0zmir"));
+    spec.location.as_mut().unwrap().latitude = 38.45;
+    assert_ne!(before, query(&spec, "tr"));
+    spec.location.as_mut().unwrap().latitude = 38.4; spec.fahrenheit = true;
+    assert_ne!(before, query(&spec, "tr"));
+    spec.fahrenheit = false; assert_ne!(before, query(&spec, "en"));
+  }
+  #[test]
+  fn refresh_bypasses_cache_without_changing_weather_identity() {
+    let identity = "/widgets/weather?city=Berlin&language=tr&fahrenheit=0";
+    assert_eq!(request_uri(identity, false), identity);
+    assert_eq!(request_uri(identity, true), format!("{identity}&refresh=1"));
   }
 }

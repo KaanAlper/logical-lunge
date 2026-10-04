@@ -18,6 +18,9 @@ mod desktop;
 mod edit;
 mod input;
 pub(super) mod layout;
+mod location;
+mod picker;
+mod shape;
 mod paint;
 mod policy;
 mod weather;
@@ -58,7 +61,6 @@ use windows::{
 
 use self::{
   desktop::*,
-  edit::city_field,
   layout::{ClockStyle, Kind, Spec, Store},
   paint::{Data, Editing, Hit},
   weather::Report,
@@ -87,14 +89,16 @@ const TEMPS_FILE: &str = r"C:\Users\Public\lunge-temps.json";
 
 /// Results from worker threads.
 pub(super) enum Ev {
-  Weather(u64, Result<Report, String>),
+  Weather(u64, u64, String, Result<Report, String>),
+  PickerOpened(u64, u64, isize),
+  PickerClosed(u64, u64),
+  LocationSave(u64, u64, layout::Location, std::sync::mpsc::Sender<Result<(), String>>),
   Temps(Option<Temps>),
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Target {
   Note,
-  City,
 }
 
 struct Editor {
@@ -142,7 +146,11 @@ pub(super) struct Widgets {
   started: bool,
   wins: Vec<Win>,
   weather: HashMap<u64, (Result<Report, String>, Instant)>,
-  weather_busy: HashSet<u64>,
+  weather_busy: HashMap<u64, (u64, String)>,
+  weather_token: u64,
+  weather_refresh: HashSet<u64>,
+  pickers: HashMap<u64, (u64, Option<isize>)>,
+  picker_token: u64,
   temps: Option<Temps>,
   temps_busy: bool,
   temps_woken: Option<Instant>,
@@ -172,12 +180,24 @@ fn load() -> Store {
 }
 
 fn save(store: &Store) {
-  let _ = std::fs::create_dir_all(super::state_dir());
+  if let Err(error) = try_save(store) { tracing::warn!("Desktop widgets: save: {error}"); }
+}
+
+fn try_save(store: &Store) -> Result<(), String> {
+  std::fs::create_dir_all(super::state_dir()).map_err(|e| e.to_string())?;
   let p = path();
   let tmp = p.with_extension("json.tmp");
-  if std::fs::write(&tmp, store.to_json()).is_ok() {
-    let _ = std::fs::rename(&tmp, &p);
-  }
+  std::fs::write(&tmp, store.to_json()).map_err(|e| e.to_string())?;
+  std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
+fn persist_location(store: &mut Store, id: u64, location: layout::Location, write: impl FnOnce(&Store) -> Result<(), String>) -> Result<(), String> {
+  if !location.valid() { return Err("Geçersiz konum".into()); }
+  let index = store.widgets.iter().position(|s| s.id == id && s.kind == Kind::Weather).ok_or("Widget kaldırıldı")?;
+  let before = store.widgets[index].clone();
+  store.widgets[index].save_location(location);
+  if let Err(error) = write(store) { store.widgets[index] = before; return Err(error); }
+  Ok(())
 }
 
 impl Ui {
@@ -233,7 +253,7 @@ impl Ui {
     let Some(spec) = self.widgets.store.widgets.iter_mut().find(|s| s.id == id) else { return };
     let Some(m) = mon_for(&mons, &spec.monitor) else { return };
     let (aw, ah) = area_dip(&m);
-    let (x, y, w, h) = layout::clamp(spec.kind, spec.rect(), aw, ah);
+    let (x, y, w, h) = shape::clamp(spec.kind, &spec.shape, spec.rect(), aw, ah);
     // on its own monitor the clamped place is kept; shown on the primary one
     // while its monitor is away, it goes back there when it returns
     let own = spec.monitor.is_empty() || spec.monitor.eq_ignore_ascii_case(&m.device);
@@ -250,6 +270,7 @@ impl Ui {
         return;
       }
     };
+    shape_region(hwnd, &shape::plan(&spec.shape,w,h), scale);
     self.widgets.wins.push(Win {
       id,
       hwnd,
@@ -335,6 +356,7 @@ impl Ui {
   }
 
   fn widget_remove(&mut self, id: u64) {
+    self.widget_close_picker(id);
     if self.widgets.editor.as_ref().is_some_and(|e| e.id == id) {
       self.widgets.editor = None;
     }
@@ -346,6 +368,8 @@ impl Ui {
     }
     self.widgets.store.widgets.retain(|s| s.id != id);
     self.widgets.weather.remove(&id);
+    self.widgets.weather_busy.remove(&id);
+    self.widgets.weather_refresh.remove(&id);
     save(&self.widgets.store);
     self.widgets_schedule();
   }
@@ -464,8 +488,12 @@ impl Ui {
   }
 
   fn widget_paint(&mut self, id: u64, force: bool) {
-    let Some(spec) = self.spec(id).cloned() else { return };
+    let Some(mut spec) = self.spec(id).cloned() else { return };
     let Some(wi) = self.widgets.wins.iter().position(|w| w.id == id) else { return };
+    // A missing monitor may display the saved widget in a smaller work
+    // area. Painting uses that actual surface without changing its home.
+    spec.w = self.widgets.wins[wi].px.0 as f32 / self.widgets.wins[wi].scale;
+    spec.h = self.widgets.wins[wi].px.1 as f32 / self.widgets.wins[wi].scale;
     let key = self.widget_key(&spec, &self.widgets.wins[wi]);
     if !self.widgets.wins[wi].repaint.should_draw(key, force) {
       return;
@@ -490,11 +518,6 @@ impl Ui {
     let model = &self.model;
     let tr = |s: &str| model.tr(s);
     let weather = self.widgets.weather.get(&id).map(|w| w.0.clone());
-    let editing_city = self.widgets.editor.as_ref().filter(|e| e.id == id && e.target == Target::City).map(|e| (e.edit.text(), e.edit.caret));
-    let mut spec_shown = spec.clone();
-    if let Some((city, _)) = &editing_city {
-      spec_shown.city = city.clone();
-    }
     let ed_text;
     let editing = match self.widgets.editor.as_ref().filter(|e| e.id == id && e.target == Target::Note) {
       Some(e) => {
@@ -521,12 +544,8 @@ impl Ui {
     let mut note_layout = None;
     let drawn = gfx::draw_surface(&win.layer.surface, win.scale, |dc| {
       let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-      hits = paint::paint(&mut p, &theme, &spec_shown, &data, win.hover || win.drag.is_some(), editing.as_ref(), &mut note_layout)
+      hits = paint::paint(&mut p, &theme, &spec, &data, win.hover || win.drag.is_some(), editing.as_ref(), &mut note_layout)
         .map_err(|err| windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32), err.to_string()))?;
-      if let Some((city, caret)) = &editing_city {
-        city_field(&mut p, &theme, &spec_shown, city, *caret, &tr)
-          .map_err(|err| windows::core::Error::new(windows::core::HRESULT(0x80004005u32 as i32), err.to_string()))?;
-      }
       Ok(())
     });
     match drawn.and_then(|_| unsafe { gfx.dcomp.Commit() }) {
@@ -589,13 +608,40 @@ impl Ui {
 
   pub(super) fn widgets_event(&mut self, ev: Ev) {
     match ev {
-      Ev::Weather(id, r) => {
+      Ev::Weather(id, token, query, r) => {
+        if !self.widgets.weather_busy.get(&id).is_some_and(|busy| busy.0 == token && busy.1 == query) { return; }
         self.widgets.weather_busy.remove(&id);
+        let Some(spec) = self.spec(id) else { return };
+        if weather::query(spec, self.model.locale()) != query {
+          self.widget_weather(id);
+          return;
+        }
+        if self.widgets.weather_refresh.contains(&id) { self.widget_weather(id); return; }
         if let Err(e) = &r {
           tracing::info!("Desktop widget: weather: {}", e);
         }
         self.widgets.weather.insert(id, (r, Instant::now()));
         self.widget_paint(id, false);
+      }
+      Ev::PickerOpened(id, token, hwnd) => {
+        if let Some(picker) = self.widgets.pickers.get_mut(&id).filter(|p| p.0 == token) {
+          picker.1 = Some(hwnd);
+        } else { unsafe { let _ = PostMessageW(HWND(hwnd as *mut _), WM_CLOSE, WPARAM(0), LPARAM(0)); } }
+      }
+      Ev::PickerClosed(id, token) => {
+        if self.widgets.pickers.get(&id).is_some_and(|p| p.0 == token) { self.widgets.pickers.remove(&id); }
+      }
+      Ev::LocationSave(id, token, location, reply) => {
+        if !self.widgets.pickers.get(&id).is_some_and(|p| p.0 == token) || !location.valid() {
+          let _ = reply.send(Err("Konum seçimi artık etkin değil".into())); return;
+        }
+        if let Err(error) = persist_location(&mut self.widgets.store, id, location, try_save) {
+          let _ = reply.send(Err(error)); return;
+        }
+        let _ = reply.send(Ok(()));
+        self.widgets.weather.remove(&id);
+        self.widget_weather(id);
+        self.widget_paint(id, true);
       }
       Ev::Temps(t) => {
         self.widgets.temps_busy = false;
@@ -629,15 +675,47 @@ impl Ui {
   }
 
   fn widget_weather(&mut self, id: u64) {
-    let Some((city, fahrenheit)) = self.spec(id).map(|s| (s.city.clone(), s.fahrenheit)) else { return };
-    if !self.widgets.weather_busy.insert(id) {
+    let Some(spec) = self.spec(id) else { return };
+    let query = weather::query(spec, self.model.locale());
+    if self.widgets.weather_busy.contains_key(&id) { return; }
+    self.widgets.weather_token += 1;
+    let token = self.widgets.weather_token;
+    self.widgets.weather_busy.insert(id, (token, query.clone()));
+    let request = weather::request_uri(&query, self.widgets.weather_refresh.remove(&id));
+    std::thread::spawn(move || {
+      let r = weather::fetch_query(&request);
+      super::send(Msg::Widgets(Ev::Weather(id, token, query, r)));
+    });
+  }
+
+  fn widget_weather_force(&mut self, id: u64) {
+    self.widgets.weather_refresh.insert(id);
+    self.widget_weather(id);
+  }
+
+  fn widget_close_picker(&mut self, id: u64) {
+    if let Some((_, Some(hwnd))) = self.widgets.pickers.remove(&id) {
+      unsafe { let _ = PostMessageW(HWND(hwnd as *mut _), WM_CLOSE, WPARAM(0), LPARAM(0)); }
+    }
+  }
+
+  fn widget_location_picker(&mut self, id: u64) {
+    if let Some((_, hwnd)) = self.widgets.pickers.get(&id) {
+      if let Some(hwnd) = hwnd { unsafe { let _ = SetForegroundWindow(HWND(*hwnd as *mut _)); } }
       return;
     }
-    let lang = self.model.locale().to_string();
-    std::thread::spawn(move || {
-      let r = weather::fetch(&city, &lang, fahrenheit);
-      super::send(Msg::Widgets(Ev::Weather(id, r)));
-    });
+    let Some(spec) = self.spec(id).cloned() else { return };
+    let Some(win) = self.widgets.wins.iter().find(|w| w.id == id) else { return };
+    let owner = win.hwnd.0 as isize;
+    let labels = ["Konumu değiştir", "Ülke", "Şehir", "İlçe (isteğe bağlı)", "Sonuçlar · tıklayın veya Enter ile seçin",
+      "Tekrar dene", "Son konumlar", "İptal", "Kaydet", "Konumlar yüklenemedi", "Aranıyor…",
+      "Konum seçildi · Kaydet ile uygulayın", "Sonuç yok · ülke ve şehir seçin", "Bir sonuç seçin", "Konum kaydedilemedi",
+      "Ülke, şehir ve isteğe bağlı ilçe", "Kapat"]
+      .iter().map(|label| self.model.tr(label)).collect();
+    self.widgets.picker_token += 1;
+    let token = self.widgets.picker_token;
+    self.widgets.pickers.insert(id, (token, None));
+    picker::open(spec, token, owner, self.model.locale().to_string(), labels, self.theme());
   }
 
   /// The temperature service's file (fresh: written every 2 s); when it is
@@ -686,5 +764,24 @@ impl Ui {
           .collect()
       })
       .unwrap_or_default();
+  }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+  use super::*;
+  #[test]
+  fn failed_location_write_preserves_city_location_and_recents() {
+    let mut store = Store::default(); let mut spec = Spec::new(1, Kind::Weather, "");
+    spec.city = "Old legacy city".into(); store.widgets.push(spec);
+    let before = store.clone();
+    let location = layout::Location { country_code: "TR".into(), country: "Türkiye".into(), city: "İzmir".into(), district: String::new(),
+      latitude: 38.42, longitude: 27.14, city_latitude: 38.42, city_longitude: 27.14 };
+    let error = persist_location(&mut store, 1, location.clone(), |pending| {
+      assert_eq!(pending.widgets[0].city, "İzmir"); Err("disk full".into())
+    }).unwrap_err();
+    assert_eq!(error, "disk full"); assert_eq!(store, before);
+    persist_location(&mut store, 1, location.clone(), |_| Ok(())).unwrap();
+    assert_eq!(store.widgets[0].location, Some(location)); assert_eq!(store.widgets[0].recent_locations.len(), 1);
   }
 }

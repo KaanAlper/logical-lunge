@@ -67,7 +67,7 @@ impl Ui {
         let editing = self.widgets.editor.as_ref().is_some_and(|e| e.id == id);
         let shape = match w.hot {
           Some(Hit::Grip) => IDC_SIZENWSE,
-          Some(Hit::Prev | Hit::Play | Hit::Next) => IDC_HAND,
+          Some(Hit::Prev | Hit::Play | Hit::Next | Hit::Settings) => IDC_HAND,
           Some(Hit::Text) if editing || self.spec(id).is_some_and(|s| s.kind == Kind::Note) => IDC_IBEAM,
           _ if w.drag.as_ref().is_some_and(|d| d.moved && !d.resize) => IDC_SIZEALL,
           _ => IDC_ARROW,
@@ -86,6 +86,7 @@ impl Ui {
           Some(Hit::Prev) => self.widget_media(MediaFunction::Previous),
           Some(Hit::Play) => self.widget_media(MediaFunction::TogglePlayPause),
           Some(Hit::Next) => self.widget_media(MediaFunction::Next),
+          Some(Hit::Settings) => self.widget_menu(id, cursor()),
           Some(Hit::Text) => self.widget_text_click(id, x, y, msg == WM_LBUTTONDBLCLK),
           other => {
             // anything else moves it; the corner resizes it
@@ -152,7 +153,7 @@ impl Ui {
   /// monitor it is over, kept on screen.
   pub(super) fn widget_drag(&mut self, wi: usize) {
     let id = self.widgets.wins[wi].id;
-    let Some(kind) = self.spec(id).map(|s| s.kind) else { return };
+    let Some((kind, form)) = self.spec(id).map(|s| (s.kind, s.shape.clone())) else { return };
     let (d_from, d_start, resize) = match &self.widgets.wins[wi].drag {
       Some(d) => (d.from, d.start, d.resize),
       None => return,
@@ -173,6 +174,7 @@ impl Ui {
     if resize {
       rect.2 = layout::snap(d_start.2 + dx);
       rect.3 = layout::snap(d_start.3 + dy);
+      if form == "circle" { rect.2 = shape::circle_resize(d_start.2,dx,dy); rect.3 = rect.2; }
     } else {
       rect.0 = layout::snap(d_start.0 + dx);
       rect.1 = layout::snap(d_start.1 + dy);
@@ -197,7 +199,7 @@ impl Ui {
       }
     }
     let (aw, ah) = area_dip(&target);
-    let clamped = layout::clamp(kind, rect, aw, ah);
+    let clamped = shape::clamp(kind, &form, rect, aw, ah);
     let moved_monitor = !target.device.eq_ignore_ascii_case(&cur.device);
     if let Some(s) = self.widgets.store.widgets.iter_mut().find(|s| s.id == id) {
       (s.x, s.y, s.w, s.h) = clamped;
@@ -217,7 +219,8 @@ impl Ui {
   /// gets a new surface and a draw.
   pub(super) fn widget_apply(&mut self, wi: usize, m: &Mon) {
     let id = self.widgets.wins[wi].id;
-    let Some((x, y, w, h)) = self.spec(id).map(|s| s.rect()) else { return };
+    let Some((spec, form)) = self.spec(id).map(|s| (s.rect(),s.shape.clone())) else { return };
+    let (x,y,w,h) = spec;
     let scale = crate::native_bar::scale::of_dpi(m.dpi);
     let (px, py) = (m.work.left + (x * scale).round() as i32, m.work.top + (y * scale).round() as i32);
     let (pw, ph) = ((w * scale).round() as u32, (h * scale).round() as u32);
@@ -226,6 +229,7 @@ impl Ui {
     win.scale = scale;
     win.device = m.device.clone();
     win.work = m.work;
+    shape_region(win.hwnd, &shape::plan(&form,w,h), scale);
     unsafe {
       let _ = SetWindowPos(win.hwnd, None, px, py, pw as i32, ph as i32, SWP_NOZORDER | SWP_NOACTIVATE);
     }
@@ -278,6 +282,16 @@ impl Ui {
     if !settings.is_empty() {
       items.push(MenuItem::new("settings", Some("tune"), tr("Ayarlar")).submenu(settings));
     }
+    let appearances = layout::APPEARANCES.iter().map(|(style, label)|
+      MenuItem::new(&format!("appearance:{style}"), None, tr(label)).checked(s.appearance == *style)).collect();
+    items.push(MenuItem::new("appearance", Some("palette"), tr("Görünüş")).submenu(appearances));
+    let shapes = shape::SHAPES.iter().map(|(form,label)| MenuItem::new(&format!("shape:{form}"), None, tr(label)).checked(s.shape == *form)).collect();
+    items.push(MenuItem::new("shape", Some("category"), tr("Biçim")).submenu(shapes));
+    for (key, label, value) in [("background", "Arka plan opaklığı", s.background_opacity), ("content", "İçerik opaklığı", s.content_opacity)] {
+      let levels = [0, 10, 25, 50, 75, 90, 100].iter().map(|percent|
+        MenuItem::new(&format!("opacity:{key}:{percent}"), None, format!("{percent}%")).checked((value * 100.0 - *percent as f32).abs() < 0.5)).collect();
+      items.push(MenuItem::new(key, None, tr(label)).submenu(levels));
+    }
     items.push(MenuItem::new("add", Some("widgets"), tr("Widget ekle")).submenu(self.widgets_add_menu()));
     items.push(MenuItem::sep());
     items.push(MenuItem::new("remove", Some("delete"), tr("Widget’ı kaldır")));
@@ -295,7 +309,7 @@ impl Ui {
       return;
     }
     if choice == "city:edit" {
-      self.widgets_begin_edit(id, Target::City);
+      self.widget_location_picker(id);
       return;
     }
     if choice == "edit" {
@@ -313,6 +327,7 @@ impl Ui {
       "temps" => s.temps = !s.temps,
       "city:auto" => {
         s.city.clear();
+        s.location = None;
         refetch = true;
       }
       "fahrenheit" => {
@@ -320,12 +335,38 @@ impl Ui {
         refetch = true;
       }
       "refresh" => refetch = true,
+      choice if choice.starts_with("appearance:") => {
+        let style = &choice[11..];
+        s.appearance = layout::APPEARANCES.iter().find(|(id, _)| *id == style).map(|(id, _)| *id).unwrap_or("standard").into();
+      }
+      choice if choice.starts_with("shape:") => {
+        // Apply below with the current monitor bounds and the previous shape
+        // still intact, so its dimensions can be remembered.
+      }
+      choice if choice.starts_with("opacity:") => {
+        let parts: Vec<_> = choice.split(':').collect();
+        let Some(value) = parts.get(2).and_then(|s| s.parse::<f32>().ok()).filter(|v| v.is_finite()) else { return };
+        let value = (value / 100.0).clamp(0.0, 1.0);
+        match parts.get(1).copied() { Some("background") => s.background_opacity = value, Some("content") => s.content_opacity = value, _ => return }
+      }
       _ => return,
+    }
+    if choice.starts_with("shape:") {
+      if let Some(wi) = self.widgets.wins.iter().position(|w| w.id == id) {
+        let win = &self.widgets.wins[wi];
+        if let Some(m) = mon_for(&monitors(), &win.device) {
+          let (aw,ah) = area_dip(&m);
+          if let Some(s) = self.widgets.store.widgets.iter_mut().find(|s| s.id == id) {
+            s.select_shape(&choice[6..],aw,ah);
+          }
+          self.widget_apply(wi,&m);
+        }
+      }
     }
     save(&self.widgets.store);
     if refetch {
       self.widgets.weather.remove(&id);
-      self.widget_weather(id);
+      if choice == "refresh" { self.widget_weather_force(id); } else { self.widget_weather(id); }
     }
     self.widgets_schedule();
     self.widget_paint(id, true);

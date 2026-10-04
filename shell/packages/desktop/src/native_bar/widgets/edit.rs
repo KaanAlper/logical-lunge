@@ -1,11 +1,11 @@
-//! Typing into a widget: a note (several lines) or the weather's place.
+//! Typing into a note widget (several lines).
 //! The widget takes the keyboard while it is edited and gives it back on
 //! Esc, a click elsewhere or another window taking the focus.
 
 use super::*;
 
 impl Ui {
-  // ------------------------------------------------------------ editing (notes, the weather's place)
+  // ------------------------------------------------------------ note editing
 
   pub(super) fn widgets_begin_edit(&mut self, id: u64, target: Target) {
     if self.widgets.editor.as_ref().is_some_and(|e| e.id == id && e.target == target) {
@@ -14,7 +14,7 @@ impl Ui {
     self.widgets_end_edit(true);
     let Some(s) = self.spec(id) else { return };
     let mut edit = Edit::default();
-    edit.start(if target == Target::Note { &s.note } else { &s.city });
+    edit.start(&s.note);
     self.widgets.editor = Some(Editor { id, target, edit, high: None });
     let Some(w) = self.widgets.wins.iter().find(|w| w.id == id) else { return };
     let hwnd = w.hwnd;
@@ -28,32 +28,18 @@ impl Ui {
     self.widget_paint(id, true);
   }
 
-  /// Ends editing; `commit` keeps the text (a note always keeps it, Esc on
-  /// the place puts the old one back).
-  pub(super) fn widgets_end_edit(&mut self, commit: bool) {
+  /// Notes always keep their text when editing ends, including on Escape.
+  pub(super) fn widgets_end_edit(&mut self, _commit: bool) {
     let Some(e) = self.widgets.editor.take() else { return };
     let text = e.edit.text();
-    let mut refetch = false;
     if let Some(s) = self.widgets.store.widgets.iter_mut().find(|s| s.id == e.id) {
-      match e.target {
-        Target::Note => s.note = text,
-        Target::City if commit => {
-          let city = text.trim().to_string();
-          refetch = city != s.city;
-          s.city = city;
-        }
-        Target::City => {}
-      }
+      s.note = text;
     }
     save(&self.widgets.store);
     if let Some(w) = self.widgets.wins.iter().find(|w| w.id == e.id) {
       unsafe {
         let _ = SetWindowTextW(w.hwnd, TITLE);
       }
-    }
-    if refetch {
-      self.widgets.weather.remove(&e.id);
-      self.widget_weather(e.id);
     }
     self.widget_paint(e.id, true);
   }
@@ -84,7 +70,9 @@ impl Ui {
     let w = self.widgets.wins.iter().find(|w| w.id == id)?;
     let layout = w.note_layout.as_ref()?;
     let text = self.widgets.editor.as_ref().filter(|e| e.id == id).map(|e| e.edit.text())?;
-    let (ox, oy) = (16.0, 14.0);
+    let s = self.spec(id)?;
+    let inner = shape::plan(&s.shape,w.px.0 as f32 / w.scale,w.px.1 as f32 / w.scale).inner;
+    let (ox,oy) = (inner.x,inner.y);
     let (mut trailing, mut inside) = (BOOL(0), BOOL(0));
     let mut m = DWRITE_HIT_TEST_METRICS::default();
     unsafe { layout.HitTestPoint(x - ox, y - oy, &mut trailing, &mut inside, &mut m) }.ok()?;
@@ -133,7 +121,7 @@ impl Ui {
         return true;
       }
       v if v == VK_RETURN.0 => {
-        if target == Target::City || ctrl {
+        if ctrl {
           self.widgets_end_edit(true);
         } else if let Some(e) = self.widgets.editor.as_mut() {
           e.edit.insert_lines("\n");
@@ -203,29 +191,10 @@ impl Ui {
       u if u < 0x20 || u == 0x7F => return,
       u => String::from_utf16_lossy(&[u]),
     };
-    let limit = if e.target == Target::Note { 4000 } else { 80 };
+    let limit = 4000;
     if e.edit.chars.len() < limit {
       e.edit.insert(&text);
     }
     self.widget_paint(id, false);
   }
-}
-
-/// The weather widget's place field (while it is edited), over its lower part.
-pub(super) fn city_field(p: &mut Painter, t: &crate::native_bar::view::Theme, s: &Spec, text: &str, caret: usize, tr: &dyn Fn(&str) -> String) -> anyhow::Result<()> {
-  use crate::native_bar::{fonts::TextStyle, view::Align};
-  let r = Rect::new(12.0, s.h - 48.0, s.w - 24.0, 36.0);
-  p.fill_round(r, 12.0, t.surface_container_high)?;
-  p.stroke_round(r, 12.0, t.primary, 1.5)?;
-  let style = TextStyle { size: 14.0, weight: 450.0 };
-  let inner = r.inset(12.0, 0.0);
-  if text.is_empty() {
-    p.text(&tr("Şehir adı"), inner, style, t.on_surface_variant, Align::Left, false)?;
-  } else {
-    p.text(text, inner, style, t.on_layer0, Align::Left, false)?;
-  }
-  let before: String = text.chars().take(caret).collect();
-  let x = if before.is_empty() { 0.0 } else { p.measure(&before, style)? };
-  p.fill(Rect::new(inner.x + x.min(inner.w - 2.0), inner.y + 9.0, 1.5, inner.h - 18.0), t.primary)?;
-  Ok(())
 }
