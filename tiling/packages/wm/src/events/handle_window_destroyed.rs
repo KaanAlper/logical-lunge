@@ -13,6 +13,13 @@ pub fn handle_window_destroyed(
   state: &mut WmState,
 ) -> anyhow::Result<()> {
   state.transition_moves.remove(&native_window_id.0);
+  #[cfg(target_os = "windows")]
+  {
+    // A hidden/unmanaged HWND can be destroyed and reused too.
+    state.fullscreen_marks.remove(&native_window_id.0);
+    state.fake_fullscreen.remove(&native_window_id.0);
+    state.self_resizes.remove(&native_window_id.0);
+  }
   // Logical Lunge: what was hidden with it comes back (if it is still there).
   #[cfg(target_os = "windows")]
   {
@@ -39,11 +46,6 @@ pub fn handle_window_destroyed(
   if let Some(window) = found_window {
     let workspace = window.workspace().context("No workspace.")?;
 
-    #[cfg(target_os = "windows")]
-    {
-      use wm_platform::NativeWindowWindowsExt;
-      state.fake_fullscreen.remove(&window.native().hwnd().0);
-    }
     info!("Window closed: {window}");
     unmanage_window(window, state)?;
 
