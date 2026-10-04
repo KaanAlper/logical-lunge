@@ -408,7 +408,7 @@ class RingLayer : Form
     Rectangle placed;
     bool ready;
     public readonly Stack<IntPtr[]> PoolA = new Stack<IntPtr[]>(), PoolI = new Stack<IntPtr[]>();
-    public int RetainA = 1, RetainI = 2;
+    public int RetainA = 2, RetainI = 2;
 
     public RingLayer()
     {
@@ -1030,7 +1030,7 @@ class Slider
     readonly List<Thumb> ringed = new List<Thumb>();
     static int RingPoolTarget(bool active, int windows)
     {
-        return Math.Max(active ? 1 : 2, Math.Min(active ? 2 : 12, windows));
+        return active ? 2 : Math.Max(2, Math.Min(12, windows + 1));
     }
     static IntPtr[] RegisterRingSet(RingTemplate src, IntPtr dest)
     {
@@ -1066,14 +1066,14 @@ class Slider
         lock (pool) pool.Push(ids);
     }
     // Havuzu doldur (katman gizliyken: kayıt ucuz)
-    static void FillRingPools(RingLayer layer)
+    static void FillRingPools(RingLayer layer, int incomingReserve = 0)
     {
         if (ringSrc == null || layer.Hwnd == IntPtr.Zero) return;
         for (int k = 0; k < 2; k++)
         {
             bool active = k == 0;
             var pool = active ? layer.PoolA : layer.PoolI;
-            int want = active ? layer.RetainA : layer.RetainI;
+            int want = active ? layer.RetainA : Math.Max(layer.RetainI, incomingReserve);
             if (!active && ringSrcInactive == null) continue;
             while (true)
             {
@@ -1103,7 +1103,7 @@ class Slider
         overlay.Rings.RetainI = RingPoolTarget(false, windows.Count);
         overlay.Rings.RetainA = RingPoolTarget(true, 1);
         TrimRingPools(overlay.Rings);
-        FillRingPools(overlay.Rings); // hidden layer: warm this scene's actual demand before Reveal
+        FillRingPools(overlay.Rings, windows.Count + 1); // includes an arriving window before Reveal; retained pool stays capped
         foreach (var t in windows) RingAdd(t, t.Src == focused);
     }
     // Yalnızca ölçüm için (A/B): %LOCALAPPDATA%\LogicalLunge\state\test-no-rings varken animasyonlarda kenarlık halkası yok.
@@ -1116,6 +1116,9 @@ class Slider
     // Odak değişti: etkin/pasif takımı değiştir (eskisi gizlenir, yenisi bir sonraki RingPlace'te yerleşir)
     void RingsFocus(IntPtr focused)
     {
+        // Release old focus sets first, so a gesture never allocates a new set on the visible layer.
+        foreach (var t in ringed)
+            if (t.Src != focused && t.RingA != null) { ReturnRingSet(t.Layer, t.RingA, true); t.RingA = null; }
         foreach (var t in ringed)
         {
             bool a = t.Src == focused;
@@ -2636,7 +2639,8 @@ class Dwindle
     // sürekli çöp (kaymalarda çöp toplama duraklamaları).
     static readonly AutoResetEvent cacheDirty = new AutoResetEvent(true);
     volatile bool cacheConnected;
-    static int CacheWaitMs(bool connected) { return connected ? 30000 : 2000; }
+    volatile bool cacheHealthy;
+    static int CacheWaitMs(bool connected, bool healthy) { return connected && healthy ? 30000 : 2000; }
     static bool SnapshotEvent(string eventType) { return eventType != "focus_changed"; }
     static volatile Dwindle current;
     public static void MarkDirty() { cacheDirty.Set(); }
@@ -2658,10 +2662,10 @@ class Dwindle
         {
             while (true)
             {
-                cacheDirty.WaitOne(CacheWaitMs(cacheConnected));
+                cacheDirty.WaitOne(CacheWaitMs(cacheConnected, cacheHealthy));
                 Thread.Sleep(30);
                 while (Slider.Animating) Thread.Sleep(50); // animasyon bitince bir kez
-                try { RefreshCache(); } catch { }
+                try { RefreshCache(); } catch { cacheHealthy = false; }
             }
         }) { IsBackground = true, Name = "dwindle-cache" };
         t.Start();
@@ -2673,7 +2677,9 @@ class Dwindle
     {
         r = new Dictionary<long, Native.RECT>(); m = new Dictionary<long, string>(); mr = new Dictionary<string, Rectangle>();
         var tiled = new HashSet<long>();
-        foreach (var mon in cacheTiling.Monitors())
+        var monitors = cacheTiling.Monitors();
+        if (monitors.Count == 0) throw new InvalidOperationException("WM snapshot unavailable");
+        foreach (var mon in monitors)
         {
             string mid = J.Str(mon, "id");
             mr[mid] = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
@@ -2717,7 +2723,7 @@ class Dwindle
         lock (cacheLock)
         {
             if (gen != Slider.Gen || Slider.Animating) { cacheDirty.Set(); return; } // sorgu sürerken animasyon başladı: bu sonuç eski, sonra yine
-            rects = r; monOf = m; monRects = mr; visual = v;
+            rects = r; monOf = m; monRects = mr; visual = v; cacheHealthy = true;
         }
     }
 
@@ -6410,12 +6416,20 @@ class Rounder
     }
 
     // Kapanan pencerenin kayıtları (önceden hiç silinmiyordu)
-    void Forget(IntPtr h) { applied.Remove(h); resets.Remove(h); giveUp.Remove(h); }
+    readonly Dictionary<IntPtr, int> clipRepairAt = new Dictionary<IntPtr, int>();
+    static bool ClipRepairDue(int now, int last) { return unchecked(now - last) >= 16; }
+    static bool RegionMatches(int kind, Native.RECT actual, Native.RECT expected, bool square)
+    {
+        return kind == (square ? 2 : 3) && actual.Left == expected.Left && actual.Top == expected.Top
+            && actual.Right == expected.Right && actual.Bottom == expected.Bottom;
+    }
+    void Forget(IntPtr h) { applied.Remove(h); resets.Remove(h); giveUp.Remove(h); clipRepairAt.Remove(h); }
     void Prune()
     {
         foreach (var h in new List<IntPtr>(applied.Keys)) if (!Native.IsWindow(h)) Forget(h);
         foreach (var h in new List<IntPtr>(resets.Keys)) if (!Native.IsWindow(h)) resets.Remove(h);
         giveUp.RemoveWhere(h => !Native.IsWindow(h));
+        foreach (var h in new List<IntPtr>(clipRepairAt.Keys)) if (!Native.IsWindow(h)) clipRepairAt.Remove(h);
     }
 
     // Bar, bildirim ve ekran klavyesi pencereleri (başlıklarıyla, tüm pencereleri gezmeden)
@@ -6541,10 +6555,15 @@ class Rounder
         unchecked { key = (((((long)(fr.Right - fr.Left) * 31 + (fr.Bottom - fr.Top)) * 31 + (vis.Left - fr.Left)) * 31 + (vis.Top - fr.Top)) * 31 + (fr.Right - vis.Right)) * 31 + (fr.Bottom - vis.Bottom); }
         long prev;
         Native.RECT box;
-        bool hasRgn = Native.GetWindowRgnBox(h, out box) != 0;
+        int regionKind = Native.GetWindowRgnBox(h, out box);
+        bool hasRgn = regionKind > 1;
         bool clipRequired = NeedsTileClip(fr, slot, tiledSlot);
+        int l = vis.Left - wr.Left, t = vis.Top - wr.Top;
+        int r = l + (vis.Right - vis.Left), b = t + (vis.Bottom - vis.Top);
+        var expectedRegion = new Native.RECT { Left = l, Top = t, Right = r + 1, Bottom = b + 1 };
+        bool square = full || borderless || giveUp.Contains(h);
         // Bazı uygulamalar (Terminal, Firefox/Zen) bölgeyi kendileri sıfırlıyor: yoksa yeniden uygula
-        if (applied.TryGetValue(h, out prev) && prev == key && hasRgn) return;
+        if (applied.TryGetValue(h, out prev) && prev == key && RegionMatches(regionKind, box, expectedRegion, square)) return;
         if (giveUp.Contains(h) && !clipRequired)
         {
             // A previous fullscreen clip is relative to the old HWND bounds.
@@ -6568,17 +6587,21 @@ class Rounder
                 if (!clipRequired) { applied.Remove(h); if (hasRgn) Native.SetWindowRgn(h, IntPtr.Zero, true); return; }
             }
         }
-        applied[h] = key;
-
-        int l = vis.Left - wr.Left, t = vis.Top - wr.Top;
-        int r = l + (vis.Right - vis.Left), b = t + (vis.Bottom - vis.Top);
+        if (clipRequired)
+        {
+            int last, now = Environment.TickCount;
+            if (clipRepairAt.TryGetValue(h, out last) && !ClipRepairDue(now, last)) return;
+            clipRepairAt[h] = now;
+        }
         IntPtr rgn = full || borderless || giveUp.Contains(h) ? Native.CreateRectRgn(l, t, r + 1, b + 1)
             : Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
         if (Native.SetWindowRgn(h, rgn, true) == 0)
         {
             Slider.Log("SetWindowRgn failed " + ProcName(h) + " err=" + Marshal.GetLastWin32Error());
             Native.DeleteObject(rgn); // başarılıysa sistem sahiplenir
+            applied.Remove(h);
         }
+        else applied[h] = key;
     }
 }
 
