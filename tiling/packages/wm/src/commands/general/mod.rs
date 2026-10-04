@@ -3,7 +3,7 @@ mod disable_binding_mode;
 mod enable_binding_mode;
 mod platform_sync;
 #[cfg(target_os = "windows")]
-mod window_sync_policy;
+pub(crate) mod window_sync_policy;
 mod reload_config;
 mod shell_exec;
 mod toggle_pause;

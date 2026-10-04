@@ -40,6 +40,13 @@ pub fn handle_window_moved_or_resized(
   let found_window = state.window_from_native(native_window);
 
   if let Some(window) = found_window {
+    // Never retain an observation across a drag, pause or state change.
+    #[cfg(target_os = "windows")]
+    if state.is_paused || window.state() != WindowState::Tiling
+      || window.active_drag().is_some() || is_interactive_start
+    {
+      state.background_fullscreen_frames.remove(&window.native().hwnd().0);
+    }
     let old_frame_position = window.native_properties().frame;
     let frame_position = try_warn!(window.native().frame());
 
@@ -226,6 +233,23 @@ pub fn handle_window_moved_or_resized(
     let nearest_monitor = state
       .nearest_monitor(&window.native())
       .context("No nearest monitor.")?;
+
+    #[cfg(target_os = "windows")]
+    {
+      use crate::commands::general::window_sync_policy::is_background_fullscreen_frame;
+      let handle = window.native().hwnd().0;
+      state.background_fullscreen_frames.remove(&handle);
+      if !state.is_paused && window.state() == WindowState::Tiling && !is_maximized {
+        if let Ok(frame) = window.native().frame_with_shadows() {
+          if is_background_fullscreen_frame(&frame, &nearest_monitor.native_properties().bounds) {
+            state.background_fullscreen_frames.insert(handle, frame);
+            state.fake_fullscreen.insert(handle);
+            state.pending_sync.queue_container_to_redraw(window.clone());
+            return Ok(());
+          }
+        }
+      }
+    }
 
     // For `HideMethod::PlaceInCorner`, hiding/showing is implemented by
     // repositioning the window. Since the OS won't emit real

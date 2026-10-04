@@ -217,6 +217,11 @@ pub trait NativeWindowWindowsExt {
     flags: SET_WINDOW_POS_FLAGS,
   ) -> crate::Result<()>;
 
+  /// After a synchronous background-fullscreen tile correction, deliver
+  /// WINDOWPOSCHANGING/NCCALCSIZE without moving, resizing or activating.
+  /// Returns false if focus or geometry changed before dispatch.
+  fn notify_background_frame_changed(&self, expected_frame: &Rect) -> crate::Result<bool>;
+
   /// Shows the window asynchronously.
   ///
   /// NOTE: Cloaked windows do not get shown until uncloaked.
@@ -440,6 +445,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn show(&self) -> crate::Result<()> {
     self.inner.show()
+  }
+
+  fn notify_background_frame_changed(&self, expected_frame: &Rect) -> crate::Result<bool> {
+    self.inner.notify_background_frame_changed(expected_frame)
   }
 
   fn hide(&self) -> crate::Result<()> {
