@@ -714,12 +714,16 @@ class RingTemplate : Form
     public static Native.RECT R(int l, int t, int r, int b) { return new Native.RECT { Left = l, Top = t, Right = r, Bottom = b }; }
 }
 
-// CPU frame submission timing: update, pacing/handoff wait, and scheduling gap. Intermediate frames are
-// now asynchronous; this is not a measurement of physical frames displayed by the GPU.
+// Animasyon kare ölçümü: her kare "güncelleme" (önizleme çağrıları), "flush" (DwmFlush: DWM'in kareyi
+// bitirmesini bekleme) ve "boşluk" (iki kare arası başka şey: thread'in kesilmesi, GC) olarak parçalanır; takılmanın
+// bizde mi DWM'de mi olduğunu ayırmak için.
+// Kare temposu her karede DwmFlush. Zamanlayıcıyla (2f49b4a'daki FramePacer) güncelleme DWM'in kareyi topladığı ana denk
+// gelip kayıyordu: ekranda gösterilen kareler (tools/dev/frame-bench) akıcı %88 -> %81, atlanan kare iki katı, gecikme
+// +1,7 ms; yük altında da aynı yön. Ölçüm burada değil ekranda: zamanlayıcıyla bu sayaç "zamanında" der, ekran takılır.
 class FrameStats
 {
     readonly Stopwatch sw = Stopwatch.StartNew();
-    double t0, t1, lastEnd = -1, sumUpd, sumWait, sumGap, maxTotal;
+    double t0, t1, lastEnd = -1, sumUpd, sumFlush, sumGap, maxTotal;
     string worst = "";
     public int Frames;
     // Kare aralığı dağılımı (yenileme periyoduna göre): zamanında / 1 vsync kaçırdı / 2+ kaçırdı. Ortalama aynı olsa da
@@ -745,21 +749,21 @@ class FrameStats
     }
     public void Begin() { t0 = sw.Elapsed.TotalMilliseconds; }
     public void Updated() { t1 = sw.Elapsed.TotalMilliseconds; }
-    public void Waited()
+    public void Flushed()
     {
         double t2 = sw.Elapsed.TotalMilliseconds;
         double gap = lastEnd < 0 ? 0 : t0 - lastEnd, upd = t1 - t0, fl = t2 - t1;
         double total = lastEnd < 0 ? t2 - t0 : t2 - lastEnd;
-        sumUpd += upd; sumWait += fl; sumGap += gap;
-        if (total > maxTotal) { maxTotal = total; worst = string.Format("güncelleme {0:0.0} + bekleme {1:0.0} + boşluk {2:0.0}", upd, fl, gap); }
+        sumUpd += upd; sumFlush += fl; sumGap += gap;
+        if (total > maxTotal) { maxTotal = total; worst = string.Format("güncelleme {0:0.0} + flush {1:0.0} + boşluk {2:0.0}", upd, fl, gap); }
         if (lastEnd >= 0) { if (total < period * 1.5) onTime++; else if (total < period * 2.5) miss1++; else miss2++; }
         lastEnd = t2; Frames++;
     }
     public string Report()
     {
         var sb = new StringBuilder();
-        sb.AppendFormat("[CPU gönderimi: {0} kare/{1:0} ms; en uzun {2:0.0} ms = {3}; toplam güncelleme {4:0} bekleme {5:0} boşluk {6:0} ms; GC {7}/{8}/{9}",
-            Frames, sw.Elapsed.TotalMilliseconds, maxTotal, worst, sumUpd, sumWait, sumGap,
+        sb.AppendFormat("[{0} kare/{1:0} ms; en uzun {2:0.0} ms = {3}; toplam güncelleme {4:0} flush {5:0} boşluk {6:0} ms; GC {7}/{8}/{9}",
+            Frames, sw.Elapsed.TotalMilliseconds, maxTotal, worst, sumUpd, sumFlush, sumGap,
             GC.CollectionCount(0) - gc0, GC.CollectionCount(1) - gc1, GC.CollectionCount(2) - gc2);
         sb.AppendFormat("; aralık {0:0.0} ms: zamanında {1} / 1 kaçık {2} / 2+ kaçık {3}", period, onTime, miss1, miss2);
         sb.Append("]");
@@ -787,66 +791,6 @@ class PresentClock
         }
         if (baseQpc < 0) baseQpc = next;
         return (next - baseQpc) * ToMs;
-    }
-}
-
-// Pace intermediate thumbnail updates without waiting for the GPU to finish every frame. Initial/final
-// DwmFlush handoffs still guarantee the overlay is ready before real windows change or it disappears.
-sealed class FramePacer : IDisposable
-{
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
-    static extern IntPtr CreateWaitableTimerExW(IntPtr security, string name, uint flags, uint access);
-    [DllImport("kernel32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    static extern bool SetWaitableTimer(IntPtr timer, ref long due, int period, IntPtr callback, IntPtr argument, bool resume);
-    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle, uint timeout);
-    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    IntPtr timer;
-    readonly long period;
-    long deadline;
-
-    public FramePacer()
-    {
-        double ms = FrameStats.RefreshPeriodMs();
-        if (double.IsNaN(ms) || double.IsInfinity(ms) || ms < 1 || ms > 100) ms = 1000.0 / 60;
-        period = Math.Max(1, (long)Math.Round(ms * Stopwatch.Frequency / 1000.0));
-        try
-        {
-            var t = new Native.DWM_TIMING_INFO(); t.cbSize = (uint)Marshal.SizeOf(typeof(Native.DWM_TIMING_INFO));
-            if (Native.DwmGetCompositionTimingInfo(IntPtr.Zero, ref t) == 0 && t.qpcVBlank > 0 && t.qpcRefreshPeriod > 0)
-            {
-                deadline = NextDeadline(Stopwatch.GetTimestamp(), (long)t.qpcVBlank, period);
-            }
-            timer = CreateWaitableTimerExW(IntPtr.Zero, null, 2 /* high resolution, Windows 10 1803+ */, 0x1f0003);
-            if (timer == IntPtr.Zero) timer = CreateWaitableTimerExW(IntPtr.Zero, null, 0, 0x1f0003);
-        }
-        catch { timer = IntPtr.Zero; }
-    }
-
-    internal static long NextDeadline(long now, long previous, long interval)
-    {
-        interval = Math.Max(1, interval);
-        if (previous <= 0) return now + interval;
-        if (previous > now) return previous;
-        return previous + ((now - previous) / interval + 1) * interval;
-    }
-
-    public void Wait()
-    {
-        long now = Stopwatch.GetTimestamp();
-        deadline = NextDeadline(now, deadline, period);
-        double ms = (deadline - now) * 1000.0 / Stopwatch.Frequency;
-        long due = -Math.Max(1, (long)Math.Ceiling(ms * 10000)); // relative 100ns units
-        if (timer != IntPtr.Zero && SetWaitableTimer(timer, ref due, 0, IntPtr.Zero, IntPtr.Zero, false))
-            WaitForSingleObject(timer, (uint)Math.Ceiling(ms + 16)); // bounded even if a timer fails
-        else Thread.Sleep(Math.Max(1, (int)Math.Ceiling(ms)));
-        deadline += period;
-    }
-
-    public void Dispose()
-    {
-        if (timer == IntPtr.Zero) return;
-        CloseHandle(timer); timer = IntPtr.Zero;
     }
 }
 
@@ -1703,7 +1647,6 @@ class Slider
         var pc = new PresentClock();
         var fs = new FrameStats();
         int frames = 0; long lastFrame = 0, maxGap = 0;
-        using (var pace = new FramePacer())
         while (!Interrupt)
         {
             fs.Begin();
@@ -1738,8 +1681,8 @@ class Slider
                 RingPlace(a.T, r, op);
             }
             fs.Updated();
-            if (p >= 1.0 && pIn >= 1.0) Native.DwmFlush(); else pace.Wait();
-            fs.Waited();
+            Native.DwmFlush();
+            fs.Flushed();
             if (p >= 1.0 && pIn >= 1.0) break;
         }
         var sb = new StringBuilder();
@@ -2260,7 +2203,6 @@ class Slider
             double rStart = 0;
             var fs = new FrameStats();
             culledCount = 0;
-            using (var pace = new FramePacer())
             while (!Interrupt)
             {
                 fs.Begin();
@@ -2298,8 +2240,8 @@ class Slider
                     RingPlace(carried, rc, 255);
                 }
                 fs.Updated();
-                if (p >= 1.0 && (!moveFollow || pR >= 1.0)) Native.DwmFlush(); else pace.Wait();
-                fs.Waited();
+                Native.DwmFlush();
+                fs.Flushed();
                 if (p >= 1.0 && (!moveFollow || pR >= 1.0)) break;
                 if (p >= 1.0 && swR == null && sw0.ElapsedMilliseconds > dur0 + 1500) break; // komut takıldı
             }
@@ -2376,7 +2318,6 @@ class Slider
             Native.DwmFlush();
 
             var pc = new PresentClock();
-            using (var pace = new FramePacer())
             while (!Interrupt)
             {
                 double p = Prog(pc.Ms(), Anims.Workspaces.Ms);
@@ -2384,7 +2325,7 @@ class Slider
                 int shift = (int)Math.Round(e * (mw + GAP));
                 foreach (var t in oldThumbs) Move(t, -dir * shift);
                 foreach (var t in newThumbs) Move(t, dir * (mw + GAP) - dir * shift);
-                if (p >= 1.0) Native.DwmFlush(); else pace.Wait();
+                Native.DwmFlush();
                 if (p >= 1.0) break;
             }
         }
@@ -2562,15 +2503,14 @@ class Slider
         var pc = new PresentClock();
         var fs = new FrameStats();
         int frames = 0;
-        using (var pace = new FramePacer())
         while (dur > 0)
         {
             fs.Begin(); frames++;
             double q = Prog(pc.Ms(), dur);
             SwipePlace(from + (to - from) * spec.Curve.At(q));
             fs.Updated();
-            if (q >= 1.0) Native.DwmFlush(); else pace.Wait();
-            fs.Waited();
+            Native.DwmFlush();
+            fs.Flushed();
             if (q >= 1.0) break;
         }
         // Katmanı gerçek durum hazır olunca kaldır (Run'daki gibi): eski workspace'in pencereleri gizlenmiş, yenininkiler
@@ -11862,7 +11802,7 @@ static class PerfGuard
             avg /= 5;
         }
         if (avg < 0.7)
-            ThreadPool.QueueUserWorkItem(_ => Dump("animasyon gönderimi kare kaçırıyor (son 5'te zamanında %" + Math.Round(avg * 100) + ")"));
+            ThreadPool.QueueUserWorkItem(_ => Dump("animasyonlar kare kaçırıyor (son 5'te zamanında %" + Math.Round(avg * 100) + ")"));
     }
 
     // Tam ekran oyun / sunum / kilit ekranı: DWM ölçümü anlamsız
