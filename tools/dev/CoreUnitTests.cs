@@ -29,8 +29,34 @@ static class CoreUnitTests
         FocusSinkTests(root);
         LogWriterTests();
         MemoryLogTests(root);
+        TempsFileTests();
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // The usage menu's temperatures come from the core without a process, and reading marks the demand.
+    static void TempsFileTests()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "lunge-unit-temps-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string keepPath = TempsFile.Path, keepWant = TempsFile.Want;
+        TempsFile.Path = Path.Combine(dir, "lunge-temps.json");
+        TempsFile.Want = Path.Combine(dir, "lunge-temps.want");
+        try
+        {
+            File.WriteAllText(TempsFile.Path, "{\"running\":true,\"cpu\":41}");
+            Check(TempsFile.Json() == "{\"running\":true,\"cpu\":41}", "a fresh temperature file was not passed on");
+            Check(File.Exists(TempsFile.Want) && (DateTime.UtcNow - File.GetLastWriteTimeUtc(TempsFile.Want)).TotalSeconds < 5, "reading did not mark the demand");
+            File.SetLastWriteTimeUtc(TempsFile.Path, DateTime.UtcNow.AddMinutes(-1));
+            Check(TempsFile.Json() == "{\"running\":false}", "a stale temperature file was passed on as running");
+            string text = File.ReadAllText(Path.Combine("core", "lunge.cs"));
+            Check(text.Contains("verbless.StartsWith(\"/temps.json\")") && text.Contains("target == \"/temps.json\""), "the core does not serve /temps.json");
+        }
+        finally
+        {
+            TempsFile.Path = keepPath; TempsFile.Want = keepWant;
+            try { Directory.Delete(dir, true); } catch { }
+        }
     }
 
     // The black box writes every part's memory once an hour, also during fullscreen games (a leak shows as a growing figure).

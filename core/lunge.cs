@@ -5680,7 +5680,7 @@ static class Toasts
                 new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
                 return;
             }
-            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/temps.json") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -5811,6 +5811,8 @@ static class Toasts
             else if (target.StartsWith("/log?m=")) { Slider.Log("widget: " + Uri.UnescapeDataString(target.Substring(7))); status = "204 No Content"; }
             // Arayüz tercihleri (dil, saat, animasyon): widget'lar sayfa çizilmeden önce okur
             else if (target == "/prefs.json" || target.StartsWith("/prefs.json?")) { body = Prefs.Json(); status = "200 OK"; }
+            // Kullanım menüsünün sıcaklıkları: süreç başlatmadan (eskiden her 2 sn'de bir lunge-temps --read)
+            else if (target == "/temps.json") { body = TempsFile.Json(); status = "200 OK"; }
             else if (target.StartsWith("/focus-color?v="))
             {
                 if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
@@ -11548,6 +11550,45 @@ static class WarmTerminal
 // Sistem genelindeki olay kancalarının (WinEvent) gecikmesi: olayın üretildiği an (dwmsEventTime) ile bize ulaştığı an
 // arası. Bir uygulama olay seli ürettiğinde (ör. Görev Yöneticisi'nin listesi yeniden sıralanırken) kuyruk birikirse
 // kaydedilir: bir dahaki kasmanın kaynağı tahminle değil kayıtla bulunsun. Ucuz: çağrı başına bir karşılaştırma.
+// Sıcaklık servisinin dosyası (lunge-temps.exe), arayüze süreç başlatmadan. Okuyanın işaretini de koyar (servis sensörleri
+// yalnızca son 10 sn'de biri okumak istediyse okur); servis çalışmıyorsa en fazla dakikada bir --read ile uyandırılır.
+static class TempsFile
+{
+    public static string Path = @"C:\Users\Public\lunge-temps.json", Want = @"C:\Users\Public\lunge-temps.want";   // testler değiştirir
+    static int lastWake;
+
+    public static string Json()
+    {
+        try
+        {
+            if (!System.IO.File.Exists(Want)) System.IO.File.WriteAllText(Want, "");
+            System.IO.File.SetLastWriteTimeUtc(Want, DateTime.UtcNow);
+        }
+        catch { }
+        try
+        {
+            var fi = new System.IO.FileInfo(Path);
+            if (fi.Exists && (DateTime.UtcNow - fi.LastWriteTimeUtc).TotalSeconds < 15) return System.IO.File.ReadAllText(Path);
+        }
+        catch { }
+        int now = Environment.TickCount;
+        if (lastWake == 0 || now - lastWake > 60000)
+        {
+            lastWake = now;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    var psi = new ProcessStartInfo(Paths.Tool(@"temps\lunge-temps.exe"), "--read") { CreateNoWindow = true, UseShellExecute = false, RedirectStandardOutput = true };
+                    using (var p = Process.Start(psi)) { p.StandardOutput.ReadToEnd(); p.WaitForExit(5000); }
+                }
+                catch { }
+            });
+        }
+        return "{\"running\":false}";
+    }
+}
+
 // core.log'u yazan tek iş parçacığı: satırlar kuyruktan toplu yazılır. Birden çok süreç (çekirdek, yardımcı kipleri) aynı
 // dosyaya yazdığı için dosya her toplu yazımda ekleme kipinde açılır. 4 MB'yi geçince eskisi .old olur; taşınamazsa (bir
 // okuyucu tutuyorsa) 8 MB'de baştan başlar. Disk takılırsa kuyruk sınırlı kalır, atılanların sayısı yazılır.
