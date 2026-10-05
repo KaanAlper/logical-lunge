@@ -119,6 +119,13 @@ try {
     foreach ($step in 'uac', 'taskbar', 'icons', 'settings', 'tasks', 'extras', 'files', 'result') {
         Assert ($uninstallText -match "Step '$step'") "uninstall.ps1 does not report its $step step"
     }
+    # Permission before the cover: the elevated copy waits (ready, then go / cancel / the window gone) before any step;
+    # the user's part stops the desktop and only then lets it go on
+    $awaitAt = $uninstallText.IndexOf("if (`$Await -and `$Driver)"); $uacAt = $uninstallText.IndexOf("Step 'uac' 'done'")
+    Assert ($awaitAt -gt 0 -and $awaitAt -lt $uacAt) 'The elevated copy does not wait before its first step'
+    Assert ($uninstallText.Contains('(Join-Path $Driver ''ready'')') -and $uninstallText.Contains('(Join-Path $Driver ''cancel'')') -and $uninstallText.Contains('Get-Process -Id $Owner')) 'The elevated copy cannot be released or given up'
+    $stopAt = $uninstallText.IndexOf('Stop-LLDesktop $APP $STATE $sameUser $sessionId $false'); $goAt = $uninstallText.IndexOf("Join-Path `$Driver 'go'), 'go'")
+    Assert ($stopAt -gt 0 -and $goAt -gt $stopAt) 'The user part lets the elevated copy go before the desktop stops'
 
     $nativeRefresh = ${function:Invoke-LLShellRefresh}
 
@@ -213,14 +220,19 @@ try {
     $originalBytes = New-Object byte[] 40; $originalBytes[8] = 3
     [IO.File]::WriteAllText($installPath, ('{"registry":[{"path":"' + $taskbar.Replace('\', '\\') + '","name":"Settings","existed":true,"old":"' + [Convert]::ToBase64String($originalBytes) + '","type":"Binary","binary":true}]}'))
     Assert (Restore-LLWindowsState (Read-LLRestoreSnapshot $state) $hku $true) 'Legacy taskbar original restore failed'
-    Assert ($script:live[0] -eq 3) 'Installer-original auto-hide preference was overridden'
+    # A recorded auto-hiding taskbar or hidden icons may be Logical Lunge's own values recorded over an earlier install
+    # (2026-10-05): the taskbar comes back fixed and the icons shown
+    Assert ($script:live[0] -eq 2) 'A recorded auto-hide kept the taskbar hidden after uninstall'
+    [IO.File]::WriteAllText($installPath, ('{"registry":[{"path":"' + $advanced.Replace('\', '\\') + '","name":"HideIcons","existed":true,"old":1,"type":"DWord","binary":false}],"installed":[],"version":"1.4.1"}'))
+    Assert (Restore-LLWindowsState (Read-LLRestoreSnapshot $state) $hku $true) 'Recorded hidden icons failed to restore'
+    Assert ($script:registry[$advanced].HideIcons -eq 0 -and $script:live[1] -eq $false) 'A recorded HideIcons=1 left the desktop icons hidden'
     Remove-Item -LiteralPath $installPath
     [IO.File]::WriteAllText($takePath, '{broken json')
     Assert (-not (Restore-LLWindowsState (Read-LLRestoreSnapshot $state) $hku $true)) 'Corrupt recovery JSON was reported as restored'
     Assert ([IO.File]::ReadAllText($takePath) -eq '{broken json') 'Corrupt recovery evidence was deleted or rewritten'
     Remove-Item -LiteralPath $takePath
     Assert (Restore-LLWindowsState (Read-LLRestoreSnapshot $state) $hku $true) 'Missing records made a repeat uninstall fail'
-    Assert ($script:live[0] -eq -1 -and $null -eq $script:live[1]) 'Missing originals caused guessed Windows preferences'
+    Assert ($script:live[0] -eq 2 -and $script:live[1] -eq $false) 'Missing records left the taskbar or the icons hidden'
 
     # Command timeout uses a fake Process; it can only terminate its own child.
     $app = Join-Path $sandbox 'app'; New-Item -ItemType Directory -Path $app | Out-Null

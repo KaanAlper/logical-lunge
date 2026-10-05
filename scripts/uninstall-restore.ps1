@@ -176,6 +176,18 @@ function Restore-LLWindowsState($Snapshot, [string]$Hku, [bool]$LiveUser) {
             catch { $ok = $false; Write-Warning "Registry restoration failed: $($_.Exception.Message)" }
         }
     }
+    # Logical Lunge hides the desktop icons and the taskbar while it runs; when it goes, both come back whatever a record
+    # says. A record taken while an earlier install's changes were still in effect holds Logical Lunge's own values as
+    # the "originals" (2026-10-05: HideIcons=1 and an auto-hiding taskbar came back after an uninstall). Wrongly showing
+    # them costs a user who hid them one click; wrongly hiding them looks like a broken Windows.
+    $advanced = "$Hku\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced"
+    try {
+        $now = if (Test-Path -LiteralPath $advanced) { (Get-ItemProperty -LiteralPath $advanced -ErrorAction Stop).HideIcons } else { $null }
+        if ($null -ne $now -and [int]$now -ne 0) { Set-LLRestoredValue $advanced 'HideIcons' 0 'DWord' $true }
+    }
+    catch { $ok = $false; Write-Warning "Desktop icons: $($_.Exception.Message)" }
+    $hideIcons = $false
+    $autoHide = 2 # ABS_ALWAYSONTOP: shown, not auto-hidden
     if ($banners -and $banners.Valid) {
         foreach ($entry in $banners.Value.PSObject.Properties) {
             try {
@@ -320,7 +332,9 @@ public static class LLUninstallShell {
             if (name.ToString() == "Shell_TrayWnd" || name.ToString() == "Shell_SecondaryTrayWnd") ShowWindowAsync(h, 8 /*SW_SHOWNA*/);
             return true;
         }, IntPtr.Zero);
-        if (hideIcons >= 0) { try { SetIcons(hideIcons != 0); } catch { ok = false; } }
+        // Explorer's ShellWindows may not answer an elevated caller; the uninstall window shows the icons again with the
+        // user's rights (WindowRepair.Shell), and HideIcons in the registry holds from the next Explorer start
+        if (hideIcons >= 0) { try { SetIcons(hideIcons != 0); } catch { } }
         IntPtr result;
         SendMessageTimeout((IntPtr)0xffff, 0x001a, IntPtr.Zero, "TraySettings", 2, 1000, out result);
         SendMessageTimeout((IntPtr)0xffff, 0x001a, IntPtr.Zero, "Environment", 2, 1000, out result);
