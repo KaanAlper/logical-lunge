@@ -31,23 +31,26 @@ static class Program
                 session.TryChangePlaybackPositionAsync(TimeSpan.FromSeconds(sec).Ticks).AsTask().Wait(2000);
                 return;
             }
-            // A browser changes the title first and the picture a moment later (YouTube in Zen/Firefox): the picture
-            // read at the title change was the previous video's, and the bar keeps one picture per title. Read again
-            // every half second until two reads agree (at most 3 s); a title that changes meanwhile gives nothing, the
-            // bar asks again for the new title.
+            // A browser changes the title first and the picture a moment later (it fetches the new video's artwork):
+            // the picture read at the title change was the previous video's, and the bar keeps one picture per title.
+            // A picture that was given for another title is that title's: read again every quarter second until it
+            // changes (at most 4 s, then it is taken as this title's own). A title that changes meanwhile gives
+            // nothing; the bar asks again for the new title.
             var props = session.TryGetMediaPropertiesAsync().AsTask().Result;
             if (props == null) return;
-            string title = props.Title, type;
-            byte[] art = Read(props, out type), previous = null;
-            for (int i = 0; i < 6 && (previous == null || !Same(art, previous)); i++)
+            string title = props.Title ?? "", type;
+            byte[] art = Read(props, out type);
+            string lastTitle, lastHash;
+            ReadLast(out lastTitle, out lastHash);
+            for (int i = 0; i < 16 && (art == null || (lastTitle != title && Hash(art) == lastHash)); i++)
             {
-                System.Threading.Thread.Sleep(500);
+                System.Threading.Thread.Sleep(250);
                 var again = session.TryGetMediaPropertiesAsync().AsTask().Result;
-                if (again == null || again.Title != title) return;
-                previous = art;
+                if (again == null || (again.Title ?? "") != title) return;
                 art = Read(again, out type);
             }
             if (art == null) return;
+            WriteLast(title, Hash(art));
             var output = new StreamWriter(Console.OpenStandardOutput());
             output.Write("data:" + type + ";base64," + Convert.ToBase64String(art));
             output.Flush();
@@ -66,11 +69,27 @@ static class Program
         return ms.ToArray();
     }
 
-    static bool Same(byte[] a, byte[] b)
+    // The last picture given and its title (%LOCALAPPDATA%\LogicalLunge\media-art-last.txt): each run is a new process
+    static readonly string LastPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LogicalLunge", "media-art-last.txt");
+
+    static void ReadLast(out string title, out string hash)
     {
-        if (a == null || b == null) return a == b;
-        if (a.Length != b.Length) return false;
-        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
-        return true;
+        title = null; hash = null;
+        try
+        {
+            var lines = File.ReadAllLines(LastPath);
+            if (lines.Length == 2) { hash = lines[0]; title = lines[1]; }
+        }
+        catch { }
+    }
+
+    static void WriteLast(string title, string hash)
+    {
+        try { File.WriteAllLines(LastPath, new[] { hash, title.Replace("\r", " ").Replace("\n", " ") }); } catch { }
+    }
+
+    static string Hash(byte[] data)
+    {
+        using (var sha = System.Security.Cryptography.SHA256.Create()) return Convert.ToBase64String(sha.ComputeHash(data));
     }
 }
