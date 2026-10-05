@@ -2239,6 +2239,10 @@ class Slider
                     RingPlace(carried, rc, 255);
                 }
                 fs.Updated();
+                // An app's own fullscreen on the target workspace is raised to the top by the window manager as
+                // the slide runs (it is its workspace's focused window): it covered the layer and the workspace
+                // appeared without a slide. The layer goes back on top every few frames.
+                if (mfFrames % 4 == 1) { overlay.Reveal(); RaisePinned(); }
                 Native.DwmFlush();
                 fs.Flushed();
                 if (p >= 1.0 && (!moveFollow || pR >= 1.0)) break;
