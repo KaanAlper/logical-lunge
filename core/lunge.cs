@@ -13561,6 +13561,7 @@ static class Program
         var hookThread = new Thread(() =>
         {
             InputLatency.PrepareThread();
+            var beat = HangWatch.Register("klavye kancası");
             Binds.Watch();
             var keys = new Keys2(ui, slider);
             keys.Start();
@@ -13574,6 +13575,7 @@ static class Program
             var health = new System.Windows.Forms.Timer { Interval = 1000 };
             health.Tick += (s, e) =>
             {
+                beat();
                 InputLatency.Sample();
                 keys.Unstick();
                 if (HooksStale()) { keys.Reinstall(true); Keys2.LastHookTick = Environment.TickCount; Slider.Log("klavye kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
@@ -13592,6 +13594,7 @@ static class Program
         var mouseThread = new Thread(() =>
         {
             InputLatency.PrepareThread();
+            var beat = HangWatch.Register("fare kancası");
             var mouse = new MouseFocus(new TilingClient());
             mouse.InstallHook();
             mouse.StartWorker();
@@ -13601,6 +13604,7 @@ static class Program
             var health = new System.Windows.Forms.Timer { Interval = 1000 };
             health.Tick += (s, e) =>
             {
+                beat();
                 if (HooksStale()) { mouse.Reinstall(); MouseFocus.LastHookTick = Environment.TickCount; Slider.Log("fare kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
             };
             health.Start();
@@ -13686,6 +13690,12 @@ static class Program
         FocusGuard.Start();
         PerfGuard.Start();
         SelfHeal.WatchUi(ui);
+        // Arayüzün, klavye ve fare kancalarının nabzı: biri takılınca çekirdek kendini yeniden başlatır (HangWatch)
+        var uiBeat = HangWatch.Register("arayüz");
+        var uiBeatTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        uiBeatTimer.Tick += (s, e) => uiBeat();
+        uiBeatTimer.Start();
+        HangWatch.Start();
 
         if (startup != null)
         {
