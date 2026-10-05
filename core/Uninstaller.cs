@@ -6,6 +6,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -18,6 +19,10 @@ using System.Windows.Forms;
 // <çalışma klasörü>\steps.txt'den okur ("adım durum" satırları). Kayıtlar (loglar) her durumda kalır.
 // uninstall.ps1 kurulum klasöründen geçici bir kopyayla (lunge-uninstall.exe) başlatır: kurulum klasörü silinirken bu
 // süreç çalışmaya devam eder; masaüstünü durduran kod süreçleri adlarıyla kapattığı için bu kopyaya dokunmaz.
+// Yönetici izni örtüden önce istenir (kart tek başınayken, "Kaldır"a basınca): güvenli masaüstü kapalıysa izin penceresi
+// sıradan bir penceredir ve örtünün arkasında kalıyordu (2026-10-05: kullanıcı Alt+Tab, ok tuşu ve Enter'la körlemesine
+// onayladı). İzin verilince yönetici kopyası (-Await) bekler; örtü gelir; kullanıcının parçası (-UserPhase: masaüstünü
+// kullanıcının yetkisiyle durdurmak) bitince yönetici kopyası devam eder.
 static class Uninstaller
 {
     // Ek bileşenler: kurulumun install-backup.json'a yazdıkları; bunlardan biri kuruluysa ortak bir seçenek çıkar
@@ -70,48 +75,56 @@ static class Uninstaller
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             var covers = new List<Splash.Cover>();
-            Splash.Cover main = null;
-            foreach (var s in Screen.AllScreens)
-            {
-                var f = new Splash.Cover(s.Bounds, s.Primary) { Opacity = 0 };
-                if (s.Primary) main = f;
-                f.Show();
-                covers.Add(f);
-            }
-            var targets = new List<KeyValuePair<Splash.Cover, Rectangle>>();
-            foreach (var f in covers) targets.Add(new KeyValuePair<Splash.Cover, Rectangle>(f, f.Bounds));
-            ThreadPool.QueueUserWorkItem(_ =>
-            {
-                try
-                {
-                    var img = Splash.Wallpaper();
-                    if (img == null) return;
-                    var virt = Splash.SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
-                    foreach (var t in targets)
-                    {
-                        var bmp = Splash.Cover.Prepare(img, t.Value, virt, t.Key.BackColor);
-                        var f = t.Key;
-                        try { f.BeginInvoke((Action)(() => f.SetBackground(bmp))); } catch { bmp.Dispose(); }
-                    }
-                    img.Dispose();
-                }
-                catch { }
-            });
-
             string backup = null;
             try { backup = File.ReadAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"LogicalLunge\state\install-backup.json")); } catch { }
             var card = new UninstallCard(work, app, InstalledExtras(backup), Splash.Accent());
-            int start = Environment.TickCount, leaving = -1;
+            int start = Environment.TickCount, covered = -1, leaving = -1;
             card.Leave = () => { if (leaving < 0) leaving = Environment.TickCount; };
+            // Örtü (izinden sonra): her ekranda bir tane, kart ana ekrandakinin sahipliğinde (onun üstünde kalır)
+            var keepTop = new System.Windows.Forms.Timer { Interval = 250 };
+            card.Cover = () =>
+            {
+                if (covered >= 0) return;
+                covered = Environment.TickCount;
+                Splash.Cover main = null;
+                foreach (var s in Screen.AllScreens)
+                {
+                    var f = new Splash.Cover(s.Bounds, s.Primary) { Opacity = 0 };
+                    if (s.Primary) main = f;
+                    f.Show();
+                    covers.Add(f);
+                }
+                var targets = new List<KeyValuePair<Splash.Cover, Rectangle>>();
+                foreach (var f in covers) targets.Add(new KeyValuePair<Splash.Cover, Rectangle>(f, f.Bounds));
+                ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    try
+                    {
+                        var img = Splash.Wallpaper();
+                        if (img == null) return;
+                        var virt = Splash.SpanStyle() ? SystemInformation.VirtualScreen : Rectangle.Empty;
+                        foreach (var t in targets)
+                        {
+                            var bmp = Splash.Cover.Prepare(img, t.Value, virt, t.Key.BackColor);
+                            var f = t.Key;
+                            try { f.BeginInvoke((Action)(() => f.SetBackground(bmp))); } catch { bmp.Dispose(); }
+                        }
+                        img.Dispose();
+                    }
+                    catch { }
+                });
+                if (main != null) card.Owner = main;
+                keepTop.Start();
+                card.Activate();
+            };
             var clock = new System.Windows.Forms.Timer { Interval = 16 };
             clock.Tick += (o, e) =>
             {
                 int now = Environment.TickCount;
-                double opacity;
-                if (leaving < 0) opacity = 1 - Math.Pow(1 - Math.Min(1, (now - start) / 300.0), 3);
-                else opacity = 1 - (1 - Math.Pow(1 - Math.Min(1, (now - leaving) / 450.0), 3));
-                foreach (var f in covers) { f.Opacity = opacity; if (f.Blending) f.Invalidate(); }
-                if (!card.IsDisposed) card.Opacity = opacity;
+                double away = leaving < 0 ? 1 : Math.Pow(1 - Math.Min(1, (now - leaving) / 450.0), 3);
+                double cover = covered < 0 ? 0 : (1 - Math.Pow(1 - Math.Min(1, (now - covered) / 300.0), 3)) * away;
+                foreach (var f in covers) { f.Opacity = cover; if (f.Blending) f.Invalidate(); }
+                if (!card.IsDisposed) card.Opacity = (1 - Math.Pow(1 - Math.Min(1, (now - start) / 300.0), 3)) * away;
                 if (leaving >= 0 && now - leaving >= 450)
                 {
                     clock.Stop();
@@ -121,10 +134,8 @@ static class Uninstaller
             clock.Start();
             // Örtü en üstte kalsın: kaldırma sırasında açılan ya da öne gelen hiçbir şey araya girmesin (kart örtünün sahibi
             // olduğu için onun da üstünde kalır)
-            var keepTop = new System.Windows.Forms.Timer { Interval = 250 };
             keepTop.Tick += (o, e) => { foreach (var f in covers) Native.SetWindowPos(f.Handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); };
-            keepTop.Start();
-            card.Show(main);
+            card.Show();
             card.Activate();
             Application.Run();
             keepTop.Stop();
@@ -152,6 +163,11 @@ sealed class UninstallCard : Form
     readonly List<string> extras;
     bool removeData, removeExtras = true;
     public Action Leave = () => { };
+    public Action Cover = () => { };
+    // Zaten yönetici değilse izin "Kaldır"da, örtüden önce istenir; izinle başlayan yönetici kopyası (waiter) bekler
+    readonly bool admin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+    Process waiter;
+    string userArgs, failure;
 
     // Adımlar: kimlik, etiket. "shell / tiling / core" süreçlerin kapanmasından, "windows" bu pencerenin onarımından,
     // geri kalanlar uninstall.ps1'den gelir.
@@ -191,10 +207,10 @@ sealed class UninstallCard : Form
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         var list = new List<string[]>
         {
+            new[] { "uac", T("Yönetici izni", "Administrator permission") },
             new[] { "shell", T("Bar ve kabuk kapatılıyor", "Closing the bar and shell") },
             new[] { "tiling", T("Pencere yöneticisi kapatılıyor", "Closing the window manager") },
             new[] { "core", T("Çekirdek kapatılıyor", "Closing the core") },
-            new[] { "uac", T("Windows yönetici izni istiyor", "Windows asks for permission") },
             new[] { "taskbar", T("Görev çubuğu geri getiriliyor", "Bringing back the taskbar") },
             new[] { "icons", T("Masaüstü simgeleri ve gizli pencereler gösteriliyor", "Showing desktop icons and hidden windows") },
             new[] { "windows", T("Uygulama pencereleri onarılıyor", "Repairing app windows") },
@@ -320,17 +336,68 @@ sealed class UninstallCard : Form
         try
         {
             File.WriteAllText(Path.Combine(work, "steps.txt"), "");
+            foreach (var name in new[] { "go", "ready", "cancel" }) File.Delete(Path.Combine(work, name));
             var args = "-NoProfile -ExecutionPolicy Bypass -File \"" + Path.Combine(work, "uninstall.ps1") + "\" -Driver \"" + work + "\" " +
                 (removeData ? "-RemoveConfig" : "-KeepConfig") + " -Extras " + (removeExtras ? "remove" : "keep");
-            proc = Process.Start(new ProcessStartInfo("powershell.exe", args) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = work });
+            if (!admin)
+            {
+                // İzin penceresi kartın önüne gelsin: kart izin sorulurken en üstte değil
+                TopMost = false;
+                try
+                {
+                    waiter = Process.Start(new ProcessStartInfo("powershell.exe", args + " -Elevated -Await -Owner " + Process.GetCurrentProcess().Id +
+                        " -UserProfile \"" + Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\" -UserSid " + WindowsIdentity.GetCurrent().User.Value)
+                    { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden, ErrorDialogParentHandle = Handle, WorkingDirectory = work });
+                }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    if (ex.NativeErrorCode != 1223 /*ERROR_CANCELLED*/) throw;
+                    Finish(false, T("Kaldırma yapılmadı", "Nothing was uninstalled"),
+                        T("Yönetici izni verilmedi; hiçbir şey değişmedi.", "Permission was not given; nothing changed."), null);
+                    return;
+                }
+                finally { TopMost = true; }
+                if (waiter == null) throw new InvalidOperationException(T("Yönetici kopyası başlamadı", "The elevated copy did not start"));
+                userArgs = args + " -UserPhase";
+            }
+            Cover();
             page = Page.Progress;
             lastChange = Environment.TickCount;
+            if (admin) proc = Process.Start(new ProcessStartInfo("powershell.exe", args) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = work });
             Invalidate();
         }
         catch (Exception ex)
         {
             Finish(false, T("Kaldırma başlatılamadı", "The uninstall could not start"), ex.Message, null);
         }
+    }
+
+    // Yönetici kopyası beklemeye geçince (ready) kullanıcının parçası başlar; o parça go yazmadan biterse (masaüstü
+    // durdurulamadı) yönetici kopyası cancel ile bırakılır
+    void StepWaiter()
+    {
+        if (waiter == null) return;
+        try
+        {
+            if (proc == null)
+            {
+                if (File.Exists(Path.Combine(work, "ready")))
+                    proc = Process.Start(new ProcessStartInfo("powershell.exe", userArgs) { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = work });
+                return;
+            }
+            if (proc.HasExited && !File.Exists(Path.Combine(work, "go"))) Cancel();
+        }
+        catch (Exception ex) { failure = ex.Message; Cancel(); }
+    }
+
+    void Cancel()
+    {
+        try { if (!File.Exists(Path.Combine(work, "cancel"))) File.WriteAllText(Path.Combine(work, "cancel"), "cancel"); } catch { }
+    }
+
+    int ExitCode()
+    {
+        try { return (waiter ?? proc).ExitCode; } catch { return -1; }
     }
 
     void OnTick()
@@ -344,8 +411,11 @@ sealed class UninstallCard : Form
             using (var sr = new StreamReader(fs, Encoding.UTF8)) text = sr.ReadToEnd();
         }
         catch { }
+        StepWaiter();
         string result, message;
         var reported = Uninstaller.ReadSteps(text, out result, out message);
+        if (message == null) message = failure;
+        if (waiter != null) reported["uac"] = "done";
         // Masaüstünün parçaları kapandıkça (uninstall.ps1 hepsini birlikte durdurur; sırası burada görünür)
         if (Gone(Names.Shell)) reported["shell"] = "done";
         if (Gone(Names.Tiling)) reported["tiling"] = "done";
@@ -357,7 +427,13 @@ sealed class UninstallCard : Form
         if (!repairStarted && reported.TryGetValue("icons", out icons) && (icons == "done" || icons == "fail"))
         {
             repairStarted = true;
-            ThreadPool.QueueUserWorkItem(_ => { try { repairResult = WindowRepair.Run(); } catch (Exception ex) { repairResult = "! " + ex.Message; } });
+            // STA: kabuğun COM arayüzleri (ShellWindows, ImmersiveShell)
+            var repair = new Thread(() =>
+            {
+                try { repairResult = WindowRepair.Shell() + "; " + WindowRepair.Run(); } catch (Exception ex) { repairResult = "! " + ex.Message; }
+            }) { IsBackground = true };
+            repair.SetApartmentState(ApartmentState.STA);
+            repair.Start();
         }
         if (repairStarted) reported["windows"] = repairResult == null ? "run" : repairResult.StartsWith("!") ? "fail" : "done";
         // Ekranda adımlar sırayla ilerler: aynı anda biten adımlar birer birer (her biri en az 180 ms) işaretlenir
@@ -376,7 +452,8 @@ sealed class UninstallCard : Form
             }
         bool caughtUp = true;
         foreach (var kv in reported) { string have; if (!shown.TryGetValue(kv.Key, out have) || have != kv.Value) caughtUp = false; }
-        bool ended = proc != null && proc.HasExited;
+        // Bitiş: yönetici kopyasıyla çalışılıyorsa onun bitmesi (kullanıcının parçası ondan önce biter)
+        bool ended = waiter != null ? waiter.HasExited : proc != null && proc.HasExited;
         if (ended && caughtUp && (repairResult != null || !repairStarted))
         {
             if (result == null) { Thread.Sleep(150); text = ReadAll(); reported = Uninstaller.ReadSteps(text, out result, out message); }
@@ -394,7 +471,7 @@ sealed class UninstallCard : Form
                 Finish(false, T("Kaldırma tamamlanamadı", "The uninstall did not finish"),
                     T("Program dosyaları ya da bazı Windows ayarları geride kaldı. Kurtarma kayıtları %LOCALAPPDATA%\\LogicalLunge\\state içinde; kaldırmayı yeniden çalıştırabilirsin.",
                       "Program files or some Windows settings were left behind. Recovery records are in %LOCALAPPDATA%\\LogicalLunge\\state; you can run the uninstall again."),
-                    message ?? (result == null ? "exit " + proc.ExitCode : result));
+                    message ?? (result == null ? "exit " + ExitCode() : result));
             return;
         }
         Invalidate();
@@ -671,6 +748,81 @@ static class WindowRepair
     [DllImport("gdi32.dll")] static extern bool EqualRgn(IntPtr a, IntPtr b);
     [DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
     [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [StructLayout(LayoutKind.Sequential)] struct AppBar { public int size; public IntPtr hwnd; public uint callback, edge; public int left, top, right, bottom; public IntPtr param; }
+    [DllImport("shell32.dll")] static extern IntPtr SHAppBarMessage(uint msg, ref AppBar data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder name, int size);
+    [DllImport("user32.dll")] static extern bool ShowWindowAsync(IntPtr h, int cmd);
+
+    // Kabuk, kullanıcının yetkisiyle: kabuğun gizlediği (cloak) uygulama pencereleri, masaüstü simgeleri ve sabit görev
+    // çubuğu. Yönetici kopyası kayıt defterini yazar, ama Explorer'ın canlı görünümüne (ShellWindows) yükseltilmiş bir
+    // süreçten ulaşılamayabiliyor: kaldırmadan sonra simgeler gizli, görev çubuğu otomatik gizlemede kaldı (2026-10-05).
+    public static string Shell()
+    {
+        var parts = new List<string>();
+        try { parts.Add(Orphans.Uncloak() + " uncloaked"); } catch (Exception ex) { parts.Add("uncloak ! " + ex.Message); }
+        try { ShowIcons(); parts.Add("icons"); } catch (Exception ex) { parts.Add("icons ! " + ex.Message); }
+        try { parts.Add(FixTaskbar() ? "taskbar" : "taskbar ?"); } catch (Exception ex) { parts.Add("taskbar ! " + ex.Message); }
+        return string.Join(", ", parts.ToArray());
+    }
+
+    // Masaüstünün IFolderView2'si: ShellWindows -> IServiceProvider -> IShellBrowser -> etkin görünüm
+    // https://devblogs.microsoft.com/oldnewthing/20130318-00/?p=4933
+    [ComImport, Guid("6d5140c1-7436-11ce-8034-00aa006009fa"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface Provider { [PreserveSig] int QueryService(ref Guid service, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object result); }
+    [ComImport, Guid("000214e2-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface Browser
+    {
+        void GetWindow(); void ContextSensitiveHelp(); void InsertMenusSB(); void SetMenuSB(); void RemoveMenusSB();
+        void SetStatusTextSB(); void EnableModelessSB(); void TranslateAcceleratorSB(); void BrowseObject();
+        void GetViewStateStream(); void GetControlWindow(); void SendControlMsg();
+        void QueryActiveShellView([MarshalAs(UnmanagedType.Interface)] out object view);
+    }
+    [ComImport, Guid("1af3a467-214f-4298-908e-06b03e0b39f9"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface FolderView2
+    {
+        void GetCurrentViewMode(); void SetCurrentViewMode(); void GetFolder(); void Item(); void ItemCount(); void Items();
+        void GetSelectionMarkedItem(); void GetFocusedItem(); void GetItemPosition(); void GetSpacing(); void GetDefaultSpacing();
+        void GetAutoArrange(); void SelectItem(); void SelectAndPositionItems();
+        void SetGroupBy(); void GetGroupBy(); void SetViewProperty(); void GetViewProperty(); void SetTileViewProperties();
+        void SetExtendedTileViewProperties(); void SetText(); void SetCurrentFolderFlags(uint mask, uint flags);
+    }
+
+    static void ShowIcons()
+    {
+        object windows = null, desktop = null, browser = null, view = null;
+        try
+        {
+            windows = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("9ba05972-f6a8-11cf-a442-00a0c90a8f39")));
+            object[] args = { 0, null /*VT_EMPTY*/, 8 /*SWC_DESKTOP*/, 0, 1 /*SWFO_NEEDDISPATCH*/ };
+            var modifier = new System.Reflection.ParameterModifier(5); modifier[3] = true;
+            desktop = windows.GetType().InvokeMember("FindWindowSW", System.Reflection.BindingFlags.InvokeMethod, null, windows, args, new[] { modifier }, null, null);
+            Guid service = new Guid("4c96be40-915c-11cf-99d3-00aa004ae837"), iid = typeof(Browser).GUID;
+            Marshal.ThrowExceptionForHR(((Provider)desktop).QueryService(ref service, ref iid, out browser));
+            ((Browser)browser).QueryActiveShellView(out view);
+            ((FolderView2)view).SetCurrentFolderFlags(0x1000 /*FWF_NOICONS*/, 0);
+        }
+        finally
+        {
+            foreach (object o in new object[] { view, browser, desktop, windows }) if (o != null && Marshal.IsComObject(o)) Marshal.ReleaseComObject(o);
+        }
+    }
+
+    // Görev çubukları görünür ve otomatik gizlemesiz (ABS_ALWAYSONTOP)
+    static bool FixTaskbar()
+    {
+        IntPtr tray = FindWindow("Shell_TrayWnd", null);
+        if (tray == IntPtr.Zero) return false;
+        var data = new AppBar { size = Marshal.SizeOf(typeof(AppBar)), hwnd = tray, param = (IntPtr)2 };
+        SHAppBarMessage(10 /*ABM_SETSTATE*/, ref data);
+        EnumWindows((h, l) =>
+        {
+            var name = new StringBuilder(64); GetClassName(h, name, 64);
+            if (name.ToString() == "Shell_TrayWnd" || name.ToString() == "Shell_SecondaryTrayWnd") ShowWindowAsync(h, 8 /*SW_SHOWNA*/);
+            return true;
+        }, IntPtr.Zero);
+        return (SHAppBarMessage(4 /*ABM_GETSTATE*/, ref data).ToInt64() & 1) == 0;
+    }
 
     // Onarılanların kısa özeti; includeOwnProcess yalnızca testler için (kaldırıcının kendi örtüsüne dokunulmaz)
     public static string Run(bool includeOwnProcess = false)

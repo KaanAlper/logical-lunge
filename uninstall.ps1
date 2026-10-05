@@ -8,8 +8,12 @@
 # --uninstall), which asks, runs this script with -Driver and shows its steps.
 #   -Extras remove|keep: the extras the installer added (terminal, its font and fish, PawnIO, Everything) go too, or stay
 #   (WezTerm and Everything are then copied out of the install folder into the user's programs). Not given: they go.
+#   The window asks for administrator permission before it covers the screen (a consent prompt on the normal desktop
+#   stayed behind the cover): -Await starts the elevated copy then, which waits for <Driver>\go; -UserPhase is the
+#   user's part (stopping the desktop with the user's rights) and writes it. <Driver>\cancel or the window (-Owner)
+#   going away ends the wait.
 param([string]$UserProfile = $env:USERPROFILE, [string]$UserSid = '', [switch]$Elevated, [switch]$KeepConfig, [switch]$RemoveConfig,
-    [string]$Driver = '', [ValidateSet('', 'remove', 'keep')][string]$Extras = '')
+    [string]$Driver = '', [ValidateSet('', 'remove', 'keep')][string]$Extras = '', [switch]$Await, [switch]$UserPhase, [int]$Owner = 0)
 $ErrorActionPreference = 'Continue'
 
 # The uninstall window's steps (it reads <Driver>\steps.txt): "step state" lines, the last one of a step wins
@@ -102,6 +106,8 @@ if (-not $isAdmin) {
         $record = $recovery[$name]
         if ($record -and $record.Valid) { [IO.File]::WriteAllText($record.Path, $record.Raw, (New-Object Text.UTF8Encoding $false)) }
     }
+    # The elevated copy was started (and permission given) before the screen was covered; it goes on now
+    if ($UserPhase -and $Driver) { [IO.File]::WriteAllText((Join-Path $Driver 'go'), 'go'); return }
     # one UAC prompt; the elevated copy needs to know whose settings to restore
     $selfDir = Join-Path $env:TEMP ('logical-lunge-uninstall-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $selfDir 'scripts') -Force | Out-Null
@@ -128,6 +134,17 @@ if (-not $isAdmin) {
 
 $cu = "$HKU\Software\Microsoft\Windows\CurrentVersion"
 function Log([string]$m) { Write-Host $m }
+if ($Await -and $Driver) {
+    # Permission came first; the user's part (the desktop stops with the user's rights) runs now. The recovery records
+    # were read above, before that part could consume them.
+    [IO.File]::WriteAllText((Join-Path $Driver 'ready'), 'ready')
+    $waited = [Diagnostics.Stopwatch]::StartNew()
+    while (-not (Test-Path -LiteralPath (Join-Path $Driver 'go'))) {
+        $gone = $Owner -and -not (Get-Process -Id $Owner -ErrorAction SilentlyContinue)
+        if ($gone -or (Test-Path -LiteralPath (Join-Path $Driver 'cancel')) -or $waited.Elapsed.TotalMinutes -ge 10) { return }
+        Start-Sleep -Milliseconds 100
+    }
+}
 Step 'uac' 'done'
 # A stop that is not handled below still tells the window why (the records stay for a retry)
 trap { Step 'message' ($_.Exception.Message -replace '[\r\n]+', ' '); Step 'result' 'failed'; break }
