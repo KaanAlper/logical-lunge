@@ -713,6 +713,12 @@ impl WindowManager {
         shown_on_top,
       } => match subject_container.as_window_container() {
         Ok(window) => {
+          // An app's own fullscreen goes down into its tile and back
+          #[cfg(target_os = "windows")]
+          if crate::commands::window::toggle_app_fullscreen(&window, state, config)? {
+            return Ok(());
+          }
+
           let fullscreen_defaults =
             &config.value.window_behavior.state_defaults.fullscreen;
 
@@ -735,6 +741,13 @@ impl WindowManager {
         }
         _ => Ok(()),
       },
+      InvokeCommand::ToggleFullscreenSpoof => {
+        #[cfg(target_os = "windows")]
+        if let Ok(window) = subject_container.as_window_container() {
+          crate::commands::window::toggle_fullscreen_spoof(window, state, config)?;
+        }
+        Ok(())
+      }
       InvokeCommand::ToggleMinimized => {
         match subject_container.as_window_container() {
           Ok(window) => {

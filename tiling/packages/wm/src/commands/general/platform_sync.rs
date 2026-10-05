@@ -217,13 +217,17 @@ fn windows_to_bring_to_front(
               WindowState::Floating(_) | WindowState::Tiling
             );
 
-            is_floating_or_tiling
-              && (window.state().is_same_state(&focused_descendant.state())
-                // Logical Lunge: like Hyprland, floating windows stay
-                // above tiling ones. Focusing a tiling window used to
-                // bring only the tiling windows forward, hiding floating
-                // ones (e.g. a game launcher) behind them.
-                || floats_over_tiling(window, &focused_descendant))
+            // A fullscreen window that is not always on top (an app's own
+            // fullscreen) goes on top of the bar when focused and down when
+            // another window is (see the z-order below)
+            matches!(window.state(), WindowState::Fullscreen(fullscreen) if !fullscreen.shown_on_top)
+              || (is_floating_or_tiling
+                && (window.state().is_same_state(&focused_descendant.state())
+                  // Logical Lunge: like Hyprland, floating windows stay
+                  // above tiling ones. Focusing a tiling window used to
+                  // bring only the tiling windows forward, hiding floating
+                  // ones (e.g. a game launcher) behind them.
+                  || floats_over_tiling(window, &focused_descendant)))
           })
           .collect(),
         None => vec![],
@@ -406,6 +410,16 @@ fn redraw_containers(
       }
       WindowState::Fullscreen(config) if config.shown_on_top => {
         WindowZOrder::TopMost
+      }
+      // An app's own fullscreen: above everything, the bar included, while
+      // it is its workspace's focused window; the window focused next comes
+      // in front of it (as with Alt+Tab), and it comes back when focused.
+      WindowState::Fullscreen(_) => {
+        if workspace_focused_window(window).is_some_and(|focused| focused.id() == window.id()) {
+          WindowZOrder::TopMost
+        } else {
+          WindowZOrder::Normal
+        }
       }
       // Raised to the top, after the focused tiling window (see above).
       WindowState::Floating(_)

@@ -28,6 +28,7 @@ pub fn unmanage_window(
       }
     }
     state.fake_fullscreen.remove(&handle);
+    state.spoof_fullscreen.remove(&handle);
     state.background_fullscreen_frames.remove(&handle);
     state.self_resizes.remove(&handle);
   }

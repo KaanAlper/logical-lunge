@@ -222,6 +222,17 @@ pub trait NativeWindowWindowsExt {
   /// Returns false if focus or geometry changed before dispatch.
   fn notify_background_frame_changed(&self, expected_frame: &Rect) -> crate::Result<bool>;
 
+  /// Asks the app to enter or leave its own fullscreen the way a user does on
+  /// Windows: F11. Hyprland tells the client its fullscreen state through the
+  /// protocol; Windows has no such message. Waits on its own thread until the
+  /// shortcut's modifier keys are released and presses F11 only if this
+  /// window is still the foreground window then.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn press_fullscreen_key(&self);
+
   /// Shows the window asynchronously.
   ///
   /// NOTE: Cloaked windows do not get shown until uncloaked.
@@ -449,6 +460,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn notify_background_frame_changed(&self, expected_frame: &Rect) -> crate::Result<bool> {
     self.inner.notify_background_frame_changed(expected_frame)
+  }
+
+  fn press_fullscreen_key(&self) {
+    self.inner.press_fullscreen_key();
   }
 
   fn hide(&self) -> crate::Result<()> {

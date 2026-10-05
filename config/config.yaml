@@ -202,8 +202,13 @@ keybindings:
     bindings: ['lwin+alt+0']
 
   # --- Pencere durumu ---
+  # Uygulamanın kendi tam ekranı (YouTube, Discord, oyunlar) ii'deki gibi gerçek tam ekrandır; Super+F onu yuvasına
+  # indirir ve geri çıkarır
   - commands: ['toggle-fullscreen']
     bindings: ['lwin+f']
+  # ii'deki "fullscreen spoof": pencerenin kendi tam ekranı yuvasında kalır (uygulamaya F11 gider); tekrar basınca çıkar
+  - commands: ['toggle-fullscreen-spoof']
+    bindings: ['lwin+alt+f']
   - commands: ['toggle-floating --centered']
     bindings: ['lwin+alt+space']
   # Hyprland togglesplit: pencerenin içinde olduğu bölme döner (yan yana <-> alt alta)

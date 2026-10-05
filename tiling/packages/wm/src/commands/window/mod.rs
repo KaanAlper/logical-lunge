@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+mod fullscreen_spoof;
 mod ignore_window;
 mod manage_window;
 mod move_window_in_direction;
@@ -9,6 +11,8 @@ mod set_window_size;
 mod unmanage_window;
 mod update_window_state;
 
+#[cfg(target_os = "windows")]
+pub use fullscreen_spoof::*;
 pub use ignore_window::*;
 pub use manage_window::*;
 pub use move_window_in_direction::*;
