@@ -253,12 +253,15 @@ mod tests {
 
   #[test]
   fn test_key_conversion_roundtrip() {
+    // The platform's command key: Cmd has no Windows key code (see
+    // test_platform_specific_key_code), Win none on macOS.
+    let command = if cfg!(target_os = "windows") { Key::Win } else { Key::Cmd };
     let test_keys = [
       Key::A,
       Key::S,
       Key::D,
       Key::F,
-      Key::Cmd,
+      command,
       Key::LAlt,
       Key::RCtrl,
       Key::LShift,
