@@ -31,16 +31,46 @@ static class Program
                 session.TryChangePlaybackPositionAsync(TimeSpan.FromSeconds(sec).Ticks).AsTask().Wait(2000);
                 return;
             }
+            // A browser changes the title first and the picture a moment later (YouTube in Zen/Firefox): the picture
+            // read at the title change was the previous video's, and the bar keeps one picture per title. Read again
+            // every half second until two reads agree (at most 3 s); a title that changes meanwhile gives nothing, the
+            // bar asks again for the new title.
             var props = session.TryGetMediaPropertiesAsync().AsTask().Result;
-            if (props == null || props.Thumbnail == null) return;
-            var stream = props.Thumbnail.OpenReadAsync().AsTask().Result;
-            var ms = new MemoryStream();
-            stream.AsStreamForRead().CopyTo(ms);
-            string type = string.IsNullOrEmpty(stream.ContentType) ? "image/png" : stream.ContentType;
+            if (props == null) return;
+            string title = props.Title, type;
+            byte[] art = Read(props, out type), previous = null;
+            for (int i = 0; i < 6 && (previous == null || !Same(art, previous)); i++)
+            {
+                System.Threading.Thread.Sleep(500);
+                var again = session.TryGetMediaPropertiesAsync().AsTask().Result;
+                if (again == null || again.Title != title) return;
+                previous = art;
+                art = Read(again, out type);
+            }
+            if (art == null) return;
             var output = new StreamWriter(Console.OpenStandardOutput());
-            output.Write("data:" + type + ";base64," + Convert.ToBase64String(ms.ToArray()));
+            output.Write("data:" + type + ";base64," + Convert.ToBase64String(art));
             output.Flush();
         }
         catch { }
+    }
+
+    static byte[] Read(GlobalSystemMediaTransportControlsSessionMediaProperties props, out string type)
+    {
+        type = "image/png";
+        if (props.Thumbnail == null) return null;
+        var stream = props.Thumbnail.OpenReadAsync().AsTask().Result;
+        var ms = new MemoryStream();
+        stream.AsStreamForRead().CopyTo(ms);
+        if (!string.IsNullOrEmpty(stream.ContentType)) type = stream.ContentType;
+        return ms.ToArray();
+    }
+
+    static bool Same(byte[] a, byte[] b)
+    {
+        if (a == null || b == null) return a == b;
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
     }
 }
