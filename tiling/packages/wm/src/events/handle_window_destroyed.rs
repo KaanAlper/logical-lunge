@@ -18,6 +18,7 @@ pub fn handle_window_destroyed(
     // A hidden/unmanaged HWND can be destroyed and reused too.
     state.fullscreen_marks.remove(&native_window_id.0);
     state.fake_fullscreen.remove(&native_window_id.0);
+    state.spoof_fullscreen.remove(&native_window_id.0);
     state.background_fullscreen_frames.remove(&native_window_id.0);
     state.self_resizes.remove(&native_window_id.0);
   }

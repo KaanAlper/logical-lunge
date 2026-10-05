@@ -239,7 +239,11 @@ pub fn handle_window_moved_or_resized(
       use crate::commands::general::window_sync_policy::is_background_fullscreen_frame;
       let handle = window.native().hwnd().0;
       state.background_fullscreen_frames.remove(&handle);
-      if !state.is_paused && window.state() == WindowState::Tiling && !is_maximized {
+      // Only a spoofed window's own fullscreen is in a tile; any other
+      // app's is the window manager's fullscreen (see `self_fullscreen`)
+      if !state.is_paused && window.state() == WindowState::Tiling && !is_maximized
+        && state.keeps_fullscreen_in_tile(handle)
+      {
         if let Ok(frame) = window.native().frame_with_shadows() {
           if is_background_fullscreen_frame(&frame, &nearest_monitor.native_properties().bounds) {
             state.background_fullscreen_frames.insert(handle, frame);
@@ -319,15 +323,41 @@ pub fn handle_window_moved_or_resized(
       }
     };
 
-    // A tiled app's own fullscreen stays in its tile. Super+F changes
-    // the state explicitly and therefore bypasses this branch. Keep the
-    // marker through the resize acknowledgements so the app's restore
-    // rectangle on exit cannot overwrite the tile.
+    // A tiling window covering its whole workspace by itself, as in ii
+    // (Hyprland): the app's own fullscreen is real fullscreen, a spoofed one
+    // (`toggle-fullscreen-spoof`) stays in its tile, and a framed window
+    // that grew past its tile goes back into it. Super+F changes the state
+    // explicitly and therefore bypasses this branch.
+    #[cfg(target_os = "windows")]
+    let mut app_fullscreen = false;
     #[cfg(target_os = "windows")]
     if should_fullscreen && !is_maximized && matches!(window.state(), WindowState::Tiling) {
-      state.fake_fullscreen.insert(window.native().hwnd().0);
-      state.pending_sync.queue_container_to_redraw(window.clone());
-      return Ok(());
+      use crate::commands::general::window_sync_policy::{self_fullscreen, SelfFullscreen};
+      let handle = window.native().hwnd().0;
+      let framed = window.native().has_window_style(wm_platform::WS_CAPTION)
+        || window.native().has_window_style(wm_platform::WS_THICKFRAME);
+      match self_fullscreen(
+        state.keeps_fullscreen_in_tile(handle),
+        &frame_position,
+        &nearest_monitor.native_properties().bounds,
+        framed,
+      ) {
+        SelfFullscreen::KeepInTile => {
+          // Keep the marker through the resize acknowledgements so the
+          // app's restore rectangle on exit cannot overwrite the tile.
+          state.fake_fullscreen.insert(handle);
+          state.pending_sync.queue_container_to_redraw(window.clone());
+          return Ok(());
+        }
+        SelfFullscreen::ReturnToTile => {
+          if allow_self_resize_correction(state, handle) {
+            tracing::info!("Returning self-resized window to its tile: {window}");
+            state.pending_sync.queue_container_to_redraw(window.clone());
+          }
+          return Ok(());
+        }
+        SelfFullscreen::Fullscreen => app_fullscreen = true,
+      }
     }
 
     // Handle a window being maximized or entering fullscreen.
@@ -354,7 +384,8 @@ pub fn handle_window_moved_or_resized(
         return Ok(());
       }
 
-      let fullscreen_state = if let WindowState::Fullscreen(
+      #[allow(unused_mut)]
+      let mut fullscreen_state = if let WindowState::Fullscreen(
         fullscreen_state,
       ) = window.state()
       {
@@ -367,6 +398,14 @@ pub fn handle_window_moved_or_resized(
           .fullscreen
           .clone()
       };
+
+      // The app's own fullscreen is above everything only while it is
+      // focused (platform_sync): the window focused next comes in front of
+      // it, as with Alt+Tab, instead of being hidden behind it.
+      #[cfg(target_os = "windows")]
+      if app_fullscreen {
+        fullscreen_state.shown_on_top = false;
+      }
 
       let window = update_window_state(
         window.clone(),
@@ -409,7 +448,11 @@ pub fn handle_window_moved_or_resized(
         // Only restore after a real native geometry change; duplicate
         // acknowledgements returned above. The layout tree stays intact.
         state.pending_sync.queue_container_to_redraw(window.clone());
-        if window.native().has_window_style(wm_platform::WS_CAPTION) {
+        // Out of its own fullscreen once its frame is back (a frameless
+        // app's normal window has its sizing border but no caption)
+        if window.native().has_window_style(wm_platform::WS_CAPTION)
+          || window.native().has_window_style(wm_platform::WS_THICKFRAME)
+        {
           state.fake_fullscreen.remove(&window.native().hwnd().0);
         }
       }

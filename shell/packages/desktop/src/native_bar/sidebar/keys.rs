@@ -195,6 +195,7 @@ fn tiling_label(cmds: &[String]) -> String {
     "move --prev-workspace ; focus --prev-workspace" => "Pencereyi önceki workspace'e taşı (PageUp)",
     "move --next-workspace ; focus --next-workspace" => "Pencereyi sonraki workspace'e taşı (PageDown)",
     "toggle-fullscreen" => "Tam ekran",
+    "toggle-fullscreen-spoof" => "Yuvasında tam ekran (spoof)",
     "toggle-floating --centered" => "Yüzen pencere",
     "toggle-tiling-direction" => "Bölme yönünü değiştir",
     "toggle-minimized" => "Simge durumuna küçült",

@@ -368,3 +368,19 @@ impl UserConfig {
     })
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  /// The shipped config must parse: an unknown command in a keybinding
+  /// keeps the window manager from starting with it.
+  #[test]
+  fn the_shipped_config_parses_with_every_command() {
+    let parsed: ParsedConfig = serde_yaml::from_str(SAMPLE_CONFIG).expect("config/config.yaml");
+    let commands = parsed.keybindings.iter().flat_map(|k| k.commands.iter()).count();
+    assert!(commands > 0);
+    assert!(parsed.keybindings.iter().any(|k| k.commands.iter().any(|c| matches!(c, InvokeCommand::ToggleFullscreenSpoof))),
+      "the spoof key (ii's Super+Alt+F) is missing from config/config.yaml");
+  }
+}

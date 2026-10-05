@@ -13,6 +13,46 @@ pub(crate) fn is_background_fullscreen_frame(frame: &Rect, monitor: &Rect) -> bo
     && frame.bottom == monitor.bottom - 1
 }
 
+/// An app in its own fullscreen covers its whole monitor (to the pixel;
+/// Chromium's background frame lacks the last row) and has dropped its frame
+/// (caption and sizing border: Chromium, Electron and games do; a frameless
+/// app's normal window keeps its sizing border).
+pub(crate) fn is_app_fullscreen(frame: &Rect, monitor: &Rect, framed: bool) -> bool {
+  !framed
+    && frame.left <= monitor.left + 1
+    && frame.top <= monitor.top + 1
+    && frame.right >= monitor.right - 1
+    && frame.bottom >= monitor.bottom - 1
+}
+
+/// What a tiling window that grew over its whole workspace by itself gets.
+/// As in ii (Hyprland): an app's own fullscreen is real fullscreen, and the
+/// spoof key (`toggle-fullscreen-spoof`) keeps it in its tile instead.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SelfFullscreen {
+  /// The app's own fullscreen becomes the window manager's fullscreen
+  Fullscreen,
+  /// Spoofed: the app stays in its own fullscreen inside its tile
+  KeepInTile,
+  /// Not fullscreen (a framed window grew past its tile): back into it
+  ReturnToTile,
+}
+
+pub(crate) fn self_fullscreen(
+  spoofed: bool,
+  frame: &Rect,
+  monitor: &Rect,
+  framed: bool,
+) -> SelfFullscreen {
+  if !is_app_fullscreen(frame, monitor, framed) {
+    SelfFullscreen::ReturnToTile
+  } else if spoofed {
+    SelfFullscreen::KeepInTile
+  } else {
+    SelfFullscreen::Fullscreen
+  }
+}
+
 pub(super) fn should_notify_background_fullscreen(
   observed: Option<&Rect>,
   live: Option<&Rect>,
@@ -89,6 +129,27 @@ pub(super) fn fullscreen_mark(
 mod tests {
   use super::*;
   use wm_common::{FloatingStateConfig, FullscreenStateConfig};
+
+  #[test]
+  fn an_apps_own_fullscreen_is_real_unless_spoofed() {
+    let monitor = Rect::from_ltrb(0, 0, 1920, 1080);
+    let shrunk = Rect::from_ltrb(0, 0, 1920, 1079); // Chromium, focus elsewhere
+    let workspace_sized = Rect::from_ltrb(0, 45, 1920, 1080); // below the bar
+    let elsewhere = Rect::from_ltrb(1920, 0, 3840, 1080); // the next monitor
+    for (frame, framed, spoofed, want) in [
+      (&monitor, false, false, SelfFullscreen::Fullscreen),
+      (&shrunk, false, false, SelfFullscreen::Fullscreen),
+      (&monitor, false, true, SelfFullscreen::KeepInTile),
+      (&shrunk, false, true, SelfFullscreen::KeepInTile),
+      // a framed window that restored a monitor-sized frame is not fullscreen
+      (&monitor, true, false, SelfFullscreen::ReturnToTile),
+      (&monitor, true, true, SelfFullscreen::ReturnToTile),
+      (&workspace_sized, false, false, SelfFullscreen::ReturnToTile),
+      (&elsewhere, false, false, SelfFullscreen::ReturnToTile),
+    ] {
+      assert_eq!(self_fullscreen(spoofed, frame, &monitor, framed), want, "{frame:?} framed={framed} spoofed={spoofed}");
+    }
+  }
 
   fn fullscreen(maximized: bool) -> WindowState {
     WindowState::Fullscreen(FullscreenStateConfig {

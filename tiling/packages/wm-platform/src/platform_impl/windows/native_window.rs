@@ -23,7 +23,10 @@ use windows::{
     },
     UI::{
       Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEINPUT,
+        GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD,
+        INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        MOUSEINPUT, VIRTUAL_KEY, VK_CONTROL, VK_F11, VK_LWIN, VK_MENU,
+        VK_RWIN, VK_SHIFT,
       },
       WindowsAndMessaging::{
         EnumWindows, FindWindowExW, GetAncestor, GetClassNameW, GetDesktopWindow,
@@ -264,6 +267,36 @@ impl NativeWindow {
       )
     }?;
     Ok(true)
+  }
+
+  /// Implements [`NativeWindowWindowsExt::press_fullscreen_key`].
+  pub(crate) fn press_fullscreen_key(&self) {
+    let handle = self.handle;
+    std::thread::spawn(move || {
+      // F11 while Super/Alt of the shortcut are still down would arrive as
+      // another shortcut
+      let held = |vk: VIRTUAL_KEY| unsafe { GetAsyncKeyState(i32::from(vk.0)) } < 0;
+      let start = std::time::Instant::now();
+      while start.elapsed() < Duration::from_millis(1500)
+        && [VK_LWIN, VK_RWIN, VK_MENU, VK_CONTROL, VK_SHIFT].into_iter().any(held)
+      {
+        std::thread::sleep(Duration::from_millis(10));
+      }
+      if unsafe { GetForegroundWindow() } != HWND(handle) {
+        return;
+      }
+      let key = |flags: KEYBD_EVENT_FLAGS| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+          ki: KEYBDINPUT { wVk: VK_F11, dwFlags: flags, ..Default::default() },
+        },
+      };
+      let inputs = [key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)];
+      #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+      unsafe {
+        SendInput(&inputs, std::mem::size_of::<INPUT>() as i32)
+      };
+    });
   }
 
   /// Implements [`NativeWindow::resize`].

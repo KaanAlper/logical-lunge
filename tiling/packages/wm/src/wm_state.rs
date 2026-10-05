@@ -57,6 +57,11 @@ pub struct WmState {
   /// Native handles of apps displaying fullscreen content inside their tile.
   pub fake_fullscreen: std::collections::HashSet<isize>,
 
+  /// Windows whose own fullscreen stays in their tile (ii's "fullscreen
+  /// spoof", `toggle-fullscreen-spoof`); every other app's own fullscreen is
+  /// real fullscreen.
+  pub spoof_fullscreen: std::collections::HashSet<isize>,
+
   /// One-shot native monitor-minus-one observations awaiting tile correction.
   #[cfg(target_os = "windows")]
   pub background_fullscreen_frames: std::collections::HashMap<isize, Rect>,
@@ -104,6 +109,13 @@ pub struct WmState {
 }
 
 impl WmState {
+  /// Whether the window's own fullscreen stays in its tile: spoofed
+  /// (`toggle-fullscreen-spoof`), or taken down for its current fullscreen
+  /// with `toggle-fullscreen`.
+  pub fn keeps_fullscreen_in_tile(&self, handle: isize) -> bool {
+    self.spoof_fullscreen.contains(&handle) || self.fake_fullscreen.contains(&handle)
+  }
+
   pub fn new(
     dispatcher: Dispatcher,
     event_tx: mpsc::UnboundedSender<WmEvent>,
@@ -117,6 +129,7 @@ impl WmState {
       recent_workspace_name: None,
       unmanaged_or_minimized_timestamp: None,
       fake_fullscreen: std::collections::HashSet::new(),
+      spoof_fullscreen: std::collections::HashSet::new(),
       #[cfg(target_os = "windows")]
       background_fullscreen_frames: std::collections::HashMap::new(),
       #[cfg(target_os = "windows")]

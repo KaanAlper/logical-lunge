@@ -23,6 +23,9 @@ pub(crate) fn constrain_transition_overlay(native: &NativeWindow, state: &mut Wm
     || !native.has_window_style_ex(WS_EX_NOACTIVATE) { return Ok(false); }
   let Some(window) = state.focused_container().and_then(|c| c.as_window_container().ok()) else { return Ok(false) };
   if window.state() != WindowState::Tiling { return Ok(false); }
+  // Only a spoofed window's own fullscreen is kept in its tile; any other
+  // app's fullscreen covers the monitor, effects included
+  if !state.keeps_fullscreen_in_tile(window.native().hwnd().0) { return Ok(false); }
   let Some(monitor) = window.monitor() else { return Ok(false) };
   let frame = native.frame()?;
   let bounds = monitor.native_properties().bounds;

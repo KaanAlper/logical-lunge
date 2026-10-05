@@ -228,6 +228,9 @@ pub enum InvokeCommand {
     #[clap(long, default_missing_value = "true", require_equals = true, num_args = 0..=1)]
     maximized: Option<bool>,
   },
+  /// ii's "fullscreen spoof" (Super+Alt+F): the window's own fullscreen
+  /// stays in its tile; the app is asked into (or out of) its fullscreen.
+  ToggleFullscreenSpoof,
   ToggleMinimized,
   ToggleTiling,
   ToggleTilingDirection,
