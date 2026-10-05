@@ -37,8 +37,65 @@ static class CoreUnitTests
         WinIconTests();
         UninstallerTests(root);
         StartupCoverTests(root);
+        HangWatchTests();
         Console.WriteLine(failures == 0 ? "PASS core unit tests" : failures + " failure(s)");
         return failures == 0 ? 0 : 1;
+    }
+
+    // A thread blocked here, for the hang watchdog to find in its stack
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static void BlockedInHangTest(ManualResetEvent release) { release.WaitOne(); }
+
+    static void HangWatchTests()
+    {
+        var ticks = new[] { new KeyValuePair<string, int>("fresh", 10000), new KeyValuePair<string, int>("old", 1000) };
+        var stuck = HangWatch.Stuck(ticks, 10500, 8000);
+        Check(stuck.Count == 1 && stuck[0] == "old", "only a beat older than the limit is stuck");
+        Check(HangWatch.Stuck(new[] { new KeyValuePair<string, int>("wrap", int.MaxValue - 100) }, int.MinValue + 100, 8000).Count == 0,
+            "the tick counter wrapping is no hang");
+        Check(HangWatch.Slept(4000) && !HangWatch.Slept(1100), "a late watchdog round means the machine slept, not a hang");
+
+        // A thread blocked in a wait: its stack names the method it waits in, and it runs on afterwards
+        var release = new ManualResetEvent(false);
+        var blocked = new Thread(() => BlockedInHangTest(release)) { IsBackground = true };
+        blocked.Start();
+        Thread.Sleep(200);
+        string stack = HangWatch.CaptureStack(blocked, 2000);
+        Check(stack.Contains("BlockedInHangTest"), "the stuck thread's stack is captured: " + stack);
+        release.Set();
+        Check(blocked.Join(2000), "the stuck thread runs on after its stack was read");
+
+        // End to end: a registered thread stops beating; the watchdog writes its stack and recovers once
+        string dir = Path.Combine(Path.GetTempPath(), "ll-hang-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string recovered = null;
+        var recoveredSignal = new ManualResetEvent(false);
+        var oldRecover = HangWatch.Recover; var oldDir = HangWatch.ReportDir; int oldStuck = HangWatch.StuckMs;
+        HangWatch.Recover = why => { recovered = why; recoveredSignal.Set(); };
+        HangWatch.ReportDir = () => dir;
+        HangWatch.StuckMs = 1500;
+        var hold = new ManualResetEvent(false);
+        var watched = new Thread(() =>
+        {
+            var beat = HangWatch.Register("test kancası");
+            beat();
+            BlockedInHangTest(hold); // stops beating here
+        }) { IsBackground = true };
+        try
+        {
+            watched.Start();
+            HangWatch.Start();
+            Check(recoveredSignal.WaitOne(6000), "a thread that stops beating is recovered from");
+            Check(recovered != null && recovered.Contains("test kancası"), "the recovery names the stuck thread: " + recovered);
+            var reports = Directory.GetFiles(dir, "hang-*.txt");
+            Check(reports.Length == 1 && File.ReadAllText(reports[0]).Contains("BlockedInHangTest"), "the report holds the stuck thread's stack");
+        }
+        finally
+        {
+            hold.Set();
+            HangWatch.Recover = oldRecover; HangWatch.ReportDir = oldDir; HangWatch.StuckMs = oldStuck;
+            try { Directory.Delete(dir, true); } catch { }
+        }
     }
 
     static void DesktopPerformancePolicyTests()
