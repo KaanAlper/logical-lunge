@@ -730,12 +730,27 @@ impl WindowManager {
                 .unwrap_or(fullscreen_defaults.shown_on_top),
             });
 
-          update_window_state(
-            window.clone(),
-            window.toggled_state(target_state, config),
-            state,
-            config,
-          )?;
+          // As in Hyprland, one mode at a time: Super+F on a maximized
+          // window makes it fullscreen; Super+D (maximize) on a fullscreen
+          // one, and Super+F on a fullscreen one, leave fullscreen.
+          #[cfg(target_os = "windows")]
+          let next = crate::commands::general::window_sync_policy::toggled_fullscreen_mode(
+            &window.state(),
+            &target_state,
+          )
+          .unwrap_or_else(|| window.toggled_state(target_state, config));
+          #[cfg(not(target_os = "windows"))]
+          let next = window.toggled_state(target_state, config);
+
+          // Out of fullscreen nothing keeps the app's own fullscreen in
+          // its tile any more
+          #[cfg(target_os = "windows")]
+          if matches!(window.state(), WindowState::Fullscreen(_)) {
+            state.fake_fullscreen.remove(&window.native().hwnd().0);
+            state.restore_maximized.remove(&window.native().hwnd().0);
+          }
+
+          update_window_state(window.clone(), next, state, config)?;
 
           Ok(())
         }

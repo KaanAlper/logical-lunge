@@ -202,10 +202,13 @@ keybindings:
     bindings: ['lwin+alt+0']
 
   # --- Pencere durumu ---
-  # Uygulamanın kendi tam ekranı (YouTube, Discord, oyunlar) ii'deki gibi gerçek tam ekrandır; Super+F onu yuvasına
-  # indirir ve geri çıkarır
+  # Hyprland'deki gibi her pencere tek kipte: döşeli/yüzen, büyütülmüş ya da tam ekran. Super+F tam ekran (barın da
+  # üstünde); uygulamanın kendi tam ekranı (YouTube, Discord, oyunlar) da gerçek tam ekrandır ve Super+F onu bırakır
   - commands: ['toggle-fullscreen']
     bindings: ['lwin+f']
+  # Super+D büyüt: barın altındaki alanı doldurur (boşluklar korunur); tam ekrandaki pencerede tam ekranı bırakır
+  - commands: ['toggle-fullscreen --maximized']
+    bindings: ['lwin+d']
   # ii'deki "fullscreen spoof": pencerenin kendi tam ekranı yuvasında kalır (uygulamaya F11 gider); tekrar basınca çıkar
   - commands: ['toggle-fullscreen-spoof']
     bindings: ['lwin+alt+f']

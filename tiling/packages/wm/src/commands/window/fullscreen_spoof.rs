@@ -30,6 +30,51 @@ fn in_app_fullscreen(window: &WindowContainer) -> bool {
   }
 }
 
+/// ii's `misc:on_focus_under_fullscreen = 2`: another window focused on a
+/// workspace that has a fullscreen (or maximized) window takes that window
+/// out of it, back to its tile or float, and the layout is normal again.
+/// Hovering moves no focus to or from a fullscreen window (the core's
+/// focus-follows-mouse), so only a click, a key or a new window does this.
+pub fn leave_fullscreen_for_focus(
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  use crate::commands::general::window_sync_policy::leaves_fullscreen_for_focus;
+
+  let Some(focused) = state
+    .focused_container()
+    .and_then(|container| container.as_window_container().ok())
+  else {
+    return Ok(());
+  };
+  let Some(workspace) = focused.workspace() else {
+    return Ok(());
+  };
+
+  let leaving = workspace
+    .descendants()
+    .filter_map(|descendant| descendant.as_window_container().ok())
+    .filter(|window| {
+      leaves_fullscreen_for_focus(
+        &window.state(),
+        window.id() == focused.id(),
+        true,
+        &focused.state(),
+      )
+    })
+    .collect::<Vec<_>>();
+
+  for window in leaving {
+    tracing::info!("Leaving fullscreen for the focused window: {window}");
+    state.restore_maximized.remove(&window.native().hwnd().0);
+    state.fake_fullscreen.remove(&window.native().hwnd().0);
+    let target = window.toggled_state(window.state(), config);
+    update_window_state(window.clone(), target, state, config)?;
+  }
+
+  Ok(())
+}
+
 /// `toggle-fullscreen-spoof` (ii: Super+Alt+F). On: the window's own
 /// fullscreen stays in its tile from now on, and the app is asked into its
 /// fullscreen (or, already fullscreen, comes down into its tile). Off: the
@@ -74,11 +119,13 @@ pub fn toggle_fullscreen_spoof(
   Ok(())
 }
 
-/// Super+F (`toggle-fullscreen`) on an app's own fullscreen. Down: the
-/// window goes into its tile for this fullscreen (the app stays in it; it
-/// would otherwise be made fullscreen again at its next move). Up: a window
-/// in its own fullscreen inside its tile becomes real fullscreen. Returns
-/// whether it handled the toggle; other windows take the usual one.
+/// Super+F (`toggle-fullscreen`) on a window in its own fullscreen inside
+/// its tile (spoofed, Super+Alt+F): it becomes real fullscreen. An app's
+/// real fullscreen takes the usual toggle, as in Hyprland: it leaves
+/// fullscreen for its tile or float, the window's previous place restored
+/// in one step (if the app insists on its fullscreen, its next own
+/// fullscreen is real again: no fight). Returns whether it handled the
+/// toggle; other windows take the usual one.
 pub fn toggle_app_fullscreen(
   window: &WindowContainer,
   state: &mut WmState,
@@ -87,11 +134,6 @@ pub fn toggle_app_fullscreen(
   let handle = window.native().hwnd().0;
 
   match window.state() {
-    WindowState::Fullscreen(_) if in_app_fullscreen(window) => {
-      state.fake_fullscreen.insert(handle);
-      update_window_state(window.clone(), WindowState::Tiling, state, config)?;
-      Ok(true)
-    }
     WindowState::Tiling if state.fake_fullscreen.contains(&handle) => {
       state.fake_fullscreen.remove(&handle);
       state.spoof_fullscreen.remove(&handle);

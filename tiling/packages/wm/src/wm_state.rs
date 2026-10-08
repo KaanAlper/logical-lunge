@@ -62,6 +62,11 @@ pub struct WmState {
   /// real fullscreen.
   pub spoof_fullscreen: std::collections::HashSet<isize>,
 
+  /// Windows the app took into its own fullscreen while the window manager
+  /// had them maximized (Hyprland's `restoreClientMaximized`): leaving that
+  /// fullscreen, they go back to maximized, not to their tile.
+  pub restore_maximized: std::collections::HashSet<isize>,
+
   /// One-shot native monitor-minus-one observations awaiting tile correction.
   #[cfg(target_os = "windows")]
   pub background_fullscreen_frames: std::collections::HashMap<isize, Rect>,
@@ -130,6 +135,7 @@ impl WmState {
       unmanaged_or_minimized_timestamp: None,
       fake_fullscreen: std::collections::HashSet::new(),
       spoof_fullscreen: std::collections::HashSet::new(),
+      restore_maximized: std::collections::HashSet::new(),
       #[cfg(target_os = "windows")]
       background_fullscreen_frames: std::collections::HashMap::new(),
       #[cfg(target_os = "windows")]
