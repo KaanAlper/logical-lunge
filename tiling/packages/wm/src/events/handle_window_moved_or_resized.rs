@@ -144,6 +144,49 @@ pub fn handle_window_moved_or_resized(
       return Ok(());
     }
 
+    // Logical Lunge: a window maximized by the window manager (Super+D) is
+    // placed over its workspace's area (under the bar). Its own landing
+    // there is no change; Windows' maximize goes back into ours; the app's
+    // own fullscreen is real fullscreen; anywhere else it leaves the
+    // maximize (handled below as before).
+    #[cfg(target_os = "windows")]
+    if !state.is_paused && !is_interactive_start {
+      if let WindowState::Fullscreen(fullscreen) = window.state() {
+        if fullscreen.maximized {
+          use crate::commands::general::window_sync_policy::{maximized_move, MaximizedMove};
+          if is_maximized {
+            state.pending_sync.queue_container_to_redraw(window.clone());
+            return Ok(());
+          }
+          let target = window
+            .to_rect()?
+            .apply_delta(&window.total_border_delta()?, None);
+          let monitor = window.monitor().context("No monitor.")?.native_properties().bounds;
+          let framed = window.native().has_window_style(wm_platform::WS_CAPTION)
+            || window.native().has_window_style(wm_platform::WS_THICKFRAME);
+          let live = window.native().frame_with_shadows().unwrap_or(frame_position.clone());
+          match maximized_move(&live, &target, &monitor, framed) {
+            MaximizedMove::AtTarget => return Ok(()),
+            MaximizedMove::AppFullscreen => {
+              tracing::info!("App fullscreen from a maximized window: {window}");
+              state.restore_maximized.insert(window.native().hwnd().0);
+              update_window_state(
+                window.clone(),
+                WindowState::Fullscreen(FullscreenStateConfig {
+                  maximized: false,
+                  shown_on_top: false,
+                }),
+                state,
+                config,
+              )?;
+              return Ok(());
+            }
+            MaximizedMove::Elsewhere => {}
+          }
+        }
+      }
+    }
+
     // Detect whether the window is starting to be interactively moved or
     // resized by the user (e.g. via the window's drag handles).
     let is_drag_start = !state.is_paused && {
@@ -407,6 +450,7 @@ pub fn handle_window_moved_or_resized(
         fullscreen_state.shown_on_top = false;
       }
 
+      #[cfg_attr(target_os = "windows", allow(unused_variables))]
       let window = update_window_state(
         window.clone(),
         WindowState::Fullscreen(FullscreenStateConfig {
@@ -417,6 +461,10 @@ pub fn handle_window_moved_or_resized(
         config,
       )?;
 
+      // Logical Lunge: a window that maximized itself is placed over its
+      // workspace's area by the redraw (Windows' maximize covers the bar);
+      // the queued redraw stays.
+      #[cfg(not(target_os = "windows"))]
       if is_maximized {
         // Dequeue the window from redraw if it's maximized, since the
         // window is already in the correct state.
@@ -436,12 +484,19 @@ pub fn handle_window_moved_or_resized(
         // Window is no longer maximized/fullscreen and should be restored.
         tracing::info!("Restoring window from fullscreen: {window}");
 
-        update_window_state(
-          window.clone(),
-          window.toggled_state(window.state(), config),
-          state,
-          config,
-        )?;
+        // An app leaving the fullscreen it entered from our maximize goes
+        // back to maximized (Hyprland's `restoreClientMaximized`)
+        #[cfg(target_os = "windows")]
+        let target = if state.restore_maximized.remove(&window.native().hwnd().0) {
+          let defaults = &config.value.window_behavior.state_defaults.fullscreen;
+          WindowState::Fullscreen(FullscreenStateConfig { maximized: true, ..defaults.clone() })
+        } else {
+          window.toggled_state(window.state(), config)
+        };
+        #[cfg(not(target_os = "windows"))]
+        let target = window.toggled_state(window.state(), config);
+
+        update_window_state(window.clone(), target, state, config)?;
       }
       #[cfg(target_os = "windows")]
       WindowState::Tiling if state.fake_fullscreen.contains(&window.native().hwnd().0) && !state.is_paused => {

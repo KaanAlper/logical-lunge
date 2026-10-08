@@ -59,6 +59,13 @@ pub fn platform_sync(
     }
   }
 
+  // A window focused on a workspace with a fullscreen one: that one leaves
+  // its fullscreen (ii's on_focus_under_fullscreen = 2) before the redraw.
+  #[cfg(target_os = "windows")]
+  if state.pending_sync.needs_focus_update() {
+    crate::commands::window::leave_fullscreen_for_focus(state, config)?;
+  }
+
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
@@ -680,7 +687,7 @@ fn reposition_window(
     {
       use wm_platform::{
         SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-        SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_EX_TOPMOST, WS_MAXIMIZEBOX,
+        SWP_NOCOPYBITS, SWP_NOSENDCHANGING, WS_EX_TOPMOST,
       };
 
       // Logical Lunge: a tile's visible frame, so that a window that stays
@@ -703,17 +710,24 @@ fn reposition_window(
       let target_state = window.state();
       let is_minimized = window.native().is_minimized()?;
       let is_maximized = window.native().is_maximized()?;
-      let has_maximize_box = window.native().has_window_style(WS_MAXIMIZEBOX);
       let should_restore = window_sync_policy::should_restore(
         &target_state, is_minimized, is_maximized,
       );
+      // A fullscreen window already at its monitor stays exactly as it is
+      // while its workspace is shown and hidden (cloaked, never resized).
+      let live_frame = window.native().frame_with_shadows().ok();
+      let at_target = match &target_state {
+        WindowState::Fullscreen(fullscreen) if !fullscreen.maximized => live_frame
+          .as_ref()
+          .is_some_and(|frame| window_sync_policy::at_fullscreen_target(frame, &rect)),
+        _ => live_frame.as_ref() == Some(&rect),
+      };
       let needs_geometry_sync = window_sync_policy::needs_geometry_sync(
         &target_state,
         is_minimized,
         is_maximized,
-        has_maximize_box,
         window.has_pending_dpi_adjustment(),
-        window.native().frame_with_shadows().ok().as_ref() == Some(&rect),
+        at_target,
       );
 
       if should_restore {
@@ -735,23 +749,8 @@ fn reposition_window(
             window.native().minimize()?;
           }
         }
-        WindowState::Fullscreen(fullscreen)
-          if fullscreen.maximized
-            && has_maximize_box =>
-        {
-          if !is_maximized {
-            window.native().maximize()?;
-          }
-
-          if needs_geometry_sync {
-            window.native().set_window_pos(z_order, &rect, swp_flags)?;
-          } else if is_visible
-            && (*z_order != WindowZOrder::Normal
-              || window.native().has_window_style_ex(WS_EX_TOPMOST))
-          {
-            window.native().set_z_order(z_order)?;
-          }
-        }
+        // The window manager's maximize is placed like any other window,
+        // over its workspace's area (see `NonTilingWindow::to_rect`).
         _ => {
           // Skip `SetWindowPos` when the window is already at its target
           // rect. Switching workspaces redraws every window being shown or

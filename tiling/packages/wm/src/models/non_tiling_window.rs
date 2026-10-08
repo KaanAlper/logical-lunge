@@ -148,6 +148,14 @@ impl_window_getters!(NonTilingWindow);
 impl PositionGetters for NonTilingWindow {
   fn to_rect(&self) -> anyhow::Result<Rect> {
     match self.state() {
+      // Logical Lunge: maximized as Hyprland's maximize: the workspace's
+      // area (under the bar, inside the outer gaps), not the monitor.
+      // Windows' own maximize would cover the bar, which reserves no work
+      // area.
+      #[cfg(target_os = "windows")]
+      WindowState::Fullscreen(fullscreen) if fullscreen.maximized => {
+        self.workspace().context("No workspace.")?.to_rect()
+      }
       WindowState::Fullscreen(_) => {
         let monitor = self.monitor().context("No monitor.")?;
 

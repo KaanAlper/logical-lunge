@@ -25,6 +25,35 @@ pub(crate) fn is_app_fullscreen(frame: &Rect, monitor: &Rect, framed: bool) -> b
     && frame.bottom >= monitor.bottom - 1
 }
 
+/// Whether a window's live frame is its fullscreen target, give or take the
+/// pixel the OS (or the app's own fullscreen code) can be off by. A
+/// fullscreen window that already is there is never moved again by a
+/// redraw: workspace switches show and hide it, and a resize there (with
+/// `SWP_FRAMECHANGED`) made games and players rebuild their output, so the
+/// picture shrank and grew at every switch.
+pub(crate) fn at_fullscreen_target(frame: &Rect, target: &Rect) -> bool {
+  (frame.left - target.left).abs() <= 1
+    && (frame.top - target.top).abs() <= 1
+    && (frame.right - target.right).abs() <= 1
+    && (frame.bottom - target.bottom).abs() <= 1
+}
+
+/// ii's `misc:on_focus_under_fullscreen = 2`: another window focused on a
+/// workspace that has a fullscreen window takes that window out of its
+/// fullscreen, and the layout is normal again. One explicit rule instead
+/// of a fullscreen window and the newly focused one taking turns on top.
+pub(crate) fn leaves_fullscreen_for_focus(
+  candidate: &WindowState,
+  candidate_is_focused: bool,
+  same_workspace: bool,
+  focused: &WindowState,
+) -> bool {
+  matches!(candidate, WindowState::Fullscreen(_))
+    && !candidate_is_focused
+    && same_workspace
+    && matches!(focused, WindowState::Tiling | WindowState::Floating(_))
+}
+
 /// What a tiling window that grew over its whole workspace by itself gets.
 /// As in ii (Hyprland): an app's own fullscreen is real fullscreen, and the
 /// spoof key (`toggle-fullscreen-spoof`) keeps it in its tile instead.
@@ -77,9 +106,10 @@ pub(super) fn should_restore(
   maximized: bool,
 ) -> bool {
   match target {
-    WindowState::Fullscreen(fullscreen) => {
-      !fullscreen.maximized && maximized
-    }
+    // The window manager's maximize is a window placed over the workspace's
+    // area (see `NonTilingWindow::to_rect`), never Windows' own maximize,
+    // which covers the bar: a natively maximized window is restored first.
+    WindowState::Fullscreen(_) => maximized,
     WindowState::Minimized => false,
     _ => minimized || maximized,
   }
@@ -89,22 +119,53 @@ pub(super) fn needs_geometry_sync(
   target: &WindowState,
   minimized: bool,
   maximized: bool,
-  has_maximize_box: bool,
   pending_dpi: bool,
   at_target: bool,
 ) -> bool {
   match target {
     WindowState::Minimized => false,
-    WindowState::Fullscreen(fullscreen)
-      if fullscreen.maximized && has_maximize_box =>
-    {
-      !maximized || pending_dpi || !at_target
-    }
     _ => {
       should_restore(target, minimized, maximized)
         || pending_dpi
         || !at_target
     }
+  }
+}
+
+/// Hyprland's one-mode-at-a-time toggles: `Some` overrides the usual
+/// toggle (back to the previous state). Super+F (`toggle-fullscreen`) on a
+/// maximized window makes it fullscreen at once; every other toggle of a
+/// fullscreen or maximized window (Super+D on a fullscreen one included)
+/// leaves it, as the usual toggle does.
+pub(crate) fn toggled_fullscreen_mode(current: &WindowState, target: &WindowState) -> Option<WindowState> {
+  match (current, target) {
+    (WindowState::Fullscreen(now), WindowState::Fullscreen(want)) if now.maximized && !want.maximized => {
+      Some(target.clone())
+    }
+    _ => None,
+  }
+}
+
+/// What a move of a window maximized by the window manager (Super+D)
+/// means.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum MaximizedMove {
+  /// At the workspace's area: our own placement landing
+  AtTarget,
+  /// The app went into its own fullscreen (F on a video, F11, a game): real
+  /// fullscreen over the monitor, whatever mode the window was in
+  AppFullscreen,
+  /// Somewhere else: the window leaves the maximize (restored by its app)
+  Elsewhere,
+}
+
+pub(crate) fn maximized_move(frame: &Rect, target: &Rect, monitor: &Rect, framed: bool) -> MaximizedMove {
+  if at_fullscreen_target(frame, target) {
+    MaximizedMove::AtTarget
+  } else if is_app_fullscreen(frame, monitor, framed) {
+    MaximizedMove::AppFullscreen
+  } else {
+    MaximizedMove::Elsewhere
   }
 }
 
@@ -129,6 +190,32 @@ pub(super) fn fullscreen_mark(
 mod tests {
   use super::*;
   use wm_common::{FloatingStateConfig, FullscreenStateConfig};
+
+  #[test]
+  fn a_fullscreen_window_at_its_monitor_is_left_alone() {
+    let monitor = Rect::from_ltrb(0, 0, 1920, 1080);
+    assert!(at_fullscreen_target(&monitor, &monitor));
+    // a game a pixel past its monitor, or a row short of it
+    assert!(at_fullscreen_target(&Rect::from_ltrb(-1, -1, 1921, 1081), &monitor));
+    assert!(at_fullscreen_target(&Rect::from_ltrb(0, 0, 1920, 1079), &monitor));
+    // still somewhere else: moved
+    assert!(!at_fullscreen_target(&Rect::from_ltrb(0, 45, 1920, 1080), &monitor));
+    assert!(!at_fullscreen_target(&Rect::from_ltrb(1920, 0, 3840, 1080), &monitor));
+  }
+
+  #[test]
+  fn focusing_another_window_takes_the_fullscreen_one_down() {
+    let full = fullscreen(false);
+    let floating = WindowState::Floating(FloatingStateConfig::default());
+    assert!(leaves_fullscreen_for_focus(&full, false, true, &WindowState::Tiling));
+    assert!(leaves_fullscreen_for_focus(&full, false, true, &floating));
+    // the fullscreen window itself focused, another workspace, or a
+    // fullscreen window taking focus: nothing changes
+    assert!(!leaves_fullscreen_for_focus(&full, true, true, &WindowState::Tiling));
+    assert!(!leaves_fullscreen_for_focus(&full, false, false, &WindowState::Tiling));
+    assert!(!leaves_fullscreen_for_focus(&full, false, true, &full));
+    assert!(!leaves_fullscreen_for_focus(&WindowState::Tiling, false, true, &WindowState::Tiling));
+  }
 
   #[test]
   fn an_apps_own_fullscreen_is_real_unless_spoofed() {
@@ -198,66 +285,20 @@ mod tests {
   #[test]
   fn unchanged_maximized_window_needs_no_geometry_work_on_workspace_switch()
   {
-    assert!(!needs_geometry_sync(
-      &fullscreen(true),
-      false,
-      true,
-      true,
-      false,
-      true
-    ));
+    // our maximize: placed over the workspace's area, not Windows' maximize
+    assert!(!needs_geometry_sync(&fullscreen(true), false, false, false, true));
   }
 
   #[test]
   fn maximize_restore_and_dpi_changes_still_require_geometry_sync() {
-    assert!(needs_geometry_sync(
-      &fullscreen(true),
-      false,
-      false,
-      true,
-      false,
-      true
-    ));
-    assert!(needs_geometry_sync(
-      &fullscreen(true),
-      false,
-      true,
-      true,
-      true,
-      true
-    ));
-    assert!(needs_geometry_sync(
-      &fullscreen(true),
-      false,
-      true,
-      true,
-      false,
-      false
-    ));
-    assert!(needs_geometry_sync(
-      &WindowState::Tiling,
-      false,
-      true,
-      true,
-      false,
-      true
-    ));
-    assert!(needs_geometry_sync(
-      &WindowState::Tiling,
-      true,
-      false,
-      true,
-      false,
-      true
-    ));
-    assert!(needs_geometry_sync(
-      &fullscreen(false),
-      false,
-      true,
-      true,
-      false,
-      true
-    ));
+    // Windows' own maximize (it covers the bar) is restored into ours
+    assert!(needs_geometry_sync(&fullscreen(true), false, true, false, true));
+    assert!(should_restore(&fullscreen(true), false, true));
+    assert!(needs_geometry_sync(&fullscreen(true), false, false, true, true));
+    assert!(needs_geometry_sync(&fullscreen(true), false, false, false, false));
+    assert!(needs_geometry_sync(&WindowState::Tiling, false, true, false, true));
+    assert!(needs_geometry_sync(&WindowState::Tiling, true, false, false, true));
+    assert!(needs_geometry_sync(&fullscreen(false), false, true, false, true));
   }
 
   #[test]
@@ -266,14 +307,40 @@ mod tests {
     for target in [
       WindowState::Tiling,
       fullscreen(false),
+      fullscreen(true),
       WindowState::Floating(FloatingStateConfig::default()),
       WindowState::Minimized,
     ] {
-      assert!(!needs_geometry_sync(
-        &target, false, false, true, false, true
-      ));
+      assert!(!needs_geometry_sync(&target, false, false, false, true));
     }
     assert!(!should_restore(&WindowState::Minimized, true, true));
+  }
+
+  #[test]
+  fn fullscreen_and_maximize_are_one_mode_at_a_time() {
+    let full = fullscreen(false);
+    let maxi = fullscreen(true);
+    // Super+F on a maximized window: fullscreen at once
+    assert_eq!(toggled_fullscreen_mode(&maxi, &full), Some(full.clone()));
+    // Super+D on a fullscreen window, Super+F on a fullscreen one, Super+D
+    // on a maximized one, and any toggle from a tile: the usual toggle
+    assert_eq!(toggled_fullscreen_mode(&full, &maxi), None);
+    assert_eq!(toggled_fullscreen_mode(&full, &full), None);
+    assert_eq!(toggled_fullscreen_mode(&maxi, &maxi), None);
+    assert_eq!(toggled_fullscreen_mode(&WindowState::Tiling, &full), None);
+  }
+
+  #[test]
+  fn an_app_fullscreen_from_our_maximize_is_real_fullscreen() {
+    let monitor = Rect::from_ltrb(0, 0, 1920, 1080);
+    let area = Rect::from_ltrb(5, 45, 1915, 1075); // under the bar, inside the gaps
+    assert_eq!(maximized_move(&area, &area, &monitor, true), MaximizedMove::AtTarget);
+    // F on a video / F11: the app covers the monitor without its frame
+    assert_eq!(maximized_move(&monitor, &area, &monitor, false), MaximizedMove::AppFullscreen);
+    // a framed window at the monitor's size is no app fullscreen
+    assert_eq!(maximized_move(&monitor, &area, &monitor, true), MaximizedMove::Elsewhere);
+    // restored by its app (title bar double click): it leaves the maximize
+    assert_eq!(maximized_move(&Rect::from_ltrb(300, 200, 1300, 900), &area, &monitor, true), MaximizedMove::Elsewhere);
   }
 
   #[test]
