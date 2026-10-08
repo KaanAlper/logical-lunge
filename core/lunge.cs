@@ -7587,7 +7587,7 @@ static class Touchpad
     [DllImport("hid.dll")] static extern int HidP_GetUsageValue(int reportType, ushort usagePage, ushort link, ushort usage, out uint value, IntPtr preparsed, byte[] report, uint length);
     [DllImport("hid.dll")] static extern int HidP_GetUsages(int reportType, ushort usagePage, ushort link, [Out] ushort[] usages, ref uint length, IntPtr preparsed, byte[] report, uint reportLength);
     const int HIDP_OK = 0x00110000, WM_INPUT = 0x00FF;
-    const uint RIDEV_INPUTSINK = 0x100, RID_INPUT = 0x10000003, RIDI_PREPARSEDDATA = 0x20000005, RIDI_DEVICEINFO = 0x2000000b, RIM_TYPEHID = 2;
+    const uint RIDEV_INPUTSINK = 0x100, RID_INPUT = 0x10000003, RIDI_PREPARSEDDATA = 0x20000005, RIDI_DEVICENAME = 0x20000007, RIDI_DEVICEINFO = 0x2000000b, RIM_TYPEHID = 2;
     const ushort PAGE_DIGITIZER = 0x0D, PAGE_DESKTOP = 0x01, USAGE_TOUCHPAD = 0x05, USAGE_TIP = 0x42, USAGE_COUNT = 0x54, USAGE_X = 0x30, USAGE_Y = 0x31;
 
     // Bir dokunmatik yüzey: parmak başına bir "link collection" (X, Y, değme anahtarı), kare başında parmak sayısı
@@ -7605,6 +7605,20 @@ static class Touchpad
         public int Touching;
     }
     static readonly Dictionary<IntPtr, Pad> pads = new Dictionary<IntPtr, Pad>();
+
+    // Uykudan dönüş, yeniden bağlanma ya da dock değişimi cihaza yeni bir tutamaç verir: eskisinin kaydı ve HID tanımı
+    // (AllocHGlobal) gün boyu birikiyordu. Yeni bir cihaz gelince Windows'un artık tanımadığı tutamaçlar bırakılır.
+    static void ForgetGonePads()
+    {
+        foreach (var h in new List<IntPtr>(pads.Keys))
+        {
+            uint size = 0;
+            if (GetRawInputDeviceInfo(h, RIDI_DEVICENAME, IntPtr.Zero, ref size) != unchecked((uint)-1)) continue;
+            var gone = pads[h];
+            if (gone.Preparsed != IntPtr.Zero) Marshal.FreeHGlobal(gone.Preparsed);
+            pads.Remove(h);
+        }
+    }
     static readonly ushort[] usageBuf = new ushort[64];
 
     sealed class Sink : NativeWindow
@@ -7710,6 +7724,7 @@ static class Touchpad
     {
         Pad pad;
         if (pads.TryGetValue(device, out pad)) return pad;
+        ForgetGonePads();
         pad = new Pad();
         pads[device] = pad;
         uint size = 0;
