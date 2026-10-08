@@ -113,6 +113,11 @@ jobs:
             node ./tools/dev/bar-data-tests.mjs
             if ($LASTEXITCODE) { throw 'Bar data regression failed' }
           }
+          # every text the native shell translates has a row in ui/i18n.json
+          if (Test-Path ./tools/dev/i18n-coverage.mjs) {
+            node ./tools/dev/i18n-coverage.mjs
+            if ($LASTEXITCODE) { throw 'Untranslated shell texts' }
+          }
           ./tools/dev/core-tests.ps1
 
       - name: Keep the package
