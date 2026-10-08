@@ -94,11 +94,11 @@ jobs:
           cargo test --release -p lunge-shell -p lunge-wallpaper -p systray-util
           if ($LASTEXITCODE) { throw 'Shell unit tests failed' }
 
-      - name: Run the window manager's event tests
+      - name: Run the window manager's event and window sync tests
         shell: pwsh
         working-directory: tiling
         run: |
-          cargo test --release -p wm -- events::handle_window_moved_or_resized
+          cargo test --release -p wm -- events::handle_window_moved_or_resized commands::general::window_sync_policy
           if ($LASTEXITCODE) { throw 'Window manager event tests failed' }
 
       - name: Check theme, media and core regressions
