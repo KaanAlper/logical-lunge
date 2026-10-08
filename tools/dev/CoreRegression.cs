@@ -61,6 +61,18 @@ static class CoreRegression
         Check(ShellTakeover.TryParse(withAh, out saved, out autoHide) && autoHide == 3, "Auto-hide state did not survive the record");
     }
 
+    static void FullscreenLayerTests() {
+        // the workspace slide's layer covers the bar when a window covers its monitor (a game, a video)
+        Check(Slider.CoversMonitor(new Native.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 }, 0, 0, 1920, 1080), "A monitor-sized window was no fullscreen");
+        Check(Slider.CoversMonitor(new Native.RECT { Left = -1, Top = -1, Right = 1921, Bottom = 1079 }, 0, 0, 1920, 1080), "A pixel off made a fullscreen window a normal one");
+        Check(!Slider.CoversMonitor(new Native.RECT { Left = 5, Top = 45, Right = 1915, Bottom = 1075 }, 0, 0, 1920, 1080), "A maximized window under the bar counted as fullscreen");
+        Check(!Slider.CoversMonitor(new Native.RECT { Left = 1920, Top = 0, Right = 3840, Bottom = 1080 }, 0, 0, 1920, 1080), "A window on the next monitor counted as fullscreen here");
+        // state changes animate through a freeze; other commands do not
+        Check(Dwindle.ChangesState(new[] { "toggle-fullscreen" }) && Dwindle.ChangesState(new[] { "toggle-fullscreen --maximized" })
+            && Dwindle.ChangesState(new[] { "toggle-floating --centered" }) && Dwindle.ChangesState(new[] { "toggle-fullscreen-spoof" }), "A state toggle was not animated");
+        Check(!Dwindle.ChangesState(new[] { "focus --workspace 2" }) && !Dwindle.ChangesState(new[] { "toggle-tiling-direction" }), "A non-state command went through the state animation");
+    }
+
     static void UiScaleTests() {
         Check(UiScale.Valid(100) && UiScale.Valid(125) && !UiScale.Valid(101) && !UiScale.Valid(0), "uiScale steps were misjudged");
         Check(UiScale.TopGap(100) == 45 && UiScale.TopGap(125) == 55 && UiScale.TopGap(85) == 39, "Top gap must be the bar's height plus 5");
@@ -389,6 +401,7 @@ static class CoreRegression
         if (args.Length == 1 && args[0] == "--restart-only") return;
         TakeoverTests();
         UiScaleTests();
+        FullscreenLayerTests();
         DialogTests();
         LauncherTests();
         string response = Request("POST", "/focus-color?v=invalid", "http://127.0.0.1:6124");
