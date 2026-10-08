@@ -29,7 +29,7 @@ use windows::{
     },
     Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS},
     Graphics::Gdi::{
-      EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW,
+      EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, GetWindowRgnBox,
       MonitorFromWindow, DISPLAY_DEVICEW, HDC, HMONITOR, MONITORINFO,
       MONITORINFOEXW, MONITOR_DEFAULTTONULL,
     },
@@ -844,6 +844,20 @@ unsafe fn covering_windows() -> Vec<RECT> {
       && GetWindowRect(h, &mut r).is_err()
     {
       return true.into();
+    }
+    // A window cut by its region (a tile's clip, rounded corners) covers only
+    // what the region leaves: a monitor-sized window clipped to its tile
+    // counted as covering the whole monitor, and the wallpaper stayed paused
+    // (and dark) around it.
+    let mut box_ = RECT::default();
+    if GetWindowRgnBox(h, &mut box_).0 >= 2 {
+      let mut wr = RECT::default();
+      if GetWindowRect(h, &mut wr).is_ok() {
+        r.left = r.left.max(wr.left + box_.left);
+        r.top = r.top.max(wr.top + box_.top);
+        r.right = r.right.min(wr.left + box_.right);
+        r.bottom = r.bottom.min(wr.top + box_.bottom);
+      }
     }
     if r.right > r.left && r.bottom > r.top {
       out.push(r);
