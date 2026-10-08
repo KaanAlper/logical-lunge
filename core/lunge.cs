@@ -1519,13 +1519,54 @@ class Slider
     // animasyon başladıysa sonucu atar (yoksa kapanan pencerenin henüz silinmiş hali önbelleğe yazılıp animasyonu bozuyordu).
     public static int Gen;
 
-    public Frozen Freeze(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden = 0)
+    // wholeMonitor: the layer covers the bar too (a window going into or out of fullscreen covers it), the bar being
+    // a still image beneath the windows
+    public Frozen Freeze(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden = 0, bool wholeMonitor = false)
     {
-        try { return FreezeCore(mon, handles, startScreen, hidden); }
+        try { return FreezeCore(mon, handles, startScreen, hidden, wholeMonitor); }
         catch (Exception ex) { Recover("donma: " + ex.Message); throw; }
     }
 
-    Frozen FreezeCore(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden)
+    // A window covering its whole monitor (to the pixel the OS can be off by): a fullscreen game or video
+    internal static bool CoversMonitor(Native.RECT r, int mx, int my, int mw, int mh)
+    {
+        return r.Left <= mx + 1 && r.Top <= my + 1 && r.Right >= mx + mw - 1 && r.Bottom >= my + mh - 1;
+    }
+
+    static bool AnyCovers(Dictionary<string, object> ws, int mx, int my, int mw, int mh)
+    {
+        var wins = new List<IntPtr>();
+        J.Windows(ws, wins);
+        foreach (var h in wins)
+            if (Native.IsWindow(h) && !Native.IsIconic(h) && CoversMonitor(WinRect(h), mx, my, mw, mh)) return true;
+        return false;
+    }
+
+    // The bar as a still image on the layer (beneath the windows registered after it), for layers that cover it
+    void BarAttach(List<Thumb> scene, Rectangle mon, int ox, int oy)
+    {
+        var bars = new List<KeyValuePair<IntPtr, Native.RECT>>();
+        var title = new StringBuilder(64);
+        Native.EnumWindows(delegate (IntPtr h, IntPtr unused)
+        {
+            if (!Native.IsWindowVisible(h) || Native.IsIconic(h)) return true;
+            title.Length = 0; Native.GetWindowText(h, title, 64);
+            if (title.ToString() != Names.Bar) return true;
+            int cloaked;
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0) return true;
+            Native.RECT r;
+            if (Native.GetWindowRect(h, out r) && mon.IntersectsWith(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom)))
+                bars.Add(new KeyValuePair<IntPtr, Native.RECT>(h, r));
+            return true;
+        }, IntPtr.Zero);
+        foreach (var b in bars)
+        {
+            var t = Register(b.Key, Shift(b.Value, ox, oy), null);
+            if (t != null) scene.Add(t);
+        }
+    }
+
+    Frozen FreezeCore(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden, bool wholeMonitor)
     {
         SwipeAbort(); // aynı katman: süren parmak kaydırması bitsin
         Interrupt = false;
@@ -1533,7 +1574,7 @@ class Slider
         var fz = Stopwatch.StartNew();
         var fzs = new StringBuilder();
         Action<string> step = n => { fzs.Append(n + " " + fz.Elapsed.TotalMilliseconds.ToString("0.0") + " "); };
-        int barH = BarPx(mon.X + mon.Width / 2, mon.Y + mon.Height / 2);
+        int barH = wholeMonitor ? 0 : BarPx(mon.X + mon.Width / 2, mon.Y + mon.Height / 2);
         int ox = mon.X, oy = mon.Y + barH;
         var f = new Frozen { Ox = ox, Oy = oy, Mon = mon };
         UseOverlay(new Rectangle(mon.X, oy, mon.Width, mon.Height - barH));
@@ -1549,6 +1590,7 @@ class Slider
             if (wt != null) f.All.Add(wt);
         }
         DesktopWidgetsAttach(f.All, new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy);
+        if (wholeMonitor) BarAttach(f.All, mon, ox, oy);
         foreach (var h in handles)
         {
             var hw = new IntPtr(h);
@@ -1569,7 +1611,7 @@ class Slider
         step("kayıt");
         RingsAttach(f.Win.Values, FocusedTop()); // kenarlıklar pencerelerin üstünde; katman gizliyken kaydı ucuz
         foreach (var t in f.Win.Values) RingPlace(t, t.Dest, (byte)(t.Src.ToInt64() == hidden ? 0 : 255));
-        PinsAttach(new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy, f.Win.Values);
+        PinsAttach(new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy, f.All); // the bar drawn in the scene is no pin
         step("kenar");
         Animating = true;
         overlay.Reveal();
@@ -1588,6 +1630,25 @@ class Slider
     // gerçek yeridir (en küçük boyutu olan uygulama tiling'in hesabından farklı yere oturabilir).
     class Anim { public Thumb T; public IntPtr H; public Native.RECT Start, End, Before; public bool Moved, Resizes; public int Cx0, Cy0; public long SrcAt = -1; }
 
+    // Where each window's image is on screen right now while a layout animation plays (screen coordinates): a new
+    // change in the middle of one starts from there instead of jumping to the windows' real places first.
+    static readonly object ShownLock = new object();
+    static readonly Dictionary<long, Native.RECT> Shown = new Dictionary<long, Native.RECT>();
+    static int ShownAt = Environment.TickCount - 100000;
+    public static Dictionary<long, Native.RECT> ShownNow(IEnumerable<long> handles)
+    {
+        var r = new Dictionary<long, Native.RECT>();
+        bool live = unchecked(Environment.TickCount - ShownAt) < 100;
+        lock (ShownLock)
+            foreach (var h in handles)
+            {
+                Native.RECT s;
+                if (live && Shown.TryGetValue(h, out s)) r[h] = s;
+                else if (Native.IsWindow(new IntPtr(h))) r[h] = WinRect(new IntPtr(h));
+            }
+        return r;
+    }
+
     // Hata animasyonu yarıda keserse katman ekranda donmuş kalmasın: temizlenir, hata çağırana gider
     public void Finish(Frozen f, IEnumerable<long> endHandles, long popin, int durationMs, Dictionary<long, Native.RECT> targetFrames = null)
     {
@@ -1598,6 +1659,7 @@ class Slider
     void FinishCore(Frozen f, IEnumerable<long> endHandles, long popin, int durationMs, Dictionary<long, Native.RECT> targetFrames)
     {
         if (f.Ov != null) overlay = f.Ov;
+        lock (ShownLock) Shown.Clear(); // the freeze that led here already read them
         // Yer değiştiren pencereler windows_move eğrisiyle (durationMs), yeni pencere windows_in süresi ve eğrisiyle
         var inSpec = Anims.WindowsIn; var moveCurve = Anims.WindowsMove.Curve;
         var items = new List<Anim>();
@@ -1679,7 +1741,9 @@ class Slider
                     if (a.Resizes && a.SrcAt < 0 && (a.T.Cx != a.Cx0 || a.T.Cy != a.Cy0)) a.SrcAt = nowMs;
                 }
                 RingPlace(a.T, r, op);
+                lock (ShownLock) Shown[a.H.ToInt64()] = Unshift(r, f.Ox, f.Oy);
             }
+            ShownAt = Environment.TickCount;
             fs.Updated();
             Native.DwmFlush();
             fs.Flushed();
@@ -2077,7 +2141,15 @@ class Slider
         }
 
         int mx = J.Int(mon, "x"), my = J.Int(mon, "y"), mw = J.Int(mon, "width"), mh = J.Int(mon, "height");
-        int barH = BarPx(mx + mw / 2, my + mh / 2);
+        // A fullscreen window (a game, a video) covers the bar. The layer normally starts under the bar so the bar
+        // stays put; a fullscreen window's top then went under the real bar as the slide began and came back at its
+        // end (it seemed to shrink and grow). With one on either side the layer takes the whole monitor, the bar is a
+        // still image beneath the sliding windows, and the fullscreen window slides whole.
+        Dictionary<string, object> slideTarget = null;
+        if (otherTarget != null)
+            foreach (Dictionary<string, object> w in J.Children(mon)) if (J.Str(w, "name") == otherTarget) slideTarget = w;
+        bool wholeMonitor = AnyCovers(oldWs, mx, my, mw, mh) || (slideTarget != null && AnyCovers(slideTarget, mx, my, mw, mh));
+        int barH = wholeMonitor ? 0 : BarPx(mx + mw / 2, my + mh / 2);
         Interlocked.Increment(ref Gen);
         UseOverlay(new Rectangle(mx, my + barH, mw, mh - barH));
         int ox = mx, oy = my + barH;
@@ -2096,6 +2168,7 @@ class Slider
             if (t != null) thumbs.Add(t);
         }
         DesktopWidgetsAttach(thumbs, new Rectangle(mx, oy, mw, mh - barH), ox, oy);
+        if (wholeMonitor) BarAttach(thumbs, new Rectangle(mx, my, mw, mh), ox, oy);
 
         // Super+Ctrl+Shift+←/→: pencereyi taşı ve takip et. Taşınan pencere yerinde kalır, workspace'ler onun
         // arkasında kayar (pencereyi yanında götürüyormuşsun gibi), sonra yeni yerleşimdeki yerine oturur.
@@ -2831,6 +2904,72 @@ class Dwindle
     // Pencere açıldı/kapandı. tiling yerleşimi zaten değiştirdi; katmanı hemen, pencerelerin GÖRÜLDÜKLERİ eski
     // yerlerinden (önbellek) açıp arkada fareye göre yerleştirmeyi de yapıyoruz, sonra hepsi gerçek yerine kayar.
     // (Eskiden: önce zıplama, 60 ms sonra katman, sonra fareye göre ikinci zıplama ve 400 ms sonra üçüncüsü.)
+    // ---- A window's state changing (Super+F fullscreen, floating <-> tiling, the spoofed fullscreen): as Hyprland,
+    // which animates the window's last picture from its old place to its new one and shows the app's fresh picture
+    // when it comes, the app never repainting along the way. The screen is frozen with the windows where they are
+    // (where their pictures are, if a layout animation is still playing: a quick second press goes on from there),
+    // the window manager changes the state behind the layer, and the pictures move to the new layout.
+    static readonly string[] stateCommands = {
+        "toggle-fullscreen", "set-fullscreen", "toggle-floating", "set-floating", "toggle-tiling", "set-tiling",
+        "toggle-fullscreen-spoof" };
+    public static bool ChangesState(string[] commands)
+    {
+        foreach (var c in commands)
+            foreach (var s in stateCommands)
+                if (c == s || c.StartsWith(s + " ")) return true;
+        return false;
+    }
+
+    // From the keyboard hook's worker thread: false when the commands were not run here
+    public static bool AnimateState(string[] commands)
+    {
+        var d = current;
+        if (d == null || d.ui == null || !Prefs.Animations || !ChangesState(commands)) return false;
+        d.AnimateStateCore(commands);
+        return true;
+    }
+
+    void AnimateStateCore(string[] commands)
+    {
+        var clk = Stopwatch.StartNew();
+        long fh = Native.GetAncestor(Native.GetForegroundWindow(), 2).ToInt64();
+        Dictionary<long, string> beforeMon; Dictionary<string, Rectangle> beforeMr;
+        lock (cacheLock) { beforeMon = monOf; beforeMr = monRects; }
+        string mid; Rectangle mon;
+        if (!beforeMon.TryGetValue(fh, out mid) || !beforeMr.TryGetValue(mid, out mon)) { foreach (var c in commands) tiling.Command(c); return; }
+        var hs = new List<long>();
+        foreach (var kv in beforeMon) if (kv.Value == mid) hs.Add(kv.Key);
+        var start = Slider.ShownNow(hs);
+        // Going into or out of fullscreen the window covers the bar at one end: the layer covers it too
+        Native.RECT fr;
+        bool whole = start.TryGetValue(fh, out fr) && Slider.CoversMonitor(fr, mon.X, mon.Y, mon.Width, mon.Height)
+            || Array.Exists(commands, c => c.Contains("fullscreen"));
+        Slider.Frozen f = null;
+        slider.Interrupt = true; // a layout animation still playing ends now (its pictures' places are in `start`)
+        try { f = (Slider.Frozen)ui.Invoke((Func<Slider.Frozen>)(() => slider.Freeze(mon, hs, start, 0, whole))); }
+        catch (Exception ex) { Slider.Log("durum donması: " + ex.Message); }
+        foreach (var c in commands) tiling.Command(c);
+        if (f == null) { RefreshCache(); return; }
+        Dictionary<long, Native.RECT> after; Dictionary<long, string> afterMon; Dictionary<string, Rectangle> mr;
+        try { Snapshot(out after, out afterMon, out mr); }
+        catch (Exception ex)
+        {
+            Slider.Log("durum: " + ex.Message);
+            ui.BeginInvoke((Action)(() => { try { slider.Finish(f, new List<long>(), 0, 1); } catch { } }));
+            return;
+        }
+        var end = new List<long>();
+        foreach (var kv in afterMon) if (kv.Value == mid) end.Add(kv.Key);
+        var v = new Dictionary<long, Native.RECT>();
+        foreach (var kv in after) v[kv.Key] = Slider.WindowRectForFrame(new IntPtr(kv.Key), kv.Value);
+        lock (cacheLock) { rects = after; monOf = afterMon; monRects = mr; visual = v; }
+        Slider.Log("durum değişti: " + string.Join(", ", commands) + ", donma+komut " + clk.ElapsedMilliseconds + " ms");
+        ui.BeginInvoke((Action)(() =>
+        {
+            try { slider.Finish(f, end, 0, Slider.MoveMs, after); } catch (Exception ex) { Slider.Log("durum animasyonu: " + ex.Message); }
+        }));
+    }
+
     void AnimateChange(long anchorHandle, bool opened, Dictionary<string, object> win)
     {
         var clk = Stopwatch.StartNew();
@@ -3293,12 +3432,21 @@ class MouseFocus
                         if (!J.Bool(ws, "isDisplayed")) continue;
                         var wins = new List<Dictionary<string, object>>();
                         J.WindowNodes(ws, wins);
+                        // Hovering moves no focus to or from a fullscreen window: focusing another window on its
+                        // workspace takes it out of fullscreen (as ii does), which only a click, a key or a new
+                        // window should do, not the pointer passing by.
+                        bool fullscreenThere = false;
+                        foreach (var w in wins)
+                        {
+                            object st; var state = w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
+                            if (state != null && J.Str(state, "type") == "fullscreen") fullscreenThere = true;
+                        }
                         foreach (var w in wins)
                         {
                             object hv;
                             if (w.TryGetValue("handle", out hv) && Convert.ToInt64(hv) == handle)
                             {
-                                if (!J.Bool(w, "hasFocus")) tiling.Command("focus --container-id " + J.Str(w, "id"));
+                                if (!J.Bool(w, "hasFocus") && !fullscreenThere) tiling.Command("focus --container-id " + J.Str(w, "id"));
                                 lastRoot = IntPtr.Zero;
                                 goto done;
                             }
@@ -6299,6 +6447,8 @@ class Rounder
     readonly Dictionary<IntPtr, List<long>> resets = new Dictionary<IntPtr, List<long>>();
     readonly HashSet<IntPtr> giveUp = new HashSet<IntPtr>();
     Native.WinEventDelegate cb;
+    const int WS_EX_LAYERED = 0x00080000, WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+    [DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
     static readonly HashSet<string> skipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { Names.Shell, Names.Tiling, Names.Core, "explorer" }; // Başlat / arama / kilit ekranı gibi kabuk yüzeyleri başlıksız
                                                                   // ya da araç penceresi: aşağıdaki stil kuralları onları zaten dışarıda bırakır
@@ -6501,6 +6651,17 @@ class Rounder
         int ex = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
         if ((style & Native.WS_CHILD) != 0 || (ex & Native.WS_EX_TOOLWINDOW) != 0) return;
         if (skipProcs.Contains(ProcName(h))) return;
+        // A per-pixel layered window (its picture handed over whole, UpdateLayeredWindow) or one drawn straight by DirectComposition
+        // without a redirection surface (custom-drawn launchers and clients) takes no window region: DWM keeps composing
+        // the window's last picture where the region used to clip it, so moving it or toggling its fullscreen left a copy
+        // of it on screen. Such a window keeps its own shape; a region of ours left from before is taken off.
+        uint lwKey; byte lwAlpha; uint lwFlags;
+        bool perPixel = (ex & WS_EX_LAYERED) != 0 && !GetLayeredWindowAttributes(h, out lwKey, out lwAlpha, out lwFlags); // a whole-window alpha (opacity effect) still has its surface
+        if (perPixel || (ex & WS_EX_NOREDIRECTIONBITMAP) != 0)
+        {
+            if (applied.Remove(h)) Native.SetWindowRgn(h, IntPtr.Zero, true);
+            return;
+        }
 
         Native.RECT wr, fr;
         if (!Native.GetWindowRect(h, out wr)) return;
@@ -7208,7 +7369,8 @@ class Keys2
             string[] wm = WmBinds.Lookup(mods, vk);
             if (wm != null)
             {
-                ThreadPool.QueueUserWorkItem(_ => { lock (inWsLock) { try { slider.Commands(wm); } catch (Exception ex) { Slider.Log("kısayol: " + ex.Message); } } });
+                // state changes (fullscreen, floating) animate through a freeze, as a layout change does
+                ThreadPool.QueueUserWorkItem(_ => { lock (inWsLock) { try { if (!Dwindle.AnimateState(wm)) slider.Commands(wm); } catch (Exception ex) { Slider.Log("kısayol: " + ex.Message); } } });
                 return (IntPtr)1;
             }
             return (IntPtr)1; // hiçbir tabloda yok: Windows'a da gitmez
