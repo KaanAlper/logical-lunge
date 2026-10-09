@@ -3369,19 +3369,21 @@ static class DesktopClick
     }
 
     // Windows'un "tek tıklamayla aç" seçeneği (Klasör seçenekleri): açıkken masaüstündeki simge tek tıklamayla açılır.
-    // Kayıt defterinden okunur; tıklama başına okumamak için 2 sn saklanır.
+    // Kayıt defterinden okunur, fare kancasının thread'inde değil: kanca saklanan değeri kullanır, bayatsa (2 sn) okuma
+    // arkada yenilenir (yük altında kanca hiç beklemesin).
     [DllImport("shell32.dll")] static extern void SHGetSettings(out int flags, uint mask);
     const uint SSF_DOUBLECLICKINWEBVIEW = 0x80;
-    static int singleCheckedAt = Environment.TickCount - 10000;
-    static bool single;
+    static int singleCheckedAt = Environment.TickCount - 10000, singleReading;
+    static volatile bool single;
     public static bool SingleClickOpen()
     {
-        int now = Environment.TickCount;
-        if (now - singleCheckedAt > 2000)
-        {
-            singleCheckedAt = now;
-            try { int f; SHGetSettings(out f, SSF_DOUBLECLICKINWEBVIEW); single = (f & (1 << 5)) == 0; } catch { single = false; }
-        }
+        if (Environment.TickCount - singleCheckedAt > 2000 && Interlocked.Exchange(ref singleReading, 1) == 0)
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try { int f; SHGetSettings(out f, SSF_DOUBLECLICKINWEBVIEW); single = (f & (1 << 5)) == 0; }
+                catch (Exception) { single = false; }
+                finally { singleCheckedAt = Environment.TickCount; Interlocked.Exchange(ref singleReading, 0); }
+            });
         return single;
     }
 
