@@ -445,12 +445,14 @@ static class ShellState
             missing = false;
             if (up) return false;
             up = true;
+            NativeInput.SetFlag(NativeInput.SHELL_UP, true);
             Slider.Log("bar geri geldi: görev çubuğu ve Win tuşu yine kabuğun");
             return true;
         }
         if (!missing) { missing = true; missingSince = Environment.TickCount; return false; }
         if (!up || unchecked(Environment.TickCount - missingSince) < 20000) return false;
         up = false;
+        NativeInput.SetFlag(NativeInput.SHELL_UP, false);
         Slider.Log("bar 20 sn'dir yok: Windows görev çubuğu, Başlat menüsü ve ayarları geri açıldı");
         return true;
     }

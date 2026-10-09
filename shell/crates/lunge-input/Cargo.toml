@@ -1,0 +1,10 @@
+[package]
+name = "lunge-input"
+version = "0.0.0"
+edition = "2021"
+description = "Logical Lunge input hooks: the low-level keyboard and mouse hooks of the core, in native code"
+
+[lib]
+name = "lunge_input"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
