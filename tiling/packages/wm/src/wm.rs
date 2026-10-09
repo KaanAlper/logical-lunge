@@ -355,6 +355,10 @@ impl WindowManager {
           )?;
         }
 
+        if args.no_cursor_jump {
+          state.pending_sync.cancel_cursor_jump();
+        }
+
         Ok(())
       }
       InvokeCommand::Ignore => {

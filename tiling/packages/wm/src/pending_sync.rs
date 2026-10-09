@@ -137,6 +137,13 @@ impl PendingSync {
     self
   }
 
+  /// Drops a queued cursor jump (a focus the pointer itself caused: the
+  /// cursor is already where it should be).
+  pub fn cancel_cursor_jump(&mut self) -> &mut Self {
+    self.needs_cursor_jump = false;
+    self
+  }
+
   pub fn needs_focus_update(&self) -> bool {
     self.needs_focus_update
   }
