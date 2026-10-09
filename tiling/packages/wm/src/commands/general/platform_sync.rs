@@ -447,11 +447,17 @@ fn redraw_containers(
       .context("Monitor not found in hide corner map.")?;
 
     // Whether the window should be shown above all other windows.
+    // A workspace whose focused window is fullscreen (a game, a video) keeps
+    // that window in front: no window on it is made HWND_TOPMOST, and the
+    // fullscreen window itself never is either (it stays at the top of the
+    // normal band, above the bar, which is not topmost). A topmost game
+    // lost independent flip and stayed topmost if the WM died.
+    let fullscreen_in_front = workspace_focused_window(window)
+      .is_some_and(|focused| matches!(focused.state(), WindowState::Fullscreen(_)));
     let z_order = match window.state() {
-      WindowState::Floating(config) if config.shown_on_top => {
-        WindowZOrder::TopMost
-      }
-      WindowState::Fullscreen(config) if config.shown_on_top => {
+      WindowState::Floating(config)
+        if config.shown_on_top && !fullscreen_in_front =>
+      {
         WindowZOrder::TopMost
       }
       // An app's own fullscreen: in front of the bar and every other normal
@@ -461,6 +467,8 @@ fn redraw_containers(
       // left topmost if the WM stops. The window focused next comes in
       // front of it (as with Alt+Tab), and it comes back when focused.
       WindowState::Fullscreen(_) => WindowZOrder::Normal,
+      // a floating window under a focused fullscreen one: below it
+      WindowState::Floating(config) if config.shown_on_top => WindowZOrder::Normal,
       // Raised to the top, after the focused tiling window (see above).
       WindowState::Floating(_)
         if should_bring_to_front
