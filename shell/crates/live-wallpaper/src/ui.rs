@@ -665,6 +665,9 @@ impl App {
       || (self.config.pause_on_battery && ON_BATTERY.get())
       || (self.config.pause_idle_minutes > 0
         && idle() >= Duration::from_secs(u64::from(self.config.pause_idle_minutes) * 60));
+    // no video copy is made while a game (or anything fullscreen) is in
+    // front or nobody is there
+    copies::set_hold(LOCKED.get() || self.screens.iter().any(|s| s.covered));
     let off = monitor_power::off();
     let paused: Vec<bool> = self
       .screens
