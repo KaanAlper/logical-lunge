@@ -232,7 +232,7 @@ impl BorderDrawer {
                 .render_factory
                 .cast()
                 .windows_context("d2d_multithread")?;
-            d2d_multithread.Enter();
+            let _d2d_lock = crate::utils::D2DLock::enter(&d2d_multithread);
 
             // Set d2d_context's target back to the target_bitmap so we can draw to the display
             let mut point = POINT::default();
@@ -265,7 +265,6 @@ impl BorderDrawer {
                 .Commit()
                 .windows_context("d_comp_device.Commit()")?;
 
-            d2d_multithread.Leave();
         }
 
         Ok(())
@@ -375,7 +374,7 @@ impl BorderDrawer {
                 .render_factory
                 .cast()
                 .windows_context("d2d_multithread")?;
-            d2d_multithread.Enter();
+            let _d2d_lock = crate::utils::D2DLock::enter(&d2d_multithread);
 
             // Set d2d_context's target back to the target_bitmap so we can draw to the display
             let mut point = POINT::default();
@@ -418,7 +417,6 @@ impl BorderDrawer {
                 .Commit()
                 .windows_context("d_comp_device.Commit()")?;
 
-            d2d_multithread.Leave();
         }
 
         Ok(())

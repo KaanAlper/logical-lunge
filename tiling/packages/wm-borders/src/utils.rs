@@ -1062,3 +1062,67 @@ mod tests {
         Ok(())
     }
 }
+
+/// Logical Lunge: holds Direct2D's multithread lock until dropped. Every
+/// early return (a lost device after a GPU reset returns from EndDraw or
+/// Commit with an error) used to skip the matching Leave(), and every
+/// other border thread then waited on the lock forever.
+pub struct D2DLock(windows::Win32::Graphics::Direct2D::ID2D1Multithread);
+
+impl D2DLock {
+    /// Enters the lock.
+    ///
+    /// # Safety
+    /// Same as `ID2D1Multithread::Enter`.
+    pub unsafe fn enter(lock: &windows::Win32::Graphics::Direct2D::ID2D1Multithread) -> Self {
+        lock.Enter();
+        Self(lock.clone())
+    }
+}
+
+impl Drop for D2DLock {
+    fn drop(&mut self) {
+        unsafe { self.0.Leave() };
+    }
+}
+
+/// Logical Lunge: whether `hwnd` covers its whole monitor.
+pub fn covers_its_monitor(hwnd: HWND) -> bool {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONULL,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let mut rect = windows::Win32::Foundation::RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut rect) }.is_err() {
+        return false;
+    }
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL) };
+    if monitor.is_invalid() {
+        return false;
+    }
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+        return false;
+    }
+    let m = info.rcMonitor;
+    rect.left <= m.left && rect.top <= m.top && rect.right >= m.right && rect.bottom >= m.bottom
+}
+
+/// Logical Lunge: whether this machine is low on memory for the border
+/// glow (each glowing border keeps extra monitor-sized bitmaps): less than
+/// 8 GB of physical memory.
+pub fn low_memory_machine() -> bool {
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    static LOW: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *LOW.get_or_init(|| {
+        let mut status = MEMORYSTATUSEX {
+            dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        unsafe { GlobalMemoryStatusEx(&mut status) }.is_ok()
+            && status.ullTotalPhys < 8 * 1024 * 1024 * 1024
+    })
+}

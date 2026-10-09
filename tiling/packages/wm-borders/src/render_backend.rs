@@ -182,7 +182,7 @@ impl V2RenderBackend {
                 .render_factory
                 .cast()
                 .windows_context("d2d_multithread")?;
-            d2d_multithread.Enter();
+            let _d2d_lock = crate::utils::D2DLock::enter(&d2d_multithread);
 
             let dxgi_adapter = directx_devices
                 .dxgi_device
@@ -224,8 +224,7 @@ impl V2RenderBackend {
             d_comp_device
                 .Commit()
                 .windows_context("d_comp_device.Commit()")?;
-
-            d2d_multithread.Leave();
+            drop(_d2d_lock);
 
             let (border_bitmap_opt, mask_bitmap_opt) = if create_extra_bitmaps {
                 let (border_bitmap, mask_bitmap) =
@@ -284,7 +283,7 @@ impl V2RenderBackend {
                 .render_factory
                 .cast()
                 .windows_context("d2d_multithread")?;
-            d2d_multithread.Enter();
+            let _d2d_lock = crate::utils::D2DLock::enter(&d2d_multithread);
 
             self.d_comp_visual
                 .SetContent(None)
@@ -296,7 +295,6 @@ impl V2RenderBackend {
                 .Commit()
                 .windows_context("d_comp_device.Commit()")?;
 
-            d2d_multithread.Leave();
         }
 
         Ok(())
@@ -321,7 +319,7 @@ impl V2RenderBackend {
                 .render_factory
                 .cast()
                 .windows_context("d2d_multithread")?;
-            d2d_multithread.Enter();
+            let _d2d_lock = crate::utils::D2DLock::enter(&d2d_multithread);
 
             *self.d_comp_surface = self
                 .d_comp_device
@@ -342,7 +340,6 @@ impl V2RenderBackend {
                 .Commit()
                 .windows_context("d_comp_device.Commit()")?;
 
-            d2d_multithread.Leave();
         }
         self.surface_size = D2D_SIZE_U { width, height };
 
