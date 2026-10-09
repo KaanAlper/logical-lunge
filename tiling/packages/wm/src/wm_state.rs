@@ -590,47 +590,48 @@ impl WmState {
           prev_active_workspace_in_monitor.cloned(),
         )
       }
-      WorkspaceTarget::Next => {
-        let workspaces = &config.value.workspaces;
-        let origin_name = origin_workspace.config().name.clone();
-        let origin_index = workspaces
+      // Hyprland's r+1 / r-1: the next workspace in config order that
+      // lives (or would open) on this monitor; workspaces shown on or bound
+      // to another monitor are skipped and the ends do not wrap around.
+      WorkspaceTarget::Next | WorkspaceTarget::Previous => {
+        let step: isize =
+          if matches!(target, WorkspaceTarget::Next) { 1 } else { -1 };
+        let monitor = origin_workspace
+          .monitor()
+          .context("No monitor in workspace")?;
+        let names: Vec<String> = config
+          .value
+          .workspaces
           .iter()
-          .position(|workspace| workspace.name == origin_name)
-          .context("Failed to get index of given workspace.")?;
-
-        let next_workspace_config = workspaces
-          .get(origin_index + 1)
-          .or_else(|| workspaces.first());
-
-        let next_workspace_name =
-          next_workspace_config.map(|config| config.name.clone());
-
-        let next_workspace = next_workspace_name
+          .map(|workspace| workspace.name.clone())
+          .collect();
+        let origin_name = origin_workspace.config().name.clone();
+        let target_name =
+          adjacent_on_monitor(&names, &origin_name, step, |name| {
+            match self.workspace_by_name(name) {
+              Some(workspace) => workspace
+                .monitor()
+                .is_some_and(|m| m.id() == monitor.id()),
+              None => config
+                .value
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.name == name)
+                .and_then(|workspace| workspace.bind_to_monitor)
+                .and_then(|index| {
+                  self
+                    .monitors()
+                    .into_iter()
+                    .find(|m| m.index() == index as usize)
+                })
+                .is_none_or(|bound| bound.id() == monitor.id()),
+            }
+          });
+        let target_workspace = target_name
           .as_ref()
           .and_then(|name| self.workspace_by_name(name));
 
-        (next_workspace_name, next_workspace)
-      }
-      WorkspaceTarget::Previous => {
-        let workspaces = &config.value.workspaces;
-        let origin_name = origin_workspace.config().name.clone();
-        let origin_index = workspaces
-          .iter()
-          .position(|workspace| workspace.name == origin_name)
-          .context("Failed to get index of given workspace.")?;
-
-        let previous_workspace_config = workspaces.get(
-          origin_index.checked_sub(1).unwrap_or(workspaces.len() - 1),
-        );
-
-        let previous_workspace_name =
-          previous_workspace_config.map(|config| config.name.clone());
-
-        let previous_workspace = previous_workspace_name
-          .as_ref()
-          .and_then(|name| self.workspace_by_name(name));
-
-        (previous_workspace_name, previous_workspace)
+        (target_name, target_workspace)
       }
 
       WorkspaceTarget::Direction(direction) => {
@@ -831,5 +832,50 @@ impl Drop for WmState {
           .set_transparency(&OpacityValue::from_alpha(u8::MAX));
       }
     }
+  }
+}
+
+/// The workspace `step` places away from `origin` in `names` (config order)
+/// that `on_monitor` accepts, without wrapping around the ends.
+pub(crate) fn adjacent_on_monitor(
+  names: &[String],
+  origin: &str,
+  step: isize,
+  on_monitor: impl Fn(&str) -> bool,
+) -> Option<String> {
+  let start = names.iter().position(|name| name == origin)? as isize;
+  let mut index = start + step;
+  while index >= 0 && (index as usize) < names.len() {
+    let name = &names[index as usize];
+    if on_monitor(name) {
+      return Some(name.clone());
+    }
+    index += step;
+  }
+  None
+}
+
+#[cfg(test)]
+mod adjacent_tests {
+  use super::adjacent_on_monitor;
+
+  fn names() -> Vec<String> {
+    (1..=6).map(|n| n.to_string()).collect()
+  }
+
+  #[test]
+  fn stops_at_the_ends() {
+    assert_eq!(adjacent_on_monitor(&names(), "1", -1, |_| true), None);
+    assert_eq!(adjacent_on_monitor(&names(), "6", 1, |_| true), None);
+    assert_eq!(adjacent_on_monitor(&names(), "3", 1, |_| true).as_deref(), Some("4"));
+  }
+
+  #[test]
+  fn skips_other_monitors() {
+    // 2 and 3 live on another monitor
+    let here = |n: &str| n != "2" && n != "3";
+    assert_eq!(adjacent_on_monitor(&names(), "1", 1, here).as_deref(), Some("4"));
+    assert_eq!(adjacent_on_monitor(&names(), "4", -1, here).as_deref(), Some("1"));
+    assert_eq!(adjacent_on_monitor(&names(), "1", -1, here), None);
   }
 }

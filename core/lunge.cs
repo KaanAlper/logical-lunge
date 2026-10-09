@@ -815,17 +815,34 @@ class Slider
     // Süreler ve eğriler config.yaml'dan (Anims): kayma 520 ms menu_decel (Hyprland workspaces speed 7 ~700 ms, kuyruğu
     // kısaltıldı), taşı+takip 340 ms, pencere hareketi 300 ms emphasizedDecel, açılış popin %80
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
-    static string AdjacentWorkspace(string current, int direction)
+    // Hyprland r+1 / r-1 (pencere yöneticisinin --next/--prev-workspace'iyle aynı kural): config sırasında bu monitörde
+    // yaşayan ya da açılacak bir sonraki workspace; başka monitörde gösterilen ya da başka monitöre bağlı olanlar atlanır,
+    // uçta başa sarılmaz (1'de sola basınca 30'a gitmiyordu artık). Yoksa null.
+    static string AdjacentWorkspace(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string current, int direction)
     {
         try {
             List<WorkspaceConfigText.Entry> entries;
             string error;
-            if (WorkspaceConfigText.TryRead(System.IO.File.ReadAllText(Paths.ConfigFile), out entries, out error)) {
-                int index = entries.FindIndex(entry => entry.Number.ToString() == current);
-                if (index >= 0) return entries[(index + direction + entries.Count) % entries.Count].Number.ToString();
+            if (!WorkspaceConfigText.TryRead(System.IO.File.ReadAllText(Paths.ConfigFile), out entries, out error)) return null;
+            int index = entries.FindIndex(entry => entry.Number.ToString() == current);
+            if (index < 0) return null;
+            for (int i = index + direction; i >= 0 && i < entries.Count; i += direction)
+            {
+                string name = entries[i].Number.ToString();
+                if (OnMonitor(mons, mon, name, entries[i].Monitor)) return name;
             }
         } catch { }
         return null;
+    }
+
+    // Workspace bu monitörde mi (ya da açılınca burada mı açılır): açıksa bulunduğu monitör, kapalıysa bağlı olduğu
+    // monitör (bind_to_monitor: monitör sırası; o monitör takılı değilse odaktaki monitörde açılır)
+    static bool OnMonitor(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string name, int? bound)
+    {
+        foreach (var m in mons)
+            foreach (Dictionary<string, object> w in J.Children(m))
+                if (J.Str(w, "name") == name) return J.Str(m, "id") == J.Str(mon, "id");
+        return bound == null || bound.Value < 0 || bound.Value >= mons.Count || J.Str(mons[bound.Value], "id") == J.Str(mon, "id");
     }
 
     readonly TilingClient tiling;
@@ -1889,6 +1906,28 @@ class Slider
     // Sonunda fare hedef pencerenin ortasına taşınır (Hyprland'de odak değişince imleç de gider).
     public void Commands(string[] cmds) { foreach (var c in cmds) tiling.Command(c); }
 
+    // Tutamacı verilen pencerenin pencere yöneticisindeki kimliği ve workspace'i (yönetilmiyorsa false)
+    public bool FindHandle(long handle, out string id, out string workspace, out bool shown)
+    {
+        id = null; workspace = null; shown = false;
+        foreach (var m in tiling.Monitors())
+            foreach (Dictionary<string, object> ws in J.Children(m))
+            {
+                var wins = new List<Dictionary<string, object>>();
+                J.WindowNodes(ws, wins);
+                foreach (var w in wins)
+                {
+                    object hv;
+                    if (w.TryGetValue("handle", out hv) && Convert.ToInt64(hv) == handle)
+                    {
+                        id = J.Str(w, "id"); workspace = J.Str(ws, "name"); shown = J.Bool(ws, "isDisplayed");
+                        return true;
+                    }
+                }
+            }
+        return false;
+    }
+
     public void FocusInWorkspace(string dir) { InWorkspace(dir, false); }
     public void MoveInWorkspace(string dir) { InWorkspace(dir, true); }
 
@@ -1986,6 +2025,12 @@ class Slider
         Finish(f, hs, 0, MoveMs, targets);
     }
 
+    static string StateType(Dictionary<string, object> w)
+    {
+        object st; var state = w != null && w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
+        return state != null ? J.Str(state, "type") : "";
+    }
+
     void InWorkspace(string dir, bool move)
     {
         var clk = Stopwatch.StartNew();
@@ -2012,7 +2057,13 @@ class Slider
             // workspace'ine atıyordu; orada hiçbir şey yapma. Tek pencerede de.
             var par0 = ParentOf(ws, J.Str(cur, "id"));
             string axis = dir == "left" || dir == "right" ? "horizontal" : "vertical";
-            if (par0 == null || wins.Count < 2) return;
+            // yalnızca döşeli pencereler sayılır: bir döşeli + bir yüzen pencerede komut tiling'e gidiyor, o da pencereyi
+            // yandaki monitöre atıyordu. Tam ekran pencere de kenarda monitör değiştirmez.
+            int tiled = 0;
+            foreach (var w in wins) if (StateType(w) == "tiling") tiled++;
+            string curState = StateType(cur);
+            if (curState == "fullscreen") return;
+            if (par0 == null || (curState == "tiling" && tiled < 2)) return;
             if (J.Str(par0, "type") == "workspace" && J.Str(par0, "tilingDirection") == axis) return;
         }
         if (!Prefs.Animations || MoveMs <= 0) { tiling.Command("move --direction " + dir); return; } // animasyonlar kapalı (ayarlar / config.yaml)
@@ -2111,8 +2162,8 @@ class Slider
             int cur0;
             if (int.TryParse(oldName, out cur0))
             {
-                if (lastCmd == "focus --next-workspace") otherTarget = AdjacentWorkspace(oldName, 1);
-                else if (lastCmd == "focus --prev-workspace") otherTarget = AdjacentWorkspace(oldName, -1);
+                if (lastCmd == "focus --next-workspace") otherTarget = AdjacentWorkspace(mons, mon, oldName, 1);
+                else if (lastCmd == "focus --prev-workspace") otherTarget = AdjacentWorkspace(mons, mon, oldName, -1);
             }
         }
         Dictionary<string, object> otherMon = null, otherWs = null, warpMon = null, warpWs = null;
@@ -2207,9 +2258,15 @@ class Slider
             int cur;
             if (int.TryParse(oldName, out cur))
             {
-                if (focusCmd == "focus --next-workspace") predicted = AdjacentWorkspace(oldName, 1);
-                else if (focusCmd == "focus --prev-workspace") predicted = AdjacentWorkspace(oldName, -1);
+                if (focusCmd == "focus --next-workspace") predicted = AdjacentWorkspace(mons, mon, oldName, 1);
+                else if (focusCmd == "focus --prev-workspace") predicted = AdjacentWorkspace(mons, mon, oldName, -1);
             }
+        }
+        // Uçtaki workspace (bu monitörde ötesi yok): pencere yöneticisi de bir şey yapmaz; animasyon da başlamasın
+        if (predicted == null && (commands.Length == 1 || moveFollow) && (focusCmd == "focus --next-workspace" || focusCmd == "focus --prev-workspace"))
+        {
+            Log("slide: bu monitörde " + (focusCmd.EndsWith("next-workspace") ? "sonraki" : "önceki") + " workspace yok");
+            return;
         }
         if (predicted != null && (commands.Length == 1 || moveFollow))
         {
@@ -2464,8 +2521,8 @@ class Slider
         var mon = FocusedMonitor(mons, out oldWs);
         int cur;
         if (mon == null || oldWs == null || !int.TryParse(J.Str(oldWs, "name"), out cur)) return false;
-        string prevCandidate = AdjacentWorkspace(cur.ToString(), -1);
-        string nextCandidate = AdjacentWorkspace(cur.ToString(), 1);
+        string prevCandidate = AdjacentWorkspace(mons, mon, cur.ToString(), -1);
+        string nextCandidate = AdjacentWorkspace(mons, mon, cur.ToString(), 1);
         string prevName = prevCandidate != null && !LivesElsewhere(mons, mon, prevCandidate) ? prevCandidate : null;
         string nextName = nextCandidate != null && !LivesElsewhere(mons, mon, nextCandidate) ? nextCandidate : null;
 
@@ -2562,7 +2619,7 @@ class Slider
     {
         var s = swipe;
         if (s == null) return;
-        const double COMMIT = 0.3, FLICK = 0.0015; // hızlı fiske: ~0.7 sn'de bir workspace boyu
+        const double COMMIT = 0.2, FLICK = 0.0015; // hızlı fiske: ~0.7 sn'de bir workspace boyu
         if (double.IsNaN(velocity)) velocity = 0;
         double p = s.Progress;
         int target = 0;
@@ -3527,10 +3584,11 @@ class MouseFocus
                 IntPtr root = Native.GetAncestor(under, 2);
                 IntPtr fg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
                 if (root == fg) continue;
-                // Öndeki pencere yüzen/diyalog (sahibi olan ya da her zaman üstte) ise fare hareketi
-                // odağı ondan çalmasın: dosya seçme penceresi vb. fare gezdikçe arkaya düşüp gelmiyordu.
+                // Öndeki pencere bir diyalogsa (sahibi olan ya da kalıcı çerçeveli) fare hareketi odağı ondan çalmasın:
+                // dosya seçme penceresi vb. fare gezdikçe arkaya düşüp gelmiyordu. Her zaman üstte olmak tek başına
+                // yetmez: yüzen her pencere üstte durur ve fareyle odak o pencere öne gelince tamamen duruyordu.
                 if (fg != IntPtr.Zero && (Native.GetWindow(fg, 4) != IntPtr.Zero ||
-                    (Native.GetWindowLong(fg, Native.GWL_EXSTYLE) & Native.WS_EX_TOPMOST) != 0)) continue;
+                    (Native.GetWindowLong(fg, Native.GWL_EXSTYLE) & 0x1 /*WS_EX_DLGMODALFRAME*/) != 0)) continue;
                 if (root == lastRoot) continue; // son bakılan yönetilmeyen pencere (bar, masaüstü...)
 
                 // Yalnızca tiling'in yönettiği ve odaktaki workspace'te görünen pencereler
@@ -3548,7 +3606,8 @@ class MouseFocus
                         foreach (var w in wins)
                         {
                             object st; var state = w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
-                            if (state != null && J.Str(state, "type") == "fullscreen") fullscreenThere = true;
+                            // büyütülmüş (Super+D) pencere tam ekran değil: üstünden geçince odak normal çalışır
+                            if (state != null && J.Str(state, "type") == "fullscreen" && !J.Bool(state, "maximized")) fullscreenThere = true;
                         }
                         foreach (var w in wins)
                         {
@@ -5993,7 +6052,7 @@ static class Toasts
                 new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
                 return;
             }
-            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/temps.json") || verbless.StartsWith("/desktop-ready") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/widgets/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/urgent.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/temps.json") || verbless.StartsWith("/desktop-ready") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/widgets/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -6239,6 +6298,11 @@ static class Toasts
                     }
                 }
                 else { body = "{\"gamma\":" + NightLight.Gamma(dev).ToString(System.Globalization.CultureInfo.InvariantCulture) + "}"; status = "200 OK"; }
+            }
+            // Dikkat isteyen pencereler (Urgent): bar workspace'lerini işaretler
+            else if (target == "/urgent.json")
+            {
+                body = Urgent.Json(); status = "200 OK";
             }
             else if (target == "/apps.json" || target.StartsWith("/apps.json?"))
             {
@@ -6760,6 +6824,7 @@ static class Binds
         { "overview-alt", "Ctrl+Escape" }, { "run", "Super+R" }, { "search", "Super+Q" }, { "workspaces", "Super+Tab" },
         { "settings", "Super+I" }, { "sidebar", "Super+A" }, { "notifications", "Super+N" },
         { "screenshot-alt", "Super+Shift+S" }, { "task-manager", "Ctrl+Shift+Escape" },
+        { "focus-urgent-or-last", "Super+U" },
     };
 
     // Uygulama açan kısayollar (düzenleyicide "Uygulamalar": kaldırılabilir, kullanıcı yenilerini ekleyebilir)
@@ -7459,6 +7524,24 @@ class Keys2
             string d = dir > 0 ? "next" : "prev";
             if (act.StartsWith("ws-move-")) Post(new[] { "move --" + d + "-workspace", "focus --" + d + "-workspace" }, dir, null);
             else Post(new[] { "focus --" + d + "-workspace" }, dir, null);
+            return true;
+        }
+        // Hyprland focusurgentorlast: en son dikkat isteyen pencere (workspace'i başkaysa kayarak), yoksa bir önceki workspace
+        if (act == "focus-urgent-or-last")
+        {
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    long h = Urgent.Latest();
+                    string id, ws; bool shown;
+                    if (h == 0) Post(new[] { "focus --recent-workspace" }, 0, null);
+                    else if (!slider.FindHandle(h, out id, out ws, out shown)) FocusSink.Give(new IntPtr(h));
+                    else if (shown) slider.Commands(new[] { "focus --container-id " + id });
+                    else Post(new[] { "focus --container-id " + id }, 0, ws);
+                }
+                catch (Exception ex) { Slider.Log("urgent: " + ex.Message); }
+            });
             return true;
         }
         if (act.StartsWith("ws-"))
@@ -13985,6 +14068,7 @@ static class Program
         Wallpaper.StartKeeper();
         Toasts.Start();
         WinNotifications.Start();
+        Urgent.Start();
 
         // Klavye kancası KENDİ thread'inde ve orada başka hiçbir iş yapılmaz: LL hook ~300ms'de
         // yanıt vermezse Windows kancayı söker ve o sırada klavye donar. (Eskiden köşe yuvarlama
