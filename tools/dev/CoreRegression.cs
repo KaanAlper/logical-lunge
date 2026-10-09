@@ -599,6 +599,8 @@ static class CoreRegression
         // Kısayollar: pencere yöneticisi biçimi, çakışmalar, uygulama kısayollarının doğrulaması
         Check(WmBinds.ToUi("lwin+shift+oem_1") == "Super+Shift+;" && WmBinds.ToWm("Super+Shift+;") == "lwin+shift+oem_1", "Window manager key names did not round-trip");
         Check(WmBinds.ToWm("Super+PageUp") == "lwin+page_up" && WmBinds.ToUi("lwin+ctrl+page_down") == "Super+Ctrl+PageDown", "Page keys did not convert");
+        Check(WmBinds.Repeats(new[] { "split-ratio -0.1" }) && WmBinds.Repeats(new[] { "resize --width +2%" }), "Split ratio and resize keys must repeat while held");
+        Check(!WmBinds.Repeats(new[] { "toggle-fullscreen" }) && !WmBinds.Repeats(new[] { "focus --next-workspace" }) && !WmBinds.Repeats(null), "Toggle and workspace keys must fire once per press");
         Check(Binds.Canonical("super+shift+s") == "Super+Shift+S" && Binds.Canonical("ctrl+shift+escape") == "Ctrl+Shift+Escape" && Binds.Canonical("Super+Banana") == null, "Combos were not normalised");
         var conflicts = Keymap.Conflicts(new Dictionary<string, string> { { "browser", "Super+W" }, { "app:x", "super+w" }, { "files", "Super+L" }, { "code", "" } },
             new Dictionary<int, List<string>> { { 0, new List<string> { "Super+F" } }, { 1, new List<string> { "Super+F", "Super+G" } } });

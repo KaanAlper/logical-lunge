@@ -7421,14 +7421,14 @@ class Keys2
             if (act != null)
             {
                 bool repeat = held.Contains(vk);
-                // Basılı tutunca tekrar eden eylemler: odak/taşıma/workspace. Uygulama açma, kapatma, ekran alıntısı bir kez.
-                bool repeatable = act.StartsWith("focus-") || act.StartsWith("move-") || act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-");
-                if (repeat && !repeatable) return (IntPtr)1;
-                if (repeat || RunAction(act))
+                // Basılı tutmak tekrar etmez (ii: yalnızca bölme oranı, yakınlaştırma, ses ve parlaklık tekrar eder): odak,
+                // taşıma ve workspace geçişi de basış başına bir kez; basılı Super+Ctrl+→ workspace'leri art arda geçiyordu
+                if (repeat) return (IntPtr)1;
+                if (RunAction(act))
                 {
                     held.Add(vk);
-                    if (winDown)                    // Ctrl+Super (+Shift) ile gezinme: bar noktaların yerine numaraları kısa süre gösterir (kanca beklemesin)
-                    if (!repeat && (act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-")))
+                    // Ctrl+Super (+Shift) ile gezinme: bar noktaların yerine numaraları kısa süre gösterir (kanca beklemesin)
+                    if (winDown && (act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-")))
                         ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:ws-numbers"));
                     return (IntPtr)1;
                 }
@@ -7438,12 +7438,15 @@ class Keys2
         if (winDown && isDown && !modKey)
         {
             int mods = Binds.SUPER | (Down(VK_CONTROL) ? Binds.CTRL : 0) | (Down(VK_SHIFT) ? Binds.SHIFT : 0) | (Down(VK_MENU) ? Binds.ALT : 0);
-            held.Add(vk);
+            bool repeat = !held.Add(vk);
             // Windows'un kilidi (Super+L): Win Windows'a ulaşmadığı için kilidi çekirdek ister
             string reserved = Reserved.Action(mods, vk);
-            if (reserved != null) { if (reserved.Length > 0) RunAction(reserved); return (IntPtr)1; }
+            if (reserved != null) { if (reserved.Length > 0 && !repeat) RunAction(reserved); return (IntPtr)1; }
             // Pencere yöneticisinin Super'li kısayolu: komutları IPC ile (pencere yöneticisi Win'i hiç görmez)
             string[] wm = WmBinds.Lookup(mods, vk);
+            // Basılı tutunca yalnızca bölme oranı tekrar eder (ii binde): Super+F / Super+D / Super+Alt+Space durmadan
+            // açılıp kapanıyor, Super+PageDown workspace'leri art arda geçiyordu
+            if (repeat && !(wm != null && WmBinds.Repeats(wm))) return (IntPtr)1;
             int slideDir; string slideTarget;
             if (wm != null && SwitchesWorkspace(wm, out slideDir, out slideTarget))
             {

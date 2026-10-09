@@ -122,6 +122,16 @@ static class WmBinds
         lock (gate) return table.TryGetValue(((long)mods << 16) | (uint)vk, out c) ? c : null;
     }
 
+    // Basılı tutunca tekrar eden kısayol mu: yalnızca bölme oranı ve boyutlandırma (Hyprland/ii'de "binde"); geçiş,
+    // odak ve durum komutları basış başına bir kez
+    public static bool Repeats(string[] commands)
+    {
+        if (commands == null || commands.Length == 0) return false;
+        foreach (var cmd in commands)
+            if (!(cmd.StartsWith("split-ratio ") || cmd.StartsWith("resize "))) return false;
+        return true;
+    }
+
     // Düzenleyici için: [{"index","commands","bindings"(Super+F biçiminde)}]
     public static List<Dictionary<string, object>> List()
     {
