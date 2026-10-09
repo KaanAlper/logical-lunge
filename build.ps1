@@ -99,7 +99,7 @@ if (-not $SkipRust) {
     try { Native { cargo build --release -p wm -p wm-cli -p wm-watcher } 'tiling' }
     finally { Pop-Location }
     Copy-Item "$root\tiling\target\release\lunge-tiling.exe", "$root\tiling\target\release\lunge-tiling-cli.exe", "$root\tiling\target\release\lunge-tiling-watcher.exe" $app
-    Step 'lunge-shell (bar, panels) + lunge-wallpaper + lunge_input (the core's input hooks)'
+    Step 'lunge-shell (bar, panels) + lunge-wallpaper + lunge_input (input hooks of the core)'
     # VERSION_NUMBER (above) goes into lunge-shell.exe's version resource (its build.rs)
     Push-Location "$root\shell"
     try { Native { cargo build --release -p lunge-shell -p lunge-wallpaper -p lunge-input } 'shell' }
