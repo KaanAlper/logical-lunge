@@ -18,7 +18,7 @@ use crate::{
   commands::{
     container::{
       focus_container_by_id, focus_in_direction, set_tiling_direction,
-      toggle_tiling_direction,
+      split_ratio, toggle_tiling_direction,
     },
     general::{
       cycle_focus, disable_binding_mode, enable_binding_mode,
@@ -795,6 +795,9 @@ impl WindowManager {
       }
       InvokeCommand::ToggleTilingDirection => {
         toggle_tiling_direction(subject_container, state, config)
+      }
+      InvokeCommand::SplitRatio { delta } => {
+        split_ratio(subject_container, *delta, state)
       }
       InvokeCommand::SetTilingDirection { tiling_direction } => {
         set_tiling_direction(

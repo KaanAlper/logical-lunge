@@ -234,6 +234,12 @@ pub enum InvokeCommand {
   ToggleMinimized,
   ToggleTiling,
   ToggleTilingDirection,
+  /// Hyprland's splitratio: moves the split above the focused tiled
+  /// window by `delta` (ratio units around 1.0, e.g. -0.1 / +0.1).
+  SplitRatio {
+    #[clap(required = true, allow_hyphen_values = true)]
+    delta: f32,
+  },
   SetTilingDirection {
     #[clap(required = true)]
     tiling_direction: TilingDirection,
