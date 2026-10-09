@@ -65,6 +65,10 @@ pub struct Global {
     /// focus (illogical-impulse's neutral outline).
     #[serde(default = "serde_default_u64::<800>")]
     pub focus_flash: u64,
+    /// Logical Lunge: how much the windows without the focus are darkened (illogical-impulse's dim_inactive,
+    /// 0.05); 0 = off.
+    #[serde(default)]
+    pub inactive_dim: f32,
 }
 
 pub fn serde_default_u64<const V: u64>() -> u64 {

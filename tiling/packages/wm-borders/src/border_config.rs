@@ -24,6 +24,7 @@ pub struct BorderConfig {
     pub effects: EffectsConfig,
     pub initialize_delay: u64,
     pub unminimize_delay: u64,
+    pub inactive_dim: f32,
 }
 
 impl BorderConfig {
@@ -71,6 +72,7 @@ impl BorderConfig {
             unminimize_delay: window_rule
                 .unminimize_delay
                 .unwrap_or(global.unminimize_delay),
+            inactive_dim: global.inactive_dim,
         }
     }
 
