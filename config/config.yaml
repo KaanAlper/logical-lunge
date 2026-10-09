@@ -276,7 +276,7 @@ borders:
     border_width: 2
     border_offset: 0
     # Hyprland'deki rounding; çekirdek pencere köşelerini de aynı yarıçapla yuvarlar
-    border_radius: 14
+    border_radius: 19
     border_z_order: AboveWindow
     follow_native_border: false
     # Windows pencere animasyonları kapalı: kenarlık gecikmeden gelsin

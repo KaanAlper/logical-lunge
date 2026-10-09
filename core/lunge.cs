@@ -507,7 +507,7 @@ class Overlay : Form
 static class BorderStyle
 {
     public static Color Active = Color.FromArgb(0xcc, 0xb6, 0x9d, 0xf8), Inactive = Color.FromArgb(0x99, 0x3a, 0x3a, 0x40);
-    public static int Width = 2, Radius = 14;
+    public static int Width = 2, Radius = 19;
     static BorderStyle() { Load(); }
 
     // config.yaml değişince yeniden okunur (ayarlar penceresinden odak rengi ya da elle düzenleme; bkz. ConfigWatch)
@@ -6567,7 +6567,16 @@ static class Toasts
 // ---------------- Yuvarlak köşeler ----------------
 class Rounder
 {
-    const int RADIUS = 14; // kenarlık motoru border_radius ile aynı
+    [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
+    // Köşe yarıçapı tek kaynaktan: config.yaml borders.global.border_radius (BorderStyle), pencerenin monitörünün ölçeğiyle
+    // büyür (kenarlık motoru da aynı yarıçapı aynı ölçekle çizer; önceden sabit 14 px, %150'de köşe kenarlığa uymuyordu)
+    static int RadiusFor(IntPtr h)
+    {
+        uint dpi = 0;
+        try { dpi = GetDpiForWindow(h); } catch { }
+        if (dpi == 0) dpi = 96;
+        return Math.Max(0, (int)Math.Round(BorderStyle.Radius * dpi / 96.0));
+    }
     readonly Dictionary<IntPtr, long> applied = new Dictionary<IntPtr, long>();
     readonly Dictionary<IntPtr, List<long>> resets = new Dictionary<IntPtr, List<long>>();
     readonly HashSet<IntPtr> giveUp = new HashSet<IntPtr>();
@@ -6672,11 +6681,12 @@ class Rounder
     }
     // Pencereye konan bölge, hep buradan. Köşesi yuvarlanamayacak kadar küçük pencerenin yuvarlak bölgesi düz ya da boş
     // çıkar (boş bölge pencereyi görünmez bırakır): o köşeli kesilir.
-    internal static IntPtr MakeRegion(bool square, int l, int t, int r, int b)
+    internal static IntPtr MakeRegion(bool square, int l, int t, int r, int b) { return MakeRegion(square, l, t, r, b, BorderStyle.Radius); }
+    internal static IntPtr MakeRegion(bool square, int l, int t, int r, int b, int radius)
     {
-        if (!square)
+        if (!square && radius > 0)
         {
-            IntPtr round = Native.CreateRoundRectRgn(l, t, r + 1, b + 1, RADIUS * 2, RADIUS * 2);
+            IntPtr round = Native.CreateRoundRectRgn(l, t, r + 1, b + 1, radius * 2, radius * 2);
             Native.RECT box;
             if (round != IntPtr.Zero && GetRgnBox(round, out box) == 3 /*COMPLEXREGION*/) return round;
             if (round != IntPtr.Zero) Native.DeleteObject(round);
@@ -6687,10 +6697,10 @@ class Rounder
     // köşelerinin dikdörtgeninden bir piksel küçük, küçük pencerede türü de değişir. Tahmin hiç tutmayınca bölge her olayda
     // yeniden konuyordu; SetWindowRgn de yeni bir konum olayı doğurduğundan pencere başına saniyede binlerce tur (boşta
     // bir çekirdek).
-    static int RegionShape(bool square, int l, int t, int r, int b, out Native.RECT box)
+    static int RegionShape(bool square, int l, int t, int r, int b, int radius, out Native.RECT box)
     {
         box = new Native.RECT();
-        IntPtr rgn = MakeRegion(square, l, t, r, b);
+        IntPtr rgn = MakeRegion(square, l, t, r, b, radius);
         if (rgn == IntPtr.Zero) return 0;
         int kind = GetRgnBox(rgn, out box);
         Native.DeleteObject(rgn);
@@ -6820,11 +6830,10 @@ class Rounder
         if (!Native.GetWindowRect(h, out wr)) return;
         if (Native.DwmGetWindowAttribute(h, Native.DWMWA_EXTENDED_FRAME_BOUNDS, out fr, Marshal.SizeOf(typeof(Native.RECT))) != 0) fr = wr;
 
-        // Tam ekran / maximize: köşe yok (Hyprland'de de fullscreen'de rounding kalkar)
-        var wp = new Native.WINDOWPLACEMENT { length = Marshal.SizeOf(typeof(Native.WINDOWPLACEMENT)) };
-        Native.GetWindowPlacement(h, ref wp);
+        // Tam ekran: köşe yok (Hyprland'de de fullscreen'de rounding kalkar). Büyütülmüş pencere köşelerini korur
+        // (Hyprland'in maximize'ı gibi); büyütülmüş pencere monitörü kaplıyorsa zaten tam ekran sayılır.
         var screen = MonitorOf(h);
-        bool full = wp.showCmd == 3 || (fr.Left <= screen.Left && fr.Top <= screen.Top && fr.Right >= screen.Right && fr.Bottom >= screen.Bottom);
+        bool full = fr.Left <= screen.Left && fr.Top <= screen.Top && fr.Right >= screen.Right && fr.Bottom >= screen.Bottom;
 
         // A managed tile keeps its screen-space slot even when an application
         // briefly expands its own window to the monitor for video fullscreen.
@@ -6855,8 +6864,9 @@ class Rounder
             var c = new Native.RECT { Left = Math.Max(fr.Left, slot.Left), Top = Math.Max(fr.Top, slot.Top), Right = Math.Min(fr.Right, slot.Right), Bottom = Math.Min(fr.Bottom, slot.Bottom) };
             if (c.Right > c.Left && c.Bottom > c.Top) vis = c;
         }
+        int radius = RadiusFor(h);
         long key;
-        unchecked { key = (((((long)(fr.Right - fr.Left) * 31 + (fr.Bottom - fr.Top)) * 31 + (vis.Left - fr.Left)) * 31 + (vis.Top - fr.Top)) * 31 + (fr.Right - vis.Right)) * 31 + (fr.Bottom - vis.Bottom); }
+        unchecked { key = ((((((long)radius * 31 + (fr.Right - fr.Left)) * 31 + (fr.Bottom - fr.Top)) * 31 + (vis.Left - fr.Left)) * 31 + (vis.Top - fr.Top)) * 31 + (fr.Right - vis.Right)) * 31 + (fr.Bottom - vis.Bottom); }
         long prev;
         Native.RECT box;
         int regionKind = Native.GetWindowRgnBox(h, out box);
@@ -6868,7 +6878,7 @@ class Rounder
         bool square = full || borderless || giveUp.Contains(h);
         // Bazı uygulamalar (Terminal, Firefox/Zen) bölgeyi kendileri sıfırlıyor: yoksa yeniden uygula
         Native.RECT ours;
-        if (applied.TryGetValue(h, out prev) && prev == key && RegionMatches(regionKind, box, RegionShape(square, l, t, r, b, out ours), ours)) return;
+        if (applied.TryGetValue(h, out prev) && prev == key && RegionMatches(regionKind, box, RegionShape(square, l, t, r, b, radius, out ours), ours)) return;
         if (giveUp.Contains(h) && !clipRequired)
         {
             // A previous fullscreen clip is relative to the old HWND bounds.
@@ -6900,7 +6910,7 @@ class Rounder
             if (clipRepairAt.TryGetValue(h, out last) && !ClipRepairDue(now, last)) return;
             clipRepairAt[h] = now;
         }
-        IntPtr rgn = MakeRegion(square || giveUp.Contains(h), l, t, r, b);
+        IntPtr rgn = MakeRegion(square || giveUp.Contains(h), l, t, r, b, radius);
         if (Native.SetWindowRgn(h, rgn, true) == 0)
         {
             Slider.Log("SetWindowRgn failed " + ProcName(h) + " err=" + Marshal.GetLastWin32Error());
