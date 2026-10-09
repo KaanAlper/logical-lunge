@@ -81,8 +81,55 @@ static class Launcher
             return dir != null && dir.Length > 0 && !Directory.Exists(dir) ? PATH_NOT_FOUND : NOT_FOUND;
         }
         string ext = Path.GetExtension(f).ToLowerInvariant();
+        // Kısayol: hedefi gitmişse (program kaldırıldı, sürücü takılı değil) Gezgin "Kısayol sorunu" kutusunu açardı
+        if (ext == ".lnk")
+        {
+            string target = ShortcutTarget(f);
+            // hedefin yalnızca varlığına bakılır (kısayoldan kısayola zincir döngüye girmesin)
+            if (target != null) return File.Exists(target) || Directory.Exists(target) ? OK : (Directory.Exists(Path.GetPathRoot(target) ?? "") ? NOT_FOUND : PATH_NOT_FOUND);
+        }
+        // İnternet kısayolu: adresinin şemasını açacak uygulama yoksa
+        if (ext == ".url")
+        {
+            string url = UrlTarget(f);
+            if (url != null && SchemeOf(url) != null) return Check(url);
+        }
         if (Array.IndexOf(RUNNABLE, ext) >= 0) return OK;
         return ext.Length > 0 && HasHandler(ext) ? OK : NO_ASSOCIATION;
+    }
+
+    // Bir .lnk'nin dosya sistemindeki hedefi; hedef bir yol değilse (Mağaza uygulaması, kabuk öğesi, kurulum
+    // reklamı) ya da okunamazsa null: denetlenmez, Windows'a bırakılır
+    static string ShortcutTarget(string lnk)
+    {
+        object shell = null, link = null;
+        try
+        {
+            shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+            link = shell.GetType().InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { lnk });
+            string target = Convert.ToString(link.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, link, null));
+            if (string.IsNullOrWhiteSpace(target)) return null;
+            target = Environment.ExpandEnvironmentVariables(target);
+            return Path.IsPathRooted(target) ? target : null;
+        }
+        catch (Exception) { return null; }
+        finally
+        {
+            if (link != null) Marshal.FinalReleaseComObject(link);
+            if (shell != null) Marshal.FinalReleaseComObject(shell);
+        }
+    }
+
+    // .url dosyasının adresi ([InternetShortcut] URL=)
+    static string UrlTarget(string file)
+    {
+        try
+        {
+            foreach (var line in File.ReadAllLines(file))
+                if (line.StartsWith("URL=", StringComparison.OrdinalIgnoreCase)) return line.Substring(4).Trim();
+        }
+        catch (Exception) { }
+        return null;
     }
 
     // Windows'un kendi (yerelleştirilmiş) hata metni

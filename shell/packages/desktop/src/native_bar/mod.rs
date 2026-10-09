@@ -7,7 +7,7 @@
 
 mod anim;
 mod brightness;
-mod core_api;
+pub(crate) mod core_api;
 mod dialog;
 mod fonts;
 mod gfx;

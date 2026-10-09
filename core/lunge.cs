@@ -3269,6 +3269,37 @@ static class DesktopClick
     }
 
     public static bool At(int x, int y) { return IsDesktopWindow(WindowFromPoint(new Point(x, y))); }
+
+    // Masaüstünde bir yazı kutusu (simgenin yeniden adlandırma kutusu): onun tıklaması ve Enter'ı Explorer'ın kalır
+    static bool IsEdit(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return false;
+        var sb = new StringBuilder(16);
+        GetClassName(h, sb, 16);
+        return sb.ToString() == "Edit";
+    }
+
+    public static bool EditAt(int x, int y) { return IsEdit(WindowFromPoint(new Point(x, y))); }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct GUITHREADINFO { public int cbSize, flags; public IntPtr hwndActive, hwndFocus, hwndCapture, hwndMenuOwner, hwndMoveSize, hwndCaret; public Native.RECT rcCaret; }
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+
+    // Öndeki masaüstünde odak bir yazı kutusunda mı (yeniden adlandırılan simge)
+    public static bool FocusIsEdit(IntPtr fg)
+    {
+        var info = new GUITHREADINFO { cbSize = Marshal.SizeOf(typeof(GUITHREADINFO)) };
+        return GetGUIThreadInfo(GetWindowThreadProcessId(fg, IntPtr.Zero), ref info) && IsEdit(info.hwndFocus);
+    }
+
+    // Çift tıklama penceresi (kullanıcının Windows ayarı): süre ve dikdörtgen
+    [DllImport("user32.dll")] static extern uint GetDoubleClickTime();
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int i);
+    public static bool DoubleClick(uint t0, int x0, int y0, uint t1, int x1, int y1)
+    {
+        return t1 - t0 <= GetDoubleClickTime() && Math.Abs(x1 - x0) * 2 <= GetSystemMetrics(36) && Math.Abs(y1 - y0) * 2 <= GetSystemMetrics(37);
+    }
 }
 
 // A captured menu chord keeps its repeats/release even after focus or shell
@@ -3320,6 +3351,13 @@ class MouseFocus
 
     bool desktopRight;
 
+    // Masaüstünde çift tıklama: simgeyi Explorer değil biz açarız (UserLaunch: önce denetlenir, açılamayan bir şeyde
+    // Windows'un kutusu yerine bizim kartımız). İlk tıklama Explorer'ındır (seçim, sürükleme, kutu seçimi aynen kalır);
+    // yalnızca çift tıklamayı tamamlayan ikinci basış ve bırakışı yutulur, açılacak simgeye kabuk bakar.
+    bool leftDesk, swallowLeftUp;
+    uint leftTime;
+    int leftX, leftY;
+
     // Klavye kancası gibi ölçülür: yavaşsa nedeniyle log'a
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
@@ -3361,9 +3399,26 @@ class MouseFocus
                 moved.Set();
             }
         }
+        else if (nCode >= 0 && msg == 0x202 && swallowLeftUp) // çift tıklamanın yutulan basışının bırakışı
+        {
+            swallowLeftUp = false;
+            return (IntPtr)1;
+        }
         else if (nCode >= 0 && (msg == 0x201 || msg == 0x207)) // sol / orta basış (sağ: yukarıda)
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
+            if (msg == 0x201 && (m.flags & 1) == 0) // gerçek sol basış (enjekte değil)
+            {
+                bool desk = ShellState.Up && DesktopClick.At(m.pt.X, m.pt.Y) && !DesktopClick.EditAt(m.pt.X, m.pt.Y);
+                if (desk && leftDesk && DesktopClick.DoubleClick(leftTime, leftX, leftY, m.time, m.pt.X, m.pt.Y))
+                {
+                    leftDesk = false;
+                    swallowLeftUp = true;
+                    ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-open"));
+                    return (IntPtr)1;
+                }
+                leftDesk = desk; leftTime = m.time; leftX = m.pt.X; leftY = m.pt.Y;
+            }
             clickX = m.pt.X; clickY = m.pt.Y;
             clicked.Set(); // kanca hızlı kalsın: pencereye bakmak işçinin işi
         }
@@ -6292,152 +6347,6 @@ static class Toasts
 }
 
 
-// ---------------- Windows hata pencerelerini yakala ----------------
-// Tek "Tamam" butonlu bilgi/hata kutularını (tiling "Non-fatal error", Explorer "bulunamıyor",
-// shell/kenarlık hataları...) kapatıp metnini toast olarak gösterir. Cevap bekleyen (Evet/Hayır)
-// kutulara dokunmaz.
-class DialogCatcher
-{
-    Native.WinEventDelegate cb;
-    static readonly HashSet<string> owners = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        { Names.Tiling, Names.Shell, Names.Core, "explorer", "powershell", "rundll32", "cmd" };
-    // Oluşturulurken görünmez yapılan, henüz karar verilmemiş kutular -> özgün genişletilmiş stil
-    readonly Dictionary<IntPtr, int> pending = new Dictionary<IntPtr, int>();
-    System.Windows.Forms.Timer safety;
-
-    [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object obj);
-    [DllImport("oleacc.dll")] static extern int AccessibleChildren(Accessibility.IAccessible container, int start, int count, [Out] object[] children, out int obtained);
-
-    // Mesaj döngüsü olan kendi thread'inde çağrılır
-    public void Start()
-    {
-        cb = Callback.Guard("iletişim kutusu olayı", OnEvent);
-        // CREATE..SHOW: kutu oluşturulduğu anda (gösterilmeden) görünmez yapılır, gösterilince karar verilir
-        Native.SetWinEventHook(0x8000, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
-        // Güvenlik ağı: 2 sn'de karar verilemeyen kutu (olay kaçtıysa) geri görünür olur; hiçbir pencere görünmez kalmaz
-        safety = new System.Windows.Forms.Timer { Interval = 500 };
-        safety.Tick += (s, e) =>
-        {
-            // karar verilmiş / kapanmış kutunun zamanı kalmasın (gün boyu açık çekirdekte sözlük büyüyordu)
-            if (createdAt.Count > pending.Count)
-                foreach (var h in new List<IntPtr>(createdAt.Keys)) if (!pending.ContainsKey(h)) createdAt.Remove(h);
-            foreach (var kv in new List<KeyValuePair<IntPtr, int>>(pending))
-                if (!Native.IsWindow(kv.Key)) { pending.Remove(kv.Key); createdAt.Remove(kv.Key); }
-                else if (Environment.TickCount - Created(kv.Key) > 2000) { Restore(kv.Key, kv.Value); Slider.Log("dialog: karar verilemedi, geri gösterildi"); }
-        };
-        safety.Start();
-    }
-
-    readonly Dictionary<IntPtr, int> createdAt = new Dictionary<IntPtr, int>();
-    int Created(IntPtr h) { int t; return createdAt.TryGetValue(h, out t) ? t : 0; }
-
-    static string ClassOf(IntPtr h) { var c = new StringBuilder(64); Native.GetClassName(h, c, 64); return c.ToString(); }
-
-    void Hide(IntPtr h)
-    {
-        int ex0 = Native.GetWindowLong(h, Native.GWL_EXSTYLE);
-        if ((ex0 & 0x00080000) == 0) Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex0 | 0x00080000); // WS_EX_LAYERED
-        Native.SetLayeredWindowAttributes(h, 0, 0, 0x2); // LWA_ALPHA, tamamen saydam
-        pending[h] = ex0; createdAt[h] = Environment.TickCount;
-    }
-
-    void Restore(IntPtr h, int ex0)
-    {
-        pending.Remove(h); createdAt.Remove(h);
-        Native.SetLayeredWindowAttributes(h, 0, 255, 0x2);
-        Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex0);
-        Native.RedrawWindow(h, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400); // INVALIDATE|UPDATENOW|ALLCHILDREN|FRAME
-    }
-
-    void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
-    {
-        EventLag.Note("iletişim kutusu", time);
-        if (idObject != 0 || hwnd == IntPtr.Zero) return;
-        try
-        {
-            if (ev != 0x8000 && ev != Native.EVENT_OBJECT_SHOW) return;
-            if (ClassOf(hwnd) != "#32770") return;
-            uint pid; Native.GetWindowThreadProcessId(hwnd, out pid);
-            string proc;
-            proc = ProcInfo.Name(pid); if (proc.Length == 0) return;
-            if (!owners.Contains(proc)) return;
-
-            if (ev == 0x8000) { Hide(hwnd); return; } // EVENT_OBJECT_CREATE: henüz ekranda değil
-            if (!pending.ContainsKey(hwnd)) Hide(hwnd); // oluşturma olayı kaçtıysa şimdi
-            int ex0 = pending[hwnd];
-
-            var texts = new List<string>(); var buttons = new List<IntPtr>(); IntPtr dui = IntPtr.Zero;
-            Native.EnumChildWindows(hwnd, delegate (IntPtr ch, IntPtr l)
-            {
-                string cn = ClassOf(ch);
-                var t = new StringBuilder(2048); Native.GetWindowText(ch, t, 2048);
-                string tx = t.ToString().Trim();
-                if (cn == "Button") { if (Native.IsWindowVisible(ch)) buttons.Add(ch); }
-                else if (cn == "Static" && tx.Length > 0) texts.Add(tx);
-                else if (cn == "DirectUIHWND" && dui == IntPtr.Zero) dui = ch;
-                return true;
-            }, IntPtr.Zero);
-            // Yeni tür kutular (TaskDialog: Çalıştır, explorer, kısayol hataları): metin DirectUIHWND'in içinde çiziliyor,
-            // pencere metni olarak okunmuyor; erişilebilirlik arabiriminden (ekran okuyucuların yolu) okunur.
-            if (texts.Count == 0 && dui != IntPtr.Zero) ReadAccessibleTexts(dui, texts);
-
-            // Yalnızca tek düğmeli (Tamam) bilgi / hata kutusu bildirime döner; soru soranlar (Evet/Hayır, özellikler,
-            // dosya işlemleri) olduğu gibi görünür
-            if (buttons.Count != 1 || texts.Count == 0) { Restore(hwnd, ex0); return; }
-
-            pending.Remove(hwnd); createdAt.Remove(hwnd);
-            var title = new StringBuilder(256); Native.GetWindowText(hwnd, title, 256);
-            Native.PostMessage(buttons[0], 0x00F5, IntPtr.Zero, IntPtr.Zero); // BM_CLICK
-            string head = title.ToString();
-            if (proc.Equals(Names.Tiling, StringComparison.OrdinalIgnoreCase)) head = "Pencere yöneticisi: " + head;
-            Toasts.Send("error", head.Length > 0 ? head : "Hata", string.Join("\n", texts), "error");
-            Slider.Log("dialog -> toast: " + proc + " | " + head);
-        }
-        catch (Exception ex)
-        {
-            Slider.Log("dialog: " + ex.GetBaseException().Message);
-            int ex0; if (pending.TryGetValue(hwnd, out ex0)) Restore(hwnd, ex0);
-        }
-    }
-
-    // MSAA: kutunun içindeki metin öğeleri (ROLE_SYSTEM_STATICTEXT / TEXT), sırayla ve tekrarsız
-    static void ReadAccessibleTexts(IntPtr h, List<string> into)
-    {
-        try
-        {
-            var iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71"); // IID_IAccessible
-            object o;
-            if (AccessibleObjectFromWindow(h, 0xFFFFFFFC, ref iid, out o) != 0) return; // OBJID_CLIENT
-            var acc = o as Accessibility.IAccessible;
-            if (acc != null) Walk(acc, into, 0);
-        }
-        catch { }
-    }
-
-    static void Walk(Accessibility.IAccessible acc, List<string> into, int depth)
-    {
-        if (depth > 8) return;
-        int n;
-        try { n = acc.accChildCount; } catch { return; }
-        if (n <= 0 || n > 200) return;
-        var kids = new object[n]; int got;
-        if (AccessibleChildren(acc, 0, n, kids, out got) != 0) return;
-        for (int i = 0; i < got; i++)
-        {
-            try
-            {
-                var child = kids[i] as Accessibility.IAccessible;
-                object role; string name;
-                if (child != null) { role = child.get_accRole(0); name = child.get_accName(0); }
-                else { role = acc.get_accRole(kids[i]); name = acc.get_accName(kids[i]); }
-                int r = role is int ? (int)role : 0;
-                if ((r == 41 || r == 42) && !string.IsNullOrWhiteSpace(name) && !into.Contains(name.Trim())) into.Add(name.Trim());
-                if (child != null) Walk(child, into, depth + 1);
-            }
-            catch { }
-        }
-    }
-}
 
 // ---------------- Yuvarlak köşeler ----------------
 class Rounder
@@ -7274,6 +7183,19 @@ class Keys2
         {
             if (desktopMenuOpen) ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu-key"));
             return (IntPtr)1;
+        }
+
+        // Masaüstü öndeyken Enter: seçili simgeleri Explorer değil biz açarız (çift tıklamayla aynı yol). Alt+Enter
+        // (Özellikler), Ctrl'li kombinasyonlar ve yeniden adlandırma kutusundaki Enter Explorer'ın kalır.
+        if (isDown && vk == 0x0D && !winDown && !Down(VK_CONTROL) && !Down(VK_MENU))
+        {
+            IntPtr fg = Native.GetForegroundWindow();
+            if (DesktopClick.IsDesktopWindow(fg) && !DesktopClick.FocusIsEdit(fg))
+            {
+                if (!held.Contains(vk)) ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-open-key"));
+                held.Add(vk);
+                return (IntPtr)1;
+            }
         }
 
         // Gerçek Win tuşu Windows'a HİÇ iletilmez ve hiç enjekte edilmez: Windows bir Win basışı görmediği için Başlat
@@ -13279,7 +13201,6 @@ static class LaunchQueue
 // Native callback sahiplerinin GC'den korunması
 static class Keep
 {
-    public static DialogCatcher Dialogs;
     public static Rounder Round;
 }
 
@@ -13973,12 +13894,6 @@ static class Program
         Wallpaper.StartKeeper();
         Toasts.Start();
         WinNotifications.Start();
-        // Windows'a verilen callback'lerin sahibi nesneler canlı kalmalı: aksi halde çöp toplayıcı
-        // onları siler ve Windows silinmiş fonksiyonu çağırınca helper sessizce çöker.
-        var dialogThread = new Thread(() => { Keep.Dialogs = new DialogCatcher(); Keep.Dialogs.Start(); Application.Run(); });
-        dialogThread.SetApartmentState(ApartmentState.STA);
-        dialogThread.IsBackground = true;
-        dialogThread.Start();
 
         // Klavye kancası KENDİ thread'inde ve orada başka hiçbir iş yapılmaz: LL hook ~300ms'de
         // yanıt vermezse Windows kancayı söker ve o sırada klavye donar. (Eskiden köşe yuvarlama
