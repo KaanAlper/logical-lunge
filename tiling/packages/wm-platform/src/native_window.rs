@@ -205,6 +205,14 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn has_window_style_ex(&self, style: WINDOW_EX_STYLE) -> bool;
 
+  /// Logical Lunge: whether the window's app has stopped answering (it
+  /// shows as "Not responding"; a synchronous call to it would block).
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn is_hung(&self) -> bool;
+
   /// Thin wrapper around [`SetWindowPos`](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowpos).
   ///
   /// # Platform-specific
@@ -437,6 +445,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn has_window_style_ex(&self, style: WINDOW_EX_STYLE) -> bool {
     self.inner.has_window_style_ex(style)
+  }
+
+  fn is_hung(&self) -> bool {
+    unsafe { windows::Win32::UI::WindowsAndMessaging::IsHungAppWindow(self.hwnd()) }.as_bool()
   }
 
   fn set_window_pos(

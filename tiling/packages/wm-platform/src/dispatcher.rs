@@ -732,7 +732,14 @@ impl Dispatcher {
       } else {
         "Pencere yöneticisi hatası"
       };
-      notify_core("error", title, message);
+      // A fatal one (the WM cannot start; the process ends next) is sent
+      // at once; others go through a background sender, so the WM's
+      // single thread never waits on the core's HTTP answer.
+      if fatal {
+        notify_core("error", title, message);
+      } else {
+        notify_core_later("error", title, message);
+      }
     }
     #[cfg(target_os = "macos")]
     {
@@ -764,6 +771,36 @@ fn query_value(s: &str) -> String {
     }
   }
   out
+}
+
+/// Logical Lunge: queues a card for the core on one background thread.
+/// The same message is sent at most once a minute (a recurring error
+/// must not flood the screen or the core), and a full queue drops it.
+#[cfg(target_os = "windows")]
+fn notify_core_later(kind: &str, title: &str, body: &str) {
+  use std::sync::{mpsc, OnceLock};
+  static SENDER: OnceLock<mpsc::SyncSender<(String, String, String)>> = OnceLock::new();
+  let sender = SENDER.get_or_init(|| {
+    let (tx, rx) = mpsc::sync_channel::<(String, String, String)>(16);
+    let _ = std::thread::Builder::new()
+      .name("wm-notify".into())
+      .spawn(move || {
+        let mut last: std::collections::HashMap<String, std::time::Instant> =
+          std::collections::HashMap::new();
+        for (kind, title, body) in rx {
+          let key = format!("{title}\n{body}");
+          let now = std::time::Instant::now();
+          if last.get(&key).is_some_and(|t| now.duration_since(*t) < std::time::Duration::from_secs(60)) {
+            continue;
+          }
+          last.retain(|_, t| now.duration_since(*t) < std::time::Duration::from_secs(60));
+          last.insert(key, now);
+          notify_core(&kind, &title, &body);
+        }
+      });
+    tx
+  });
+  let _ = sender.try_send((kind.to_string(), title.to_string(), body.to_string()));
 }
 
 /// `POST /notify` to Logical Lunge's core (127.0.0.1:6131); a missing core

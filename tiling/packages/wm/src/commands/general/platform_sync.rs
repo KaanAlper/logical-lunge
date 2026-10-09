@@ -552,7 +552,10 @@ fn redraw_containers(
       } else {
         false
       };
-      let synchronous = window_sync_policy::synchronous_tile_correction(tiled, marked, escaped, is_visible);
+      // Never wait on an app that stopped answering (a game compiling its
+      // shaders): the WM's single thread would wait with it.
+      let synchronous = window_sync_policy::synchronous_tile_correction(tiled, marked, escaped, is_visible)
+        && !window.native().is_hung();
       let foreground = state.dispatcher.focused_window()
         .map_or(true, |focused| focused.id() == window.native().id());
       let notify = !state.is_paused && window.active_drag().is_none()
