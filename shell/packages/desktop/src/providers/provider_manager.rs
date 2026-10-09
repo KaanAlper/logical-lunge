@@ -270,14 +270,20 @@ impl ProviderManager {
             provider.start_sync();
           }
           ProviderConfig::Battery(config) => {
+            #[cfg(windows)]
+            crate::common::windows::eco_qos_current_thread();
             let mut provider = BatteryProvider::new(config, common);
             provider.start_sync();
           }
           ProviderConfig::Cpu(config) => {
+            #[cfg(windows)]
+            crate::common::windows::eco_qos_current_thread();
             let mut provider = CpuProvider::new(config, common);
             provider.start_sync();
           }
           ProviderConfig::Host(config) => {
+            #[cfg(windows)]
+            crate::common::windows::eco_qos_current_thread();
             let mut provider = HostProvider::new(config, common);
             provider.start_sync();
           }
@@ -287,11 +293,15 @@ impl ProviderManager {
             provider.start_sync();
           }
           ProviderConfig::Memory(config) => {
+            #[cfg(windows)]
+            crate::common::windows::eco_qos_current_thread();
             let mut provider = MemoryProvider::new(config, common);
             provider.start_sync();
           }
 
           ProviderConfig::Network(config) => {
+            #[cfg(windows)]
+            crate::common::windows::eco_qos_current_thread();
             let mut provider = NetworkProvider::new(config, common);
             provider.start_sync();
           }
