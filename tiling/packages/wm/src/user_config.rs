@@ -31,6 +31,34 @@ pub struct UserConfig {
   window_rules_by_event: HashMap<WindowRuleEvent, Vec<WindowRuleConfig>>,
 }
 
+/// Logical Lunge: the border the border engine draws around a window
+/// (`borders.global.border_width`, default 4, and a uniform
+/// `border_offset`, default -1 as in the engine; a per-side offset counts
+/// by its mean). No borders: none.
+#[allow(clippy::cast_possible_truncation)]
+fn window_border(borders: Option<&serde_json::Value>) -> (f32, f32) {
+  let Some(global) = borders.map(|b| &b["global"]) else {
+    return (0., 0.);
+  };
+  let width = global["border_width"].as_f64().unwrap_or(4.);
+  let offset = match &global["border_offset"] {
+    serde_json::Value::Null => -1.,
+    serde_json::Value::Object(sides) => {
+      let values = ["left", "top", "right", "bottom"]
+        .iter()
+        .filter_map(|k| sides.get(*k).and_then(serde_json::Value::as_f64))
+        .collect::<Vec<_>>();
+      if values.is_empty() {
+        0.
+      } else {
+        values.iter().sum::<f64>() / values.len() as f64
+      }
+    }
+    value => value.as_f64().unwrap_or(0.),
+  };
+  (width as f32, offset as f32)
+}
+
 impl UserConfig {
   /// Creates an instance of `UserConfig`. Reads and validates the user
   /// config from the given path.
@@ -72,7 +100,10 @@ impl UserConfig {
 
     // TODO: Improve error formatting of serde_yaml errors. Something
     // similar to https://github.com/AlexanderThaller/format_serde_error
-    let config_value = serde_yaml::from_str(&config_str)?;
+    let mut config_value: ParsedConfig = serde_yaml::from_str(&config_str)?;
+    let (width, offset) = window_border(config_value.borders.as_ref());
+    config_value.gaps.window_border_width = width;
+    config_value.gaps.window_border_offset = offset;
 
     Ok((config_value, config_str))
   }
@@ -382,5 +413,19 @@ mod tests {
     assert!(commands > 0);
     assert!(parsed.keybindings.iter().any(|k| k.commands.iter().any(|c| matches!(c, InvokeCommand::ToggleFullscreenSpoof))),
       "the spoof key (ii's Super+Alt+F) is missing from config/config.yaml");
+  }
+
+  /// The tiled windows' border inset comes from the border engine's
+  /// global width and offset (its defaults when unset; none without
+  /// borders).
+  #[test]
+  fn window_border_follows_the_border_config() {
+    let parsed: ParsedConfig = serde_yaml::from_str(SAMPLE_CONFIG).expect("config/config.yaml");
+    assert_eq!(window_border(parsed.borders.as_ref()), (2., 0.));
+    assert_eq!(window_border(None), (0., 0.));
+    let defaults = serde_json::json!({ "global": {} });
+    assert_eq!(window_border(Some(&defaults)), (4., -1.));
+    let sides = serde_json::json!({ "global": { "border_width": 1, "border_offset": { "left": 0, "top": 2, "right": 0, "bottom": 2 } } });
+    assert_eq!(window_border(Some(&sides)), (1., 1.));
   }
 }

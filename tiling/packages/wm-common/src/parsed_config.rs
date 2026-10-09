@@ -54,6 +54,15 @@ pub struct GapsConfig {
   /// Gap between window and the screen edge if there is only one window
   /// in the workspace
   pub single_window_outer_gap: Option<RectDelta>,
+
+  /// Logical Lunge: the WM's window border (`borders.global`
+  /// `border_width` and uniform `border_offset`, logical px), filled in
+  /// when the config is read. A tiled window is made this much smaller on
+  /// every side so that its border sits inside its cell, as in Hyprland.
+  #[serde(skip)]
+  pub window_border_width: f32,
+  #[serde(skip)]
+  pub window_border_offset: f32,
 }
 
 impl Default for GapsConfig {
@@ -68,6 +77,8 @@ impl Default for GapsConfig {
         LengthValue::from_px(0),
       ),
       single_window_outer_gap: None,
+      window_border_width: 0.,
+      window_border_offset: 0.,
     }
   }
 }

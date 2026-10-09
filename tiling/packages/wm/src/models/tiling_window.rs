@@ -138,5 +138,5 @@ impl TilingWindow {
 impl_container_debug!(TilingWindow);
 impl_common_getters!(TilingWindow);
 impl_tiling_size_getters!(TilingWindow);
-impl_position_getters_as_resizable!(TilingWindow);
+impl_position_getters_as_resizable!(TilingWindow, window);
 impl_window_getters!(TilingWindow);
