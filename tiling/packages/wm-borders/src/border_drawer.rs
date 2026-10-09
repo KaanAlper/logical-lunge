@@ -46,6 +46,11 @@ pub struct BorderDrawer {
     pub dim: f32,
     pub dim_target: f32,
     dim_brush: Option<ID2D1SolidColorBrush>,
+    /// Logical Lunge: a floating window's shadow, as illogical-impulse's (Hyprland shadow range 20, render_power 10,
+    /// offset 0 2, color 12.5 % black): alpha 0.125 * (1 - d / range)^10 at d px outside the border. 0 = none.
+    /// Drawn as 1 px rings, each at its own alpha (exact, no stacking), with the black brush of the dim.
+    pub shadow_range: f32,
+    pub shadow_offset: f32,
 }
 
 /// illogical-impulse's dim fade (Hyprland fadeDim)
@@ -63,6 +68,9 @@ impl BorderDrawer {
         self.animations = config.animations.to_animations();
         self.effects = config.effects.to_effects(dpi);
         self.dim_strength = config.inactive_dim.clamp(0.0, 0.5);
+        let floats = config.floating_shadow && crate::is_floating(tracking_window);
+        self.shadow_range = if floats { (20.0 * dpi as f32 / 96.0).round() } else { 0.0 };
+        self.shadow_offset = if floats { (2.0 * dpi as f32 / 96.0).round() } else { 0.0 };
         self.dim_target = self.dim_target.min(self.dim_strength);
         self.dim = self.dim.min(self.dim_strength);
     }
@@ -90,6 +98,41 @@ impl BorderDrawer {
         if let Some(brush) = self.dim_brush.as_ref() {
             unsafe { brush.SetOpacity(self.dim) };
             self.fill_rectangle(inner, renderer, brush);
+        }
+    }
+
+    /// The shadow around `outer` (the border's outer edge, its corner radius `radius`), `shadow_offset` lower. The
+    /// rings closer than the offset would cross the window's top: those are drawn below its top corners only.
+    fn paint_shadow(&self, outer: &D2D_RECT_F, radius: f32, renderer: &ID2D1RenderTarget) {
+        let range = self.shadow_range;
+        let Some(brush) = self.dim_brush.as_ref().filter(|_| range > 0.0) else { return };
+        let off = self.shadow_offset;
+        let mut d = 0.0;
+        while d < range {
+            let alpha = 0.125 * (1.0 - d / range).powi(10);
+            if alpha < 0.002 {
+                break;
+            }
+            let g = d + 0.5;
+            let ring = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F { left: outer.left - g, top: outer.top + off - g, right: outer.right + g, bottom: outer.bottom + off + g },
+                radiusX: radius + g,
+                radiusY: radius + g,
+            };
+            unsafe {
+                brush.SetOpacity(alpha);
+                if d < off {
+                    renderer.PushAxisAlignedClip(
+                        &D2D_RECT_F { left: f32::MIN, top: outer.top + off + radius, right: f32::MAX, bottom: f32::MAX },
+                        windows::Win32::Graphics::Direct2D::D2D1_ANTIALIAS_MODE_ALIASED,
+                    );
+                }
+                renderer.DrawRoundedRectangle(&ring, brush, 1.0, None);
+                if d < off {
+                    renderer.PopAxisAlignedClip();
+                }
+            }
+            d += 1.0;
         }
     }
 
@@ -305,6 +348,7 @@ impl BorderDrawer {
             d2d_context.BeginDraw();
             d2d_context.Clear(None);
 
+            self.paint_shadow(&bounds, stroke_rect.radiusX + self.stroke_width as f32 / 2.0, d2d_context);
             self.paint_dim(&Self::inner_rect(&stroke_rect, self.stroke_width as f32 / 2.0), d2d_context);
             self.paint_colors(bottom_color, top_color, &bounds, d2d_context, &|brush| {
                 self.draw_rectangle(&stroke_rect, d2d_context, brush)
@@ -454,6 +498,7 @@ impl BorderDrawer {
             d2d_context.BeginDraw();
             d2d_context.Clear(None);
 
+            self.paint_shadow(&bounds, stroke_rect.radiusX + half_stroke_width, d2d_context);
             self.paint_dim(&Self::inner_rect(&stroke_rect, half_stroke_width), d2d_context);
             d2d_context.DrawImage(
                 command_list,

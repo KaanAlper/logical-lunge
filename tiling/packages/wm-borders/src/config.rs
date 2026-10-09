@@ -69,6 +69,9 @@ pub struct Global {
     /// 0.05); 0 = off.
     #[serde(default)]
     pub inactive_dim: f32,
+    /// Logical Lunge: floating windows get illogical-impulse's shadow (20 px, 2 px down, 12.5 % at the edge).
+    #[serde(default)]
+    pub floating_shadow: bool,
 }
 
 pub fn serde_default_u64<const V: u64>() -> u64 {

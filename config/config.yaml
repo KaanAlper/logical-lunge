@@ -286,6 +286,8 @@ borders:
     focus_flash: 800
     # odakta olmayan pencereler bu kadar karartılır (Hyprland dim_inactive / dim_strength); 0 = kapalı
     inactive_dim: 0.05
+    # yüzen pencerelerin gölgesi (Hyprland shadow: 20 px, 2 px aşağı, kenarda %12,5)
+    floating_shadow: true
     # Odak rengi (Hyprland col.active_border): #rrggbb ya da saydamlıkla #rrggbbaa
     active_color: "#b69df8cc"
     # Hyprland inactive_border: hafif görünür
