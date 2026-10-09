@@ -3861,6 +3861,13 @@ static class ShellWatchdog
         Slider.Log("test: bars " + windows + " alive " + recent);
         // test-only: where the core's handles go (CI stress test reads the trend)
         using (var me = Process.GetCurrentProcess())
+        {
+            int raw = me.HandleCount;
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            me.Refresh();
+            Slider.Log("test: handles-after-gc " + me.HandleCount + " (before " + raw + ")");
+        }
+        using (var me = Process.GetCurrentProcess())
             Slider.Log("test: handles " + me.HandleCount + " threads " + me.Threads.Count + " private " + (me.PrivateMemorySize64 >> 20) + "MB gc " + GC.CollectionCount(2) + " " + Toasts.TestStats());
     }
     static int AliveBars()
