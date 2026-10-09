@@ -72,6 +72,27 @@ pub fn window_box(node: Bx, work: Bx, gaps: Gaps) -> (i32, i32, i32, i32) {
   )
 }
 
+/// A window's frame inside its visible box when its border (drawn
+/// outside the frame by the border engine) takes `border` px on each side:
+/// the border then fills the edge of the box, as Hyprland draws it inside
+/// the window's cell.
+pub fn inset(visible: (i32, i32, i32, i32), border: i32) -> (i32, i32, i32, i32) {
+  let b = border.max(0);
+  (
+    visible.0 + b,
+    visible.1 + b,
+    (visible.2 - 2 * b).max(1),
+    (visible.3 - 2 * b).max(1),
+  )
+}
+
+/// The border the engine draws at a DPI scale: width and offset each
+/// rounded like its `to_width` / `to_offset` (`v * dpi / 96`).
+#[allow(clippy::cast_possible_truncation)]
+pub fn border_px(width: f32, offset: f32, scale: f32) -> i32 {
+  ((width * scale).round() as i32 + (offset * scale).round() as i32).max(0)
+}
+
 /// The gaps a window loses along one axis in its node box (left + right,
 /// or top + bottom): what a target window length must add to become a
 /// node length.
@@ -576,6 +597,30 @@ mod tests {
     assert!(!side_by_side(tall));
     assert!(new_is_first(tall, (300., 100.)));
     assert!(!new_is_first(tall, (300., 700.)));
+  }
+
+  #[test]
+  fn border_sits_inside_the_cell() {
+    // ii: gaps_in 4 (8 between windows), gaps_out 5, a 2px border at 150 %
+    let work = Bx::new(5., 45., 1910., 1030.);
+    let kids = partition(work, true, &[0.5, 0.5]);
+    let b = border_px(2., 0., 1.5);
+    assert_eq!(b, 3);
+    for kid in kids {
+      let visible = window_box(kid, work, GAPS);
+      let frame = inset(visible, b);
+      // the engine draws b px around the frame: back to the visible box
+      assert_eq!((frame.0 - b, frame.1 - b, frame.2 + 2 * b, frame.3 + 2 * b), visible);
+    }
+    // borders of neighbours stay 8px apart, the outer edge 5px from the
+    // monitor and right under the bar's reserved area
+    let left = window_box(partition(work, true, &[0.5, 0.5])[0], work, GAPS);
+    let right = window_box(partition(work, true, &[0.5, 0.5])[1], work, GAPS);
+    assert_eq!(right.0 - (left.0 + left.2), 8);
+    assert_eq!(left.0, 5);
+    assert_eq!(left.1, 45);
+    // the engine's default offset (-1) puts the stroke 1px into the frame
+    assert_eq!(border_px(4., -1., 1.), 3);
   }
 
   #[test]

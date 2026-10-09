@@ -75,6 +75,34 @@ pub fn side_gaps<T: TilingSizeGetters>(container: &T) -> anyhow::Result<Gaps> {
 /// while widths were rounded.
 #[macro_export]
 macro_rules! impl_position_getters_as_resizable {
+  // A tiled window: its frame is inset by the WM's border so that frame +
+  // border fill the visible box (the border engine draws outside the
+  // frame; Hyprland draws the border inside the window's cell).
+  ($struct_name:ident, window) => {
+    impl PositionGetters for $struct_name {
+      fn to_rect(&self) -> anyhow::Result<Rect> {
+        let workspace = self.workspace().context("No workspace.")?;
+        let work = $crate::traits::rect_box(&workspace.to_rect()?);
+        let node = $crate::traits::node_box(&self.clone().into())?;
+        let gaps = $crate::traits::side_gaps(self)?;
+        let visible = $crate::dwindle_math::window_box(node, work, gaps);
+
+        let scale = self
+          .monitor()
+          .map_or(1., |monitor| monitor.native_properties().scale_factor);
+        let (border_width, border_offset) = {
+          let config = self.gaps_config();
+          (config.window_border_width, config.window_border_offset)
+        };
+        let border =
+          $crate::dwindle_math::border_px(border_width, border_offset, scale);
+        let (x, y, width, height) =
+          $crate::dwindle_math::inset(visible, border);
+
+        Ok(Rect::from_xy(x, y, width, height))
+      }
+    }
+  };
   ($struct_name:ident) => {
     impl PositionGetters for $struct_name {
       fn to_rect(&self) -> anyhow::Result<Rect> {
