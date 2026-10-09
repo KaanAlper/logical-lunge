@@ -563,10 +563,11 @@ impl Ui {
   /// The tick: once a second while something shows seconds or moves
   /// (a seconds clock, playing media, the system gauges), else at the next
   /// minute; none without widgets.
-  fn widgets_schedule(&mut self) {
+  pub(super) fn widgets_schedule(&mut self) {
     let fast = self.widgets_fast();
     let specs = &self.widgets.store.widgets;
-    let period = if specs.is_empty() { 0 } else if fast { 1000 } else { super::ms_to_next_minute() };
+    // game mode: no tick (no temperatures, no redraws) until it ends
+    let period = if specs.is_empty() || crate::common::game_mode::on() { 0 } else if fast { 1000 } else { super::ms_to_next_minute() };
     self.widgets.period = period;
     unsafe {
       if period == 0 {

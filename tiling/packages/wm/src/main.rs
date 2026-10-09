@@ -229,7 +229,7 @@ async fn start_wm(
         wm.process_event(PlatformEvent::DisplaySettingsChanged, &mut config)
       },
       _ = cleanup_interval.tick() => {
-        if wm.state.is_paused {
+        if wm.state.is_paused || wm.state.game_mode {
           Ok(())
         } else {
           wm.state.cleanup_invalid_windows()

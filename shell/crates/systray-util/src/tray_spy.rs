@@ -25,7 +25,7 @@ use windows::{
       WindowsAndMessaging::{
         DefWindowProcW, FindWindowW, GetWindowThreadProcessId, PostMessageW,
         RegisterWindowMessageW, SendMessageTimeoutW, SendMessageW, SendNotifyMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK,
-        SetTimer, SetWindowPos, HWND_BROADCAST, HWND_TOPMOST,
+        KillTimer, SetTimer, SetWindowPos, HWND_BROADCAST, HWND_TOPMOST,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_ACTIVATEAPP,
         WM_COMMAND, WM_COPYDATA, WM_TIMER, WM_USER,
       },
@@ -45,6 +45,25 @@ use crate::Util;
 /// `extern "system"` function aborts the whole shell).
 static TRAY_EVENT_TX: Mutex<Option<mpsc::UnboundedSender<TrayEvent>>> =
   Mutex::new(None);
+
+/// The spy window (posted to from other threads).
+static SPY_HWND: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+/// Game mode on: the z-order check stops (no topmost re-assertion over a
+/// fullscreen game, no wake-ups four times a second).
+static QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const WM_APP_QUIET: u32 = 0x8000 + 0x51;
+const CHECK_TIMER: usize = 1;
+const CHECK_MS: u32 = 250;
+
+/// The core's game mode: stops (true) or restarts (false) the spy's
+/// z-order check. Safe from any thread.
+pub fn set_quiet(quiet: bool) {
+  QUIET.store(quiet, std::sync::atomic::Ordering::Release);
+  let h = SPY_HWND.load(std::sync::atomic::Ordering::Acquire);
+  if h != 0 {
+    let _ = unsafe { PostMessageW(HWND(h as _), WM_APP_QUIET, WPARAM(0), LPARAM(0)) };
+  }
+}
 
 /// The current tray event sender, if any.
 fn tray_event_tx() -> Option<mpsc::UnboundedSender<TrayEvent>> {
@@ -298,7 +317,10 @@ impl TraySpy {
     // the spy stays above Explorer's taskbar. Checked four times a second,
     // raised only when it was overtaken (moving it on every tick woke the
     // system and every window hook ten times a second).
-    unsafe { SetTimer(HWND(window as _), 1, 250, None) };
+    SPY_HWND.store(window as isize, std::sync::atomic::Ordering::Release);
+    if !QUIET.load(std::sync::atomic::Ordering::Acquire) {
+      unsafe { SetTimer(HWND(window as _), CHECK_TIMER, CHECK_MS, None) };
+    }
 
     let Some(event_tx) = tray_event_tx() else {
       tracing::warn!("Tray spy started without an event sender.");
@@ -353,6 +375,14 @@ impl TraySpy {
         .unwrap_or_default();
         if first != hwnd {
           let _ = Self::bring_to_top(hwnd);
+        }
+        LRESULT(0)
+      }
+      WM_APP_QUIET => {
+        if QUIET.load(std::sync::atomic::Ordering::Acquire) {
+          let _ = unsafe { KillTimer(hwnd, CHECK_TIMER) };
+        } else {
+          unsafe { SetTimer(hwnd, CHECK_TIMER, CHECK_MS, None) };
         }
         LRESULT(0)
       }

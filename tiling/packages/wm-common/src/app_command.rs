@@ -266,9 +266,23 @@ pub enum InvokeCommand {
     name: String,
   },
   WmExit,
+  /// Logical Lunge: the core's game mode (a fullscreen app in front):
+  /// borders, their animations and the periodic cleanup wait meanwhile.
+  WmGameMode {
+    #[clap(required = true)]
+    state: GameModeState,
+  },
   WmRedraw,
   WmReloadConfig,
   WmTogglePause,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum GameModeState {
+  On,
+  Off,
 }
 
 impl<'de> Deserialize<'de> for InvokeCommand {

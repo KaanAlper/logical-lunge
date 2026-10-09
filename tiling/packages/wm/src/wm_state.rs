@@ -100,6 +100,9 @@ pub struct WmState {
   /// Whether the WM is paused.
   pub is_paused: bool,
 
+  /// Logical Lunge: the core's game mode is on (a fullscreen app in front).
+  pub game_mode: bool,
+
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
@@ -147,6 +150,7 @@ impl WmState {
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       is_paused: false,
+      game_mode: false,
       is_focus_synced: false,
       has_initialized: false,
       event_tx,

@@ -20,6 +20,11 @@ impl SyncInterval {
 
   /// Returns a receiver that will get a message at the next tick time.
   pub fn tick(&mut self) -> crossbeam::channel::Receiver<Instant> {
+    // game mode: nothing polls until it ends, then one tick at once
+    if super::game_mode::on() {
+      self.next_tick = Instant::now();
+      return super::game_mode::off_signal();
+    }
     if self.is_first {
       // Emit immediately on the first tick.
       self.is_first = false;
