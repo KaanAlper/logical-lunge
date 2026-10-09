@@ -375,6 +375,10 @@ impl WindowBorder {
             && is_window_visible(self.tracking_window)
             && !is_window_cloaked(self.tracking_window)
             && !is_window_minimized(self.tracking_window)
+            // Logical Lunge: never over a window covering its monitor (a
+            // game, a fullscreen video): a layered surface above it costs
+            // the game its independent flip.
+            && !crate::utils::covers_its_monitor(self.tracking_window)
     }
 
     // NOTE: Avoid calling this function + self.render() while the tracking window is minimized

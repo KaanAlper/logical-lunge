@@ -37,7 +37,9 @@ pub struct EffectsConfig {
 
 impl EffectsConfig {
     pub fn to_effects(&self, dpi: u32) -> Effects {
-        if self.enabled {
+        // Logical Lunge: no glow on a machine with little memory -- every
+        // glowing border keeps extra monitor-sized bitmaps.
+        if self.enabled && !crate::utils::low_memory_machine() {
             Effects {
                 active: self
                     .active
