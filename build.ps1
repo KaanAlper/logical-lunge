@@ -132,6 +132,8 @@ Step 'Scripts, configs, installer'
 Copy-Item "$root\scripts\*.ps1" "$app\scripts\"
 Copy-Item "$root\uninstall.ps1", "$root\VERSION", "$root\EDITION" $app
 Copy-Item "$root\config" "$out\config" -Recurse
+# the shipped default config next to the core: it adds new default shortcuts to existing configs (BindMigration)
+Copy-Item "$root\config\config.yaml" "$app\config.default.yaml"
 # the shared installer lives on the main branch; CI copies it into installer\ before this build
 if (-not (Test-Path "$root\installer\setup.ps1")) { throw 'installer\setup.ps1 comes from the main branch: copy it into installer\ first.' }
 Copy-Item "$root\installer\setup.ps1" "$out\installer\"

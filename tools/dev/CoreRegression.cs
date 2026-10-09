@@ -551,6 +551,7 @@ static class CoreRegression
         RestartTests();
         if (args.Length == 1 && args[0] == "--restart-only") return;
         TakeoverTests();
+        BindMigrationTests();
         WmWatchdogTests();
         FullscreenLayerTests();
         DialogTests();
@@ -719,6 +720,55 @@ static class CoreRegression
         Check(Keymap.Check("{\"removed\":[\"ws-1\"]}").Contains("\"ok\":false"), "A non-app shortcut could be removed");
         Check(Reserved.Action(Binds.SUPER, 0x4C) == "lock" && Reserved.Action(Binds.SUPER, 0x4B) == null, "Super+L is not the lock action");
         Console.WriteLine("PASS: core routing, origin, method, release selection, settings file updates, Windows notifications and live wallpaper entries");
+    }
+
+    // Yeni varsayılan kısayolların mevcut config.yaml'a göçü: saf birleştirme
+    static void BindMigrationTests() {
+        var merge = typeof(BindMigration).GetMethod("Merge", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(merge != null, "BindMigration.Merge is missing");
+        Func<string, string, string[], string[], string[]> run = (u0, d0, offered, taken) => {
+            object[] a = { u0, d0, new HashSet<string>(offered), new HashSet<string>(taken), null, 0 };
+            string next = (string)merge.Invoke(null, a);
+            var now = (HashSet<string>)a[4];
+            return new[] { next, ((int)a[5]).ToString(), string.Join("|", now.OrderBy(x => x, StringComparer.Ordinal)) };
+        };
+        string head = "general:\n  x: 1\n\nkeybindings:\n  # c\n";
+        string def = head + "  - commands: ['toggle-maximized']\n    bindings: ['lwin+d']\n  - commands: ['move-workspace --direction left']\n    bindings: ['lwin+alt+page_up', 'lwin+alt+comma']\n  - commands: ['focus --prev-workspace']\n    bindings: ['lwin+page_up']\n";
+        string user = head + "  - commands: ['focus --prev-workspace']\n    bindings: ['lwin+page_up']\n\nbinding_modes:\n  - name: 'resize'\n";
+        var r = run(user, def, new string[0], new string[0]);
+        Check(r[1] == "2", "Missing default shortcuts were not added: " + r[1]);
+        Check(r[0].Contains("- commands: ['toggle-maximized']\n    bindings: ['lwin+d']") && r[0].Contains("'lwin+alt+page_up', 'lwin+alt+comma'"), "Added shortcuts have the wrong text");
+        Check(r[0].IndexOf("toggle-maximized") < r[0].IndexOf("binding_modes:") && r[0].StartsWith(user.Substring(0, user.IndexOf("\n\nbinding_modes"))), "New shortcuts were not appended inside the keybindings section, or the user's lines changed");
+        Check(r[0].EndsWith("\n\nbinding_modes:\n  - name: 'resize'\n"), "Text after the keybindings section changed");
+        Check(r[2].Split('|').Length == 3, "Every considered default must be remembered");
+        // ikinci tur: hepsi değerlendirildi, hiçbir şey değişmez
+        var again = run(r[0], def, r[2].Split('|'), new string[0]);
+        Check(again[1] == "0" && again[0] == r[0], "A second run changed the config");
+        // kullanıcı eklenen kısayolu silerse geri gelmez
+        string deleted = user;
+        var gone = run(deleted, def, r[2].Split('|'), new string[0]);
+        Check(gone[1] == "0" && gone[0] == deleted, "A shortcut the user deleted came back");
+        // aynı tuş başka bir komutta ya da çekirdekte ya da farklı yazılışta kullanılıyorsa eklenmez; serbest olanlar eklenir
+        string clash = head + "  - commands: ['close']\n    bindings: ['rwin+D']\n";
+        var c1 = run(clash, def, new string[0], new string[0]);
+        Check(!c1[0].Contains("toggle-maximized") && c1[1] == "2", "A combination used by another command (written differently) was taken over");
+        var c2 = run(clash, def, new string[0], new[] { "Super+Alt+Comma" });
+        Check(c2[0].Contains("'lwin+alt+page_up']") && !c2[0].Contains("alt+comma"), "A combination used by the core was added; the free one of the same entry was not");
+        Check(BindMigration.Combo("Super+Ctrl+Left") == BindMigration.Combo("ctrl+lwin+left") && BindMigration.Combo("lwin+PageUp") == BindMigration.Combo("lwin+page_up"), "Combo normalization differs for the same keys");
+        // mevcut komut başka tuşa taşınmış olsa da yeniden eklenmez
+        string moved = head + "  - commands: ['toggle-maximized']\n    bindings: ['lwin+m']\n";
+        var m = run(moved, def, new string[0], new string[0]);
+        Check(!m[0].Contains("lwin+d") && m[1] == "2", "A command the user rebound was added again on its default key");
+        // CRLF korunur; kısayol bölümü olmayan dosyaya dokunulmaz
+        var crlf = run(user.Replace("\n", "\r\n"), def, new string[0], new string[0]);
+        Check(crlf[0].Replace("\r\n", "").IndexOf('\n') < 0, "Line endings were mixed");
+        var none = run("general:\n  x: 1\n", def, new string[0], new string[0]);
+        Check(none[1] == "0" && none[0] == "general:\n  x: 1\n", "A config without keybindings was modified");
+        // varsayılanın içindeki girdiler aynı turda aynı tuşu istemez
+        string def2 = head + "  - commands: ['a']\n    bindings: ['lwin+q']\n  - commands: ['b']\n    bindings: ['lwin+q']\n";
+        var dup = run(head + "  - commands: ['x']\n    bindings: ['lwin+z']\n", def2, new string[0], new string[0]);
+        Check(dup[1] == "1" && dup[0].Contains("['a']") && !dup[0].Contains("['b']"), "Two defaults took the same key in one run");
+        Console.WriteLine("PASS: default shortcut migration (missing only, conflicts, deleted stay deleted, user lines untouched)");
     }
 
     static void WorkspaceOutlineTests() {

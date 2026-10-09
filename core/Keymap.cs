@@ -33,7 +33,7 @@ static class Reserved
 // Super'siz olanları (ctrl+alt+t) pencere yöneticisi kendi kancasıyla yakalamaya devam eder.
 static class WmBinds
 {
-    sealed class Entry { public List<string> Commands = new List<string>(); public List<string> Bindings = new List<string>(); public int Line = -1; }
+    internal sealed class Entry { public List<string> Commands = new List<string>(); public List<string> Bindings = new List<string>(); public int Line = -1; }
 
     static readonly object gate = new object();
     static Dictionary<long, string[]> table = new Dictionary<long, string[]>();
@@ -68,7 +68,7 @@ static class WmBinds
     static readonly Regex quoted = new Regex("'([^']*)'");
 
     // Üst düzey "keybindings:" listesi: "- commands: [...]" ardından "bindings: [...]" (binding_modes ayrı, dokunulmaz)
-    static List<Entry> Read(string[] lines)
+    internal static List<Entry> Read(string[] lines)
     {
         var list = new List<Entry>();
         bool inKb = false;
