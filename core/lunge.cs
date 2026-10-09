@@ -4101,6 +4101,10 @@ static class Prefs
             case "uiScale":
                 if (!int.TryParse(value, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out n) || !UiScale.Valid(n)) return false;
                 val = n; break;
+            // kenarlık stili: BorderLook
+            case "borderStyle":
+                if (!BorderLook.Valid(value)) return false;
+                val = value; break;
             default: return false;
         }
         lock (gate)
@@ -4125,6 +4129,7 @@ static class Prefs
         }
         Load();
         if (key == "uiScale") UiScale.Apply((int)val);
+        if (key == "borderStyle") BorderLook.Apply((string)val);
         return true;
     }
 }
@@ -4168,6 +4173,79 @@ static class UiScale
             try { new TilingClient().Command("wm-reload-config"); } catch (Exception ex) { Slider.Log("arayüz ölçeği: " + ex.Message); }
         }
         catch (Exception ex) { Slider.Log("arayüz ölçeği: " + ex.Message); }
+    }
+}
+
+// Kenarlık stili (prefs.json "borderStyle"; Ayarlar > Görünüm): "accent" = vurgu rengi, 2 px, hafif parıltı, odak
+// anında 0,8 sn görünür (varsayılan) | "ii" = illogical-impulse'un kenarlığı: nötr 1 px (outline_variant %47, etkin
+// olmayan surface_container_low %20), parıltı yok, 1 sn emphasizedDecel renk geçişi, pencere odaktayken kalıcı.
+// config.yaml'daki borders.global bloğunun yalnızca bu anahtarları yazılır (yarıçap, kurallar, elle eklenenler kalır).
+static class BorderLook
+{
+    public static bool Valid(string v) { return v == "accent" || v == "ii"; }
+
+    public static string Current(Dictionary<string, object> prefs)
+    {
+        object v;
+        return prefs.TryGetValue("borderStyle", out v) && v as string == "ii" ? "ii" : "accent";
+    }
+
+    public static bool Neutral() { return Current(Prefs.Read()) == "ii"; }
+
+    static string Set(string block, string pattern, string value)
+    {
+        return System.Text.RegularExpressions.Regex.Replace(block, pattern, m => m.Groups[1].Value + value, System.Text.RegularExpressions.RegexOptions.Multiline);
+    }
+
+    // config.yaml metninde borders.global bloğu o stile göre; blok bulunamazsa metin olduğu gibi döner
+    public static string Rewrite(string yaml, string style, string focusHex)
+    {
+        string text = yaml.Replace("\r\n", "\n");
+        var head = System.Text.RegularExpressions.Regex.Match(text, @"(?m)^borders:[ \t]*\n(?:(?:  .*|[ \t]*)\n)*?  global:[ \t]*\n");
+        if (!head.Success) return yaml;
+        int start = head.Index + head.Length, end = start;
+        // blok: 4 ve daha fazla girintili ya da boş satırlar
+        while (end < text.Length)
+        {
+            int nl = text.IndexOf('\n', end);
+            string line = nl < 0 ? text.Substring(end) : text.Substring(end, nl - end);
+            if (line.Trim().Length > 0 && !line.StartsWith("    ")) break;
+            end = nl < 0 ? text.Length : nl + 1;
+        }
+        bool ii = style == "ii";
+        string block = text.Substring(start, end - start);
+        block = Set(block, @"^(    border_width:[ \t]*)\d+", ii ? "1" : "2");
+        block = Set(block, @"^(    active_color:[ \t]*)""[^""\n]*""", ii ? "\"#49454f77\"" : "\"" + focusHex + "cc\"");
+        block = Set(block, @"^(    inactive_color:[ \t]*)""[^""\n]*""", ii ? "\"#1d1b2033\"" : "\"#3a3a4099\"");
+        block = Set(block, @"^(          duration:[ \t]*)\d+", ii ? "1000" : "180");
+        block = Set(block, @"^(          easing:[ \t]*).*", ii ? "[0.05, 0.7, 0.1, 1.0]" : "EaseInOutQuad");
+        block = System.Text.RegularExpressions.Regex.Replace(block, @"(?m)^(    effects:[ \t]*\n(?:      .*\n)*?      enabled:[ \t]*)(?:true|false)", m => m.Groups[1].Value + (ii ? "false" : "true"));
+        string flash = ii ? "0" : "800";
+        if (System.Text.RegularExpressions.Regex.IsMatch(block, @"(?m)^    focus_flash:"))
+            block = Set(block, @"^(    focus_flash:[ \t]*)\d+", flash);
+        else // eski config.yaml: anahtar bloğun başına (4 girintili her yer geçerli)
+            block = "    # etkin pencerenin odak rengi kaç ms görünür; 0 = pencere odaktayken kalıcı\n    focus_flash: " + flash + "\n" + block;
+        string next = text.Substring(0, start) + block + text.Substring(end);
+        if (next == text) return yaml;
+        return yaml.Contains("\r\n") ? next.Replace("\n", "\r\n") : next;
+    }
+
+    public static void Apply(string style)
+    {
+        try
+        {
+            string path = Paths.ConfigFile;
+            if (!System.IO.File.Exists(path)) return;
+            string text = System.IO.File.ReadAllText(path);
+            object v;
+            string focus = Prefs.Read().TryGetValue("focusColor", out v) ? v as string : null;
+            if (focus == null || !System.Text.RegularExpressions.Regex.IsMatch(focus, "^#[0-9a-fA-F]{6}$")) focus = "#b69df8";
+            string next = Rewrite(text, style, focus.ToLowerInvariant());
+            if (next == text) return;
+            if (!Files.WriteAtomic(path, next)) { Slider.Log("kenarlık stili: config.yaml yazılamadı"); return; }
+            try { new TilingClient().Command("wm-reload-config"); } catch (Exception ex) { Slider.Log("kenarlık stili: " + ex.Message); }
+        }
+        catch (Exception ex) { Slider.Log("kenarlık stili: " + ex.Message); }
     }
 }
 
@@ -4444,7 +4522,9 @@ static class Settings
 
         return new Dictionary<string, object>
         {
-            { "focusColor", m.Success ? m.Groups[1].Value.ToLowerInvariant() : "#b69df8" },
+            // tercih önce: ii kenarlık stilinde config.yaml'daki odak rengi nötr gri
+            { "focusColor", p.ContainsKey("focusColor") ? p["focusColor"] : m.Success ? m.Groups[1].Value.ToLowerInvariant() : "#b69df8" },
+            { "borderStyle", BorderLook.Current(p) },
             { "language", p.TryGetValue("language", out lang) ? lang : "system" },
             { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
             { "animations", !(p.TryGetValue("animations", out anim) && anim is bool && !(bool)anim) },
@@ -4501,6 +4581,15 @@ static class Settings
         lock (colorGate) {
         if (!System.Text.RegularExpressions.Regex.IsMatch(hex, "^#[0-9a-fA-F]{6}$")) return Result(false);
         hex = hex.ToLowerInvariant();
+        if (BorderLook.Neutral())
+        {
+            // ii kenarlık stili: kenarlık nötr kalır, vurgu rengi yalnızca kabuğu boyar (stil değişince kenarlığa geçer)
+            if (!Prefs.Set("focusColor", hex)) return Result(false);
+            Toasts.Emit("ll:theme-color");
+            var neutral = Result(true);
+            neutral["focusColor"] = hex;
+            return neutral;
+        }
         string cfg = System.IO.File.ReadAllText(Paths.ConfigFile);
         string hashFile = Paths.State("config.sha256");
         bool ours = false;
@@ -4770,6 +4859,8 @@ static class ConfigWatch
         Prefs.Load();
         Anims.Load();
         ThreadPool.QueueUserWorkItem(_ => UiScale.Apply(UiScale.Percent(Prefs.Read())));
+        // kenarlık stili de (sürüm config.yaml'ı yenilediyse ii stili geri gelsin)
+        ThreadPool.QueueUserWorkItem(_ => BorderLook.Apply(BorderLook.Current(Prefs.Read())));
         try
         {
             watcher = new System.IO.FileSystemWatcher(Paths.ConfigDir) { NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.Size };

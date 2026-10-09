@@ -18,7 +18,7 @@ use anyhow::{Context, anyhow};
 use config::{Config, EnableMode};
 use render_backend::RenderBackendConfig;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock, RwLockWriteGuard};
 use std::thread::{self, JoinHandle};
 use theme::ThemeWatcher;
@@ -657,17 +657,31 @@ fn place_impl(hwnd: isize, left: i32, top: i32, right: i32, bottom: i32) {
     }
 }
 
-/// The focus outline is a moment, not a state: a window shows the active color for [`FOCUS_FLASH`] after it gets the
+/// The focus outline is a moment, not a state: a window shows the active color for `focus_flash` ms (800 by default) after it gets the
 /// focus (whatever moved it there: a click, the keyboard, a workspace switch) or the window manager moves it, then
 /// fades back to the inactive color like every other window.
+/// `borders.global.focus_flash` sets it; 0 makes the outline a state again: the focused window keeps it.
+static FOCUS_FLASH_MS: AtomicU64 = AtomicU64::new(800);
+#[cfg(test)]
 pub(crate) const FOCUS_FLASH: std::time::Duration = std::time::Duration::from_millis(800);
 static CUE: Mutex<(isize, Option<std::time::Instant>)> = Mutex::new((0, None));
 
-/// How much longer the border of `hwnd` shows the focus outline; None when it doesn't.
+pub(crate) fn set_focus_flash(ms: u64) {
+    FOCUS_FLASH_MS.store(ms, Ordering::Relaxed);
+}
+
+/// The focused window keeps its outline (`focus_flash: 0`) instead of a moment of it.
+pub(crate) fn focus_outline_persists() -> bool {
+    FOCUS_FLASH_MS.load(Ordering::Relaxed) == 0
+}
+
+/// How much longer the border of `hwnd` shows the focus outline; None when it doesn't (or when the outline persists:
+/// then nothing has to end it).
 pub(crate) fn cue_left(hwnd: isize) -> Option<std::time::Duration> {
+    let flash = std::time::Duration::from_millis(FOCUS_FLASH_MS.load(Ordering::Relaxed));
     let cue = CUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let since = cue.1.filter(|_| cue.0 == hwnd)?;
-    FOCUS_FLASH.checked_sub(since.elapsed()).filter(|left| !left.is_zero())
+    flash.checked_sub(since.elapsed()).filter(|left| !left.is_zero())
 }
 
 /// Shows the focus outline of `hwnd` for a moment: it got the focus, or the window manager moved it.

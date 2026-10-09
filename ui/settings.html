@@ -654,6 +654,13 @@
               </div>
               {colorError && <div className="note" role="alert">{colorError}</div>}
             </div>
+            <div className="sec-title">Pencere kenarlığı</div>
+            <div className="card">
+              <Row icon="border_outer" label="Kenarlık stili" sub="Vurgu: vurgu rengi, odak değişince bir an belirir. ii: nötr 1 px, pencere odaktayken kalıcı">
+                <Seg items={[['accent', 'Vurgu', 'palette'], ['ii', 'ii (nötr, 1px, kalıcı)', 'border_style']]} value={s.borderStyle === 'ii' ? 'ii' : 'accent'}
+                  onChange={v => helper(['--set-pref', 'borderStyle', v]).then(() => update({ borderStyle: v })).catch(() => {})} />
+              </Row>
+            </div>
             <div className="sec-title">Arayüz ölçeği</div>
             <div className="card">
               <Row icon="zoom_in" label="Arayüz ölçeği" sub="Bar, paneller ve ayarlar birlikte ölçeklenir" />

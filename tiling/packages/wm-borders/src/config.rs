@@ -61,6 +61,10 @@ pub struct Global {
     #[serde(alias = "restore_delay")]
     #[serde(default = "serde_default_u64::<200>")]
     pub unminimize_delay: u64, // Adjust delay when restoring minimized windows
+    /// How long (ms) a window shows the active color after it gets the focus; 0 keeps it while the window has the
+    /// focus (illogical-impulse's neutral outline).
+    #[serde(default = "serde_default_u64::<800>")]
+    pub focus_flash: u64,
 }
 
 pub fn serde_default_u64<const V: u64>() -> u64 {
@@ -265,6 +269,7 @@ impl Config {
         let new_config = match Self::create() {
             Ok(config) => {
                 BG_SERVICES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).reload(&config);
+                crate::set_focus_flash(config.global.focus_flash);
 
                 let mut directx_devices_opt = APP_STATE.directx_devices.write().unwrap_or_else(std::sync::PoisonError::into_inner);
 
