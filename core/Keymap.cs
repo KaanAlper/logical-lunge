@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Web.Script.Serialization;
 
 // Windows'un hiçbir kancaya bırakmadığı ya da bırakmaması gereken kombinasyonlar. Eylemi olan (Super+L) çekirdekte o
@@ -30,13 +31,17 @@ static class Reserved
 
 // Pencere yöneticisinin kısayolları (config.yaml > keybindings). Win tuşu Windows'a hiç iletilmediği için pencere
 // yöneticisi Super'li kısayollarını kendisi göremez: çekirdek onları bu tablodan bulup komutlarını IPC ile gönderir.
-// Super'siz olanları (ctrl+alt+t) pencere yöneticisi kendi kancasıyla yakalamaya devam eder.
+// Super'sizler (ctrl+alt+t) ve kısayol modlarının (binding_modes, örn. boyutlandırma) tuşları da buradan: pencere
+// yöneticisinin klavye kancası yok, sistemde tek klavye kancası çekirdeğinki.
 static class WmBinds
 {
     internal sealed class Entry { public List<string> Commands = new List<string>(); public List<string> Bindings = new List<string>(); public int Line = -1; }
 
     static readonly object gate = new object();
     static Dictionary<long, string[]> table = new Dictionary<long, string[]>();
+    // binding_modes: ad -> tablo; açık mod pencere yöneticisinden (WmModes)
+    static Dictionary<string, Dictionary<long, string[]>> modes = new Dictionary<string, Dictionary<long, string[]>>();
+    static string mode;
     static string OrigPath { get { return Paths.State("tiling-keybindings.default.json"); } }
 
     static readonly Dictionary<string, string> toUi = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
@@ -99,27 +104,102 @@ static class WmBinds
         catch (Exception ex) { Slider.Log("pencere yöneticisi kısayolları okunamadı: " + ex.Message); return null; }
     }
 
-    // Kancanın tablosu: yalnızca Super'li kısayollar (diğerlerini pencere yöneticisi kendisi görür)
+    // Kancanın tablosu: pencere yöneticisinin bütün kısayolları ve kısayol modları
     public static void Load()
     {
         var lines = Lines();
         if (lines == null) return;
+        var t = Table(Read(lines));
+        var ms = new Dictionary<string, Dictionary<long, string[]>>();
+        foreach (var kv in ReadModes(lines)) ms[kv.Key] = Table(kv.Value);
+        lock (gate) { table = t; modes = ms; }
+        NativeInput.PushTable();
+    }
+
+    static Dictionary<long, string[]> Table(List<Entry> entries)
+    {
         var t = new Dictionary<long, string[]>();
-        foreach (var e in Read(lines))
+        foreach (var e in entries)
             foreach (var b in e.Bindings)
             {
                 int m, vk;
-                if (!Binds.Parse(ToUi(b), out m, out vk) || (m & Binds.SUPER) == 0) continue;
+                if (!Binds.Parse(ToUi(b), out m, out vk)) continue;
                 long key = ((long)m << 16) | (uint)vk;
                 if (!t.ContainsKey(key)) t[key] = e.Commands.ToArray();
             }
-        lock (gate) table = t;
+        return t;
     }
 
+    // Açık bir kısayol modunda pencere yöneticisi gibi: yalnızca modun tuşları; Super'li kısayollar yine çalışır
+    // (Win'i pencere yöneticisi hiç görmediği için onları hep çekirdek gönderiyordu)
     public static string[] Lookup(int mods, int vk)
     {
+        long key = ((long)mods << 16) | (uint)vk;
         string[] c;
-        lock (gate) return table.TryGetValue(((long)mods << 16) | (uint)vk, out c) ? c : null;
+        Dictionary<long, string[]> m;
+        lock (gate)
+        {
+            if (mode != null && modes.TryGetValue(mode, out m))
+            {
+                if (m.TryGetValue(key, out c)) return c;
+                if ((mods & Binds.SUPER) == 0) return null;
+            }
+            return table.TryGetValue(key, out c) ? c : null;
+        }
+    }
+
+    // Yerel kancanın tablosu: Lookup'ın o anki karşılığı
+    public static List<KeyValuePair<long, string[]>> Active()
+    {
+        lock (gate)
+        {
+            Dictionary<long, string[]> m;
+            if (mode == null || !modes.TryGetValue(mode, out m)) return new List<KeyValuePair<long, string[]>>(table);
+            var list = new List<KeyValuePair<long, string[]>>(m);
+            foreach (var kv in table)
+                if (((kv.Key >> 16) & Binds.SUPER) != 0 && !m.ContainsKey(kv.Key)) list.Add(kv);
+            return list;
+        }
+    }
+
+    // Pencere yöneticisinin açık kısayol modu (WmModes; yoksa null)
+    public static void SetMode(string name)
+    {
+        lock (gate)
+        {
+            if (name == mode) return;
+            mode = name;
+        }
+        Slider.Log("pencere yöneticisi kısayol modu: " + (name ?? "yok"));
+        NativeInput.PushTable();
+    }
+
+    // binding_modes: "- name: '...'" ve altında "keybindings:" listesi
+    static Dictionary<string, List<Entry>> ReadModes(string[] lines)
+    {
+        var result = new Dictionary<string, List<Entry>>();
+        bool inModes = false;
+        string name = null;
+        Entry pending = null;
+        foreach (string l in lines)
+        {
+            if (l.StartsWith("binding_modes:")) { inModes = true; continue; }
+            if (inModes && l.Length > 0 && !char.IsWhiteSpace(l[0]) && !l.StartsWith("#")) break;
+            if (!inModes) continue;
+            var n = Regex.Match(l, @"^\s*- name:\s*'([^']*)'");
+            if (n.Success) { name = n.Groups[1].Value; result[name] = new List<Entry>(); pending = null; continue; }
+            if (name == null) continue;
+            var c = Regex.Match(l, @"^\s*- commands:\s*\[(.*)\]\s*$");
+            if (c.Success) { pending = new Entry(); foreach (Match m in quoted.Matches(c.Groups[1].Value)) pending.Commands.Add(m.Groups[1].Value); continue; }
+            var b = Regex.Match(l, @"^\s*bindings:\s*\[(.*)\]\s*$");
+            if (pending != null && b.Success)
+            {
+                foreach (Match m in quoted.Matches(b.Groups[1].Value)) pending.Bindings.Add(m.Groups[1].Value);
+                result[name].Add(pending);
+                pending = null;
+            }
+        }
+        return result;
     }
 
     // Basılı tutunca tekrar eden kısayol mu: yalnızca bölme oranı ve boyutlandırma (Hyprland/ii'de "binde"); geçiş,
@@ -413,5 +493,86 @@ static class Keymap
         var keep = apps ? new List<Binds.CustomApp>() : Binds.ReadUser().Apps;
         bool ok = Binds.Write(new Dictionary<string, string>(), keep, new HashSet<string>(), true) && WmBinds.Reset();
         return json.Serialize(new Dictionary<string, object> { { "ok", ok } });
+    }
+}
+
+// Pencere yöneticisinin açık kısayol modu: kendi kancası olmadığı için modun tuşlarını (boyutlandırmada oklar, Esc) çekirdek
+// yakalar; mod pencere yöneticisinde değişir (kısayolla, barın mod göstergesine tıklayınca, komut satırından). Bir abonelikle
+// izlenir; bağlantı koparsa (pencere yöneticisi yeniden başladı: modlar da sıfırlandı) mod kapanır, pencere yöneticisi
+// bekçisinin döngüsü aboneliği yeniden açar.
+static class WmModes
+{
+    static int running;
+
+    public static void Ensure()
+    {
+        if (Interlocked.CompareExchange(ref running, 1, 0) != 0) return;
+        new Thread(Run) { IsBackground = true, Name = "wm-modes" }.Start();
+    }
+
+    static void Run()
+    {
+        try
+        {
+            using (var ws = new System.Net.WebSockets.ClientWebSocket())
+            {
+                ws.Options.Proxy = null;
+                if (!ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(3000)) return;
+                // önce abonelik, sonra o anki durum: arada bir değişim kaçmasın
+                Send(ws, "sub -e binding_modes_changed");
+                Send(ws, "query binding-modes");
+                var json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+                var buf = new byte[1 << 16];
+                while (true)
+                {
+                    string text = Receive(ws, buf);
+                    if (text == null) return;
+                    var msg = json.DeserializeObject(text) as Dictionary<string, object>;
+                    object data;
+                    if (msg == null || !msg.TryGetValue("data", out data)) continue;
+                    var d = data as Dictionary<string, object>;
+                    if (d == null) continue;
+                    object list;
+                    if (d.TryGetValue("newBindingModes", out list) || d.TryGetValue("bindingModes", out list))
+                        WmBinds.SetMode(First(list));
+                }
+            }
+        }
+        catch (Exception ex) { Slider.Log("kısayol modu aboneliği: " + ex.GetBaseException().Message); }
+        finally
+        {
+            WmBinds.SetMode(null);
+            Interlocked.Exchange(ref running, 0);
+        }
+    }
+
+    static string First(object list)
+    {
+        var arr = list as object[];
+        if (arr == null && list is System.Collections.ArrayList) arr = ((System.Collections.ArrayList)list).ToArray();
+        if (arr == null || arr.Length == 0) return null;
+        var m = arr[0] as Dictionary<string, object>;
+        object name;
+        return m != null && m.TryGetValue("name", out name) ? name as string : null;
+    }
+
+    static void Send(System.Net.WebSockets.ClientWebSocket ws, string message)
+    {
+        var bytes = Encoding.UTF8.GetBytes(message);
+        if (!ws.SendAsync(new ArraySegment<byte>(bytes), System.Net.WebSockets.WebSocketMessageType.Text, true, CancellationToken.None).Wait(3000))
+            throw new TimeoutException("gönderilemedi");
+    }
+
+    // Abonelik boşta günlerce bekleyebilir: süre sınırı yok, bağlantı kapanınca null
+    static string Receive(System.Net.WebSockets.ClientWebSocket ws, byte[] buf)
+    {
+        var sb = new StringBuilder();
+        while (true)
+        {
+            var r = ws.ReceiveAsync(new ArraySegment<byte>(buf), CancellationToken.None).Result;
+            if (r.MessageType == System.Net.WebSockets.WebSocketMessageType.Close) return null;
+            sb.Append(Encoding.UTF8.GetString(buf, 0, r.Count));
+            if (r.EndOfMessage) return sb.ToString();
+        }
     }
 }

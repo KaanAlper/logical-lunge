@@ -26,7 +26,7 @@ use wm_common::{AppCommand, Verbosity, WmEvent};
 #[cfg(target_os = "macos")]
 use wm_platform::DispatcherExtMacOs;
 use wm_platform::{
-  Dispatcher, DisplayListener, EventLoop, KeybindingListener,
+  Dispatcher, DisplayListener, EventLoop,
   MouseEventKind, MouseListener, PlatformEvent, SingleInstance,
   WindowListener,
 };
@@ -188,13 +188,10 @@ async fn start_wm(
     },
     dispatcher,
   )?;
-  let mut keybinding_listener = KeybindingListener::new(
-    &config
-      .active_keybinding_configs(&[], false)
-      .flat_map(|kb| kb.bindings)
-      .collect::<Vec<_>>(),
-    dispatcher,
-  )?;
+  // No keyboard hook here: the core owns the only low-level keyboard hook
+  // and sends every binding (with or without Super, binding modes too) as
+  // IPC commands. A second hook doubled the chance of Windows timing one
+  // out under load and removing it.
 
   // Run user's startup commands.
   if let Err(err) = wm.process_commands(
@@ -231,10 +228,6 @@ async fn start_wm(
         tracing::debug!("Received display settings changed event.");
         wm.process_event(PlatformEvent::DisplaySettingsChanged, &mut config)
       },
-      Some(event) = keybinding_listener.next_event() => {
-        tracing::debug!("Received keyboard event: {:?}", event);
-        wm.process_event(PlatformEvent::Keybinding(event), &mut config)
-      }
       _ = cleanup_interval.tick() => {
         if wm.state.is_paused {
           Ok(())
@@ -269,20 +262,13 @@ async fn start_wm(
           let _ = mouse_listener.enable(!is_paused);
         }
 
-        // Update keybinding and mouse listeners on config changes.
+        // Update the mouse listener on config changes.
         if matches!(
           wm_event,
           WmEvent::UserConfigChanged { .. }
             | WmEvent::BindingModesChanged { .. }
             | WmEvent::PauseChanged { .. }
         ) {
-          keybinding_listener.update(
-            &config
-              .active_keybinding_configs(&wm.state.binding_modes, false)
-              .flat_map(|kb| kb.bindings)
-              .collect::<Vec<_>>(),
-          );
-
           mouse_listener.set_enabled_events(
             if config.value.general.focus_follows_cursor {
               &[MouseEventKind::Move, MouseEventKind::LeftButtonUp]

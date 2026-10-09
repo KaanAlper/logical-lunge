@@ -99,20 +99,21 @@ if (-not $SkipRust) {
     try { Native { cargo build --release -p wm -p wm-cli -p wm-watcher } 'tiling' }
     finally { Pop-Location }
     Copy-Item "$root\tiling\target\release\lunge-tiling.exe", "$root\tiling\target\release\lunge-tiling-cli.exe", "$root\tiling\target\release\lunge-tiling-watcher.exe" $app
-    Step 'lunge-shell (bar, panels) + lunge-wallpaper'
+    Step 'lunge-shell (bar, panels) + lunge-wallpaper + lunge_input (the core's input hooks)'
     # VERSION_NUMBER (above) goes into lunge-shell.exe's version resource (its build.rs)
     Push-Location "$root\shell"
-    try { Native { cargo build --release -p lunge-shell -p lunge-wallpaper } 'shell' }
+    try { Native { cargo build --release -p lunge-shell -p lunge-wallpaper -p lunge-input } 'shell' }
     finally { Pop-Location }
-    Copy-Item "$root\shell\target\release\lunge-shell.exe", "$root\shell\target\release\lunge-wallpaper.exe" $app
+    # lunge_input.dll beside lunge.exe: the core loads it for its keyboard and mouse hooks
+    Copy-Item "$root\shell\target\release\lunge-shell.exe", "$root\shell\target\release\lunge-wallpaper.exe", "$root\shell\target\release\lunge_input.dll" $app
 }
 else {
     Step 'tiling + shell: reusing the previous builds (-SkipRust)'
-    foreach ($exe in 'tiling\target\release\lunge-tiling.exe', 'tiling\target\release\lunge-tiling-cli.exe', 'tiling\target\release\lunge-tiling-watcher.exe', 'shell\target\release\lunge-shell.exe', 'shell\target\release\lunge-wallpaper.exe') {
+    foreach ($exe in 'tiling\target\release\lunge-tiling.exe', 'tiling\target\release\lunge-tiling-cli.exe', 'tiling\target\release\lunge-tiling-watcher.exe', 'shell\target\release\lunge-shell.exe', 'shell\target\release\lunge-wallpaper.exe', 'shell\target\release\lunge_input.dll') {
         if (Test-Path "$root\$exe") { Copy-Item "$root\$exe" $app }
     }
 }
-foreach ($exe in 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'lunge-wallpaper.exe') {
+foreach ($exe in 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'lunge-wallpaper.exe', 'lunge_input.dll') {
     if (-not (Test-Path (Join-Path $app $exe))) { throw "$exe is missing (build without -SkipRust)" }
 }
 # the video screen saver: the same player under a .scr name (it switches by its own name)

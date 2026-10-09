@@ -79,6 +79,11 @@ static class CoreRegression
         Check(Keys2.SwitchesWorkspace(new[] { "focus --workspace 4" }, out sd, out st) && sd == 0 && st == "4", "A named workspace lost its name");
         Check(!Keys2.SwitchesWorkspace(new[] { "move --workspace 3" }, out sd, out st) && !Keys2.SwitchesWorkspace(new[] { "toggle-fullscreen" }, out sd, out st)
             && !Keys2.SwitchesWorkspace(new[] { "focus --direction left" }, out sd, out st), "A command that switches no workspace went through the slide");
+        // the native hook swallows a shortcut only when RunAction would handle it
+        Check(Keys2.Handling("ws-3") == 1 && Keys2.Handling("ws-next@DISPLAY1") == 1 && Keys2.Handling("ws-move-next@DISPLAY1") == 0,
+            "Workspace shortcuts got the wrong native hook handling");
+        Check(Keys2.Handling("close") == 2 && Keys2.Handling("lock") == 1 && Keys2.Handling("search") == 1 && Keys2.Handling("no-such-action") == 0,
+            "Close, lock, aliases or unknown actions got the wrong native hook handling");
     }
 
     static void WmWatchdogTests() {

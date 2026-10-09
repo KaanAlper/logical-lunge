@@ -3414,12 +3414,14 @@ class MouseFocus
     // Kanca, klavye kancasıyla aynı (başka iş yapmayan) thread'de kurulur; burada sadece sinyal verilir.
     public void InstallHook()
     {
+        if (NativeInput.Start()) { NativeInput.Mouse = this; return; } // yerel kanca: olaylar FromNative'e
         proc = Callback.Guard("fare kancası", (Native.LowLevelMouseProc)Hook);
         hookHandle = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
     }
 
     public void Reinstall()
     {
+        if (NativeInput.On) { NativeInput.Reinstall(2, false); return; }
         IntPtr fresh = Native.SetWindowsHookEx(Native.WH_MOUSE_LL, proc, Native.GetModuleHandle(null), 0);
         if (fresh == IntPtr.Zero) return;
         IntPtr old = hookHandle; hookHandle = fresh;
@@ -3528,6 +3530,19 @@ class MouseFocus
             clicked.Set(); // kanca hızlı kalsın: pencereye bakmak işçinin işi
         }
         return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+    }
+
+    // Yerel kancanın kararları (NativeInput): HookInner'ın olaydan sonra yaptığı işler
+    internal void FromNative(NativeInput.Ev e)
+    {
+        switch (e.Kind)
+        {
+            case NativeInput.CLICK: clickX = e.X; clickY = e.Y; clicked.Set(); break;
+            case NativeInput.MOVE: { int x, y; NativeInput.MousePos(out x, out y); lastX = x; lastY = y; moved.Set(); break; }
+            case NativeInput.DESK_MENU: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu")); break;
+            case NativeInput.DESK_CLICK: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-click")); break;
+            case NativeInput.DESK_OPEN: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-open")); break;
+        }
     }
 
     // Kabuğun dışına (bir pencereye, masaüstüne) tıklandı: açık menüler (tepsi, sağ panel) kapansın. Bar odak almadığı
@@ -5799,6 +5814,7 @@ static class TilingWatchdog
             Thread.Sleep(2000);
             try
             {
+                if (wm != null) WmModes.Ensure(); // pencere yöneticisinin kısayol modu (klavye kancası çekirdekte)
                 if (wm == null)
                 {
                     wm = FindWm();
@@ -7080,6 +7096,13 @@ static class Binds
         }
         lock (gate) { table = t; appPaths = paths; }
         Slider.Log("keybinds: " + t.Count + " kısayol");
+        NativeInput.PushTable();
+    }
+
+    // Yerel kancanın tablosu için kopya ((mods << 16) | vk -> eylem)
+    public static List<KeyValuePair<long, string>> Snapshot()
+    {
+        lock (gate) return new List<KeyValuePair<long, string>>(table);
     }
 
     public static string Lookup(int mods, int vk)
@@ -7115,7 +7138,8 @@ static class Binds
 
     // ---- Düzenleyici için tuş yakalama: panel "capture.req" yazar, ana helper sonraki kombinasyonu
     // "capture.res"e yazar (Super'i helper yuttuğu için tarayıcı penceresi onu hiç göremiyordu).
-    public static volatile bool Capturing;
+    static volatile bool capturing;
+    public static bool Capturing { get { return capturing; } set { capturing = value; NativeInput.SetFlag(NativeInput.CAPTURING, value); } }
     public static string CaptureDir { get { return System.IO.Path.GetDirectoryName(FilePath); } }
 
     public static string KeyName(int vk)
@@ -7238,6 +7262,8 @@ class Keys2
 
     public void Start()
     {
+        // yerel kanca (NativeInput): kararlar orada, eylemler FromNative'de
+        if (NativeInput.Start()) { NativeInput.Keys = this; return; }
         proc = Callback.Guard("klavye kancası", (Native.LowLevelKeyboardProc)Hook);
         hookHandle = Native.SetWindowsHookEx(Native.WH_KEYBOARD_LL, proc, Native.GetModuleHandle(null), 0);
     }
@@ -7247,6 +7273,7 @@ class Keys2
     // force: kanca Windows tarafından sökülmüş (tuşlar bize gelmiyor): basılı Win bilgisi de artık geçersiz
     public void Reinstall(bool force)
     {
+        if (NativeInput.On) { NativeInput.Reinstall(1, force); return; } // basılı Win'i orada bilir
         // Tuş basılıyken değiştirme (durum karışmasın)
         if (winDown && !force) return;
         if (force) ForgetKeys();
@@ -7263,6 +7290,7 @@ class Keys2
     void ForgetKeys()
     {
         winDown = false; dockChord = false; dockMasked = false; held.Clear();
+        NativeInput.Forget();
     }
 
     // Kilit ekranı / UAC / güvenli masaüstü: o sırada basılan ve bırakılan tuşlar bize gelmez. Kanca thread'inde çalışır.
@@ -7489,6 +7517,18 @@ class Keys2
             }
         }
         if (isUp && held.Remove(vk)) return (IntPtr)1;
+        // Pencere yöneticisinin Super'siz kısayolları (Ctrl+Alt+T, kısayol modunun tuşları): onun kendi kancası yok
+        if (!winDown && isDown && !modKey)
+        {
+            int mods = (Down(VK_CONTROL) ? Binds.CTRL : 0) | (Down(VK_SHIFT) ? Binds.SHIFT : 0) | (Down(VK_MENU) ? Binds.ALT : 0);
+            string[] plain = WmBinds.Lookup(mods, vk);
+            if (plain != null)
+            {
+                bool repeat = !held.Add(vk);
+                if (!repeat || WmBinds.Repeats(plain)) RunWm(plain);
+                return (IntPtr)1;
+            }
+        }
         if (winDown && isDown && !modKey)
         {
             int mods = Binds.SUPER | (Down(VK_CONTROL) ? Binds.CTRL : 0) | (Down(VK_SHIFT) ? Binds.SHIFT : 0) | (Down(VK_MENU) ? Binds.ALT : 0);
@@ -7501,25 +7541,59 @@ class Keys2
             // Basılı tutunca yalnızca bölme oranı tekrar eder (ii binde): Super+F / Super+D / Super+Alt+Space durmadan
             // açılıp kapanıyor, Super+PageDown workspace'leri art arda geçiyordu
             if (repeat && !(wm != null && WmBinds.Repeats(wm))) return (IntPtr)1;
-            int slideDir; string slideTarget;
-            if (wm != null && SwitchesWorkspace(wm, out slideDir, out slideTarget))
-            {
-                // the window manager's own workspace keys (Super+PageUp/PageDown, Super+Ctrl+Alt+←/→, their
-                // Shift forms) slide like ours, through the same queue
-                lastMoveAction = Environment.TickCount;
-                Post(wm, slideDir, slideTarget);
-                return (IntPtr)1;
-            }
-            if (wm != null)
-            {
-                // state changes (fullscreen, floating) animate through a freeze, as a layout change does
-                ThreadPool.QueueUserWorkItem(_ => { lock (inWsLock) { try { if (!Dwindle.AnimateState(wm)) slider.Commands(wm); } catch (Exception ex) { Slider.Log("kısayol: " + ex.Message); } } });
-                return (IntPtr)1;
-            }
+            if (wm != null) RunWm(wm);
             return (IntPtr)1; // hiçbir tabloda yok: Windows'a da gitmez
         }
 
         return Native.CallNextHookEx(IntPtr.Zero, nCode, wParam, lParam);
+    }
+
+    // Pencere yöneticisinin bir kısayolu: komutları IPC ile
+    void RunWm(string[] wm)
+    {
+        int slideDir; string slideTarget;
+        if (SwitchesWorkspace(wm, out slideDir, out slideTarget))
+        {
+            // the window manager's own workspace keys (Super+PageUp/PageDown, Super+Ctrl+Alt+←/→, their
+            // Shift forms) slide like ours, through the same queue
+            lastMoveAction = Environment.TickCount;
+            Post(wm, slideDir, slideTarget);
+            return;
+        }
+        // state changes (fullscreen, floating) animate through a freeze, as a layout change does
+        ThreadPool.QueueUserWorkItem(_ => { lock (inWsLock) { try { if (!Dwindle.AnimateState(wm)) slider.Commands(wm); } catch (Exception ex) { Slider.Log("kısayol: " + ex.Message); } } });
+    }
+
+    // Yerel kancanın kararları (NativeInput): HookInner'ın tuşu yuttuktan sonra yaptığı işler
+    internal void FromNative(NativeInput.Ev e)
+    {
+        switch (e.Kind)
+        {
+            case NativeInput.DESK_MENU_KEY: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu-key")); break;
+            case NativeInput.DESK_OPEN_KEY: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-open-key")); break;
+            case NativeInput.WIN_UP_DOCK: ui.BeginInvoke((Action)(() => Toasts.Emit("ll:dock-toggle"))); break;
+            case NativeInput.WIN_UP_OVERVIEW: ui.BeginInvoke((Action)ToggleOverview); break;
+            case NativeInput.CAPTURE: Binds.FinishCapture(e.Vk == 0x1B && e.Mods == 0 ? "" : Binds.Combo(e.Mods, e.Vk)); break;
+            case NativeInput.BIND:
+                {
+                    string act = NativeInput.Action(e.Id);
+                    if (act != null && RunAction(act) && e.Flag != 0 && (act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-")))
+                        ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:ws-numbers"));
+                    break;
+                }
+            case NativeInput.RESERVED:
+                {
+                    string act = NativeInput.Action(e.Id);
+                    if (!string.IsNullOrEmpty(act)) RunAction(act);
+                    break;
+                }
+            case NativeInput.WM:
+                {
+                    string[] wm = NativeInput.WmCommands(e.Id);
+                    if (wm != null) RunWm(wm);
+                    break;
+                }
+        }
     }
 
     readonly HashSet<int> held = new HashSet<int>();
@@ -7544,6 +7618,28 @@ class Keys2
             foreach (var w in wins) if (J.Bool(w, "hasFocus")) return true;
         }
         return false;
+    }
+
+    // Yerel kancanın tablosu için: RunAction bu eylemde true döner mi (tuş yutulur mu). 1: her zaman, 2: "close" (kabuk
+    // ya da masaüstü öndeyken Windows'un kalır), 0: hiç. RunAction'la aynı sırada tutulmalı.
+    internal static int Handling(string act)
+    {
+        string alias;
+        if (aliases.TryGetValue(act, out alias)) act = alias;
+        switch (act)
+        {
+            case "settings": case "lock": case "task-manager": case "run": case "clipboard": case "file-search": case "overview":
+            case "sidebar": case "focus-urgent-or-last": case "terminal": case "terminal-alt": case "screenshot": case "screenshot-screen":
+                return 1;
+            case "close": return 2;
+        }
+        if (act.StartsWith("app:")) return Binds.AppPath(act) != null ? 1 : 0;
+        foreach (var d in new[] { "left", "right", "up", "down" })
+            if (act == "focus-" + d || act == "move-" + d) return 1;
+        int at = act.StartsWith("ws-") ? act.IndexOf('@') : -1;
+        if (at > 0) { string step = act.Substring(0, at); return step == "ws-prev" || step == "ws-next" ? 1 : 0; }
+        if (act.StartsWith("ws-")) return 1;
+        return Apps.ContainsKey(act) ? 1 : 0;
     }
 
     bool RunAction(string act)
@@ -10124,8 +10220,12 @@ static class Updater
 // Arayüz lunge içinde çizilir (WebView yok): yük altında bile anında açılır.
 class Switcher : Form
 {
-    public static volatile bool Active;
+    static volatile bool active;
+    // yerel kanca da bilir: açıkken her tuş değiştiricinin
+    public static bool Active { get { return active; } set { active = value; NativeInput.SetFlag(NativeInput.SWITCHER_ACTIVE, value); } }
     static bool demo; // sınama: Alt basılı tutulmaz
+    public static bool IsDemo { get { return demo; } }
+    public static bool Ready { get { return inst != null; } }
     static Switcher inst;
     static Control ui;
     static readonly List<long> fgOrder = new List<long>(); // en yeni önde (Windows'un ön plan değişimlerinden)
@@ -10183,6 +10283,7 @@ class Switcher : Form
         {
             inst = new Switcher();
             inst.CreateControl(); var h = inst.Handle;
+            NativeInput.SetFlag(NativeInput.SWITCHER_READY, true);
             fgCb = Callback.Guard("alt-tab olayı", OnForeground);
             Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, fgCb, 0, 0, 0x0002);
             IntPtr cur = Native.GetAncestor(Native.GetForegroundWindow(), 2);
@@ -10249,6 +10350,28 @@ class Switcher : Form
             return true; // menü açıkken diğer tuşlar uygulamaya gitmesin
         }
         return isUp && (vk == VK_TAB || vk == 0x27 || vk == 0x25 || vk == 0x28 || vk == 0x26 || vk == 0x0D || vk == 0x1B);
+    }
+
+    // Yerel kancanın kararları (NativeInput): HandleKey'in yaptığı işler, aynı sırayla
+    public static void FromNative(NativeInput.Ev e)
+    {
+        if (inst == null) return;
+        switch (e.Kind)
+        {
+            case NativeInput.SW_OPEN: { Active = true; bool rev = e.Flag != 0; ui.BeginInvoke((Action)(() => inst.Open(rev))); break; }
+            case NativeInput.SW_MOVE: { int dx = e.X, dy = e.Y; ui.BeginInvoke((Action)(() => inst.Move(dx, dy))); break; }
+            case NativeInput.SW_COMMIT: ui.BeginInvoke((Action)(() => inst.CommitCurrent())); break;
+            case NativeInput.SW_CLOSE: ui.BeginInvoke((Action)(() => inst.CloseOnly())); break;
+            case NativeInput.SW_ALT_UP:
+                Slider.Log("switcher: alt bırakıldı -> seçileni aç");
+                ui.BeginInvoke((Action)(() => inst.CommitCurrent()));
+                break;
+            case NativeInput.SW_LOST_ALT:
+                Slider.Log("switcher: tuş 0x" + e.Vk.ToString("X") + " geldi ama alt basılı görünmüyor -> kapandı");
+                Active = false; ui.BeginInvoke((Action)(() => inst.CloseOnly()));
+                break;
+            case NativeInput.SW_FULLSCREEN: Slider.Log("switcher: özel tam ekran uygulama önde, Alt+Tab Windows'a bırakıldı"); break;
+        }
     }
 
     // ---- pencere listesi ----
@@ -10522,6 +10645,7 @@ class Switcher : Form
         f.Load += (s, e) => f.Hide();
         var h = f.Handle;
         demo = true;
+        NativeInput.SetFlag(NativeInput.SWITCHER_DEMO, true);
         Init(f);
         var t = new System.Windows.Forms.Timer { Interval = 300 };
         t.Tick += (s, e) => { t.Stop(); Active = true; inst.Open(false); };
@@ -13980,10 +14104,13 @@ static class Program
             // Kanca bekçisi: kullanıcı girdisi var ama iki kanca da 1,5 sn'dir çağrılmadı -> Windows sökmüş; 15 sn'lik yenilemeyi
             // beklemeden yeniden kur (o arada Super, Alt+Tab, kısayollar bize gelmiyordu)
             var health = new System.Windows.Forms.Timer { Interval = 1000 };
+            int healthTicks = 0;
             health.Tick += (s, e) =>
             {
                 beat();
                 InputLatency.Sample();
+                NativeInput.SyncTicks();
+                if (++healthTicks % 300 == 0) NativeInput.LogStats();
                 keys.Unstick();
                 if (HooksStale()) { keys.Reinstall(true); Keys2.LastHookTick = Environment.TickCount; Slider.Log("klavye kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
             };
@@ -14012,6 +14139,8 @@ static class Program
             health.Tick += (s, e) =>
             {
                 beat();
+                NativeInput.SetFlag(NativeInput.SINGLE_CLICK_OPEN, DesktopClick.SingleClickOpen());
+                NativeInput.SyncTicks();
                 if (HooksStale()) { mouse.Reinstall(); MouseFocus.LastHookTick = Environment.TickCount; Slider.Log("fare kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
             };
             health.Start();
