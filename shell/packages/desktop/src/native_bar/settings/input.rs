@@ -320,6 +320,13 @@ impl Ui {
           set_pref("uiScale", json!(v), false);
         }
       }
+      Key::BorderStyle => {
+        // the core writes the border keys of config.yaml and reloads the window manager
+        let v = if i == 1 { "ii" } else { "accent" };
+        if s.s["borderStyle"].as_str().unwrap_or("accent") != v {
+          set_pref("borderStyle", json!(v), false);
+        }
+      }
       Key::NightMode => {
         let v = ["manual", "after", "range"][i.min(2)];
         night(&["--nightlight-set", "mode", v]);

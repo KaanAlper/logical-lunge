@@ -80,6 +80,7 @@ pub(super) enum Key {
   Theme,
   Clock,
   UiScale,
+  BorderStyle,
   NightMode,
   WsMode,
 }

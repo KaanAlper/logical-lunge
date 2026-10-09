@@ -50,7 +50,7 @@ use crate::utils::{
 use crate::APP_STATE;
 
 const REORDER_TIMER_ID: usize = 0;
-/// Ends the focus outline ([`crate::FOCUS_FLASH`]).
+/// Ends the focus outline (`borders.global.focus_flash`).
 const CUE_TIMER_ID: usize = 1;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
@@ -62,8 +62,9 @@ pub enum WindowState {
 
 impl WindowState {
     pub fn update(&mut self, self_hwnd: isize, active_hwnd: isize) {
-        // Active (the focus outline) only for a moment after the window got the focus or was moved
-        if self_hwnd == active_hwnd && crate::cue_left(self_hwnd).is_some() {
+        // Active (the focus outline) only for a moment after the window got the focus or was moved,
+        // or for as long as it has the focus when the outline persists (borders.global.focus_flash: 0)
+        if self_hwnd == active_hwnd && (crate::focus_outline_persists() || crate::cue_left(self_hwnd).is_some()) {
             *self = WindowState::Active;
         } else {
             *self = WindowState::Inactive;

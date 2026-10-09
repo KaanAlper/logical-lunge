@@ -93,6 +93,25 @@ static class CoreRegression
         Check(TilingWatchdog.HungLimit(false) == 3 && TilingWatchdog.HungLimit(true) == 6, "The hung limit must double while a game runs");
     }
 
+    static void BorderLookTests() {
+        string yaml = "gaps:\n  inner_gap: '5px'\nborders:\n  render_backend: V2\n  global:\n    border_width: 2\n    border_radius: 19\n"
+            + "    focus_flash: 800\n    active_color: \"#b69df8cc\"\n    inactive_color: \"#3a3a4099\"\n    animations:\n      active:\n"
+            + "        - type: Fade\n          duration: 180\n          easing: EaseInOutQuad\n      fps: 0\n      enabled: true\n"
+            + "    effects:\n      active:\n        - type: Glow\n          opacity: 0.35\n      inactive: []\n      enabled: true\n"
+            + "  window_rules: []\nwindow_rules:\n  - commands: ['ignore']\n";
+        string ii = BorderLook.Rewrite(yaml, "ii", "#b69df8");
+        Check(ii.Contains("border_width: 1") && ii.Contains("focus_flash: 0") && ii.Contains("active_color: \"#49454f77\"")
+            && ii.Contains("duration: 1000") && ii.Contains("easing: [0.05, 0.7, 0.1, 1.0]"), "ii border style keys were not written");
+        Check(ii.Contains("      fps: 0\n      enabled: true") && ii.Contains("      inactive: []\n      enabled: false"), "ii border style must turn off the glow only, not the animations");
+        Check(ii.Contains("border_radius: 19") && ii.EndsWith("  window_rules: []\nwindow_rules:\n  - commands: ['ignore']\n"), "ii border style touched keys outside its own");
+        Check(BorderLook.Rewrite(ii, "accent", "#b69df8") == yaml, "accent border style did not restore the default borders");
+        Check(BorderLook.Rewrite(yaml.Replace("    focus_flash: 800\n", ""), "ii", "#b69df8").Contains("    focus_flash: 0\n"), "An older config without focus_flash got no persistent outline");
+        Check(BorderLook.Rewrite("gaps: {}\n", "ii", "#b69df8") == "gaps: {}\n", "A config without borders must stay as it is");
+        Check(BorderLook.Rewrite(yaml.Replace("\n", "\r\n"), "ii", "#b69df8") == ii.Replace("\n", "\r\n"), "CRLF config lost its line endings");
+        Check(BorderLook.Current(new Dictionary<string, object> { { "borderStyle", "ii" } }) == "ii" && BorderLook.Current(new Dictionary<string, object>()) == "accent", "borderStyle pref read wrongly");
+        Console.WriteLine("PASS: border style rewrites only its own keys and round-trips");
+    }
+
     static void UiScaleTests() {
         Check(UiScale.Valid(100) && UiScale.Valid(125) && !UiScale.Valid(101) && !UiScale.Valid(0), "uiScale steps were misjudged");
         Check(UiScale.TopGap(100) == 45 && UiScale.TopGap(125) == 55 && UiScale.TopGap(85) == 39, "Top gap must be the bar's height plus 5");
@@ -442,6 +461,7 @@ static class CoreRegression
         TakeoverTests();
         BindMigrationTests();
         UiScaleTests();
+        BorderLookTests();
         WmWatchdogTests();
         FullscreenLayerTests();
         DialogTests();

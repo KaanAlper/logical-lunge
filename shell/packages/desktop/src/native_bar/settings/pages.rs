@@ -272,6 +272,14 @@ fn look(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Result<f3
   }
   y += ch;
 
+  // the window border: the accent outline (a moment at each focus change) or illogical-impulse's neutral 1 px one
+  y = cx.sec_title(x, y, "Pencere kenarlığı")?;
+  let neutral = s.s["borderStyle"].as_str() == Some("ii");
+  let rows = [Row::new("border_style", "Kenarlık stili".into())
+    .sub("Vurgu: vurgu rengi, odak değişince bir an belirir. ii: nötr 1 px, pencere odaktayken kalıcı".into())
+    .ctrl(Ctrl::Seg(Key::BorderStyle, vec![(tr(cx, "Vurgu"), None), (tr(cx, "ii (nötr, 1px, kalıcı)"), None)], neutral as usize))];
+  y += cx.card(x, y, w, &rows, 0.0)?;
+
   // the interface scale: every native window at the monitor's DPI times this
   y = cx.sec_title(x, y, "Boyut")?;
   let steps = crate::native_bar::scale::STEPS;
