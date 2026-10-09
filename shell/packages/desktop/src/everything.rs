@@ -324,6 +324,11 @@ mod windows_ipc {
   }
 
   unsafe extern "system" fn window_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    // a panic must not cross into Windows (it would abort the shell)
+    std::panic::catch_unwind(|| window_proc_inner(hwnd, msg, wp, lp)).unwrap_or_else(|_| LRESULT(0))
+  }
+
+  unsafe fn window_proc_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_COPYDATA {
       let state = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Reply;
       let cds = lp.0 as *const COPYDATASTRUCT;
@@ -439,6 +444,10 @@ mod windows_ipc {
     // made inside GetMessage. Run this test optimized too: the former &mut
     // alias passed debug tests but timed out in release.
     unsafe extern "system" fn peer(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+      std::panic::catch_unwind(|| peer_inner(hwnd, msg, wp, lp)).unwrap_or_else(|_| LRESULT(0))
+    }
+
+    unsafe fn peer_inner(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
       if msg == WM_COPYDATA {
         let cds = &*(lp.0 as *const COPYDATASTRUCT);
         if cds.dwData != QUERY2_UNICODE { return LRESULT(0); }
