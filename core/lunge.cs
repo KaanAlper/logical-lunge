@@ -848,6 +848,7 @@ class Slider
     }
 
     readonly TilingClient tiling;
+    public TilingClient Tiling { get { return tiling; } }
     // Her monitörün kendi katmanı hazır ve gizli bekler (Warm): tek katmanı başka monitöre taşımak yeniden boyutlama ve
     // boyama demekti (~15 ms). Listede olmayan bir dikdörtgen (monitör düzeni değişti) yedek katmanı taşıyarak kullanır.
     Overlay overlay = new Overlay();
@@ -3560,9 +3561,53 @@ class MouseFocus
         t.Start();
     }
 
+    // Fareyle odak öne getirmez (Hyprland follow_mouse=1: yalnızca tıklama öne getirir). Yüzen bir pencere odaklanınca
+    // Windows onu kendi katmanının en üstüne alır; üstündeki pencerenin altına geri konur. Döşeli pencerelerde yüzenler
+    // zaten üstte kalır (pencere yöneticisi).
+    void HoverFocus(IntPtr root, Dictionary<string, object> w)
+    {
+        object st; var state = w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
+        bool floating = state != null && J.Str(state, "type") == "floating";
+        IntPtr above = floating ? Native.GetWindow(root, 3 /*GW_HWNDPREV*/) : IntPtr.Zero;
+        tiling.Command("focus --container-id " + J.Str(w, "id"));
+        if (above != IntPtr.Zero && Native.IsWindow(above))
+            Native.SetWindowPos(root, above, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // NOSIZE|NOMOVE|NOACTIVATE
+    }
+
+    // İmlecin altındaki monitör odaktaki monitör değilse ve gösterdiği workspace boşsa o workspace odaklanır; imleç
+    // zaten orada olduğundan zıplatılmaz. Pencereli monitörde odak, üstünden geçilen pencereyle değişir.
+    void FocusMonitorUnder(Point pt)
+    {
+        var mons = tiling.Monitors();
+        Dictionary<string, object> under = null, focused = null;
+        foreach (var m in mons)
+        {
+            int x = J.Int(m, "x"), y = J.Int(m, "y");
+            if (pt.X >= x && pt.Y >= y && pt.X < x + J.Int(m, "width") && pt.Y < y + J.Int(m, "height")) under = m;
+            foreach (Dictionary<string, object> ws in J.Children(m))
+            {
+                if (J.Bool(ws, "hasFocus")) focused = m;
+                var wins = new List<Dictionary<string, object>>();
+                J.WindowNodes(ws, wins);
+                foreach (var w in wins) if (J.Bool(w, "hasFocus")) focused = m;
+            }
+        }
+        if (under == null || focused == null || J.Str(under, "id") == J.Str(focused, "id")) return;
+        foreach (Dictionary<string, object> ws in J.Children(under))
+        {
+            if (!J.Bool(ws, "isDisplayed")) continue;
+            var wins = new List<Dictionary<string, object>>();
+            J.WindowNodes(ws, wins);
+            if (wins.Count == 0) tiling.Command("focus --workspace " + J.Str(ws, "name") + " --no-cursor-jump");
+            return;
+        }
+    }
+
+    [DllImport("user32.dll")] static extern IntPtr MonitorFromPoint(Point pt, uint flags);
+
     void Worker()
     {
-        IntPtr lastRoot = IntPtr.Zero;
+        IntPtr lastRoot = IntPtr.Zero, lastMon = IntPtr.Zero;
         while (true)
         {
             moved.WaitOne();
@@ -3576,13 +3621,19 @@ class MouseFocus
                 if (under == IntPtr.Zero) continue;
                 IntPtr root = Native.GetAncestor(under, 2);
                 IntPtr fg = Native.GetAncestor(Native.GetForegroundWindow(), 2);
-                if (root == fg) continue;
+                IntPtr mon = MonitorFromPoint(pt, 2);
+                bool monChanged = mon != lastMon;
+                lastMon = mon;
+                // öndeki pencerenin üstünde (çoğu zaman iki monitöre yayılan masaüstü): yalnızca monitör değişimi önemli
+                if (root == fg) { if (monChanged) FocusMonitorUnder(pt); continue; }
                 // Öndeki pencere bir diyalogsa (sahibi olan ya da kalıcı çerçeveli) fare hareketi odağı ondan çalmasın:
                 // dosya seçme penceresi vb. fare gezdikçe arkaya düşüp gelmiyordu. Her zaman üstte olmak tek başına
                 // yetmez: yüzen her pencere üstte durur ve fareyle odak o pencere öne gelince tamamen duruyordu.
                 if (fg != IntPtr.Zero && (Native.GetWindow(fg, 4) != IntPtr.Zero ||
                     (Native.GetWindowLong(fg, Native.GWL_EXSTYLE) & 0x1 /*WS_EX_DLGMODALFRAME*/) != 0)) continue;
-                if (root == lastRoot) continue; // son bakılan yönetilmeyen pencere (bar, masaüstü...)
+                // son bakılan yönetilmeyen pencere (bar, masaüstü...), aynı monitörde: masaüstü iki monitöre yayılan tek
+                // pencere olduğundan monitör değişimi ayrıca izlenir
+                if (root == lastRoot && !monChanged) continue;
 
                 // Yalnızca tiling'in yönettiği ve odaktaki workspace'te görünen pencereler
                 long handle = root.ToInt64();
@@ -3607,13 +3658,16 @@ class MouseFocus
                             object hv;
                             if (w.TryGetValue("handle", out hv) && Convert.ToInt64(hv) == handle)
                             {
-                                if (!J.Bool(w, "hasFocus") && !fullscreenThere) tiling.Command("focus --container-id " + J.Str(w, "id"));
+                                if (!J.Bool(w, "hasFocus") && !fullscreenThere) HoverFocus(root, w);
                                 lastRoot = IntPtr.Zero;
                                 goto done;
                             }
                         }
                     }
-                lastRoot = root; // yönetilmiyor: tekrar sorgulama
+                // yönetilmeyen yer (bar, masaüstü, boşluk): imleç başka bir monitöre geçtiyse o monitör odaklanır (Hyprland
+                // follow_mouse); boş monitörde Super+N, Super+Ctrl+ok ve yeni pencereler oraya gider
+                FocusMonitorUnder(pt);
+                lastRoot = root; // tekrar sorgulama
                 done:;
             }
             catch (Exception ex) { Slider.Log("mousefocus: " + ex.GetBaseException().Message); }

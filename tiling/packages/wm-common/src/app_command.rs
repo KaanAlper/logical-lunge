@@ -353,6 +353,10 @@ pub struct InvokeFocusCommand {
 
   #[clap(long)]
   pub recent_workspace: bool,
+
+  /// The pointer caused this focus: no cursor jump afterwards.
+  #[clap(long)]
+  pub no_cursor_jump: bool,
 }
 
 #[derive(Args, Clone, Debug, PartialEq, Serialize)]
