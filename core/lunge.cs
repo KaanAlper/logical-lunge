@@ -3884,7 +3884,7 @@ static class ShellWatchdog
             Slider.Log("test: handles-after-gc " + me.HandleCount + " (before " + raw + ")");
         }
         using (var me = Process.GetCurrentProcess())
-            Slider.Log("test: handles " + me.HandleCount + " threads " + me.Threads.Count + " private " + (me.PrivateMemorySize64 >> 20) + "MB gc " + GC.CollectionCount(2) + " " + Toasts.TestStats());
+            Slider.Log("test: handles " + me.HandleCount + " threads " + me.Threads.Count + " private " + (me.PrivateMemorySize64 >> 20) + "MB gc " + GC.CollectionCount(2) + " " + Toasts.TestStats() + " " + NativeInput.TestStats());
     }
     static int AliveBars()
     {
