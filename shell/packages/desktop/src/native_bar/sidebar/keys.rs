@@ -121,7 +121,7 @@ pub(super) struct Keys {
   busy: bool,
 }
 
-const GROUPS: [(&str, &str, &str); 4] = [("win", "Pencereler", "select_window"), ("ws", "Workspace", "view_carousel"), ("app", "Uygulamalar", "apps"), ("sys", "Sistem", "settings")];
+const GROUPS: [(&str, &str, &str); 5] = [("win", "Pencereler", "select_window"), ("ws", "Workspace", "view_carousel"), ("mon", "Monitörler", "monitor"), ("app", "Uygulamalar", "apps"), ("sys", "Sistem", "settings")];
 const SHAKE: Duration = Duration::from_millis(420);
 const FOOTER_H: f32 = 56.0;
 
@@ -159,6 +159,7 @@ fn ll_label(id: &str) -> String {
     "sidebar" => "Sağ panel",
     "notifications" => "Bildirimler",
     "task-manager" => "Görev Yöneticisi",
+    "focus-urgent-or-last" => "Dikkat isteyen pencereye git",
     _ => "",
   };
   if !fixed.is_empty() {
@@ -202,6 +203,16 @@ fn tiling_label(cmds: &[String]) -> String {
     "wm-cycle-focus" => "Yüzen / döşeli pencereler arasında geç",
     "resize --width -10%" => "Pencereyi daralt",
     "resize --width +10%" => "Pencereyi genişlet",
+    "split-ratio -0.1" => "Bölme oranını azalt",
+    "split-ratio 0.1" => "Bölme oranını artır",
+    "focus --prev-active-workspace-on-monitor" => "Bu monitörde önceki dolu workspace",
+    "focus --next-active-workspace-on-monitor" => "Bu monitörde sonraki dolu workspace",
+    "focus --workspace-in-direction left" => "Soldaki monitöre geç",
+    "focus --workspace-in-direction right" => "Sağdaki monitöre geç",
+    "move --workspace-in-direction left ; focus --workspace-in-direction left" => "Pencereyi soldaki monitöre gönder",
+    "move --workspace-in-direction right ; focus --workspace-in-direction right" => "Pencereyi sağdaki monitöre gönder",
+    "move-workspace --direction left" => "Workspace'i soldaki monitöre taşı",
+    "move-workspace --direction right" => "Workspace'i sağdaki monitöre taşı",
     "wm-enable-binding-mode --name resize" => "Boyutlandırma modu",
     "shell-exec ms-settings:" => "Windows ayarları",
     "shell-exec sndvol" => "Ses karıştırıcı",
@@ -222,7 +233,9 @@ fn tiling_label(cmds: &[String]) -> String {
 
 fn tiling_group(cmds: &[String]) -> &'static str {
   let c = cmds.join(" ");
-  if c.contains("workspace") {
+  if c.contains("workspace-in-direction") || c.starts_with("move-workspace") {
+    "mon"
+  } else if c.contains("workspace") {
     "ws"
   } else if c.contains("shell-exec") {
     "app"
@@ -1001,6 +1014,9 @@ mod tests {
     assert_eq!(tiling_group(&c("shell-exec wezterm")), "app");
     assert_eq!(tiling_group(&c("wm-exit")), "sys");
     assert_eq!(tiling_group(&c("toggle-fullscreen")), "win");
+    assert_eq!(tiling_group(&c("move-workspace --direction left")), "mon");
+    assert_eq!(tiling_group(&c("focus --workspace-in-direction right")), "mon");
+    assert_eq!(tiling_group(&c("focus --next-active-workspace-on-monitor")), "ws");
   }
 
   #[test]
