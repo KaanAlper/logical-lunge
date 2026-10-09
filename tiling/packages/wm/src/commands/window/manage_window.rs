@@ -457,14 +457,16 @@ fn insertion_target(
   ))
 }
 
-/// Places a new tiling window like Hyprland's dwindle layout
-/// (`onWindowCreatedTiling` with `force_split = 0`).
+/// Places a new tiling window like Hyprland's dwindle layout (`addTarget`
+/// with `use_active_for_splits = 1`, Hyprland's default, kept by
+/// illogical-impulse).
 ///
-/// The window under the cursor (or else the previously focused tiling
-/// window) is split along its longer side, and the new window takes the
-/// half the cursor is over. Without `use_cursor`, the last focused window
-/// is split and the new window takes the second half, which builds
-/// Hyprland's spiral when windows are managed one after another.
+/// The focused window is split when it's a tiling window on the same
+/// workspace; otherwise the window closest to the cursor (by distance to
+/// its node box, 0 inside it). The new window takes the half of the split
+/// on the cursor's side (`force_split = 0`). Without `use_cursor` (managed
+/// on startup), the last focused window is split and the new window takes
+/// the second half, which builds Hyprland's spiral.
 pub fn dwindle_place(
   window: &TilingWindow,
   use_cursor: bool,
@@ -493,17 +495,33 @@ pub fn dwindle_place(
     None
   };
 
-  let under_cursor = cursor.as_ref().and_then(|cursor| {
-    others.iter().find(|other| {
-      other
-        .to_rect()
-        .is_ok_and(|rect| rect.contains_point(cursor))
-    })
-  });
+  let focused = state
+    .focused_container()
+    .and_then(|container| container.as_tiling_window().cloned())
+    .filter(|focused| {
+      focused.id() != window.id()
+        && others.iter().any(|other| other.id() == focused.id())
+    });
 
-  let target = match under_cursor {
-    Some(target) => Some(target.clone()),
-    None => workspace
+  let target = match (focused, &cursor) {
+    (Some(focused), _) => Some(focused),
+    (None, Some(cursor)) => {
+      // (the window is already detached: a box that can't be measured
+      // is skipped rather than failing and losing the window)
+      let measured = others
+        .iter()
+        .filter_map(|other| {
+          crate::traits::node_box(&other.clone().into())
+            .ok()
+            .map(|node| (other, node))
+        })
+        .collect::<Vec<_>>();
+      let boxes = measured.iter().map(|(_, node)| *node).collect::<Vec<_>>();
+      #[allow(clippy::cast_lossless)]
+      crate::dwindle_math::closest((cursor.x as f64, cursor.y as f64), &boxes)
+        .map(|index| measured[index].0.clone())
+    }
+    (None, None) => workspace
       .descendant_focus_order()
       .find_map(|container| match container.as_tiling_container() {
         Ok(TilingContainer::TilingWindow(other)) => Some(other),

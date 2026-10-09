@@ -18,11 +18,17 @@ pub fn resize_tiling_container(
 
   // Prevent the container from being smaller than the minimum size, and
   // larger than the space available from sibling containers.
+  // Logical Lunge: a binary dwindle split keeps Hyprland's ratio range
+  // (0.1..1.9, i.e. each side 5%..95% of the split).
   #[allow(clippy::cast_precision_loss)]
-  let clamped_target_size = target_size.clamp(
-    MIN_TILING_SIZE,
-    1. - (tiling_siblings.len() as f32 * MIN_TILING_SIZE),
-  );
+  let clamped_target_size = if tiling_siblings.len() == 1 {
+    target_size.clamp(0.05, 0.95)
+  } else {
+    target_size.clamp(
+      MIN_TILING_SIZE,
+      1. - (tiling_siblings.len() as f32 * MIN_TILING_SIZE),
+    )
+  };
 
   let size_delta = clamped_target_size - container_to_resize.tiling_size();
   container_to_resize.set_tiling_size(clamped_target_size);

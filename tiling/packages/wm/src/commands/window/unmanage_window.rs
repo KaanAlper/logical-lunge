@@ -73,13 +73,21 @@ pub fn unmanage_window(
     unmanaged_handle: window.native().id().0 as isize,
   });
 
+  // Hyprland's `getNextCandidate`: the window whose node box is closest to
+  // the closed window's middle (the middle may fall in a gap between two
+  // windows now, where "the window containing it" found none).
   let focus_target = freed_center
     .zip(workspace)
     .and_then(|(center, workspace)| {
-      workspace
+      let candidates = workspace
         .descendants()
         .filter(|c| c.as_tiling_window().is_some())
-        .find(|c| c.to_rect().is_ok_and(|rect| rect.contains_point(&center)))
+        .filter_map(|c| crate::traits::node_box(&c).ok().map(|node| (c, node)))
+        .collect::<Vec<_>>();
+      let boxes = candidates.iter().map(|(_, node)| *node).collect::<Vec<_>>();
+      #[allow(clippy::cast_lossless)]
+      crate::dwindle_math::closest((center.x as f64, center.y as f64), &boxes)
+        .map(|index| candidates[index].0.clone())
     })
     .or(focus_target);
 
