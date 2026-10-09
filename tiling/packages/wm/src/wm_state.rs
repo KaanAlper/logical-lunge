@@ -627,6 +627,14 @@ impl WmState {
                 .is_none_or(|bound| bound.id() == monitor.id()),
             }
           });
+        // Hyprland's r-1 with nothing usable below goes to workspace 1
+        // (its monitor gets the focus if 1 lives elsewhere); r+1 stops
+        let target_name = target_name.or_else(|| {
+          (step < 0)
+            .then(|| names.first().cloned())
+            .flatten()
+            .filter(|first| *first != origin_name)
+        });
         let target_workspace = target_name
           .as_ref()
           .and_then(|name| self.workspace_by_name(name));

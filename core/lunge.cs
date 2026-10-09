@@ -817,7 +817,7 @@ class Slider
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
     // Hyprland r+1 / r-1 (pencere yöneticisinin --next/--prev-workspace'iyle aynı kural): config sırasında bu monitörde
     // yaşayan ya da açılacak bir sonraki workspace; başka monitörde gösterilen ya da başka monitöre bağlı olanlar atlanır,
-    // uçta başa sarılmaz (1'de sola basınca 30'a gitmiyordu artık). Yoksa null.
+    // uçta başa sarılmaz (1'de sola basınca 30'a gidiyordu). r+1 sonda durur (null); r-1 altında yoksa 1'e gider.
     static string AdjacentWorkspace(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string current, int direction)
     {
         try {
@@ -831,6 +831,8 @@ class Slider
                 string name = entries[i].Number.ToString();
                 if (OnMonitor(mons, mon, name, entries[i].Monitor)) return name;
             }
+            // r-1 with nothing usable below: workspace 1 (on its own monitor), as Hyprland
+            if (direction < 0 && index > 0) return entries[0].Number.ToString();
         } catch { }
         return null;
     }
