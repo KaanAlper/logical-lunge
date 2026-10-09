@@ -8,6 +8,7 @@
 mod anim;
 mod brightness;
 mod core_api;
+mod corners;
 mod desktop_menu;
 mod desktop_shell;
 mod dialog;
@@ -558,6 +559,8 @@ struct Bar {
   fg: Layer,
   /// this bar's "alive" id for the core's watchdog
   alive_id: String,
+  /// the hug corners under the bar and the screen's rounded bottom corners
+  corners: Option<corners::Corners>,
   frame: view::Frame,
   hover: Option<HitKind>,
   hover_left: bool,
@@ -1511,6 +1514,14 @@ impl Ui {
       if !self.demo {
         core_api::post_async(format!("/bar-alive?id={}", alive_id));
       }
+      // not in a test run next to the running shell (its own corners are there)
+      let corners = if self.demo {
+        None
+      } else {
+        corners::Corners::new(rc, h, scale, self.theme().layer0)
+          .inspect_err(|err| tracing::warn!("Bar corners: {:?}", err))
+          .ok()
+      };
       Ok(Bar {
         hwnd,
         _drop_target: drop_target,
@@ -1529,6 +1540,7 @@ impl Ui {
         pill_idx: None,
         fg,
         alive_id,
+        corners,
         frame: view::Frame::default(),
         hover: None,
         hover_left: false,
@@ -1850,6 +1862,13 @@ impl Ui {
   fn redraw_all(&mut self) {
     for i in 0..self.bars.len() {
       self.redraw(i);
+    }
+    // the hug corners follow the bar's colour (they paint only when it changed)
+    let bar = self.theme().layer0;
+    for b in self.bars.iter_mut() {
+      if let Some(c) = b.corners.as_mut() {
+        c.set_bar_color(bar);
+      }
     }
     // a theme change reaches the keyboard too
     if self.osk.is_some() {
