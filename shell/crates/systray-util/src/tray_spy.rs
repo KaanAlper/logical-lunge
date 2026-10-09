@@ -1,4 +1,4 @@
-use std::{os::raw::c_void, sync::OnceLock, thread::JoinHandle};
+use std::{os::raw::c_void, sync::Mutex, thread::JoinHandle};
 
 use tokio::sync::mpsc;
 use windows::{
@@ -24,7 +24,7 @@ use windows::{
       },
       WindowsAndMessaging::{
         DefWindowProcW, FindWindowW, GetWindowThreadProcessId, PostMessageW,
-        RegisterWindowMessageW, SendMessageW, SendNotifyMessageW,
+        RegisterWindowMessageW, SendMessageTimeoutW, SendMessageW, SendNotifyMessageW, SMTO_ABORTIFHUNG, SMTO_BLOCK,
         SetTimer, SetWindowPos, HWND_BROADCAST, HWND_TOPMOST,
         SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_ACTIVATEAPP,
         WM_COMMAND, WM_COPYDATA, WM_TIMER, WM_USER,
@@ -39,8 +39,20 @@ use crate::Util;
 /// Global instance of sender for tray events.
 ///
 /// For use with window procedure.
-static TRAY_EVENT_TX: OnceLock<mpsc::UnboundedSender<TrayEvent>> =
-  OnceLock::new();
+/// A `Mutex<Option<..>>` (not a `OnceLock`): a new spy replaces the sender
+/// of one whose receiver is gone, and a missing sender is skipped instead
+/// of panicking inside the window procedure (a panic crossing an
+/// `extern "system"` function aborts the whole shell).
+static TRAY_EVENT_TX: Mutex<Option<mpsc::UnboundedSender<TrayEvent>>> =
+  Mutex::new(None);
+
+/// The current tray event sender, if any.
+fn tray_event_tx() -> Option<mpsc::UnboundedSender<TrayEvent>> {
+  TRAY_EVENT_TX
+    .lock()
+    .unwrap_or_else(std::sync::PoisonError::into_inner)
+    .clone()
+}
 
 const TB_BUTTONCOUNT: u32 = WM_USER + 24;
 const TB_GETBUTTON: u32 = WM_USER + 23;
@@ -251,9 +263,9 @@ impl TraySpy {
     let (event_tx, event_rx) = mpsc::unbounded_channel();
 
     // Add the sender for tray events to global state.
-    TRAY_EVENT_TX
-      .set(event_tx)
-      .expect("Tray event sender already set.");
+    *TRAY_EVENT_TX
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(event_tx);
 
     let spy = Self {
       window_thread: Some(Self::spawn()?),
@@ -288,8 +300,10 @@ impl TraySpy {
     // system and every window hook ten times a second).
     unsafe { SetTimer(HWND(window as _), 1, 250, None) };
 
-    let event_tx =
-      TRAY_EVENT_TX.get().expect("Tray event sender not set.");
+    let Some(event_tx) = tray_event_tx() else {
+      tracing::warn!("Tray spy started without an event sender.");
+      return Ok(());
+    };
 
     Self::refresh_icons()?;
 
@@ -311,6 +325,20 @@ impl TraySpy {
   }
 
   extern "system" fn window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+  ) -> LRESULT {
+    // a panic must not cross into Windows (it would abort the shell)
+    std::panic::catch_unwind(|| Self::window_proc_inner(hwnd, msg, wparam, lparam))
+      .unwrap_or_else(|_| {
+        tracing::error!("Tray spy: a message (0x{msg:x}) failed; ignored.");
+        LRESULT(0)
+      })
+  }
+
+  fn window_proc_inner(
     hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
@@ -357,9 +385,6 @@ impl TraySpy {
         let tray_message =
           unsafe { &*copy_data.lpData.cast::<ShellTrayMessage>() };
 
-        let event_tx =
-          TRAY_EVENT_TX.get().expect("Tray event sender not set.");
-
         let tray_event =
           match NOTIFY_ICON_MESSAGE(tray_message.message_type) {
             NIM_ADD => {
@@ -376,8 +401,12 @@ impl TraySpy {
 
         tracing::debug!("Tray event: {:?}", tray_event);
 
-        if let Some(event) = tray_event {
-          event_tx.send(event).expect("Failed to send tray event.");
+        // a provider that stopped (receiver gone) loses the event, the
+        // window procedure goes on
+        if let (Some(event), Some(event_tx)) = (tray_event, tray_event_tx()) {
+          if event_tx.send(event).is_err() {
+            tracing::debug!("Tray event dropped: the tray provider is gone.");
+          }
         }
 
         Self::forward_message(hwnd, msg, wparam, lparam)
@@ -594,7 +623,24 @@ impl TraySpy {
       unsafe { PostMessageW(HWND(real_tray as _), msg, wparam, lparam) };
       unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
     } else {
-      unsafe { SendMessageW(HWND(real_tray as _), msg, wparam, lparam) }
+      // Bounded: every app's Shell_NotifyIcon waits on this call, and an
+      // Explorer paging under a game's memory pressure stalled them all.
+      let mut result = 0usize;
+      let sent = unsafe {
+        SendMessageTimeoutW(
+          HWND(real_tray as _),
+          msg,
+          wparam,
+          lparam,
+          SMTO_ABORTIFHUNG | SMTO_BLOCK,
+          500,
+          Some(&mut result),
+        )
+      };
+      if sent.0 == 0 {
+        tracing::debug!("Tray: Explorer did not answer 0x{msg:x} in time.");
+      }
+      LRESULT(result as isize)
     }
   }
 }
