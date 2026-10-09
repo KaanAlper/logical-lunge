@@ -1,6 +1,7 @@
 use anyhow::Context;
 use tracing::{info, warn};
-use wm_common::WindowState;
+use wm_common::{TilingDirection, WindowState};
+use wm_platform::{Direction, Point};
 
 use crate::{
   commands::{
@@ -8,10 +9,10 @@ use crate::{
       move_container_within_tree, normalize_split_containers,
       replace_container,
     },
-    window::dwindle_place,
+    window::{dwindle_place, dwindle_split, DwindlePlacement},
   },
-  models::{InsertionTarget, WindowContainer},
-  traits::{CommonGetters, TilingSizeGetters, WindowGetters},
+  models::{Container, InsertionTarget, TilingContainer, TilingWindow, WindowContainer},
+  traits::{CommonGetters, TilingDirectionGetters, TilingSizeGetters, WindowGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -53,6 +54,12 @@ fn set_tiling(
   let workspace =
     window.workspace().context("Window has no workspace.")?;
 
+  // Coming out of fullscreen or maximize it goes back to its tile (as in
+  // Hyprland, where fullscreen never takes a window out of its layout).
+  let memory = matches!(window.state(), WindowState::Fullscreen(_))
+    .then(|| window.insertion_target())
+    .flatten();
+
   let tiling_window = window.to_tiling(config.value.gaps.clone());
 
   // Replace the original window with the created tiling window.
@@ -63,9 +70,12 @@ fn set_tiling(
   )?;
 
   // Like Hyprland, a window that becomes tiled again (e.g. restored after
-  // Win+D minimized everything) is re-inserted with the dwindle split of the
-  // last focused tiling window instead of returning to its old column.
-  dwindle_place(&tiling_window, false, state, config)?;
+  // Win+D minimized everything, or a floating one tiled) is re-inserted
+  // with the dwindle split of the last focused tiling window instead of
+  // returning to its old column.
+  if !restore_tile(&tiling_window, memory, state, config)? {
+    dwindle_place(&tiling_window, false, state, config)?;
+  }
   normalize_split_containers(&workspace.clone().into())?;
 
   let target_parent = tiling_window.parent().context("No parent.")?;
@@ -76,6 +86,87 @@ fn set_tiling(
     .queue_workspace_to_reorder(workspace);
 
   Ok(tiling_window.into())
+}
+
+/// Puts a window back where it was in its workspace's layout before it left
+/// it (fullscreen, maximize): in its old split at its old index, or, when
+/// that split collapsed (two tiles, one left), split again from the tile
+/// that was next to it, on the same side and along the same direction.
+/// Its old share of the split comes back too. False when neither place
+/// exists any more (it then goes where a new window would).
+fn restore_tile(
+  window: &TilingWindow,
+  memory: Option<InsertionTarget>,
+  state: &WmState,
+  config: &UserConfig,
+) -> anyhow::Result<bool> {
+  let Some(memory) = memory else { return Ok(false) };
+  let workspace_id = window.workspace().map(|workspace| workspace.id());
+  let here = |container: &Container| {
+    !container.is_detached()
+      && container.workspace().map(|workspace| workspace.id()) == workspace_id
+  };
+
+  if here(&memory.target_parent)
+    && memory.target_parent.as_direction_container().is_ok()
+  {
+    let index = memory
+      .target_index
+      .min(memory.target_parent.child_count());
+    move_container_within_tree(
+      &window.clone().into(),
+      &memory.target_parent,
+      index,
+      state,
+    )?;
+    restore_share(window, memory.prev_tiling_size);
+    return Ok(true);
+  }
+
+  if let (Some(neighbour), Some(direction)) =
+    (&memory.neighbour, &memory.direction)
+  {
+    if let Ok(TilingContainer::TilingWindow(neighbour)) =
+      neighbour.as_tiling_container()
+    {
+      if here(&neighbour.clone().into()) {
+        let side = match (direction, memory.was_first) {
+          (TilingDirection::Horizontal, true) => Direction::Left,
+          (TilingDirection::Horizontal, false) => Direction::Right,
+          (TilingDirection::Vertical, true) => Direction::Up,
+          (TilingDirection::Vertical, false) => Direction::Down,
+        };
+        dwindle_split(
+          window,
+          &neighbour,
+          &Point { x: 0, y: 0 },
+          DwindlePlacement::Swap(&side),
+          config,
+        )?;
+        restore_share(window, memory.prev_tiling_size);
+        return Ok(true);
+      }
+    }
+  }
+
+  Ok(false)
+}
+
+/// The window takes `size` of its split again; its siblings share the rest
+/// in their current proportions.
+fn restore_share(window: &TilingWindow, size: f32) {
+  if !(size > 0.0 && size < 1.0) {
+    return;
+  }
+  let siblings = window.tiling_siblings().collect::<Vec<_>>();
+  let rest: f32 = siblings.iter().map(TilingSizeGetters::tiling_size).sum();
+  if siblings.is_empty() || rest <= 0.0 {
+    return;
+  }
+  for sibling in &siblings {
+    sibling.set_tiling_size(sibling.tiling_size() * (1.0 - size) / rest);
+  }
+  window.set_tiling_size(size);
 }
 
 /// Updates the state of a window to be either `WindowState::Floating`,
@@ -128,6 +219,24 @@ fn set_non_tiling(
     WindowContainer::TilingWindow(window) => {
       let parent = window.parent().context("No parent")?;
 
+      // The tile next to it, and its side of the split, for coming back
+      // (Hyprland keeps a fullscreen window in the layout; here it leaves
+      // the tree and returns to where it was, see `restore_tile`).
+      let neighbour = window
+        .prev_siblings()
+        .find(|sibling| sibling.as_tiling_container().is_ok())
+        .map(|sibling| (sibling, false))
+        .or_else(|| {
+          window
+            .next_siblings()
+            .find(|sibling| sibling.as_tiling_container().is_ok())
+            .map(|sibling| (sibling, true))
+        });
+      let direction = parent
+        .as_direction_container()
+        .ok()
+        .map(|parent| parent.tiling_direction());
+
       let non_tiling_window = window.to_non_tiling(
         target_state.clone(),
         Some(InsertionTarget {
@@ -135,6 +244,9 @@ fn set_non_tiling(
           target_index: window.index(),
           prev_tiling_size: window.tiling_size(),
           prev_sibling_count: window.tiling_siblings().count(),
+          was_first: neighbour.as_ref().is_some_and(|(_, first)| *first),
+          neighbour: neighbour.map(|(sibling, _)| sibling),
+          direction,
         }),
       );
 
