@@ -533,7 +533,7 @@ impl Ui {
         }
       }
       "folder" => {
-        let _ = std::process::Command::new("explorer").arg(format!("/select,{}", t.path)).spawn();
+        crate::common::windows::reveal_in_explorer(t.path.clone(), |err| crate::bus::publish(crate::bus::Event::Toast(serde_json::json!({ "kind": "error", "title": "Dosya konumu açılamadı", "body": err, "icon": "folder_off" }))));
       }
       "remove" => {
         let text = if g == G::Savers { t.name.clone() } else if t.name.is_empty() { file_name(&t.path) } else { t.name.clone() };

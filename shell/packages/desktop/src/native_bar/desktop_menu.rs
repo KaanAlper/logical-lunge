@@ -228,7 +228,7 @@ impl Ui {
       "rename" => d.rename(),
       "location" => {
         if let Some(target) = &first.target {
-          let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{target}\"")).spawn();
+          crate::common::windows::reveal_in_explorer(target.clone(), |err| crate::bus::publish(crate::bus::Event::Toast(serde_json::json!({ "kind": "error", "title": "Dosya konumu açılamadı", "body": err, "icon": "folder_off" }))));
         }
       }
       _ => {}

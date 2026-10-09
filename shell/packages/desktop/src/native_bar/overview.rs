@@ -2277,7 +2277,7 @@ impl Ui {
       "folder" => {
         if let Some(file) = file {
           ui.overview_hide();
-          let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{file}\"")).spawn();
+          crate::common::windows::reveal_in_explorer(file.clone(), |err| crate::bus::publish(crate::bus::Event::Toast(serde_json::json!({ "kind": "error", "title": "Dosya konumu açılamadı", "body": err, "icon": "folder_off" }))));
         }
       }
       "uninstall" => {
