@@ -189,6 +189,9 @@ if ($hookIdle -gt $MAX_HOOK_SLOW_IDLE) { Fail "keyboard hook slow $hookIdle time
 if ($hookLoad -gt $MAX_HOOK_SLOW_LOAD) { Fail "keyboard hook slow $hookLoad times under load (max $MAX_HOOK_SLOW_LOAD)" }
 foreach ($e in $run) { if ($e.Text -match 'kancası girdi görmüyordu') { Fail "input hook dropped by Windows: $($e.Text)" } }
 
+# the core's own handle/thread/connection report (LL_TEST=1, every 30 s): printed for diagnosis
+foreach ($e in @($run | Where-Object { $_.Text -match '^test: handles ' })) { Note "$($e.At.ToString('HH:mm:ss')) $($e.Text)" }
+
 # bar heartbeats (core logs "test: bars <windows> alive <recent>" every 30 s with LL_TEST=1)
 $beats = @(In-Phase $tIdle $tEnd.AddSeconds(20) | Where-Object { $_.Text -match '^test: bars (\d+) alive (\d+)' } | ForEach-Object {
     $null = $_.Text -match '^test: bars (\d+) alive (\d+)'; [pscustomobject]@{ At = $_.At; Windows = [int]$Matches[1]; Alive = [int]$Matches[2] } })
