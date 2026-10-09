@@ -235,6 +235,9 @@ static class CoreRegression
         Check(BorderLook.Rewrite("gaps: {}\n", "ii", "#b69df8") == "gaps: {}\n", "A config without borders must stay as it is");
         Check(BorderLook.Rewrite(yaml.Replace("\n", "\r\n"), "ii", "#b69df8") == ii.Replace("\n", "\r\n"), "CRLF config lost its line endings");
         Check(BorderLook.Current(new Dictionary<string, object> { { "borderStyle", "ii" } }) == "ii" && BorderLook.Current(new Dictionary<string, object>()) == "accent", "borderStyle pref read wrongly");
+        string wall = BorderLook.WithColors(ii, "#5a4f3d77", "#1e1b1633");
+        Check(wall.Contains("active_color: \"#5a4f3d77\"") && wall.Contains("inactive_color: \"#1e1b1633\"") && wall.Contains("border_width: 1") && wall.Contains("focus_flash: 0"), "Wallpaper border colours changed more than the two colours");
+        Check(!BorderLook.SetColors("#12345", "#1e1b1633") && !BorderLook.SetColors("#5a4f3d77", null), "Invalid wallpaper border colours were accepted");
         Console.WriteLine("PASS: border style rewrites only its own keys and round-trips");
     }
 

@@ -19,6 +19,7 @@ mod pops;
 mod palette;
 mod search;
 mod view;
+mod wallcolors;
 mod wm;
 
 use std::{
@@ -117,6 +118,8 @@ enum Msg {
   Core(Option<String>),
   /// the core asks a question (`POST /dialog`, `lunge.exe --ask`)
   Dialog(serde_json::Value),
+  /// the wallpaper's source colour, read on another thread (wallcolors)
+  WallSeed(Option<[u8; 3]>),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -365,6 +368,12 @@ struct Ui {
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
   emit: Box<dyn Fn(&str) + Send + Sync>,
+  /// colours from the wallpaper (prefs.json "wallpaperColors"): its source
+  /// colour once read, whether a read is running, the border colours last
+  /// handed to the core
+  wall_seed: Option<[u8; 3]>,
+  wall_reading: bool,
+  wall_border: Option<(String, String)>,
 }
 
 thread_local! {
@@ -457,6 +466,9 @@ fn ui_thread(
         pops: Default::default(),
         pack_dir: opts.pack_dir.clone(),
         emit: opts.emit,
+        wall_seed: None,
+        wall_reading: false,
+        wall_border: None,
       })
     });
     if ABORTED.load(Ordering::Acquire) {
@@ -651,6 +663,10 @@ impl Ui {
         if msg == WM_SETTINGCHANGE && self.fonts.refresh_text_scale() {
           self.redraw_all();
         }
+        // a new wallpaper: its colours are read again when they are in use
+        if msg == WM_SETTINGCHANGE && wp.0 == SPI_SETDESKWALLPAPER.0 as usize && self.custom_theme.is_some() && model::prefs(&self.pack_dir)["wallpaperColors"].as_bool() == Some(true) {
+          self.wall_read();
+        }
         unsafe {
           let _ = PostMessageW(self.msg_hwnd, WM_APP_REBUILD, WPARAM(0), LPARAM(0));
         }
@@ -768,6 +784,13 @@ impl Ui {
         Msg::Temps(t) => self.got_temps(t),
         Msg::Art(title, bytes) => self.got_art(title, bytes),
         Msg::Core(evt) => self.core_event(evt),
+        Msg::WallSeed(seed) => {
+          self.wall_reading = false;
+          if seed.is_some() && seed != self.wall_seed {
+            self.wall_seed = seed;
+            self.reload_custom_theme();
+          }
+        }
         Msg::Dialog(d) => self.core_dialog(d),
         Msg::Wm(state) => self.model.wm = state,
         Msg::Apps(apps) => self.icons.set_apps(apps),
@@ -1017,7 +1040,15 @@ impl Ui {
 
   fn reload_custom_theme(&mut self) {
     let prefs = model::prefs(&self.pack_dir);
-    self.custom_theme = Some(palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light));
+    let wall = prefs["wallpaperColors"].as_bool() == Some(true);
+    self.custom_theme = Some(match self.wall_seed.filter(|_| wall) {
+      Some(seed) => wallcolors::theme(seed, self.model.light),
+      None => palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light),
+    });
+    self.wall_borders(wall, prefs["borderStyle"].as_str() == Some("ii"));
+    if wall && self.wall_seed.is_none() {
+      self.wall_read();
+    }
     self.redraw_all();
     self.pops_repaint();
   }
@@ -1204,6 +1235,31 @@ impl Ui {
       _ => return,
     };
     self.set_light(light);
+  }
+
+  /// Reads the wallpaper's source colour on another thread (Msg::WallSeed).
+  fn wall_read(&mut self) {
+    if self.wall_reading {
+      return;
+    }
+    self.wall_reading = true;
+    std::thread::spawn(|| send(Msg::WallSeed(wallcolors::seed())));
+  }
+
+  /// The window borders follow the wallpaper's scheme while its colours are
+  /// on, and get the border style's own colours back when they go off. The
+  /// core is told only when that changes.
+  fn wall_borders(&mut self, wall: bool, ii: bool) {
+    let want = self.wall_seed.filter(|_| wall).map(|seed| wallcolors::border(seed, self.model.light, ii));
+    if want == self.wall_border {
+      return;
+    }
+    let path = match &want {
+      Some((a, i)) => format!("/border-color?a={}&i={}", a.replace('#', "%23"), i.replace('#', "%23")),
+      None => "/border-color?reset=1".to_string(),
+    };
+    self.wall_border = want;
+    core_api::post_async(path);
   }
 
   fn set_light(&mut self, light: bool) {

@@ -660,6 +660,9 @@
                 <Seg items={[['accent', 'Vurgu', 'palette'], ['ii', 'ii (nötr, 1px, kalıcı)', 'border_style']]} value={s.borderStyle === 'ii' ? 'ii' : 'accent'}
                   onChange={v => helper(['--set-pref', 'borderStyle', v]).then(() => update({ borderStyle: v })).catch(() => {})} />
               </Row>
+              <Row icon="wallpaper" label="Renkleri duvar kâğıdından al">
+                <Switch on={s.wallpaperColors === true} onChange={v => helper(['--set-pref', 'wallpaperColors', String(v)]).then(() => update({ wallpaperColors: v })).catch(() => {})} />
+              </Row>
             </div>
             <div className="sec-title">Arayüz ölçeği</div>
             <div className="card">

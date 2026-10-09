@@ -39,6 +39,8 @@ futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { workspace = true }
+# colours from the wallpaper (Material Color Utilities: quantize, score, schemes)
+material-colors = { version = "0.5", features = ["quantize"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 systray-util = { path = "../../crates/systray-util" }
