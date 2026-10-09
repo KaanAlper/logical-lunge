@@ -5733,7 +5733,7 @@ static class TilingWatchdog
         var ipc = new TilingClient();
         Process wm = null;
         bool wanted = false;  // tiling çalışmalı mı: çalışırken görüldü ve kasıtlı kapanmadı
-        int missing = 0, hung = 0, tick = 0, starts = 0, nextStartAt = 0;
+        int missing = 0, hung = 0, tick = 0, starts = 0, nextStartAt = 0, spin = 0;
         bool portNoted = false;
         while (true)
         {
@@ -5809,8 +5809,19 @@ static class TilingWatchdog
                 // uykudan dönüşte yanlış alarm vermez.
                 if (++tick % 3 != 0) continue;
                 if ((DateTime.Now - wm.StartTime).TotalSeconds < 30) { hung = 0; continue; }
-                if (PingWithTimeout(ipc, 8000)) { hung = 0; continue; }
-                if (++hung < 3) { Slider.Log("tiling nöbetçisi: tiling yanıt vermedi (" + hung + "/3)"); continue; }
+                TimeSpan cpuBefore = TimeSpan.Zero;
+                try { wm.Refresh(); cpuBefore = wm.TotalProcessorTime; } catch { }
+                if (PingWithTimeout(ipc, 8000)) { hung = 0; spin = 0; continue; }
+                // Yanıt yok ama işlemci zamanı ilerliyor: meşgul (yük altındaki makinede yavaş), donmuş değil. Oyun önde
+                // iken (sistem dolu) sınır iki katı. Ağır yük altında sağlıklı bir pencere yöneticisi öldürülüp masaüstü
+                // oyunun ortasında yeniden başlatılmasın.
+                bool busy = false;
+                try { wm.Refresh(); busy = WmBusy(cpuBefore, wm.TotalProcessorTime); } catch { }
+                // (sonsuz döngüde dönen bir pencere yöneticisi de meşgul görünür: ~5 dakika sürerse donmuş sayılır)
+                if (busy && ++spin < 20) { Slider.Log("tiling nöbetçisi: tiling yanıt vermedi ama çalışıyor (meşgul); beklendi"); continue; }
+                if (busy) { spin = 0; hung = HungLimit(true); }
+                int limit = HungLimit(WidgetWindows.Busy());
+                if (++hung < limit) { Slider.Log("tiling nöbetçisi: tiling yanıt vermedi (" + hung + "/" + limit + ")"); continue; }
                 hung = 0;
                 if (Maint.Quiet()) continue;
                 Slider.Log("tiling nöbetçisi: tiling 15 sn'den uzun yanıt vermedi; kapatılıyor");
@@ -5820,6 +5831,15 @@ static class TilingWatchdog
             catch (Exception ex) { Slider.Log("tiling nöbetçisi: " + ex.Message); if (wm != null) { try { wm.Dispose(); } catch { } wm = null; } }
         }
     }
+
+    // Yanıtsız bir yoklama süresince pencere yöneticisi işlemci kullandıysa (en az 50 ms) meşguldür, donmuş değil
+    internal static bool WmBusy(TimeSpan before, TimeSpan after)
+    {
+        return before > TimeSpan.Zero && (after - before).TotalMilliseconds >= 50;
+    }
+
+    // Üst üste kaç yanıtsız yoklama donma sayılır: oyun / tam ekran sunum sürerken iki katı
+    internal static int HungLimit(bool gameRunning) { return gameRunning ? 6 : 3; }
 
     // Monitor ile bekler: çekirdek nesnesi yok (her çağrıda bir olay nesnesi çöp toplayıcıya kalıyordu; kapatmak da olmazdı,
     // geç cevap veren iş parçacığı kapanmış nesneye yazar)
@@ -5864,12 +5884,13 @@ static class TilingWatchdog
         Slider.Log("tiling nöbetçisi: " + why + "; masaüstü yeniden başlatılıyor");
         // Windows'un çökme kutusu yerine (kurulum bizim exe'lerimizi Hata Bildirimi'nden çıkarır): kabuk geri gelince görünür
         Toasts.SendLater("warn", "Pencere yöneticisi durdu, yeniden başlatıldı", why, "restart_alt");
-        foreach (var name in new[] { Names.Shell, Names.Tiling })
-            foreach (var p in Process.GetProcessesByName(name))
-            {
-                try { p.Kill(); p.WaitForExit(3000); } catch { }
-                finally { p.Dispose(); }
-            }
+        // Yalnızca pencere yöneticisi: kabuk ona yeniden bağlanır (bar, paneller ve bildirimler ekranda kalır; oyunun
+        // ortasında bütün masaüstü yanıp sönmez)
+        foreach (var p in Process.GetProcessesByName(Names.Tiling))
+        {
+            try { p.Kill(); p.WaitForExit(3000); } catch { }
+            finally { p.Dispose(); }
+        }
         Maint.RunHidden(Maint.CoreExe, "--uncloak-orphans", 15000);
         if (PortFree()) Supervisor.BringUp(false);
         else Slider.Log("tiling nöbetçisi: IPC portu hâlâ eski süreçte; boşalınca başlatılacak");

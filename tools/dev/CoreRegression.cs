@@ -81,6 +81,13 @@ static class CoreRegression
             && !Keys2.SwitchesWorkspace(new[] { "focus --direction left" }, out sd, out st), "A command that switches no workspace went through the slide");
     }
 
+    static void WmWatchdogTests() {
+        Check(TilingWatchdog.WmBusy(TimeSpan.FromMilliseconds(1000), TimeSpan.FromMilliseconds(1200)), "A window manager using the CPU must count as busy, not hung");
+        Check(!TilingWatchdog.WmBusy(TimeSpan.FromMilliseconds(1000), TimeSpan.FromMilliseconds(1010)), "A window manager without CPU time must count as hung");
+        Check(!TilingWatchdog.WmBusy(TimeSpan.Zero, TimeSpan.FromMilliseconds(500)), "An unknown start time must not count as busy");
+        Check(TilingWatchdog.HungLimit(false) == 3 && TilingWatchdog.HungLimit(true) == 6, "The hung limit must double while a game runs");
+    }
+
     static void UiScaleTests() {
         Check(UiScale.Valid(100) && UiScale.Valid(125) && !UiScale.Valid(101) && !UiScale.Valid(0), "uiScale steps were misjudged");
         Check(UiScale.TopGap(100) == 45 && UiScale.TopGap(125) == 55 && UiScale.TopGap(85) == 39, "Top gap must be the bar's height plus 5");
@@ -429,6 +436,7 @@ static class CoreRegression
         if (args.Length == 1 && args[0] == "--restart-only") return;
         TakeoverTests();
         UiScaleTests();
+        WmWatchdogTests();
         FullscreenLayerTests();
         DialogTests();
         LauncherTests();
