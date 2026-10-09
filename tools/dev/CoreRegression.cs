@@ -197,6 +197,14 @@ static class CoreRegression
         Check(Dwindle.ChangesState(new[] { "toggle-fullscreen" }) && Dwindle.ChangesState(new[] { "toggle-fullscreen --maximized" })
             && Dwindle.ChangesState(new[] { "toggle-floating --centered" }) && Dwindle.ChangesState(new[] { "toggle-fullscreen-spoof" }), "A state toggle was not animated");
         Check(!Dwindle.ChangesState(new[] { "focus --workspace 2" }) && !Dwindle.ChangesState(new[] { "toggle-tiling-direction" }), "A non-state command went through the state animation");
+        // the window manager's own workspace keys slide like ours
+        int sd; string st;
+        Check(Keys2.SwitchesWorkspace(new[] { "focus --next-workspace" }, out sd, out st) && sd == 1 && st == null, "Super+PageDown did not slide right");
+        Check(Keys2.SwitchesWorkspace(new[] { "focus --prev-active-workspace" }, out sd, out st) && sd == -1, "Super+Ctrl+Alt+Left did not slide left");
+        Check(Keys2.SwitchesWorkspace(new[] { "move --next-workspace", "focus --next-workspace" }, out sd, out st) && sd == 1, "Super+Shift+PageDown did not carry the window along");
+        Check(Keys2.SwitchesWorkspace(new[] { "focus --workspace 4" }, out sd, out st) && sd == 0 && st == "4", "A named workspace lost its name");
+        Check(!Keys2.SwitchesWorkspace(new[] { "move --workspace 3" }, out sd, out st) && !Keys2.SwitchesWorkspace(new[] { "toggle-fullscreen" }, out sd, out st)
+            && !Keys2.SwitchesWorkspace(new[] { "focus --direction left" }, out sd, out st), "A command that switches no workspace went through the slide");
     }
 
     static void DialogTests() {
