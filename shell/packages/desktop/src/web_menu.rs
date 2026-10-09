@@ -157,21 +157,19 @@ fn open_terminal(desk: Option<&Desktop>) {
   let _ = std::process::Command::new("cmd.exe").current_dir(&dir).creation_flags(CREATE_NEW_CONSOLE).spawn();
 }
 
-/// Every selected icon through the core's launcher (checked first; as the
+/// A file system item through the core's launcher (checked first; as the
 /// user; failures on our card with "Birlikte aç" where nothing opens it),
 /// never Explorer's open, which shows Windows' box for a dead shortcut.
-fn open_entries(sel: &[desktop_shell::Entry]) {
-  for e in sel {
-    let mut route = String::from("/launch?file=");
-    for b in e.path.bytes() {
-      if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
-        route.push(b as char);
-      } else {
-        route.push_str(&format!("%{b:02X}"));
-      }
+fn launch_path(path: &str) {
+  let mut route = String::from("/launch?file=");
+  for b in path.bytes() {
+    if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+      route.push(b as char);
+    } else {
+      route.push_str(&format!("%{b:02X}"));
     }
-    crate::native_bar::core_api::post_async(route);
   }
+  crate::native_bar::core_api::post_async(route);
 }
 
 fn open_uri(uri: &str) {
@@ -259,16 +257,21 @@ pub fn listen(app: &tauri::AppHandle) {
   desktop_shell::refresh_new_entries();
   // a double click on a desktop icon / Enter on the desktop: we open the
   // selection (empty space: nothing, as in Explorer)
-  for event in ["ll:desktop-open", "ll:desktop-open-key"] {
+  // (ll:desktop-click: a single click while Windows' single-click-to-open
+  // option is on; on empty space it clears the selection)
+  for event in ["ll:desktop-open", "ll:desktop-open-key", "ll:desktop-click"] {
     app.listen(event, move |_| {
       std::thread::spawn(move || {
         let _com = Sta::new();
         let Some(d) = Desktop::open() else { return };
         if !event.ends_with("-key") {
-          let Some(i) = d.item_at(cursor()) else { return };
-          d.select_for_menu(i);
+          match d.item_at(cursor()) {
+            Some(i) => d.select_for_menu(i),
+            None if event == "ll:desktop-click" => return d.deselect_all(),
+            None => return,
+          }
         }
-        open_entries(&d.selection());
+        d.open_selection(launch_path);
       });
     });
   }
@@ -333,7 +336,7 @@ pub async fn desktop_menu_action(app: tauri::AppHandle, id: String) -> Result<()
       _ => {
         let d = d.ok_or("Masaüstü görünümü bulunamadı")?;
         match id.as_str() {
-          "open" if saved.icon_menu => open_entries(&d.selection()),
+          "open" if saved.icon_menu => d.open_selection(launch_path),
           "runas"|"openas"|"cut"|"copy"|"link"|"delete"|"properties" if saved.icon_menu => d.invoke(&id),
           "rename" if saved.icon_menu => d.rename(),
           "location" if saved.icon_menu => { if let Some(target)=d.selection().first().and_then(|e|e.target.clone()) { let _=std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{target}\"")).spawn(); } }

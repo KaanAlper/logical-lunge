@@ -3300,6 +3300,39 @@ static class DesktopClick
     {
         return t1 - t0 <= GetDoubleClickTime() && Math.Abs(x1 - x0) * 2 <= GetSystemMetrics(36) && Math.Abs(y1 - y0) * 2 <= GetSystemMetrics(37);
     }
+
+    // Fare basılıyken sürükleme sayılacak kadar uzaklaştı mı (Windows'un sürükleme eşiği)
+    public static bool Dragged(int x0, int y0, int x1, int y1)
+    {
+        return Math.Abs(x1 - x0) * 2 > GetSystemMetrics(68) || Math.Abs(y1 - y0) * 2 > GetSystemMetrics(69);
+    }
+
+    // Windows'un "tek tıklamayla aç" seçeneği (Klasör seçenekleri): açıkken masaüstündeki simge tek tıklamayla açılır.
+    // Kayıt defterinden okunur; tıklama başına okumamak için 2 sn saklanır.
+    [DllImport("shell32.dll")] static extern void SHGetSettings(out int flags, uint mask);
+    const uint SSF_DOUBLECLICKINWEBVIEW = 0x80;
+    static int singleCheckedAt = Environment.TickCount - 10000;
+    static bool single;
+    public static bool SingleClickOpen()
+    {
+        int now = Environment.TickCount;
+        if (now - singleCheckedAt > 2000)
+        {
+            singleCheckedAt = now;
+            try { int f; SHGetSettings(out f, SSF_DOUBLECLICKINWEBVIEW); single = (f & (1 << 5)) == 0; } catch { single = false; }
+        }
+        return single;
+    }
+
+    // Tutulan sol basışı Explorer'a geri ver (sürükleme başladı): basışın yerinde, işaretçiyle
+    [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+    public static void ReplayLeftDown(int x, int y)
+    {
+        int vx = GetSystemMetrics(76), vy = GetSystemMetrics(77), vw = Math.Max(2, GetSystemMetrics(78)), vh = Math.Max(2, GetSystemMetrics(79));
+        int nx = (int)((x - vx) * 65535L / (vw - 1)), ny = (int)((y - vy) * 65535L / (vh - 1));
+        mouse_event(0x0001 | 0x8000 | 0x4000, nx, ny, 0, Native.LL_MARK); // MOVE | ABSOLUTE | VIRTUALDESK
+        mouse_event(0x0002, 0, 0, 0, Native.LL_MARK); // LEFTDOWN
+    }
 }
 
 // A captured menu chord keeps its repeats/release even after focus or shell
@@ -3357,6 +3390,10 @@ class MouseFocus
     bool leftDesk, swallowLeftUp;
     uint leftTime;
     int leftX, leftY;
+    // "Tek tıklamayla aç" açıkken masaüstündeki sol basış tutulur: bırakılırsa tıklamadır (simge bizim yoldan açılır,
+    // boşlukta seçim temizlenir); sürükleme eşiği aşılırsa basış Explorer'a geri verilir (sürükleme, kutu seçimi aynen).
+    bool heldDown;
+    int heldX, heldY;
 
     // Klavye kancası gibi ölçülür: yavaşsa nedeniyle log'a
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
@@ -3393,6 +3430,11 @@ class MouseFocus
         if (nCode >= 0 && msg == 0x200) // WM_MOUSEMOVE
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
+            if (heldDown && (m.flags & 1) == 0 && DesktopClick.Dragged(heldX, heldY, m.pt.X, m.pt.Y))
+            {
+                heldDown = false;
+                DesktopClick.ReplayLeftDown(heldX, heldY);
+            }
             if ((m.flags & 1) == 0 && (m.pt.X != lastX || m.pt.Y != lastY)) // LLMHF_INJECTED değil
             {
                 lastX = m.pt.X; lastY = m.pt.Y;
@@ -3404,12 +3446,24 @@ class MouseFocus
             swallowLeftUp = false;
             return (IntPtr)1;
         }
+        else if (nCode >= 0 && msg == 0x202 && heldDown) // tek tıklamayla aç: tutulan basış sürüklenmeden bırakıldı
+        {
+            heldDown = false;
+            ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-click"));
+            return (IntPtr)1;
+        }
         else if (nCode >= 0 && (msg == 0x201 || msg == 0x207)) // sol / orta basış (sağ: yukarıda)
         {
             var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
             if (msg == 0x201 && (m.flags & 1) == 0) // gerçek sol basış (enjekte değil)
             {
                 bool desk = ShellState.Up && DesktopClick.At(m.pt.X, m.pt.Y) && !DesktopClick.EditAt(m.pt.X, m.pt.Y);
+                if (desk && DesktopClick.SingleClickOpen())
+                {
+                    heldDown = true; heldX = m.pt.X; heldY = m.pt.Y;
+                    leftDesk = false;
+                    return (IntPtr)1;
+                }
                 if (desk && leftDesk && DesktopClick.DoubleClick(leftTime, leftX, leftY, m.time, m.pt.X, m.pt.Y))
                 {
                     leftDesk = false;
