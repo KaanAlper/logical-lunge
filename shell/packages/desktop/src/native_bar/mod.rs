@@ -171,6 +171,8 @@ numbered! { Timer: usize = 0;
   TIMER_SETTINGS_SAVED,
   /// an answered dialog faded out: its window goes, the next one opens
   TIMER_DIALOG_CLOSE,
+  /// dialogs waiting while a fullscreen game or presentation runs
+  TIMER_DIALOG_WAIT,
   /// the right panel: its slide out is over (the window goes), a page slid
   /// back, frames while something on it moves, the clock of its timer and
   /// lists, a touchpad swipe on a notification ended
@@ -972,6 +974,7 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
         WM_TIMER if wp.0 == TIMER_SESSION_CLOSE => self.session_destroy(),
         WM_TIMER if wp.0 == TIMER_DIALOG_CLOSE => self.dialog_closed(),
+        WM_TIMER if wp.0 == TIMER_DIALOG_WAIT => self.dialog_waited(),
         WM_TIMER if matches!(wp.0, TIMER_SETTINGS_CLOSE | TIMER_SETTINGS_COMMIT | TIMER_SETTINGS_HEALTH | TIMER_SETTINGS_SAVED) => {
           self.settings_timer(wp.0)
         }
@@ -1840,6 +1843,12 @@ impl Ui {
   }
 
   fn show_osd(&mut self, device: Option<String>, kind: OsdKind, value: i32) {
+    // A fullscreen game or presentation in front: no topmost OSD over it (a
+    // game changes its own volume too, and a layer above it costs it its
+    // independent flip). The value still changes; only the picture waits out.
+    if toast::busy() {
+      return;
+    }
     // no device: the focused monitor's bar (the WM knows), else the first
     let focused = self.model.wm.monitors.iter().find(|m| m.has_focus).map(|m| m.device_name.clone());
     let want = device.or(focused);
