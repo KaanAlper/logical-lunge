@@ -58,6 +58,9 @@ fn main() -> anyhow::Result<()> {
   let args = std::env::args().collect::<Vec<_>>();
   let app_command = AppCommand::parse_with_default(&args);
 
+  /// The thread the WM's loop runs on (see the panic hook below).
+  const WM_THREAD: &str = "wm-main";
+
   if let AppCommand::Start {
     config_path,
     verbosity,
@@ -66,7 +69,20 @@ fn main() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let (event_loop, dispatcher) = EventLoop::new()?;
 
-    let task_handle = std::thread::spawn(move || {
+    // Logical Lunge: a panic on the WM's own thread is fatal. The process
+    // exits at once (its keyboard hook goes with it, so no hotkey is
+    // swallowed by a dead WM) and the core starts a new WM from the saved
+    // layout. Panics on side tasks stay theirs.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+      default_hook(info);
+      if std::thread::current().name() == Some(WM_THREAD) {
+        tracing::error!("Window manager thread panicked: {info}");
+        process::exit(1);
+      }
+    }));
+
+    let task_handle = std::thread::Builder::new().name(WM_THREAD.into()).spawn(move || {
       rt.block_on(async {
         let start_res =
           start_wm(config_path, verbosity, &dispatcher).await;
@@ -86,7 +102,7 @@ fn main() -> anyhow::Result<()> {
 
         start_res
       })
-    });
+    })?;
 
     // Run event loop (blocks until shutdown). This must be on the main
     // thread for macOS compatibility.

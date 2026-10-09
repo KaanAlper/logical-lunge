@@ -209,9 +209,11 @@ impl KeybindingListener {
           return false;
         }
 
-        let _ = event_tx.send(KeybindingEvent(longest_keybinding.clone()));
-
-        true
+        // Logical Lunge: swallow the key only while someone receives it. A
+        // WM whose loop has died must not keep eating hotkeys system-wide.
+        event_tx
+          .send(KeybindingEvent(longest_keybinding.clone()))
+          .is_ok()
       },
       dispatcher,
     )
