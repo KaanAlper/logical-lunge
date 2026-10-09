@@ -944,6 +944,11 @@ fn apply_window_effects(
     || window_effects.other_windows.border.enabled
   {
     apply_border_effect(window, effect_config);
+  } else {
+    // Logical Lunge draws the borders itself: Windows 11's own 1 px frame
+    // line (on windows whose corners Windows draws) would sit next to ours.
+    // DWMWA_COLOR_NONE removes it; on Windows 10 the call fails harmlessly.
+    _ = window.native().set_border_color(None);
   }
 
   #[cfg(target_os = "windows")]
