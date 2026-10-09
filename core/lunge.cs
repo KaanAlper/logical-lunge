@@ -3643,6 +3643,7 @@ class MouseFocus
                 // Sürükleme / tıklama sırasında odak değiştirme
                 if ((Native.GetAsyncKeyState(0x01) & 0x8000) != 0 || (Native.GetAsyncKeyState(0x02) & 0x8000) != 0) continue;
                 var pt = new Point(lastX, lastY);
+                if (GameMode.Covers(pt)) continue; // oyun kipi: oyunun monitöründe fareyle odak yok
                 IntPtr under = Native.WindowFromPoint(pt);
                 if (under == IntPtr.Zero) continue;
                 IntPtr root = Native.GetAncestor(under, 2);
@@ -6189,6 +6190,7 @@ static class Toasts
             lock (clients) clients.Add(s);
             Interlocked.Increment(ref streamTotal);
             FlushLater();
+            GameMode.Replay();
         }
         catch { try { c.Close(); } catch { } }
     }
@@ -6642,11 +6644,39 @@ class Rounder
     static readonly Dictionary<uint, KeyValuePair<string, int>> procCache = new Dictionary<uint, KeyValuePair<string, int>>();
     int ticks;
 
+    // Oyun kipi: konum kancası (her pencerenin, imlecin her hareketi) ve periyodik kontrol durur; bitince bir tam tur.
+    // Kanca onu kuran thread'de sökülür: istek bu thread'e gönderilir.
+    [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
+    Control invoker;
+    IntPtr locHook;
+    System.Windows.Forms.Timer timer;
+    public void Quiet(bool quiet)
+    {
+        var inv = invoker;
+        if (inv == null || !inv.IsHandleCreated) return;
+        inv.BeginInvoke((Action)(() =>
+        {
+            if (quiet)
+            {
+                if (locHook != IntPtr.Zero) { UnhookWinEvent(locHook); locHook = IntPtr.Zero; }
+                timer.Stop();
+                return;
+            }
+            if (locHook == IntPtr.Zero)
+                locHook = Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, cb, 0, 0, 0x0002);
+            timer.Start();
+            Native.EnumWindows(delegate (IntPtr h, IntPtr l) { Apply(h); return true; }, IntPtr.Zero);
+        }));
+    }
+
     public void Start()
     {
+        invoker = new Control();
+        invoker.CreateControl();
+        var unusedHandle = invoker.Handle;
         cb = Callback.Guard("köşe olayı", OnEvent);
         Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
-        Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, cb, 0, 0, 0x0002);
+        locHook = Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, cb, 0, 0, 0x0002);
         Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, cb, 0, 0, 0x0002);
         Native.SetWinEventHook(0x8001, 0x8001, IntPtr.Zero, cb, 0, 0, 0x0002); // EVENT_OBJECT_DESTROY: kapanan pencereyi unut
         Native.SetWinEventHook(0x8018, 0x8018, IntPtr.Zero, cb, 0, 0, 0x0002); // EVENT_OBJECT_UNCLOAKED: workspace geçişinde görünen
@@ -6656,7 +6686,7 @@ class Rounder
         // yuvarlanmış pencerelerde olur: onlara 0,7 sn'de bir bakılır. Önceden her seferinde tüm üst düzey pencereler
         // (yüzlerce, her birinde ~10 sistem çağrısı ve başlık okuma) geziliyordu. Tam tarama 5 sn'de bir güvenlik ağı;
         // kapanmış pencerelerin kayıtları da o sırada silinir.
-        var timer = new System.Windows.Forms.Timer { Interval = 700 };
+        timer = new System.Windows.Forms.Timer { Interval = 700 };
         timer.Tick += (s, e) =>
         {
             if (++ticks % 7 == 0)
@@ -14471,6 +14501,7 @@ static class Program
         prioThread.Start();
 
         ShellWatchdog.Start();
+        GameMode.Start();
         TempSweep.Start();
         TilingWatchdog.Start();
         FocusSink.Start();

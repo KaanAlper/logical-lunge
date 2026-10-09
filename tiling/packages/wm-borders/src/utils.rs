@@ -904,6 +904,7 @@ pub fn spawn_window_state_poller() {
 
     let _ = thread::spawn(move || {
         loop {
+            crate::wait_while_idle();
             // Handle any changes in terms of which window is foreground/active
             let old_active_hwnd = HWND(*APP_STATE.active_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner) as _);
             let new_active_hwnd = get_foreground_window();

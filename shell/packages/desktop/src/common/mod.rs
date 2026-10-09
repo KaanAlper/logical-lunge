@@ -1,5 +1,6 @@
 mod format_bytes;
 mod fs_util;
+pub mod game_mode;
 pub mod glob_util;
 mod interval;
 mod length_value;

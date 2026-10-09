@@ -1011,6 +1011,10 @@ impl Ui {
   }
 
   fn redraw(&mut self, i: usize) {
+    // game mode: the bar under a fullscreen app draws when it ends
+    if crate::common::game_mode::covers(&self.bars[i].device) {
+      return;
+    }
     if let Err(err) = self.redraw_inner(i) {
       if device_lost(&err) {
         tracing::warn!("Native bar: graphics device lost ({:?}), rebuilding", err);
@@ -1151,6 +1155,19 @@ impl Ui {
   /// An event from the core. On (re)connect the theme is read again: it may
   /// have changed while the stream was down.
   fn core_event(&mut self, evt: Option<String>) {
+    // the core's game mode: one monitor's fullscreen app (game_mode.rs)
+    if let Some(e) = evt.as_deref() {
+      if let Some(device) = e.strip_prefix("ll:game-mode-on:") {
+        crate::common::game_mode::set(Some(device));
+        return;
+      }
+      if e == "ll:game-mode-off" {
+        if crate::common::game_mode::set(None) {
+          self.redraw_all();
+        }
+        return;
+      }
+    }
     let light = match evt.as_deref() {
       Some("ll:theme-light") => true,
       Some("ll:theme-dark") => false,

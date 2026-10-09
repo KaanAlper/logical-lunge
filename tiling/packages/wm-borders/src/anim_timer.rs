@@ -24,6 +24,7 @@ impl AnimationTimer {
             let hwnd = HWND(hwnd_isize as _);
 
             while !*stop_flag_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
+                crate::wait_while_idle();
                 if let Err(err) = post_message_w(Some(hwnd), WM_APP_ANIMATE, WPARAM(0), LPARAM(0)) {
                     error!("could not send animation timer message for {hwnd:?}: {err:#}");
                     break;

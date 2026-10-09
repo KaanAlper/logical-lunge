@@ -249,7 +249,10 @@ impl WindowManager {
     config: &mut UserConfig,
   ) -> anyhow::Result<()> {
     // No-op if WM is currently paused.
-    if state.is_paused && *command != InvokeCommand::WmTogglePause {
+    if state.is_paused
+      && *command != InvokeCommand::WmTogglePause
+      && !matches!(command, InvokeCommand::WmGameMode { .. })
+    {
       return Ok(());
     }
 
@@ -832,6 +835,15 @@ impl WindowManager {
         enable_binding_mode(name, state, config)
       }
       InvokeCommand::WmExit => state.emit_exit(),
+      InvokeCommand::WmGameMode { state: game } => {
+        let on = *game == wm_common::GameModeState::On;
+        if state.game_mode != on {
+          state.game_mode = on;
+          wm_borders::set_idle(on);
+          tracing::info!("Game mode {}.", if on { "on" } else { "off" });
+        }
+        Ok(())
+      }
       InvokeCommand::WmRedraw => {
         state
           .pending_sync

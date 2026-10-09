@@ -30,7 +30,7 @@ use windows::{
     Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS},
     Graphics::Gdi::{
       EnumDisplayDevicesW, EnumDisplayMonitors, GetMonitorInfoW, GetWindowRgnBox,
-      MonitorFromWindow, DISPLAY_DEVICEW, HDC, HMONITOR, MONITORINFO,
+      MonitorFromRect, MonitorFromWindow, DISPLAY_DEVICEW, HDC, HMONITOR, MONITORINFO,
       MONITORINFOEXW, MONITOR_DEFAULTTONULL,
     },
     System::{
@@ -81,6 +81,10 @@ const WM_APP_MONITOR_POWER: u32 = WM_APP + 3;
 /// A video's copy at its monitors' size is ready (copies.rs): the windows
 /// are built again on it.
 const WM_APP_COPY_MADE: u32 = WM_APP + 4;
+/// The core's game mode (GameMode.cs): wParam 1 on / 0 off, lParam the
+/// monitor (HMONITOR) its fullscreen app covers. That monitor pauses at
+/// once and the half-second check stops until it ends.
+const WM_APP_GAME_MODE: u32 = WM_APP + 5;
 /// The startup cover's title (the core's Names.StartupCover).
 const STARTUP_COVER: &str = "Logical Lunge · açılış";
 /// is a fullscreen app on a monitor, are the windows still in place (and
@@ -167,6 +171,8 @@ thread_local! {
   static QUIT: Cell<Option<Quit>> = const { Cell::new(None) };
 }
 static MSG_HWND: AtomicIsize = AtomicIsize::new(0);
+/// The monitor under the core's game mode (0: none).
+static GAME_MONITOR: AtomicIsize = AtomicIsize::new(0);
 static WORKERW: AtomicIsize = AtomicIsize::new(0);
 static PROGMAN: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -229,6 +235,7 @@ pub fn run() {
     // messages would be filtered out
     for m in [
       WM_APP_RELOAD,
+      WM_APP_GAME_MODE,
       WM_CLOSE,
       TASKBAR_CREATED.load(Ordering::Acquire),
     ] {
@@ -652,9 +659,26 @@ impl App {
     let fullscreen = unsafe { fullscreen_monitor() };
     let windows = unsafe { covering_windows() };
     for s in &mut self.screens {
-      s.covered = fullscreen.is_some_and(|r| r == s.rect) || !crate::cover::shows(s.rect, &windows);
+      s.covered = fullscreen.is_some_and(|r| r == s.rect) || !crate::cover::shows(s.rect, &windows) || under_game(s.rect);
     }
     self.update_pause();
+  }
+
+  /// The core's game mode changed: the covered monitor pauses (or plays
+  /// again) at once; no window walk meanwhile.
+  fn game_mode(&mut self, on: bool) {
+    if on {
+      unsafe {
+        let _ = KillTimer(self.msg, TIMER_CHECK);
+      }
+      for s in &mut self.screens {
+        s.covered = s.covered || under_game(s.rect);
+      }
+      self.update_pause();
+    } else {
+      unsafe { SetTimer(self.msg, TIMER_CHECK, 500, None) };
+      self.check();
+    }
   }
 
   /// Tells the video thread when something changed.
@@ -984,6 +1008,13 @@ unsafe extern "system" fn msg_proc(
       }
       LRESULT(0)
     }
+    WM_APP_GAME_MODE => {
+      let on = wp.0 == 1;
+      log::line(if on { "game mode on" } else { "game mode off" });
+      GAME_MONITOR.store(if on { lp.0 } else { 0 }, Ordering::Release);
+      with_app(|a| a.game_mode(on));
+      LRESULT(0)
+    }
     WM_APP_RELOAD => {
       with_app(|a| {
         // a reload also gives a stopped video thread another chance
@@ -1092,4 +1123,10 @@ unsafe extern "system" fn screen_proc(
     }
     _ => DefWindowProcW(hwnd, msg, wp, lp),
   }
+}
+
+/// The screen is on the monitor the core's game mode covers.
+fn under_game(rect: RECT) -> bool {
+  let game = GAME_MONITOR.load(Ordering::Acquire);
+  game != 0 && unsafe { MonitorFromRect(&rect, MONITOR_DEFAULTTONULL) }.0 as isize == game
 }

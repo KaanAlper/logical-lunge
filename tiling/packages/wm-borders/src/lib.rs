@@ -790,6 +790,25 @@ pub fn stop() {
     guarded("stop", (), stop_impl);
 }
 
+/// Game mode (the core's signal): the window state poller and the border
+/// animations wait until it ends instead of waking every few milliseconds
+/// under a fullscreen game.
+static IDLE: Mutex<bool> = Mutex::new(false);
+static IDLE_CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+
+pub fn set_idle(idle: bool) {
+    *IDLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = idle;
+    IDLE_CHANGED.notify_all();
+}
+
+/// Blocks while game mode is on.
+pub(crate) fn wait_while_idle() {
+    let guard = IDLE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = IDLE_CHANGED
+        .wait_while(guard, |idle| *idle)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+}
+
 fn stop_impl() {
     let thread_id = *ENGINE_THREAD_ID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if thread_id == 0 {
