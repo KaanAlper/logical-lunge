@@ -309,9 +309,8 @@ impl MediaProvider {
     manager.CurrentSessionChanged(&TypedEventHandler::new({
       let sender = self.event_sender.clone();
       move |_, _| {
-        sender
-          .send(MediaSessionEvent::CurrentSessionChanged)
-          .unwrap();
+        let _ = sender
+          .send(MediaSessionEvent::CurrentSessionChanged);
         Ok(())
       }
     }))?;
@@ -320,7 +319,7 @@ impl MediaProvider {
     manager.SessionsChanged(&TypedEventHandler::new({
       let sender = self.event_sender.clone();
       move |_, _| {
-        sender.send(MediaSessionEvent::SessionAddOrRemove).unwrap();
+        let _ = sender.send(MediaSessionEvent::SessionAddOrRemove);
         Ok(())
       }
     }))?;
@@ -409,11 +408,10 @@ impl MediaProvider {
         let sender = self.event_sender.clone();
         let session_id = session_id.to_string();
         move |_, _| {
-          sender
+          let _ = sender
             .send(MediaSessionEvent::PlaybackInfoChanged(
               session_id.clone(),
-            ))
-            .unwrap();
+            ));
 
           Ok(())
         }
@@ -423,11 +421,10 @@ impl MediaProvider {
           let sender = self.event_sender.clone();
           let session_id = session_id.to_string();
           move |_, _| {
-            sender
+            let _ = sender
               .send(MediaSessionEvent::MediaPropertiesChanged(
                 session_id.clone(),
-              ))
-              .unwrap();
+              ));
 
             Ok(())
           }
@@ -438,11 +435,10 @@ impl MediaProvider {
           let sender = self.event_sender.clone();
           let session_id = session_id.to_string();
           move |_, _| {
-            sender
+            let _ = sender
               .send(MediaSessionEvent::TimelinePropertiesChanged(
                 session_id.clone(),
-              ))
-              .unwrap();
+              ));
 
             Ok(())
           }

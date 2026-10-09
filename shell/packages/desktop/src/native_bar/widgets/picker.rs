@@ -310,6 +310,14 @@ unsafe fn draw_label(dc:HDC,font:HFONT,label:&str,mut rect:RECT,fg:COLORREF) {
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+  // a panic must not cross into Windows (it would abort the shell)
+  std::panic::catch_unwind(|| proc_inner(hwnd, message, wp, lp)).unwrap_or_else(|_| {
+    tracing::error!("Picker: a window message failed; ignored");
+    LRESULT(0)
+  })
+}
+
+unsafe fn proc_inner(hwnd: HWND, message: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
   if message == WM_NCCREATE {
     let create = &*(lp.0 as *const CREATESTRUCTW);
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, create.lpCreateParams as isize);
