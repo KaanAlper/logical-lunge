@@ -25,6 +25,7 @@ pub struct BorderConfig {
     pub initialize_delay: u64,
     pub unminimize_delay: u64,
     pub inactive_dim: f32,
+    pub floating_shadow: bool,
 }
 
 impl BorderConfig {
@@ -73,6 +74,7 @@ impl BorderConfig {
                 .unminimize_delay
                 .unwrap_or(global.unminimize_delay),
             inactive_dim: global.inactive_dim,
+            floating_shadow: global.floating_shadow,
         }
     }
 
@@ -115,7 +117,14 @@ impl BorderConfig {
                     .max()
                     .unwrap_or(0);
 
-                i32::max(max_active_padding, max_inactive_padding)
+                // the floating window's shadow (below by its offset, so that side needs the most room)
+                let shadow = if drawer.shadow_range > 0.0 {
+                    (drawer.shadow_range + drawer.shadow_offset).ceil() as i32
+                } else {
+                    0
+                };
+
+                max_active_padding.max(max_inactive_padding).max(shadow)
             }
             RenderBackendConfig::Legacy => 0,
         }

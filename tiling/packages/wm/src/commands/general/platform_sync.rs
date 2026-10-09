@@ -104,7 +104,18 @@ pub fn platform_sync(
   let focused_container =
     state.focused_container().context("No focused container.")?;
 
-  // Logical Lunge: only managed windows get a border.
+  // Logical Lunge: floating windows get a shadow. Set before the borders are
+  // made below, so a new floating window's border has it from the start.
+  #[cfg(target_os = "windows")]
+  wm_borders::set_floating(
+    state
+      .windows()
+      .iter()
+      .filter(|window| matches!(window.state(), WindowState::Floating(_)))
+      .map(|window| native_handle(window))
+      .collect(),
+  );
+  // Only managed windows get a border.
   #[cfg(target_os = "windows")]
   wm_borders::set_managed(
     state

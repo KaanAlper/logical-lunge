@@ -634,6 +634,44 @@ fn set_managed_impl(handles: HashSet<isize>) {
     }
 }
 
+// Logical Lunge: the managed windows that float (they get a shadow, see `borders.global.floating_shadow`). The WM
+// passes the whole set after each sync, like `set_managed`.
+static FLOATING: LazyLock<Mutex<HashSet<isize>>> = LazyLock::new(Default::default);
+
+pub(crate) fn is_floating(hwnd: HWND) -> bool {
+    FLOATING.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&(hwnd.0 as isize))
+}
+
+/// Sets the floating windows. A window that starts or stops floating gets its border made again (its size changes
+/// with the shadow's room); that happens only when the user toggles it, never per frame.
+pub fn set_floating(handles: HashSet<isize>) {
+    guarded("set_floating", (), || set_floating_impl(handles));
+}
+
+fn set_floating_impl(handles: HashSet<isize>) {
+    let changed: Vec<isize> = {
+        let mut floating = FLOATING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if *floating == handles {
+            return;
+        }
+        let changed = handles.symmetric_difference(&floating).copied().collect();
+        *floating = handles;
+        changed
+    };
+
+    let shadows = APP_STATE.config.read().unwrap_or_else(std::sync::PoisonError::into_inner).global.floating_shadow;
+    if !shadows || !ENGINE_READY.load(Ordering::Acquire) {
+        return;
+    }
+    for hwnd in changed {
+        let hwnd = HWND(hwnd as _);
+        if utils::get_border_for_window(hwnd).is_some() {
+            utils::destroy_border_for_window(hwnd);
+            utils::show_border_for_window(hwnd);
+        }
+    }
+}
+
 /// Moves the border of a window to `frame` (the window's visible frame, as just requested by the window manager)
 /// right away, in the same step as the window, instead of following it after the window has moved. The window's own
 /// move then only confirms the position. Also shows the border of a window that is being uncloaked.
