@@ -23,6 +23,29 @@ use crate::{
   wm_state::WmState,
 };
 
+/// Logical Lunge: the managed window that is in front and fullscreen (not
+/// maximized) -- a game or a video.
+fn fullscreen_in_front(state: &WmState) -> Option<WindowContainer> {
+  let foreground = state.dispatcher.focused_window().ok()?;
+  let window = state.window_from_native(&foreground)?;
+  match window.state() {
+    WindowState::Fullscreen(config) if !config.maximized => Some(window),
+    _ => None,
+  }
+}
+
+/// Logical Lunge: a fullscreen window that already is the foreground window
+/// is above everything it should be: its z-order is left alone.
+fn in_front_and_fullscreen(window: &WindowContainer, state: &WmState) -> bool {
+  fullscreen_in_front(state).is_some_and(|front| front.id() == window.id())
+}
+
+/// Whether a pending focus change leaves a fullscreen window in front
+/// alone: only when the system alone asked for it.
+fn keeps_fullscreen_focus(system_only: bool, fullscreen_in_front: bool) -> bool {
+  system_only && fullscreen_in_front
+}
+
 /// Whether any split below `root` has a single child or the same tiling
 /// direction as its parent (see `normalize_split_containers`).
 fn has_redundant_splits(root: &Container) -> bool {
@@ -59,10 +82,22 @@ pub fn platform_sync(
     }
   }
 
+  // Logical Lunge: a focus change only the system asked for (a window
+  // appeared, closed or minimized) while a fullscreen window is in front
+  // (a game) leaves the game alone: it stays fullscreen and focused, the
+  // new window waits behind it. Only the user takes focus from it.
+  let mut keep_game = false;
+  if let Some(game) = fullscreen_in_front(state) {
+    if keeps_fullscreen_focus(state.pending_sync.is_system_focus_only(), true) {
+      crate::commands::container::set_focused_descendant(&game.into(), None);
+      keep_game = true;
+    }
+  }
+
   // A window focused on a workspace with a fullscreen one: that one leaves
   // its fullscreen (ii's on_focus_under_fullscreen = 2) before the redraw.
   #[cfg(target_os = "windows")]
-  if state.pending_sync.needs_focus_update() {
+  if state.pending_sync.needs_focus_update() && !keep_game {
     crate::commands::window::leave_fullscreen_for_focus(state, config)?;
   }
 
@@ -79,7 +114,7 @@ pub fn platform_sync(
       .collect(),
   );
 
-  if state.pending_sync.needs_focus_update() {
+  if state.pending_sync.needs_focus_update() && !keep_game {
     sync_focus(&focused_container, state)?;
   }
 
@@ -98,6 +133,7 @@ pub fn platform_sync(
   }
 
   if state.pending_sync.needs_cursor_jump()
+    && !keep_game
     && config.value.general.cursor_jump.enabled
   {
     jump_cursor(focused_container.clone(), state, config)?;
@@ -418,16 +454,13 @@ fn redraw_containers(
       WindowState::Fullscreen(config) if config.shown_on_top => {
         WindowZOrder::TopMost
       }
-      // An app's own fullscreen: above everything, the bar included, while
-      // it is its workspace's focused window; the window focused next comes
-      // in front of it (as with Alt+Tab), and it comes back when focused.
-      WindowState::Fullscreen(_) => {
-        if workspace_focused_window(window).is_some_and(|focused| focused.id() == window.id()) {
-          WindowZOrder::TopMost
-        } else {
-          WindowZOrder::Normal
-        }
-      }
+      // An app's own fullscreen: in front of the bar and every other normal
+      // window while it is its workspace's focused window (the top of the
+      // non-topmost band -- the bar is not topmost), never HWND_TOPMOST: a
+      // game must keep its own z-order (independent flip) and must not be
+      // left topmost if the WM stops. The window focused next comes in
+      // front of it (as with Alt+Tab), and it comes back when focused.
+      WindowState::Fullscreen(_) => WindowZOrder::Normal,
       // Raised to the top, after the focused tiling window (see above).
       WindowState::Floating(_)
         if should_bring_to_front
@@ -464,6 +497,7 @@ fn redraw_containers(
     if should_bring_to_front
       && !windows_to_redraw.contains(window)
       && window.native().is_controllable()
+      && !in_front_and_fullscreen(window, state)
     {
       tracing::info!("Updating window z-order: {window}");
 
@@ -984,4 +1018,25 @@ fn apply_transparency_effect(
   };
 
   _ = window.native().set_transparency(transparency);
+}
+
+#[cfg(test)]
+mod game_focus_tests {
+  use super::keeps_fullscreen_focus;
+
+  #[test]
+  fn system_focus_leaves_a_fullscreen_window_alone() {
+    assert!(keeps_fullscreen_focus(true, true));
+  }
+
+  #[test]
+  fn user_focus_takes_it_from_a_fullscreen_window() {
+    assert!(!keeps_fullscreen_focus(false, true));
+  }
+
+  #[test]
+  fn nothing_is_kept_without_a_fullscreen_window() {
+    assert!(!keeps_fullscreen_focus(true, false));
+    assert!(!keeps_fullscreen_focus(false, false));
+  }
 }

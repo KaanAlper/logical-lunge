@@ -11,6 +11,9 @@ use windows::{
       DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DEFAULT, DWMWCP_DONOTROUND,
       DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
     },
+    Graphics::Gdi::{
+      GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONULL,
+    },
     System::{
       Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
@@ -794,6 +797,27 @@ impl NativeWindow {
     Ok(())
   }
 
+  /// Logical Lunge: whether the window's rectangle covers its whole monitor.
+  fn covers_its_monitor(&self) -> bool {
+    let mut rect = RECT::default();
+    if unsafe { GetWindowRect(self.hwnd(), &mut rect) }.is_err() {
+      return false;
+    }
+    let monitor = unsafe { MonitorFromWindow(self.hwnd(), MONITOR_DEFAULTTONULL) };
+    if monitor.is_invalid() {
+      return false;
+    }
+    let mut info = MONITORINFO {
+      cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+      ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+      return false;
+    }
+    let m = info.rcMonitor;
+    rect.left <= m.left && rect.top <= m.top && rect.right >= m.right && rect.bottom >= m.bottom
+  }
+
   pub(crate) fn set_z_order(
     &self,
     z_order: &WindowZOrder,
@@ -811,15 +835,23 @@ impl NativeWindow {
     // over the monitor and a terminal snapped to its character grid each
     // time focus moved, and the WM pushed them back into their tiles
     // (flicker while the mouse crossed between windows).
-    let flags = SWP_NOACTIVATE
+    let base = SWP_NOACTIVATE
       | SWP_NOCOPYBITS
       | SWP_ASYNCWINDOWPOS
-      | SWP_SHOWWINDOW
       | SWP_NOMOVE
       | SWP_NOSIZE
       | SWP_NOSENDCHANGING;
+    // A window covering its monitor (a game, a video) is touched once: no
+    // SWP_SHOWWINDOW and no second call, each of which churned the z-order
+    // of an independent-flip window.
+    let covers = self.covers_its_monitor();
+    let flags = if covers { base } else { base | SWP_SHOWWINDOW };
 
     unsafe { SetWindowPos(self.hwnd(), z_order_hwnd, 0, 0, 0, 0, flags) }?;
+
+    if covers {
+      return Ok(());
+    }
 
     // Z-order can sometimes still be incorrect after the above call.
     let handle = self.handle;

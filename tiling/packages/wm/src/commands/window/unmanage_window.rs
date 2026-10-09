@@ -94,7 +94,7 @@ pub fn unmanage_window(
   // Reassign focus to suitable target.
   if let Some(focus_target) = focus_target {
     set_focused_descendant(&focus_target, None);
-    state.pending_sync.queue_focus_change();
+    state.pending_sync.queue_system_focus_change();
     state.unmanaged_or_minimized_timestamp =
       Some(std::time::Instant::now());
   }

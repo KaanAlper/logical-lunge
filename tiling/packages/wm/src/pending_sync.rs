@@ -30,6 +30,12 @@ pub struct PendingSync {
   /// Whether to jump the cursor to the focused container (if enabled in
   /// user config).
   needs_cursor_jump: bool,
+
+  /// Logical Lunge: whether a focus change was asked for by the user (a
+  /// key, a command, a click) or only by the system (a window appeared,
+  /// closed or minimized; the WM taking focus back). A system-only change
+  /// never takes focus from a fullscreen window in front (a game).
+  user_focus: bool,
 }
 
 impl PendingSync {
@@ -49,6 +55,7 @@ impl PendingSync {
     self.needs_focused_effect_update = false;
     self.needs_all_effects_update = false;
     self.needs_cursor_jump = false;
+    self.user_focus = false;
     self
   }
 
@@ -96,9 +103,23 @@ impl PendingSync {
     self
   }
 
+  /// A focus change the user asked for (keys, commands, clicks).
   pub fn queue_focus_change(&mut self) -> &mut Self {
     self.needs_focus_update = true;
+    self.user_focus = true;
     self
+  }
+
+  /// A focus change only the system asked for: a window was managed,
+  /// unmanaged or minimized, or the WM takes focus back after one.
+  pub fn queue_system_focus_change(&mut self) -> &mut Self {
+    self.needs_focus_update = true;
+    self
+  }
+
+  /// Whether the pending focus change came from the system alone.
+  pub fn is_system_focus_only(&self) -> bool {
+    self.needs_focus_update && !self.user_focus
   }
 
   pub fn queue_focused_effect_update(&mut self) -> &mut Self {
