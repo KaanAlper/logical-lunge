@@ -3634,6 +3634,18 @@ static class ShellWatchdog
         if (windows == 0) return "bar";
         return alive >= windows ? null : "bar " + alive + "/" + windows;
     }
+    // CI dayanıklılık testi (yalnızca LL_TEST=1): 30 sn'de bir bar penceresi sayısı ve son 45 sn'de "canlıyım" diyen bar
+    // sayısı log'a yazılır; test barların yük altında da sustuğunu buradan görür. Normal çalışmada hiçbir şey yapmaz.
+    static readonly bool testRun = Environment.GetEnvironmentVariable("LL_TEST") == "1";
+    static long lastTestReport = -30000;
+    static void TestReport(Process shell)
+    {
+        if (!testRun || aliveClock.ElapsedMilliseconds - lastTestReport < 30000) return;
+        lastTestReport = aliveClock.ElapsedMilliseconds;
+        int windows = BarWindows(shell.Id), recent = 0;
+        lock (barAlive) foreach (var kv in barAlive) if (aliveClock.ElapsedMilliseconds - kv.Value <= 45000) recent++;
+        Slider.Log("test: bars " + windows + " alive " + recent);
+    }
     static int AliveBars()
     {
         int n = 0;
@@ -3698,6 +3710,7 @@ static class ShellWatchdog
                     if (!TilingRunning()) { bad = 0; continue; } // tiling kapalıyken (çıkış / yeniden başlatma) karışma
                     if (Maint.Quiet() || TilingWatchdog.Recovering) { bad = 0; continue; }
                     var shell = Find(Names.Shell);
+                    if (shell != null) TestReport(shell);
                     // native kabukta web sunucusu (eskiden 6124) yok: canlılığı barların kendi bildirimi söyler
                     string problem = shell == null ? "shell çalışmıyordu" : SilentBars(shell);
                     if (problem != null && problem.StartsWith("bar ")) lock (barAlive) barAlive.Clear(); // yeniden başlayınca sayım sıfırdan
