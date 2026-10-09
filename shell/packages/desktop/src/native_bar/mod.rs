@@ -1391,7 +1391,7 @@ impl Ui {
       let wm = self.wm_cmd.clone();
       let fallback = format!("command focus --{}-workspace", step);
       core_api::slide(format!("{}@{}", step, device), move || {
-        let _ = wm.send(wm::Command::Raw(fallback));
+        let _ = wm.send(fallback);
       });
       return;
     }

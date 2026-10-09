@@ -204,10 +204,16 @@
         // POST: kabuğun service worker'ı başka adreslere giden GET cevaplarını önbelleğe alıp tekrar veriyor
         fetch(`http://127.0.0.1:6131/cmd?a=ws-${encodeURIComponent(target)}`, { method: 'POST', cache: 'no-store' })
           .then(r => { if (r.status !== 204) throw new Error(String(r.status)); })
-          .catch(() => lunge.shellSpawn(HELPER, ['--slide', target]).catch(() => {
-            run(target === 'next' ? 'focus --next-workspace' : target === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${target}`);
-          }));
+          .catch(() => {
+            // "next@<monitor>" (the bar's wheel) is the core's; without the core, plain next/prev
+            const plain = target.split('@')[0];
+            lunge.shellSpawn(HELPER, ['--slide', plain]).catch(() => {
+              run(plain === 'next' ? 'focus --next-workspace' : plain === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${plain}`);
+            });
+          });
       }
+      // this bar's monitor (the window manager's deviceName): its wheel steps through that monitor's workspaces
+      let BAR_DEVICE = '';
       // ---- Parlaklık (WMI → dahili ekran; olmazsa DDC/CI) ve gama (parlaklık 0'ın altı) ----
       // Bar hangi monitördeyse onunki (pencere yöneticisinin currentMonitor.deviceName). İkisi de çekirdekte, süreç içinde
       // tek çağrı: eskiden parlaklık cevap vermeyince PowerShell betiğine, gama her adımda yeni bir lunge.exe sürecine
@@ -301,6 +307,7 @@
         const devName = o.tiling?.currentMonitor?.deviceName;
         useEffect(() => {
           if (!devName) return;
+          BAR_DEVICE = devName;
           MONITOR = `${devName}\\Monitor0`;
           brightnessCache = null;
           brightnessUnsupported = false;
@@ -790,7 +797,9 @@
           const now = Date.now();
           if (now - lastWheel.current < 100) return;
           lastWheel.current = now;
-          slide(e.deltaY > 0 ? 'next' : 'prev', run);
+          // r±1 on this bar's own monitor, not on whichever monitor has focus
+          const step = e.deltaY > 0 ? 'next' : 'prev';
+          slide(BAR_DEVICE ? `${step}@${BAR_DEVICE}` : step, run);
         };
 
         return (
