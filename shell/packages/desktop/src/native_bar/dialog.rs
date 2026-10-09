@@ -52,6 +52,17 @@ use super::{
   Layer, Ui, CLASS, DIALOG_HWND, TIMER_DIALOG_CLOSE, TIMER_DIALOG_WAIT,
 };
 
+/// A fullscreen app, a Direct3D game or a presentation is in front.
+pub(super) fn fullscreen_busy() -> bool {
+  use windows::Win32::UI::Shell::{
+    SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN,
+  };
+  matches!(
+    unsafe { SHQueryUserNotificationState() },
+    Ok(QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_PRESENTATION_MODE)
+  )
+}
+
 const PANEL_W: f32 = 440.0;
 const PAD: f32 = 24.0;
 const RADIUS: f32 = 26.0;
@@ -469,7 +480,7 @@ impl Ui {
     // A fullscreen game, a Direct3D app or a presentation in front: the
     // question waits (as notification cards do) instead of covering it and
     // taking its focus with a forced foreground; it opens when that is over.
-    if !self.dialogs.queue.is_empty() && super::toast::busy() {
+    if !self.dialogs.queue.is_empty() && fullscreen_busy() {
       unsafe { SetTimer(self.msg_hwnd, TIMER_DIALOG_WAIT, 2000, None) };
       return;
     }

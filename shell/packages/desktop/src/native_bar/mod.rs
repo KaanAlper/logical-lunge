@@ -96,6 +96,8 @@ const TIMER_TIP: usize = 11;
 const TIMER_STABLE: usize = 12;
 /// an answered dialog faded out: its window goes, the next one opens
 const TIMER_DIALOG_CLOSE: usize = 70;
+/// dialogs waiting while a fullscreen game or presentation runs
+const TIMER_DIALOG_WAIT: usize = 71;
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// ii: the first four tray icons are pinned until the user moves them.
@@ -564,6 +566,7 @@ impl Ui {
           self.create_bars();
         }
         WM_TIMER if wp.0 == TIMER_DIALOG_CLOSE => self.dialog_closed(),
+        WM_TIMER if wp.0 == TIMER_DIALOG_WAIT => self.dialog_waited(),
         WM_TIMER if wp.0 == TIMER_OSD => {
           unsafe {
             let _ = KillTimer(self.msg_hwnd, TIMER_OSD);
@@ -1189,6 +1192,12 @@ impl Ui {
   }
 
   fn show_osd(&mut self, device: Option<String>, kind: OsdKind, value: i32) {
+    // A fullscreen game or presentation in front: no topmost OSD over it (a
+    // game changes its own volume too, and a layer above it costs it its
+    // independent flip). The value still changes; only the picture waits out.
+    if dialog::fullscreen_busy() {
+      return;
+    }
     // no device: the focused monitor's bar (the WM knows), else the first
     let focused = self.model.wm.monitors.iter().find(|m| m.has_focus).map(|m| m.device_name.clone());
     let want = device.or(focused);
