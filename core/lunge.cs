@@ -6391,7 +6391,7 @@ static class Toasts
             {
                 int q = target.IndexOf("a=");
                 string act = q < 0 ? "" : Uri.UnescapeDataString(target.Substring(q + 2).Split('&')[0]);
-                if (System.Text.RegularExpressions.Regex.IsMatch(act, @"^ws-(\d{1,2}|next|prev)$") && Keys2.Instance != null)
+                if (System.Text.RegularExpressions.Regex.IsMatch(act, @"^ws-(\d{1,2}|(next|prev)(@[\w\\.\-]{1,64})?)$") && Keys2.Instance != null)
                 {
                     Keys2.Instance.Dispatch(act);
                     status = "204 No Content";
@@ -7533,6 +7533,19 @@ class Keys2
 
     [DllImport("user32.dll")] static extern bool LockWorkStation();
 
+    // Monitörde odak var mı: workspace'i ya da içindeki bir pencere odaklı
+    static bool MonitorFocused(Dictionary<string, object> mon)
+    {
+        foreach (Dictionary<string, object> ws in J.Children(mon))
+        {
+            if (J.Bool(ws, "hasFocus")) return true;
+            var wins = new List<Dictionary<string, object>>();
+            J.WindowNodes(ws, wins);
+            foreach (var w in wins) if (J.Bool(w, "hasFocus")) return true;
+        }
+        return false;
+    }
+
     bool RunAction(string act)
     {
         string alias;
@@ -7582,6 +7595,26 @@ class Keys2
                 });
                 return true;
             }
+        }
+        // Bar tekerleği: ws-next@<monitör adı>, o barın monitöründe r±1 (Hyprland bar'ı gibi); önce o monitör odaklanır
+        int at = act.StartsWith("ws-") ? act.IndexOf('@') : -1;
+        if (at > 0)
+        {
+            string device = act.Substring(at + 1), step = act.Substring(0, at);
+            if (step != "ws-prev" && step != "ws-next") return false;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    var mons = slider.Tiling.Monitors();
+                    for (int i = 0; i < mons.Count; i++)
+                        if (J.Str(mons[i], "deviceName") == device && !MonitorFocused(mons[i]))
+                            slider.Tiling.Command("focus --monitor " + i + " --no-cursor-jump");
+                    RunAction(step);
+                }
+                catch (Exception ex) { Slider.Log("bar wheel: " + ex.Message); }
+            });
+            return true;
         }
         if (act == "ws-prev" || act == "ws-next" || act == "ws-move-prev" || act == "ws-move-next")
         {

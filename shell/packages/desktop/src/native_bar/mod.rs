@@ -2063,7 +2063,15 @@ impl Ui {
         return;
       }
       self.last_ws_wheel = Instant::now();
-      self.slide(if up { "prev" } else { "next" }.into());
+      // r±1 on this bar's own monitor (focused first), not on whichever
+      // monitor happens to hold focus.
+      let step = if up { "prev" } else { "next" };
+      let device = self.bars[i].device.replace('\\', "%5C");
+      let wm = self.wm_cmd.clone();
+      let fallback = format!("command focus --{}-workspace", step);
+      core_api::slide(format!("{}@{}", step, device), move || {
+        let _ = wm.send(wm::Command::Raw(fallback));
+      });
       return;
     }
     let (left, right) = (frame.left_zone.contains(dx, dy), frame.right_zone.contains(dx, dy));
