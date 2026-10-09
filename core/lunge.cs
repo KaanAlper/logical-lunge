@@ -3760,6 +3760,9 @@ static class ShellWatchdog
         int windows = BarWindows(shell.Id), recent = 0;
         lock (barAlive) foreach (var kv in barAlive) if (aliveClock.ElapsedMilliseconds - kv.Value <= 45000) recent++;
         Slider.Log("test: bars " + windows + " alive " + recent);
+        // test-only: where the core's handles go (CI stress test reads the trend)
+        using (var me = Process.GetCurrentProcess())
+            Slider.Log("test: handles " + me.HandleCount + " threads " + me.Threads.Count + " private " + (me.PrivateMemorySize64 >> 20) + "MB gc " + GC.CollectionCount(2) + " " + Toasts.TestStats());
     }
     static int AliveBars()
     {
@@ -5954,6 +5957,16 @@ static class Toasts
     public static volatile bool Listening;
     const int PORT = 6131;
     static readonly List<System.Net.Sockets.NetworkStream> clients = new List<System.Net.Sockets.NetworkStream>();
+    // test-only counters (LL_TEST=1 report): connections accepted, routes seen, event-stream clients
+    static int acceptedTotal, streamTotal;
+    static readonly Dictionary<string, int> routeCounts = new Dictionary<string, int>();
+    public static string TestStats()
+    {
+        var sb = new StringBuilder();
+        lock (clients) sb.Append("sse " + clients.Count + " streams " + streamTotal + " accepted " + acceptedTotal + " |");
+        lock (routeCounts) foreach (var kv in routeCounts) sb.Append(" " + kv.Key + "=" + kv.Value);
+        return sb.ToString();
+    }
     static readonly JavaScriptSerializer json = new JavaScriptSerializer();
 
     public static void Start()
@@ -6027,6 +6040,12 @@ static class Toasts
             // Widget'lar POST kullanır: shell'in service worker'ı başka adreslere giden GET'leri önbelleğe alıyordu (ilk
             // cevap hep tekrar geliyordu: Super hep pano modunu açıyor, bar tıklamaları helper'a ulaşmıyordu)
             string verbless = reqs.StartsWith("POST ") ? reqs.Substring(5) : reqs.StartsWith("GET ") ? reqs.Substring(4) : "";
+            Interlocked.Increment(ref acceptedTotal);
+            {
+                int cut = verbless.IndexOfAny(new[] { '?', ' ', '\r' });
+                string route = cut > 0 ? verbless.Substring(0, Math.Min(cut, 32)) : (verbless.Length > 0 ? verbless.Substring(0, Math.Min(verbless.Length, 32)) : reqs.Substring(0, Math.Min(reqs.Length, 8)));
+                lock (routeCounts) { int n; routeCounts.TryGetValue(route, out n); if (n > 0 || routeCounts.Count < 40) routeCounts[route] = n + 1; }
+            }
             // Soru (Dialogs): cevap dakikalarca bekleyebilir, havuz thread'ini tutmasın
             if (verbless.StartsWith("/dialog?"))
             {
@@ -6048,6 +6067,7 @@ static class Toasts
             var head = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n: hazır\n\n");
             s.Write(head, 0, head.Length);
             lock (clients) clients.Add(s);
+            Interlocked.Increment(ref streamTotal);
             FlushLater();
         }
         catch { try { c.Close(); } catch { } }
