@@ -217,6 +217,17 @@ static class NativeInput
         if (m != 0 && (int)m - MouseFocus.LastHookTick > 0) MouseFocus.LastHookTick = (int)m;
     }
 
+    // Sınama koşusu (LL_TEST=1) raporuna: son rapordan beri kancaların süreleri (CI'nin yük testi bunu yazdırır)
+    public static string TestStats()
+    {
+        if (!On) return "| hooks .NET";
+        ulong kc, kt, km, mc, mt, mm;
+        li_stats(1, out kc, out kt, out km);
+        li_stats(2, out mc, out mt, out mm);
+        return "| hooks native key " + kc + " avg " + (kc > 0 ? kt / kc : 0) + "us max " + km + "us mouse " + mc + " avg " +
+            (mc > 0 ? mt / mc : 0) + "us max " + mm + "us";
+    }
+
     // Beş dakikada bir: kancaların içinde geçen süre (çağrı sayısı, ortalama, en uzun)
     public static void LogStats()
     {
