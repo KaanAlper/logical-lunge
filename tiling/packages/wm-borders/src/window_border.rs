@@ -258,6 +258,12 @@ impl WindowBorder {
             get_monitor_info(self.current_monitor).windows_context("could not get monitor info")?;
         let monitor_width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
         let monitor_height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
+        // Logical Lunge: the window's size rounded up to a step, not the whole
+        // monitor: a monitor-sized surface (plus two more for the glow) per
+        // border cost ~25 MB of GPU memory at 1080p and ~100 MB at 4K for every
+        // window. The step keeps a resize from reallocating on every pixel.
+        let monitor_width = surface_extent(self.window_rect.right - self.window_rect.left, monitor_width);
+        let monitor_height = surface_extent(self.window_rect.bottom - self.window_rect.top, monitor_height);
 
         let stroke_width = self.drawer.stroke_width;
         let border_offset = self.border_offset;
@@ -860,6 +866,15 @@ impl WindowBorder {
                 self.update_window_rect().log_if_err();
                 needs_render |= !are_rects_same_size(&self.window_rect, &prev_rect);
 
+                // the surface follows the window's size step (see
+                // calculate_target_v2_renderer_size)
+                if matches!(self.drawer.render_backend, RenderBackend::V2(_))
+                    && self.needs_renderer_resize().unwrap_or(false)
+                {
+                    self.resize_renderer().log_if_err();
+                    needs_render = true;
+                }
+
                 let update_pos_flags =
                     (!is_window_visible(self.border_window.0)).then_some(SWP_SHOWWINDOW);
                 self.update_position(update_pos_flags).log_if_err();
@@ -1229,5 +1244,29 @@ fn clip_to_slot(hwnd: HWND, frame: RECT) -> RECT {
         cut
     } else {
         frame
+    }
+}
+
+/// Logical Lunge: a border surface's extent along one axis: the window's
+/// size rounded up to the next 256 px, at most the monitor's size (a window
+/// larger than its monitor keeps the monitor's).
+fn surface_extent(window: i32, monitor: i32) -> i32 {
+    const STEP: i32 = 256;
+    let window = window.max(1);
+    let stepped = (window + STEP - 1) / STEP * STEP;
+    stepped.min(monitor.max(window)).max(1)
+}
+
+#[cfg(test)]
+mod surface_extent_tests {
+    use super::surface_extent;
+
+    #[test]
+    fn rounds_up_to_the_step_and_stops_at_the_monitor() {
+        assert_eq!(surface_extent(300, 1920), 512);
+        assert_eq!(surface_extent(512, 1920), 512);
+        assert_eq!(surface_extent(1900, 1920), 1920);
+        assert_eq!(surface_extent(2500, 1920), 2500);
+        assert_eq!(surface_extent(0, 1920), 256);
     }
 }
