@@ -142,13 +142,24 @@ impl Index {
   /// Keeps only the entries of `keys`; returns the copy files no entry
   /// names any more (to delete).
   pub fn keep_only(&mut self, keys: &[String], files: &[String]) -> Vec<String> {
-    self.0.retain(|k, _| keys.contains(k));
+    // Copies of a video still set stay, whatever size they were made for: a
+    // game switching the display mode made a request at the game's size, and
+    // the copy for the desktop's size was deleted (the next start decoded
+    // the full original again and copied it once more).
+    let sources: Vec<&str> = keys.iter().map(|k| source_part(k)).collect();
+    self.0.retain(|k, _| sources.contains(&source_part(k)));
     files
       .iter()
       .filter(|f| f.ends_with(".mp4") && !self.0.values().any(|v| v == *f))
       .cloned()
       .collect()
   }
+}
+
+/// The part of a key naming the video (path, length, modified): the key
+/// without the sizes.
+fn source_part(key: &str) -> &str {
+  key.rsplit_once('|').map_or(key, |(source, _)| source)
 }
 
 /// A copy to make: the source and the sizes it fills, under `key`.
@@ -160,7 +171,7 @@ pub struct Job {
 }
 
 #[cfg(windows)]
-pub use worker::{request, set_on_battery, stop};
+pub use worker::{request, set_hold, set_on_battery, stop};
 
 #[cfg(windows)]
 mod worker {
@@ -194,9 +205,17 @@ mod worker {
   static QUEUE: Mutex<Option<Sender<Batch>>> = Mutex::new(None);
   static STOP: AtomicBool = AtomicBool::new(false);
   static ON_BATTERY: AtomicBool = AtomicBool::new(false);
+  static HOLD: AtomicBool = AtomicBool::new(false);
 
   pub fn set_on_battery(on: bool) {
     ON_BATTERY.store(on, Ordering::Release);
+  }
+
+  /// A fullscreen app (a game) covers a monitor, or the session is locked:
+  /// no copy is made meanwhile (decoding and encoding a video on the GPU
+  /// in the middle of a game); a copy being made is dropped and made later.
+  pub fn set_hold(on: bool) {
+    HOLD.store(on, Ordering::Release);
   }
 
   /// The player is closing: a copy being made is dropped.
@@ -236,6 +255,10 @@ mod worker {
     while let Ok(mut batch) = rx.recv() {
       // a newer request (the windows were built again) replaces this one
       std::thread::sleep(SETTLE);
+      // a game in front: wait it out (newer requests still replace this one)
+      while HOLD.load(Ordering::Acquire) && !STOP.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_secs(2));
+      }
       while let Ok(newer) = rx.try_recv() {
         batch = newer;
       }
@@ -361,7 +384,7 @@ mod worker {
 
     let mut frames = 0u32;
     let result = loop {
-      if STOP.load(Ordering::Acquire) || ON_BATTERY.load(Ordering::Acquire) {
+      if STOP.load(Ordering::Acquire) || ON_BATTERY.load(Ordering::Acquire) || HOLD.load(Ordering::Acquire) {
         break Err(None);
       }
       let (mut flags, mut sample) = (0u32, None);
@@ -471,6 +494,16 @@ mod tests {
     assert_eq!(gone, vec!["bbbb-1920x1080.mp4", "stale-1280x720.mp4", "x.part.mp4"]);
     assert_eq!(index.0.len(), 2);
     assert_eq!(Index::parse("not json"), Index::default());
+  }
+
+  #[test]
+  fn index_keeps_another_sizes_copy_of_a_video_still_set() {
+    let mut index = Index::parse(r#"{"a|1|2|1920x1080":"aaaa-1920x1080.mp4"}"#);
+    let files = vec!["aaaa-1920x1080.mp4".to_string()];
+    // a game switched the display to 1280x720: the desktop's copy stays
+    let gone = index.keep_only(&["a|1|2|1280x720".to_string()], &files);
+    assert!(gone.is_empty());
+    assert_eq!(index.0.len(), 1);
   }
 
   /// A real video (LL_TEST_VIDEO, 4K) copied for a 1080p screen, as the
