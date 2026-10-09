@@ -276,6 +276,7 @@ impl Ui {
           Sw::WinToasts => s.s["winToasts"].as_bool() != Some(false),
           Sw::Takeover => s.s["takeover"].as_bool() != Some(false),
           Sw::Night => s.night.as_ref().is_some_and(|n| n["on"].as_bool() == Some(true)),
+          Sw::WallpaperColors => s.s["wallpaperColors"].as_bool() == Some(true),
         };
         match sw {
           Sw::Animations => set_pref("animations", json!(!on), false),
@@ -283,6 +284,8 @@ impl Ui {
           Sw::WinToasts => set_pref("winToasts", json!(!on), false),
           Sw::Takeover => set_pref("takeover", json!(!on), false),
           Sw::Night => night(&["--nightlight", "toggle"]),
+          // the bar reads the wallpaper and repaints everything (ll:prefs)
+          Sw::WallpaperColors => set_pref("wallpaperColors", json!(!on), false),
         }
       }
       Hit::Step(f, d) => s.ws.step(f, d),

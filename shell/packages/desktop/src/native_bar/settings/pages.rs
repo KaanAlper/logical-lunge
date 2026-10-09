@@ -231,7 +231,12 @@ fn look(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Result<f3
   // accent: the row, the swatches, the hex field
   y = cx.sec_title(x, y, "Vurgu rengi")?;
   let focus = s.s["focusColor"].as_str().unwrap_or("#b69df8").to_lowercase();
-  let rows = [Row::new("palette", "Kabuk ve pencere kenarlıkları".into()).sub("Bar, paneller ve etkin pencerenin rengi birlikte değişir".into())];
+  let rows = [
+    Row::new("wallpaper", "Renkleri duvar kâğıdından al".into())
+      .sub("Bar, paneller ve kenarlıklar duvar kâğıdının Material renklerini alır; kapalıyken aşağıdaki vurgu rengi".into())
+      .ctrl(Ctrl::Switch(s.s["wallpaperColors"].as_bool() == Some(true), Hit::Switch(Sw::WallpaperColors))),
+    Row::new("palette", "Kabuk ve pencere kenarlıkları".into()).sub("Bar, paneller ve etkin pencerenin rengi birlikte değişir".into()),
+  ];
   let extra = 4.0 + 44.0 + 16.0 + 36.0 + 16.0 + if s.hex_bad || s.color_error { 22.0 } else { 0.0 };
   let ch = cx.card(x, y, w, &rows, extra)?;
   let mut sy = y + ch - extra + 4.0;

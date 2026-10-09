@@ -14,7 +14,7 @@
 
 mod bottom;
 mod bug;
-mod images;
+pub(super) mod images;
 mod input;
 mod panel;
 mod keys;

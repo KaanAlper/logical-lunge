@@ -35,6 +35,7 @@ mod sidebar;
 mod toast;
 mod update;
 mod view;
+mod wallcolors;
 mod widgets;
 mod wm;
 
@@ -232,6 +233,8 @@ enum Msg {
   Sidebar(sidebar::Ev),
   /// the desktop widgets' workers (weather, temperatures)
   Widgets(widgets::Ev),
+  /// the wallpaper's source colour, read on another thread (wallcolors)
+  WallSeed(Option<[u8; 3]>),
 }
 
 static SENDER: OnceLock<Sender<Msg>> = OnceLock::new();
@@ -614,6 +617,12 @@ struct Ui {
   /// `ui/logical-lunge` (fallback prefs)
   pack_dir: PathBuf,
   custom_theme: Option<view::Theme>,
+  /// colours from the wallpaper (prefs.json "wallpaperColors"): its source
+  /// colour once read, whether a read is running, the border colours last
+  /// handed to the core
+  wall_seed: Option<[u8; 3]>,
+  wall_reading: bool,
+  wall_border: Option<(String, String)>,
   /// the native Super menu (made on first use)
   overview: Option<overview::Overview>,
   /// the session screen while it is open
@@ -733,6 +742,9 @@ fn ui_thread(
         update: Default::default(),
         pack_dir: opts.pack_dir.clone(),
         custom_theme: None,
+        wall_seed: None,
+        wall_reading: false,
+        wall_border: None,
         overview: None,
         session: None,
         settings: None,
@@ -1082,6 +1094,10 @@ impl Ui {
         } else if self.fonts.refresh_text_scale() {
           self.redraw_all();
         }
+        // a new wallpaper: its colours are read again when they are in use
+        if msg == WM_SETTINGCHANGE && wp.0 == SPI_SETDESKWALLPAPER.0 as usize && self.custom_theme.is_some() && model::prefs(&self.pack_dir)["wallpaperColors"].as_bool() == Some(true) {
+          self.wall_read();
+        }
         unsafe {
           let _ = PostMessageW(self.msg_hwnd, WM_APP_REBUILD, WPARAM(0), LPARAM(0));
         }
@@ -1266,6 +1282,13 @@ impl Ui {
         Msg::Settings(e) => self.settings_event(e),
         Msg::OskToggle => self.osk_toggle(),
         Msg::DockPins(pins) => self.dock_pins(pins),
+        Msg::WallSeed(seed) => {
+          self.wall_reading = false;
+          if seed.is_some() && seed != self.wall_seed {
+            self.wall_seed = seed;
+            self.reload_custom_theme();
+          }
+        }
         Msg::Urgent(handles) => {
           let set: std::collections::HashSet<i64> = handles.into_iter().collect();
           if set != self.model.urgent {
@@ -1826,11 +1849,44 @@ impl Ui {
     if scale::set_percent(scale::from_pref(prefs["uiScale"].as_u64())) {
       return self.ui_scale_changed();
     }
-    self.custom_theme = Some(palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light));
+    let wall = prefs["wallpaperColors"].as_bool() == Some(true);
+    self.custom_theme = Some(match self.wall_seed.filter(|_| wall) {
+      Some(seed) => wallcolors::theme(seed, self.model.light),
+      None => palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light),
+    });
+    self.wall_borders(wall, prefs["borderStyle"].as_str() == Some("ii"));
+    if wall && self.wall_seed.is_none() {
+      self.wall_read();
+    }
     self.redraw_all();
     self.pops_repaint();
     self.overview_render();
     self.settings_restyle();
+  }
+
+  /// Reads the wallpaper's source colour on another thread (Msg::WallSeed).
+  fn wall_read(&mut self) {
+    if self.wall_reading {
+      return;
+    }
+    self.wall_reading = true;
+    std::thread::spawn(|| send(Msg::WallSeed(wallcolors::seed())));
+  }
+
+  /// The window borders follow the wallpaper's scheme while its colours are
+  /// on, and get the border style's own colours back when they go off. The
+  /// core is told only when that changes.
+  fn wall_borders(&mut self, wall: bool, ii: bool) {
+    let want = self.wall_seed.filter(|_| wall).map(|seed| wallcolors::border(seed, self.model.light, ii));
+    if want == self.wall_border {
+      return;
+    }
+    let path = match &want {
+      Some((a, i)) => format!("/border-color?a={}&i={}", a.replace('#', "%23"), i.replace('#', "%23")),
+      None => "/border-color?reset=1".to_string(),
+    };
+    self.wall_border = want;
+    core_api::post_async(path);
   }
 
   /// The interface scale changed (Settings > Görünüm): every window is made

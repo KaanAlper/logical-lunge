@@ -92,6 +92,7 @@ pub(super) enum Sw {
   WinToasts,
   Takeover,
   Night,
+  WallpaperColors,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]

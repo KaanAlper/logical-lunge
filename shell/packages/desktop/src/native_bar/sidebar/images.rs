@@ -262,7 +262,7 @@ fn pixels(wic: &IWICImagingFactory, src: &IWICBitmapSource, max_w: u32, max_h: u
 }
 
 /// The first frame, scaled to fit.
-pub(super) fn load(key: &str, max_w: u32, max_h: u32) -> Option<Pixels> {
+pub(in crate::native_bar) fn load(key: &str, max_w: u32, max_h: u32) -> Option<Pixels> {
   let wic = factory()?;
   let src = source(key)?;
   let dec = decoder(&wic, &src)?;

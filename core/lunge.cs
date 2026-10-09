@@ -4055,6 +4055,10 @@ static class Prefs
             case "borderStyle":
                 if (!BorderLook.Valid(value)) return false;
                 val = value; break;
+            // renkleri duvar kâğıdından al (kabuk hesaplar; kapalıyken vurgu rengi)
+            case "wallpaperColors":
+                if (value != "true" && value != "false") return false;
+                val = value == "true"; break;
             default: return false;
         }
         lock (gate)
@@ -4151,8 +4155,8 @@ static class BorderLook
         return System.Text.RegularExpressions.Regex.Replace(block, pattern, m => m.Groups[1].Value + value, System.Text.RegularExpressions.RegexOptions.Multiline);
     }
 
-    // config.yaml metninde borders.global bloğu o stile göre; blok bulunamazsa metin olduğu gibi döner
-    public static string Rewrite(string yaml, string style, string focusHex)
+    // config.yaml metninde borders.global bloğunu edit'ten geçirir; blok bulunamazsa ya da değişmezse metin olduğu gibi döner
+    static string EditGlobal(string yaml, Func<string, string> edit)
     {
         string text = yaml.Replace("\r\n", "\n");
         var head = System.Text.RegularExpressions.Regex.Match(text, @"(?m)^borders:[ \t]*\n(?:(?:  .*|[ \t]*)\n)*?  global:[ \t]*\n");
@@ -4166,22 +4170,62 @@ static class BorderLook
             if (line.Trim().Length > 0 && !line.StartsWith("    ")) break;
             end = nl < 0 ? text.Length : nl + 1;
         }
-        bool ii = style == "ii";
-        string block = text.Substring(start, end - start);
-        block = Set(block, @"^(    border_width:[ \t]*)\d+", ii ? "1" : "2");
-        block = Set(block, @"^(    active_color:[ \t]*)""[^""\n]*""", ii ? "\"#49454f77\"" : "\"" + focusHex + "cc\"");
-        block = Set(block, @"^(    inactive_color:[ \t]*)""[^""\n]*""", ii ? "\"#1d1b2033\"" : "\"#3a3a4099\"");
-        block = Set(block, @"^(          duration:[ \t]*)\d+", ii ? "1000" : "180");
-        block = Set(block, @"^(          easing:[ \t]*).*", ii ? "[0.05, 0.7, 0.1, 1.0]" : "EaseInOutQuad");
-        block = System.Text.RegularExpressions.Regex.Replace(block, @"(?m)^(    effects:[ \t]*\n(?:      .*\n)*?      enabled:[ \t]*)(?:true|false)", m => m.Groups[1].Value + (ii ? "false" : "true"));
-        string flash = ii ? "0" : "800";
-        if (System.Text.RegularExpressions.Regex.IsMatch(block, @"(?m)^    focus_flash:"))
-            block = Set(block, @"^(    focus_flash:[ \t]*)\d+", flash);
-        else // eski config.yaml: anahtar bloğun başına (4 girintili her yer geçerli)
-            block = "    # etkin pencerenin odak rengi kaç ms görünür; 0 = pencere odaktayken kalıcı\n    focus_flash: " + flash + "\n" + block;
-        string next = text.Substring(0, start) + block + text.Substring(end);
+        string next = text.Substring(0, start) + edit(text.Substring(start, end - start)) + text.Substring(end);
         if (next == text) return yaml;
         return yaml.Contains("\r\n") ? next.Replace("\n", "\r\n") : next;
+    }
+
+    // borders.global bloğu o stile göre
+    public static string Rewrite(string yaml, string style, string focusHex)
+    {
+        bool ii = style == "ii";
+        return EditGlobal(yaml, block =>
+        {
+            block = Set(block, @"^(    border_width:[ \t]*)\d+", ii ? "1" : "2");
+            block = Set(block, @"^(    active_color:[ \t]*)""[^""\n]*""", ii ? "\"#49454f77\"" : "\"" + focusHex + "cc\"");
+            block = Set(block, @"^(    inactive_color:[ \t]*)""[^""\n]*""", ii ? "\"#1d1b2033\"" : "\"#3a3a4099\"");
+            block = Set(block, @"^(          duration:[ \t]*)\d+", ii ? "1000" : "180");
+            block = Set(block, @"^(          easing:[ \t]*).*", ii ? "[0.05, 0.7, 0.1, 1.0]" : "EaseInOutQuad");
+            block = System.Text.RegularExpressions.Regex.Replace(block, @"(?m)^(    effects:[ \t]*\n(?:      .*\n)*?      enabled:[ \t]*)(?:true|false)", m => m.Groups[1].Value + (ii ? "false" : "true"));
+            string flash = ii ? "0" : "800";
+            if (System.Text.RegularExpressions.Regex.IsMatch(block, @"(?m)^    focus_flash:"))
+                return Set(block, @"^(    focus_flash:[ \t]*)\d+", flash);
+            // eski config.yaml: anahtar bloğun başına (4 girintili her yer geçerli)
+            return "    # etkin pencerenin odak rengi kaç ms görünür; 0 = pencere odaktayken kalıcı\n    focus_flash: " + flash + "\n" + block;
+        });
+    }
+
+    // Duvar kâğıdı renkleri (prefs.json "wallpaperColors"): kabuk duvar kâğıdından çıkardığı kenarlık renklerini verir;
+    // yalnızca active_color / inactive_color yazılır, stilin diğer anahtarları kalır
+    public static string WithColors(string yaml, string active, string inactive)
+    {
+        return EditGlobal(yaml, block =>
+        {
+            block = Set(block, @"^(    active_color:[ \t]*)""[^""\n]*""", "\"" + active + "\"");
+            return Set(block, @"^(    inactive_color:[ \t]*)""[^""\n]*""", "\"" + inactive + "\"");
+        });
+    }
+
+    static readonly System.Text.RegularExpressions.Regex rgba = new System.Text.RegularExpressions.Regex("^#[0-9a-f]{8}$");
+
+    // /border-color?a=#rrggbbaa&i=#rrggbbaa: duvar kâğıdının renkleri; /border-color?reset=1: stilin kendi renkleri
+    public static bool SetColors(string active, string inactive)
+    {
+        if (active == null && inactive == null) { Apply(Current(Prefs.Read())); return true; }
+        if (active == null || inactive == null) return false;
+        active = active.ToLowerInvariant(); inactive = inactive.ToLowerInvariant();
+        if (!rgba.IsMatch(active) || !rgba.IsMatch(inactive)) return false;
+        try
+        {
+            string path = Paths.ConfigFile;
+            string text = System.IO.File.ReadAllText(path);
+            string next = WithColors(text, active, inactive);
+            if (next == text) return true;
+            if (!Files.WriteAtomic(path, next)) return false;
+            try { new TilingClient().Command("wm-reload-config"); } catch (Exception ex) { Slider.Log("kenarlık renkleri: " + ex.Message); }
+            return true;
+        }
+        catch (Exception ex) { Slider.Log("kenarlık renkleri: " + ex.Message); return false; }
     }
 
     public static void Apply(string style)
@@ -4479,6 +4523,7 @@ static class Settings
             // tercih önce: ii kenarlık stilinde config.yaml'daki odak rengi nötr gri
             { "focusColor", p.ContainsKey("focusColor") ? p["focusColor"] : m.Success ? m.Groups[1].Value.ToLowerInvariant() : "#b69df8" },
             { "borderStyle", BorderLook.Current(p) },
+            { "wallpaperColors", p.ContainsKey("wallpaperColors") && p["wallpaperColors"] is bool && (bool)p["wallpaperColors"] },
             { "language", p.TryGetValue("language", out lang) ? lang : "system" },
             { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
             { "animations", !(p.TryGetValue("animations", out anim) && anim is bool && !(bool)anim) },
@@ -6217,7 +6262,7 @@ static class Toasts
                 new Thread(() => { try { Command(s, reqs); } catch { } finally { try { cc.Close(); } catch { } } }) { IsBackground = true, Name = "core-dialog" }.Start();
                 return;
             }
-            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/urgent.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/temps.json") || verbless.StartsWith("/desktop-ready") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/widgets/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
+            if (verbless.StartsWith("/dialog-") || verbless.StartsWith("/notify?") || verbless.StartsWith("/launch?") || verbless.StartsWith("/cmd?") || verbless.StartsWith("/overview-mode") || verbless.StartsWith("/overview-wait") || verbless.StartsWith("/overview-signal") || verbless.StartsWith("/bar-alive?") || verbless.StartsWith("/log?") || verbless.StartsWith("/widget?") || verbless.StartsWith("/apps.json") || verbless.StartsWith("/urgent.json") || verbless.StartsWith("/prefs.json") || verbless.StartsWith("/temps.json") || verbless.StartsWith("/desktop-ready") || verbless.StartsWith("/pref?") || verbless.StartsWith("/focus-color?") || verbless.StartsWith("/border-color?") || verbless.StartsWith("/tray-pins") || verbless.StartsWith("/winicon?") || verbless.StartsWith("/notification") || verbless.StartsWith("/dock-pin") || verbless.StartsWith("/gamma") || verbless.StartsWith("/brightness?") || verbless.StartsWith("/qs/") || verbless.StartsWith("/widgets/") || verbless.StartsWith("/library-remove?")) { Command(s, reqs); c.Close(); return; }
             if (reqs.StartsWith("OPTIONS"))
             {
                 var ok = Encoding.ASCII.GetBytes("HTTP/1.1 204 No Content\r\n" + cors + "Content-Length: 0\r\n\r\n");
@@ -6355,6 +6400,21 @@ static class Toasts
             else if (target == "/temps.json") { body = TempsFile.Json(); status = "200 OK"; }
             // Açılış örtüsü: masaüstünün bütün parçaları geldi mi
             else if (target == "/desktop-ready") { body = DesktopReady.Json(); status = "200 OK"; }
+            else if (target.StartsWith("/border-color?"))
+            {
+                if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
+                else
+                {
+                    string a = null, i = null;
+                    foreach (var part in target.Substring(14).Split('&'))
+                    {
+                        if (part.StartsWith("a=")) a = Uri.UnescapeDataString(part.Substring(2));
+                        else if (part.StartsWith("i=")) i = Uri.UnescapeDataString(part.Substring(2));
+                    }
+                    body = new JavaScriptSerializer().Serialize(new { ok = BorderLook.SetColors(a, i) });
+                    status = "200 OK";
+                }
+            }
             else if (target.StartsWith("/focus-color?v="))
             {
                 if (!req.StartsWith("POST ")) status = "405 Method Not Allowed";
