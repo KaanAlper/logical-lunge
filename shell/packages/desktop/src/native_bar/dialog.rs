@@ -49,7 +49,7 @@ use super::{
   gfx::{self, Gfx, Rect, Rgba},
   popup,
   view::{Align, Painter, Theme},
-  Layer, Ui, CLASS, DIALOG_HWND, TIMER_DIALOG_CLOSE,
+  Layer, Ui, CLASS, DIALOG_HWND, TIMER_DIALOG_CLOSE, TIMER_DIALOG_WAIT,
 };
 
 const PANEL_W: f32 = 440.0;
@@ -446,11 +446,28 @@ impl Ui {
     });
   }
 
+  /// TIMER_DIALOG_WAIT: whether the questions held back for a game can open.
+  pub(super) fn dialog_waited(&mut self) {
+    unsafe {
+      let _ = KillTimer(self.msg_hwnd, TIMER_DIALOG_WAIT);
+    }
+    if self.dialogs.open.is_none() {
+      self.dialog_next();
+    }
+  }
+
   pub(super) fn dialog_is_open(&self) -> bool {
     self.dialogs.open.is_some()
   }
 
   fn dialog_next(&mut self) {
+    // A fullscreen game, a Direct3D app or a presentation in front: the
+    // question waits (as notification cards do) instead of covering it and
+    // taking its focus with a forced foreground; it opens when that is over.
+    if !self.dialogs.queue.is_empty() && super::toast::busy() {
+      unsafe { SetTimer(self.msg_hwnd, TIMER_DIALOG_WAIT, 2000, None) };
+      return;
+    }
     while let Some((spec, done)) = self.dialogs.queue.pop_front() {
       match self.dialog_show(spec) {
         Ok(open) => {
