@@ -125,6 +125,26 @@ static class CoreRegression
         System.IO.File.WriteAllText(odd, "x");
         try { Check(Launcher.Check(odd) == Launcher.NO_ASSOCIATION, "A file no app opens must be NO_ASSOCIATION"); }
         finally { System.IO.File.Delete(odd); }
+        // a shortcut whose target is gone (desktop double-click): our card, not Explorer's "shortcut problem" box
+        string tmp = System.IO.Path.GetTempPath(), gone = System.IO.Path.Combine(tmp, "ll-gone-" + Guid.NewGuid().ToString("N") + ".exe");
+        string lnkGone = System.IO.Path.Combine(tmp, "ll-" + Guid.NewGuid().ToString("N") + ".lnk"), lnkOk = System.IO.Path.Combine(tmp, "ll-" + Guid.NewGuid().ToString("N") + ".lnk");
+        object wsh = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+        foreach (var pair in new[] { new[] { lnkGone, gone }, new[] { lnkOk, Environment.GetFolderPath(Environment.SpecialFolder.Windows) } })
+        {
+            object sc = wsh.GetType().InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, wsh, new object[] { pair[0] });
+            sc.GetType().InvokeMember("TargetPath", System.Reflection.BindingFlags.SetProperty, null, sc, new object[] { pair[1] });
+            sc.GetType().InvokeMember("Save", System.Reflection.BindingFlags.InvokeMethod, null, sc, null);
+        }
+        try
+        {
+            Check(Launcher.Check(lnkGone) == Launcher.NOT_FOUND, "A shortcut whose target is gone must be NOT_FOUND");
+            Check(Launcher.Check(lnkOk) == Launcher.OK, "A shortcut to an existing folder must open");
+        }
+        finally { System.IO.File.Delete(lnkGone); System.IO.File.Delete(lnkOk); }
+        string urlOdd = System.IO.Path.Combine(tmp, "ll-" + Guid.NewGuid().ToString("N") + ".url");
+        System.IO.File.WriteAllText(urlOdd, "[InternetShortcut]\r\nURL=llnoscheme" + Guid.NewGuid().ToString("N").Substring(0, 8) + ":x\r\n");
+        try { Check(Launcher.Check(urlOdd) == Launcher.NO_ASSOCIATION, "An internet shortcut nothing opens must be NO_ASSOCIATION"); }
+        finally { System.IO.File.Delete(urlOdd); }
         Check(Launcher.Describe(Launcher.NOT_FOUND).Length > 0, "Windows' error text must come back");
         Check(Request("GET", "/launch?file=cmd.exe", "http://127.0.0.1:6124").Contains("405") && Request("POST", "/launch?file=cmd.exe", "https://example.invalid").Contains("403"), "Launches must be local POSTs");
         Check(Request("POST", "/launch?file=", "http://127.0.0.1:6124").Contains("400") && Request("POST", "/launch?file=a&verb=delete", "http://127.0.0.1:6124").Contains("400"), "A bad launch must be refused");

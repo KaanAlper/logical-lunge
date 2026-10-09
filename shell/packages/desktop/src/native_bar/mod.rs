@@ -1742,6 +1742,9 @@ impl Ui {
       }
       Some("ll:desktop-menu") => return self.desktop_menu(),
       Some("ll:desktop-menu-key") => return self.desktop_menu_key(),
+      // a double click on the desktop / Enter on it: we open the icons
+      Some("ll:desktop-open") => return self.desktop_open(false),
+      Some("ll:desktop-open-key") => return self.desktop_open(true),
       // a click outside the shell: a menu that could not take the focus
       // (opened for the desktop) closes too
       Some("ll:outside-click") => return self.menu_close(),
