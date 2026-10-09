@@ -119,9 +119,14 @@ pub fn handle_foreground_event(best_hwnd_guess: HWND, other_hwnd_guess: HWND) {
         crate::cue(new_active_hwnd.0 as isize);
     }
 
-    // Send foreground messages to all the border windows
-    // TODO: I think only the previous focused and new focused actually need the message
-    for (key, val) in APP_STATE.borders.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
+    let borders = APP_STATE.borders.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The inactive dim follows the focus only onto windows with a border (see `crate::dim_focus`)
+    if borders.contains_key(&(new_active_hwnd.0 as isize)) {
+        crate::set_dim_focus(new_active_hwnd.0 as isize);
+    }
+
+    // Send foreground messages to all the border windows (each one's dim depends on the focus too)
+    for (key, val) in borders.iter() {
         let border_window = HWND(*val as _);
         // Some apps can become foreground even if they're not visible, so we also have to check
         // the keys against the active_window HWND from earlier

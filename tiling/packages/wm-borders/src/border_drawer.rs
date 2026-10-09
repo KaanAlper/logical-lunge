@@ -6,7 +6,7 @@ use windows::Win32::Graphics::Direct2D::Common::{
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_BRUSH_PROPERTIES, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_ROUNDED_RECT, ID2D1Brush,
-    ID2D1Multithread, ID2D1RenderTarget,
+    ID2D1Multithread, ID2D1RenderTarget, ID2D1SolidColorBrush,
 };
 use windows::Win32::Graphics::Dxgi::IDXGISurface;
 use windows::core::Interface;
@@ -39,7 +39,17 @@ pub struct BorderDrawer {
     pub last_anim_time: Option<time::Instant>,
     /// Logical Lunge: an animation step was computed but not drawn yet (the frame came early)
     pub unrendered: bool,
+    /// Logical Lunge: the inactive dim (illogical-impulse's dim_inactive): black over the window's inside at alpha
+    /// `dim`, which moves to `dim_target` over [`DIM_FADE_MS`]. The border window already sits right above its
+    /// window and lets clicks through, so this costs no extra window.
+    pub dim_strength: f32,
+    pub dim: f32,
+    pub dim_target: f32,
+    dim_brush: Option<ID2D1SolidColorBrush>,
 }
+
+/// illogical-impulse's dim fade (Hyprland fadeDim)
+const DIM_FADE_MS: f32 = 800.0;
 
 impl BorderDrawer {
     pub fn configure_appearance(&mut self, config: &BorderConfig, dpi: u32, tracking_window: HWND) {
@@ -52,6 +62,48 @@ impl BorderDrawer {
         self.inactive_color = config.inactive_color.to_color_brush(false);
         self.animations = config.animations.to_animations();
         self.effects = config.effects.to_effects(dpi);
+        self.dim_strength = config.inactive_dim.clamp(0.0, 0.5);
+        self.dim_target = self.dim_target.min(self.dim_strength);
+        self.dim = self.dim.min(self.dim_strength);
+    }
+
+    /// Sets where the dim goes; true when that changed. Without animations it goes there at once.
+    pub fn set_dim(&mut self, dimmed: bool, border_window: HWND) -> bool {
+        let target = if dimmed { self.dim_strength } else { 0.0 };
+        if target == self.dim_target {
+            return false;
+        }
+        self.dim_target = target;
+        if self.animations.active.is_empty() && self.animations.inactive.is_empty() {
+            self.dim = target;
+        } else {
+            self.set_anims_timer_if_needed(border_window);
+        }
+        true
+    }
+
+    /// The dim over the inside of the border (`inner`), under the border's own line.
+    fn paint_dim(&self, inner: &D2D1_ROUNDED_RECT, renderer: &ID2D1RenderTarget) {
+        if self.dim <= 0.0 {
+            return;
+        }
+        if let Some(brush) = self.dim_brush.as_ref() {
+            unsafe { brush.SetOpacity(self.dim) };
+            self.fill_rectangle(inner, renderer, brush);
+        }
+    }
+
+    fn inner_rect(stroke_rect: &D2D1_ROUNDED_RECT, half_stroke_width: f32) -> D2D1_ROUNDED_RECT {
+        D2D1_ROUNDED_RECT {
+            rect: D2D_RECT_F {
+                left: stroke_rect.rect.left + half_stroke_width,
+                top: stroke_rect.rect.top + half_stroke_width,
+                right: stroke_rect.rect.right - half_stroke_width,
+                bottom: stroke_rect.rect.bottom - half_stroke_width,
+            },
+            radiusX: (stroke_rect.radiusX - half_stroke_width).max(0.0),
+            radiusY: (stroke_rect.radiusY - half_stroke_width).max(0.0),
+        }
     }
 
     pub fn init(
@@ -89,6 +141,8 @@ impl BorderDrawer {
             .init_brush(renderer, &bounds, &brush_properties)?;
         self.inactive_color
             .init_brush(renderer, &bounds, &brush_properties)?;
+        // SAFETY: `renderer` is the live render target just created.
+        self.dim_brush = Some(unsafe { renderer.CreateSolidColorBrush(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, None)? });
 
         if self.render_backend.supports_effects() {
             self.effects
@@ -103,6 +157,7 @@ impl BorderDrawer {
         self.render_backend = RenderBackend::None;
         let _ = self.active_color.take_brush();
         let _ = self.inactive_color.take_brush();
+        self.dim_brush = None;
         let _ = self.effects.take_active_command_list();
         let _ = self.effects.take_inactive_command_list();
     }
@@ -191,6 +246,7 @@ impl BorderDrawer {
             render_target.BeginDraw();
             render_target.Clear(None);
 
+            self.paint_dim(&Self::inner_rect(&stroke_rect, self.stroke_width as f32 / 2.0), render_target);
             self.paint_colors(bottom_color, top_color, &bounds, render_target, &|brush| {
                 self.draw_rectangle(&stroke_rect, render_target, brush)
             })?;
@@ -249,6 +305,7 @@ impl BorderDrawer {
             d2d_context.BeginDraw();
             d2d_context.Clear(None);
 
+            self.paint_dim(&Self::inner_rect(&stroke_rect, self.stroke_width as f32 / 2.0), d2d_context);
             self.paint_colors(bottom_color, top_color, &bounds, d2d_context, &|brush| {
                 self.draw_rectangle(&stroke_rect, d2d_context, brush)
             })?;
@@ -397,6 +454,7 @@ impl BorderDrawer {
             d2d_context.BeginDraw();
             d2d_context.Clear(None);
 
+            self.paint_dim(&Self::inner_rect(&stroke_rect, half_stroke_width), d2d_context);
             d2d_context.DrawImage(
                 command_list,
                 None,
@@ -547,6 +605,16 @@ impl BorderDrawer {
                     }
                 }
             }
+        }
+
+        if self.dim != self.dim_target {
+            let step = anim_elapsed.as_secs_f32() * 1000.0 / DIM_FADE_MS * self.dim_strength;
+            self.dim = if self.dim < self.dim_target {
+                (self.dim + step).min(self.dim_target)
+            } else {
+                (self.dim - step).max(self.dim_target)
+            };
+            update = true;
         }
 
         self.last_anim_time = Some(time::Instant::now());

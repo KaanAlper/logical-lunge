@@ -18,7 +18,7 @@ use anyhow::{Context, anyhow};
 use config::{Config, EnableMode};
 use render_backend::RenderBackendConfig;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{LazyLock, Mutex, RwLock, RwLockWriteGuard};
 use std::thread::{self, JoinHandle};
 use theme::ThemeWatcher;
@@ -682,6 +682,32 @@ pub(crate) fn cue_left(hwnd: isize) -> Option<std::time::Duration> {
     let cue = CUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let since = cue.1.filter(|_| cue.0 == hwnd)?;
     flash.checked_sub(since.elapsed()).filter(|left| !left.is_zero())
+}
+
+/// Logical Lunge: the window the inactive dim leaves out: the last focused window that has a border. Focus on a
+/// window without one (the shell's bar, menus and launcher, the desktop) leaves it where it was, as Hyprland's layer
+/// surfaces take no window focus: opening a menu darkens nothing.
+static DIM_FOCUS: AtomicIsize = AtomicIsize::new(0);
+
+pub(crate) fn dim_focus() -> isize {
+    DIM_FOCUS.load(Ordering::Relaxed)
+}
+
+/// Moves the dim's exception to `hwnd`; true when it moved (the other borders then redraw).
+pub(crate) fn set_dim_focus(hwnd: isize) -> bool {
+    DIM_FOCUS.swap(hwnd, Ordering::Relaxed) != hwnd
+}
+
+/// Asks every shown border but that of `except` to recompute its colors and dim.
+pub(crate) fn refresh_other_borders(except: isize) {
+    for (key, val) in APP_STATE.borders.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
+        let border = HWND(*val as _);
+        if *key != except && utils::is_window_visible(border) {
+            post_message_w(Some(border), utils::WM_APP_FOREGROUND, WPARAM(0), LPARAM(0))
+                .context("refresh dim")
+                .log_if_err();
+        }
+    }
 }
 
 /// Shows the focus outline of `hwnd` for a moment: it got the focus, or the window manager moved it.

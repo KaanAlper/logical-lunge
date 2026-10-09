@@ -473,10 +473,9 @@ impl WindowBorder {
     }
 
     fn update_color(&mut self, check_delay: Option<u64>) {
-        self.window_state.update(
-            self.tracking_window.0 as isize,
-            *APP_STATE.active_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
+        let active = *APP_STATE.active_window.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.window_state.update(self.tracking_window.0 as isize, active);
+        self.update_dim(active);
         // The outline goes off by itself (whichever way it came on: a cue, a new border, a foreground change)
         if let (WindowState::Active, Some(left)) =
             (self.window_state, crate::cue_left(self.tracking_window.0 as isize))
@@ -500,6 +499,17 @@ impl WindowBorder {
             // The animations callback updates the color; its timer stops when idle, so it starts here
             true => self.drawer.set_anims_timer_if_needed(self.border_window.0),
         }
+    }
+
+    /// The inactive dim: on unless this window is the last focused one with a border. A window that got the focus
+    /// before its border existed takes the exception here, and the other borders redraw.
+    fn update_dim(&mut self, active: isize) {
+        let me = self.tracking_window.0 as isize;
+        if active == me && crate::set_dim_focus(me) {
+            crate::refresh_other_borders(me);
+        }
+        let focus = crate::dim_focus();
+        self.drawer.set_dim(focus != 0 && focus != me, self.border_window.0);
     }
 
     fn update_brush_opacities(&mut self) {

@@ -284,6 +284,8 @@ borders:
     unminimize_delay: 0
     # etkin pencerenin odak rengi kaç ms görünür; 0 = pencere odaktayken kalıcı (Ayarlar > Görünüm > Kenarlık stili yazar)
     focus_flash: 800
+    # odakta olmayan pencereler bu kadar karartılır (Hyprland dim_inactive / dim_strength); 0 = kapalı
+    inactive_dim: 0.05
     # Odak rengi (Hyprland col.active_border): #rrggbb ya da saydamlıkla #rrggbbaa
     active_color: "#b69df8cc"
     # Hyprland inactive_border: hafif görünür
