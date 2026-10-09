@@ -165,11 +165,28 @@ keybindings:
     bindings: ['lwin+page_up', 'lwin+ctrl+page_up']
   - commands: ['focus --next-workspace']
     bindings: ['lwin+page_down', 'lwin+ctrl+page_down']
-  # Super + Ctrl + Alt + ←/→ : sadece dolu workspace'ler arası
-  - commands: ['focus --prev-active-workspace']
+  # Super + Ctrl + Alt + ←/→ : bu monitörün dolu workspace'leri arası (Hyprland m-1 / m+1)
+  - commands: ['focus --prev-active-workspace-on-monitor']
     bindings: ['lwin+ctrl+alt+left']
-  - commands: ['focus --next-active-workspace']
+  - commands: ['focus --next-active-workspace-on-monitor']
     bindings: ['lwin+ctrl+alt+right']
+
+  # --- Monitörler ---
+  # Super + Alt + ←/→ : yandaki monitöre odaklan
+  - commands: ['focus --workspace-in-direction left']
+    bindings: ['lwin+alt+left']
+  - commands: ['focus --workspace-in-direction right']
+    bindings: ['lwin+alt+right']
+  # Super + Shift + Alt + ←/→ : pencereyi yandaki monitöre gönder (odak onunla gider)
+  - commands: ['move --workspace-in-direction left', 'focus --workspace-in-direction left']
+    bindings: ['lwin+shift+alt+left']
+  - commands: ['move --workspace-in-direction right', 'focus --workspace-in-direction right']
+    bindings: ['lwin+shift+alt+right']
+  # Super + Alt + PageUp/PageDown : bu workspace'i yandaki monitöre taşı
+  - commands: ['move-workspace --direction left']
+    bindings: ['lwin+alt+page_up']
+  - commands: ['move-workspace --direction right']
+    bindings: ['lwin+alt+page_down']
 
   # --- Pencereyi workspace'ler arası taşı: Ctrl + Shift + Super + ←/→ ---
   - commands: ['move --prev-workspace', 'focus --prev-workspace']
@@ -221,10 +238,10 @@ keybindings:
   - commands: ['wm-cycle-focus']
     bindings: ['lwin+space']
 
-  # Split oranı: Super + ; / '   (Hyprland splitratio)
-  - commands: ['resize --width -10%']
+  # Split oranı: Super + ; / '   (Hyprland splitratio: pencerenin hemen üstündeki bölme, yönü ne olursa olsun)
+  - commands: ['split-ratio -0.1']
     bindings: ['lwin+oem_1']
-  - commands: ['resize --width +10%']
+  - commands: ['split-ratio 0.1']
     bindings: ['lwin+oem_7']
   - commands: ['wm-enable-binding-mode --name resize']
     bindings: ['lwin+alt+r']

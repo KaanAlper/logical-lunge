@@ -285,7 +285,7 @@
         code: 'Kod editörü', editor: 'Metin editörü', close: 'Pencereyi kapat', screenshot: 'Ekran alıntısı', 'screenshot-screen': 'Monitörün tamamı (panoya)', clipboard: 'Pano geçmişi',
         'file-search': 'Dosya araması', 'screenshot-alt': 'Ekran alıntısı (ikinci kısayol)', 'overview-alt': 'Super menüsü',
         run: 'Çalıştır', search: 'Ara (Super menüsü)', workspaces: "Workspace'ler (Super menüsü)", settings: 'Ayarlar',
-        sidebar: 'Sağ panel', notifications: 'Bildirimler', 'task-manager': 'Görev Yöneticisi',
+        sidebar: 'Sağ panel', notifications: 'Bildirimler', 'task-manager': 'Görev Yöneticisi', 'focus-urgent-or-last': 'Dikkat isteyen pencereye git',
       };
       const llLabel = id => LL_LABELS[id] || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
       const llGroup = id => id.startsWith('focus-') || id.startsWith('move-') || id === 'close' ? 'win'
@@ -302,6 +302,12 @@
           'toggle-fullscreen': 'Tam ekran', 'toggle-fullscreen-spoof': 'Yuvasında tam ekran (spoof)', 'toggle-floating --centered': 'Yüzen pencere', 'toggle-tiling-direction': 'Bölme yönünü değiştir',
           'toggle-minimized': 'Simge durumuna küçült', 'wm-cycle-focus': 'Yüzen / döşeli pencereler arasında geç',
           'resize --width -10%': 'Pencereyi daralt', 'resize --width +10%': 'Pencereyi genişlet', 'wm-enable-binding-mode --name resize': 'Boyutlandırma modu',
+          'split-ratio -0.1': 'Bölme oranını azalt', 'split-ratio 0.1': 'Bölme oranını artır',
+          'focus --prev-active-workspace-on-monitor': 'Bu monitörde önceki dolu workspace', 'focus --next-active-workspace-on-monitor': 'Bu monitörde sonraki dolu workspace',
+          'focus --workspace-in-direction left': 'Soldaki monitöre geç', 'focus --workspace-in-direction right': 'Sağdaki monitöre geç',
+          'move --workspace-in-direction left ; focus --workspace-in-direction left': 'Pencereyi soldaki monitöre gönder',
+          'move --workspace-in-direction right ; focus --workspace-in-direction right': 'Pencereyi sağdaki monitöre gönder',
+          'move-workspace --direction left': "Workspace'i soldaki monitöre taşı", 'move-workspace --direction right': "Workspace'i sağdaki monitöre taşı",
           'shell-exec ms-settings:': 'Windows ayarları', 'shell-exec sndvol': 'Ses karıştırıcı',
           'wm-reload-config': 'Pencere yöneticisi ayarlarını yenile', 'wm-redraw': 'Pencereleri yeniden çiz', 'wm-toggle-pause': 'Döşemeyi duraklat', 'wm-exit': "Logical Lunge'dan çık",
         };
