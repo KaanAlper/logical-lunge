@@ -47,6 +47,9 @@ pub struct Model {
   /// seconds a notification card stays: information, warnings and errors
   pub toast_info: u32,
   pub toast_error: u32,
+  /// windows asking for attention (the core's /urgent.json): their
+  /// workspace is marked on the bar
+  pub urgent: std::collections::HashSet<i64>,
   /// Language of the date and of `tr()`: prefs.json, else the Windows UI language.
   locale: String,
   /// Turkish source text -> translation (empty for Turkish).

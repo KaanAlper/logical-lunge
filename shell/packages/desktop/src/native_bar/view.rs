@@ -891,6 +891,17 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, 
       None if k < 1.0 => p.fill_circle(cx, cy, 4.7 / 2.0, c.alpha(c.3 * (1.0 - k)))?,
       None => {}
     }
+    // a window here asks for attention (Windows' flashing taskbar button,
+    // with no taskbar): a dot at the cell's top right until it is focused
+    let urgent = !m.urgent.is_empty()
+      && m
+        .wm
+        .all_workspaces()
+        .find(|w| w.name == n.to_string())
+        .is_some_and(|w| w.windows.iter().any(|win| m.urgent.contains(&win.handle)));
+    if urgent {
+      p.fill_circle(cell.x + WS - 5.0, cell.y + 5.0, 3.0, t.error)?;
+    }
   }
   Ok(())
 }

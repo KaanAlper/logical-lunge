@@ -221,6 +221,8 @@ enum Msg {
   OskToggle,
   /// the Dock's pins as the core keeps them (None: no answer)
   DockPins(Option<Vec<String>>),
+  /// windows asking for attention (handles)
+  Urgent(Vec<i64>),
   /// the settings window's answers from the core
   Settings(settings::Event),
   /// the right panel: the shell's events and its workers' results
@@ -273,6 +275,15 @@ fn monitor_layout() -> Vec<(i32, i32, i32, i32, u32)> {
     .collect()
 }
 static SONGREC_CHILD: Mutex<Option<(u64, std::process::Child)>> = Mutex::new(None);
+
+/// Reads the windows asking for attention from the core.
+fn fetch_urgent() {
+  if let Some((200, body)) = core_api::post("/urgent.json") {
+    if let Ok(handles) = serde_json::from_slice::<Vec<i64>>(&body) {
+      send(Msg::Urgent(handles));
+    }
+  }
+}
 
 /// Reads the Super menu's app list from the core and hands it to the bar;
 /// false while the indexer has not written one yet.
@@ -1249,6 +1260,13 @@ impl Ui {
         Msg::Settings(e) => self.settings_event(e),
         Msg::OskToggle => self.osk_toggle(),
         Msg::DockPins(pins) => self.dock_pins(pins),
+        Msg::Urgent(handles) => {
+          let set: std::collections::HashSet<i64> = handles.into_iter().collect();
+          if set != self.model.urgent {
+            self.model.urgent = set;
+            self.redraw_all();
+          }
+        }
         Msg::Sidebar(e) => self.sidebar_event(e),
         Msg::Widgets(e) => self.widgets_event(e),
         Msg::Toast(card) => self.toast_add(card),
@@ -1740,6 +1758,11 @@ impl Ui {
         std::thread::spawn(fetch_apps);
         return;
       }
+      // a window asks for attention, or stopped asking
+      Some("ll:urgent") => {
+        std::thread::spawn(fetch_urgent);
+        return;
+      }
       Some("ll:desktop-menu") => return self.desktop_menu(),
       Some("ll:desktop-menu-key") => return self.desktop_menu_key(),
       // a double click on the desktop / Enter on it: we open the icons
@@ -1754,6 +1777,7 @@ impl Ui {
       None => {
         self.reload_pins();
         self.dock_pins_changed();
+        std::thread::spawn(fetch_urgent);
         self.reload_custom_theme();
         model::prefs(&self.pack_dir)["theme"].as_str() == Some("light")
       }
