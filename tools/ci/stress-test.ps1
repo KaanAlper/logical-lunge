@@ -1,0 +1,250 @@
+# Logical Lunge - CI smoke and stress test of a built edition package.
+#
+# Runs the core (which brings up the window manager and the shell, as the sign-in task does) straight from the package's
+# app folder, with no install, then keeps the desktop busy: workspace switches through the core's test pipe
+# (\\.\pipe\lunge-test, opened only with LL_TEST=1), synthetic key and mouse input through the input hooks, a few
+# minutes idle and a few minutes with every core busy and memory under pressure (a heavy game's footprint). It fails when
+# the desktop does not hold up: a part restarted or crashed, the bar stopped sending heartbeats, the keyboard hook got
+# slow or was dropped, slide frames got too long, or handles / GDI / memory kept growing.
+#
+#   pwsh tools/ci/stress-test.ps1 -Package <folder with app\lunge.exe>
+param(
+    [Parameter(Mandatory = $true)][string]$Package,
+    [string]$Report = $env:GITHUB_STEP_SUMMARY
+)
+$ErrorActionPreference = 'Stop'
+
+# ------------------------------------------------------------------ thresholds
+$STARTUP_TIMEOUT_SEC = 180   # core + window manager + shell + bar windows up
+$WARMUP_SEC          = 60    # settle before the baseline (startup screen, first caches)
+$IDLE_SEC            = 180   # idle phase: switches and input, nothing else running
+$LOAD_SEC            = 180   # load phase: every logical CPU busy at normal priority + memory pressure
+$SWITCH_EVERY_SEC    = 6     # one workspace switch (there and back) this often
+$MEMORY_PRESSURE     = 0.75  # the load phase takes this share of the free memory it starts with
+# GitHub's runners have no GPU: DWM and our surfaces render on WARP (software), so frame budgets are loose; they still
+# catch a frame that waits on a stuck call (hundreds of ms).
+$MAX_FRAME_IDLE_MS   = 150   # longest slide/animation frame while idle
+$MAX_FRAME_LOAD_MS   = 500   # longest frame with every core busy
+$MAX_HOOK_SLOW_IDLE  = 0     # "klavye kancası yavaş" (>100 ms in the keyboard hook) lines while idle
+$MAX_HOOK_SLOW_LOAD  = 3     # ... under load (Windows drops a hook after repeated ~300 ms timeouts)
+# growth from the end of warm-up to the end of the run, per part (core, shell, window manager)
+$MAX_HANDLE_GROWTH   = 400
+$MAX_GDI_GROWTH      = 100
+$MAX_USER_GROWTH     = 100
+$MAX_PRIVATE_MB_GROWTH = 200
+
+$failures = New-Object System.Collections.Generic.List[string]
+$skipped = New-Object System.Collections.Generic.List[string]
+function Fail([string]$m) { $failures.Add($m); Write-Host "FAIL: $m" -ForegroundColor Red }
+function Skip([string]$m) { $skipped.Add($m); Write-Host "SKIP: $m" -ForegroundColor Yellow }
+function Note([string]$m) { Write-Host $m }
+
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class LLStress {
+    [DllImport("user32.dll")] public static extern uint GetGuiResources(IntPtr process, uint flags);
+    [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+    [DllImport("user32.dll")] static extern bool CloseDesktop(IntPtr desk);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    public struct POINT { public int X, Y; }
+    // a lone Shift tap: goes through the low-level keyboard hook, triggers no shortcut
+    public static void TapShift() { keybd_event(0x10, 0, 0, UIntPtr.Zero); keybd_event(0x10, 0, 2, UIntPtr.Zero); }
+    public static void Nudge(int dx) { POINT p; if (GetCursorPos(out p)) SetCursorPos(p.X + dx, p.Y); }
+    public static bool InteractiveDesktop() { IntPtr d = OpenInputDesktop(0, false, 0x0001); if (d == IntPtr.Zero) return false; CloseDesktop(d); return true; }
+    public static int VisibleWindowsTitled(string title) {
+        int n = 0; IntPtr h = IntPtr.Zero;
+        while ((h = FindWindowEx(IntPtr.Zero, h, null, title)) != IntPtr.Zero) if (IsWindowVisible(h)) n++;
+        return n;
+    }
+}
+'@
+
+# ------------------------------------------------------------------ start
+$core = Get-ChildItem -Path $Package -Recurse -Filter lunge.exe | Where-Object { $_.Directory.Name -eq 'app' } | Select-Object -First 1
+if (-not $core) { throw "No app\lunge.exe under $Package" }
+$app = $core.Directory.FullName
+$config = Join-Path (Split-Path $app) 'config\config.yaml'
+$conf = Join-Path $env:USERPROFILE '.config\logical-lunge'
+New-Item -ItemType Directory -Force $conf | Out-Null
+if (Test-Path $config) { Copy-Item $config (Join-Path $conf 'config.yaml') -Force }   # what the installer writes
+$logs = Join-Path $env:LOCALAPPDATA 'LogicalLunge\logs'
+
+$session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+$interactive = $session -ne 0 -and [LLStress]::InteractiveDesktop() -and (Get-Process explorer -ErrorAction SilentlyContinue)
+Note "session $session, interactive desktop: $([bool]$interactive), logical CPUs: $([Environment]::ProcessorCount)"
+
+$env:LL_TEST = '1'
+$coreProc = Start-Process -FilePath $core.FullName -WorkingDirectory $app -PassThru
+Note "core started: pid $($coreProc.Id)"
+
+function Part([string]$name) { Get-Process $name -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1 }
+$deadline = (Get-Date).AddSeconds($STARTUP_TIMEOUT_SEC)
+do {
+    Start-Sleep 2
+    $tiling = Part 'lunge-tiling'; $shell = Part 'lunge-shell'
+    $bars = if ($interactive) { [LLStress]::VisibleWindowsTitled('Logical Lunge · bar') } else { 0 }
+} until (($tiling -and $shell -and ($bars -gt 0 -or -not $interactive)) -or (Get-Date) -gt $deadline -or $coreProc.HasExited)
+if ($coreProc.HasExited) { Fail "the core exited during startup (code $($coreProc.ExitCode))" }
+if (-not $tiling) { Fail 'the window manager did not start' }
+if (-not $shell) { Fail 'the shell did not start' }
+if ($interactive -and $bars -eq 0) { Fail 'no bar window appeared' }
+if (-not $interactive) { Skip 'no interactive desktop on this runner: bar, heartbeat and frame checks are skipped' }
+
+# windows to slide around
+$notepads = @(1..3 | ForEach-Object { Start-Process notepad -PassThru })
+
+function Send-Test([string]$line) {
+    try {
+        $c = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'lunge-test', [System.IO.Pipes.PipeDirection]::Out)
+        $c.Connect(3000)
+        $w = New-Object System.IO.StreamWriter($c); $w.WriteLine($line); $w.Flush(); $c.Dispose()
+    } catch { Note "test pipe: $($_.Exception.Message)" }
+}
+
+$pids = @{ core = $coreProc.Id; tiling = $tiling.Id; shell = $shell.Id }
+function Sample {
+    $r = @{}
+    foreach ($k in $pids.Keys) {
+        $p = Get-Process -Id $pids[$k] -ErrorAction SilentlyContinue
+        if (-not $p) { $r[$k] = $null; continue }
+        $r[$k] = [pscustomobject]@{ Handles = $p.HandleCount; PrivateMB = [math]::Round($p.PrivateMemorySize64 / 1MB, 1)
+            Gdi = [LLStress]::GetGuiResources($p.Handle, 0); User = [LLStress]::GetGuiResources($p.Handle, 1) }
+    }
+    $r
+}
+
+# one second of the run: input through the hooks, a workspace switch now and then, the parts still the same processes
+$script:tick = 0
+function Run-Phase([int]$seconds) {
+    $end = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $end) {
+        $script:tick++
+        if ($interactive) { [LLStress]::TapShift(); [LLStress]::Nudge($(if ($script:tick % 2) { 3 } else { -3 })) }
+        if ($script:tick % $SWITCH_EVERY_SEC -eq 0) { Send-Test 'ws-2'; Start-Sleep -Milliseconds 700; Send-Test 'ws-1' }
+        foreach ($k in @($pids.Keys)) {
+            if (-not (Get-Process -Id $pids[$k] -ErrorAction SilentlyContinue)) {
+                Fail "$k (pid $($pids[$k])) ended at $(Get-Date -Format HH:mm:ss)"
+                $pids.Remove($k)
+            }
+        }
+        Start-Sleep -Milliseconds 1000
+    }
+}
+
+$t0 = Get-Date
+Run-Phase $WARMUP_SEC
+$base = Sample
+$tIdle = Get-Date
+Run-Phase $IDLE_SEC
+$tLoad = Get-Date
+
+# ------------------------------------------------------------------ load
+$freeMB = [math]::Round((Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1KB)
+$hogMB = [int]($freeMB * $MEMORY_PRESSURE)
+Note "load: $([Environment]::ProcessorCount) busy processes, $hogMB MB of $freeMB MB free memory held"
+$load = @(1..[Environment]::ProcessorCount | ForEach-Object {
+    Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'while ($true) { }' -WindowStyle Hidden -PassThru })
+$hogScript = "`$l = New-Object System.Collections.Generic.List[byte[]]; for (`$i = 0; `$i -lt [int]($hogMB / 64); `$i++) { `$b = New-Object byte[] (64MB); for (`$j = 0; `$j -lt `$b.Length; `$j += 4096) { `$b[`$j] = 1 }; `$l.Add(`$b) }; Start-Sleep 100000"
+$load += Start-Process pwsh -ArgumentList '-NoProfile', '-Command', $hogScript -WindowStyle Hidden -PassThru
+try { Run-Phase $LOAD_SEC }
+finally { $load | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } }
+$tEnd = Get-Date
+Run-Phase 20   # back to calm: anything that broke under load shows up here
+$final = Sample
+
+# ------------------------------------------------------------------ checks
+function Read-Log([string]$name) { $p = Join-Path $logs $name; if (Test-Path $p) { Get-Content $p -Encoding UTF8 } else { @() } }
+$coreLog = Read-Log 'core.log'; $shellLog = Read-Log 'shell.log'; $tilingLog = Read-Log 'tiling.log'
+
+# core.log: "HH:mm:ss.fff text", a "---- yyyy-MM-dd ----" line when the day changes
+$day = $t0.Date
+$timed = foreach ($l in $coreLog) {
+    if ($l -match '^---- (\d{4}-\d{2}-\d{2}) ----') { $day = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd', $null); continue }
+    if ($l -match '^(\d{2}):(\d{2}):(\d{2})\.(\d{3}) (.*)$') {
+        [pscustomobject]@{ At = $day.AddHours([int]$Matches[1]).AddMinutes([int]$Matches[2]).AddSeconds([int]$Matches[3]); Text = $Matches[5] }
+    }
+}
+$run = @($timed | Where-Object { $_.At -ge $t0.AddSeconds(-5) })
+function In-Phase($from, $to) { @($run | Where-Object { $_.At -ge $from -and $_.At -lt $to }) }
+
+# restarts and crashes (the shell's first start at bring-up is logged with "açılış")
+foreach ($e in $run) {
+    if ($e.Text -match 'CRASH:|UI HATA:|bilinmeyen komut') { Fail "core: $($e.Text)" }
+    elseif ($e.Text -match 'shell nöbetçisi:' -and $e.Text -notmatch 'açılış') { Fail "watchdog acted on a healthy run: $($e.Text)" }
+    elseif ($e.Text -match 'nöbetçisi.*yeniden|yeniden başlatıl|kendini yeniden') { Fail "restart: $($e.Text)" }
+}
+foreach ($l in $shellLog) { if ($l -match 'panic|Native bar failed|Native bar stopped|died at its last starts') { Fail "shell: $l" } }
+foreach ($l in $tilingLog) { if ($l -match 'panicked') { Fail "window manager: $l" } }
+
+# input hooks
+$hookIdle = @(In-Phase $tIdle $tLoad | Where-Object { $_.Text -match 'klavye kancası yavaş' }).Count
+$hookLoad = @(In-Phase $tLoad $tEnd | Where-Object { $_.Text -match 'klavye kancası yavaş' }).Count
+if ($hookIdle -gt $MAX_HOOK_SLOW_IDLE) { Fail "keyboard hook slow $hookIdle times while idle (max $MAX_HOOK_SLOW_IDLE)" }
+if ($hookLoad -gt $MAX_HOOK_SLOW_LOAD) { Fail "keyboard hook slow $hookLoad times under load (max $MAX_HOOK_SLOW_LOAD)" }
+foreach ($e in $run) { if ($e.Text -match 'kancası girdi görmüyordu') { Fail "input hook dropped by Windows: $($e.Text)" } }
+
+# bar heartbeats (core logs "test: bars <windows> alive <recent>" every 30 s with LL_TEST=1)
+$beats = @(In-Phase $tIdle $tEnd.AddSeconds(20) | Where-Object { $_.Text -match '^test: bars (\d+) alive (\d+)' } | ForEach-Object {
+    $null = $_.Text -match '^test: bars (\d+) alive (\d+)'; [pscustomobject]@{ At = $_.At; Windows = [int]$Matches[1]; Alive = [int]$Matches[2] } })
+if ($interactive) {
+    if ($beats.Count -eq 0) { Fail 'no heartbeat report from the core (LL_TEST=1 reporting missing)' }
+    foreach ($b in $beats) {
+        if ($b.Windows -eq 0) { Fail "no bar window at $($b.At.ToString('HH:mm:ss'))" }
+        elseif ($b.Alive -lt $b.Windows) { Fail "bars silent at $($b.At.ToString('HH:mm:ss')): $($b.Alive)/$($b.Windows) sent a heartbeat in 45 s" }
+    }
+}
+
+# frames of slides and animations
+function Longest($entries) { $m = 0; foreach ($e in $entries) { if ($e.Text -match 'en uzun kare (\d+) ms') { $m = [math]::Max($m, [int]$Matches[1]) } }; $m }
+$slidesIdle = @(In-Phase $tIdle $tLoad | Where-Object { $_.Text -match '^(slide|anim)' })
+$slidesLoad = @(In-Phase $tLoad $tEnd | Where-Object { $_.Text -match '^(slide|anim)' })
+$frameIdle = Longest $slidesIdle; $frameLoad = Longest $slidesLoad
+if ($interactive) {
+    if ($slidesIdle.Count -eq 0) { Fail 'no slide happened while idle (test pipe not working?)' }
+    if ($frameIdle -gt $MAX_FRAME_IDLE_MS) { Fail "longest frame while idle $frameIdle ms (max $MAX_FRAME_IDLE_MS)" }
+    if ($frameLoad -gt $MAX_FRAME_LOAD_MS) { Fail "longest frame under load $frameLoad ms (max $MAX_FRAME_LOAD_MS)" }
+}
+
+# growth
+$growth = foreach ($k in @('core', 'shell', 'tiling')) {
+    $a = $base[$k]; $b = $final[$k]
+    if (-not $a -or -not $b) { continue }
+    $g = [pscustomobject]@{ Part = $k; Handles = $b.Handles - $a.Handles; Gdi = $b.Gdi - $a.Gdi; User = $b.User - $a.User; PrivateMB = [math]::Round($b.PrivateMB - $a.PrivateMB, 1) }
+    if ($g.Handles -gt $MAX_HANDLE_GROWTH) { Fail "$k handles grew by $($g.Handles) (max $MAX_HANDLE_GROWTH)" }
+    if ($g.Gdi -gt $MAX_GDI_GROWTH) { Fail "$k GDI objects grew by $($g.Gdi) (max $MAX_GDI_GROWTH)" }
+    if ($g.User -gt $MAX_USER_GROWTH) { Fail "$k USER objects grew by $($g.User) (max $MAX_USER_GROWTH)" }
+    if ($g.PrivateMB -gt $MAX_PRIVATE_MB_GROWTH) { Fail "$k private memory grew by $($g.PrivateMB) MB (max $MAX_PRIVATE_MB_GROWTH)" }
+    $g
+}
+
+# ------------------------------------------------------------------ report
+$lines = @(
+    "## Stress test",
+    "",
+    "| Check | Idle | Load | Limit |",
+    "|---|---|---|---|",
+    "| Longest frame (ms) | $frameIdle ($($slidesIdle.Count) slides) | $frameLoad ($($slidesLoad.Count) slides) | $MAX_FRAME_IDLE_MS / $MAX_FRAME_LOAD_MS |",
+    "| Keyboard hook slow | $hookIdle | $hookLoad | $MAX_HOOK_SLOW_IDLE / $MAX_HOOK_SLOW_LOAD |",
+    "| Bar heartbeat reports | $($beats.Count) |  |  |",
+    "",
+    "| Part | Handles | GDI | USER | Private MB |",
+    "|---|---|---|---|---|"
+) + @($growth | ForEach-Object { "| $($_.Part) | $($_.Handles) | $($_.Gdi) | $($_.User) | $($_.PrivateMB) |" }) + @(
+    "",
+    "Interactive desktop: $([bool]$interactive)"
+) + @($skipped | ForEach-Object { "- skipped: $_" }) + @($failures | ForEach-Object { "- **failed:** $_" })
+$lines | ForEach-Object { Write-Host $_ }
+if ($Report) { $lines | Add-Content -Path $Report -Encoding UTF8 }
+
+# leave the desktop
+try { & $core.FullName --shutdown } catch { }
+$notepads | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+
+if ($failures.Count) { Write-Host "$($failures.Count) check(s) failed" -ForegroundColor Red; exit 1 }
+Write-Host 'stress test passed' -ForegroundColor Green

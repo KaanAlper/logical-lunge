@@ -98,7 +98,7 @@ jobs:
         shell: pwsh
         working-directory: tiling
         run: |
-          cargo test --release -p wm -- events::handle_window_moved_or_resized commands::general::window_sync_policy
+          cargo test --release -p wm -- events::handle_window_moved_or_resized commands::general::window_sync_policy wm_state::adjacent_tests commands::container::split_ratio commands::workspace::focus_workspace
           if ($LASTEXITCODE) { throw 'Window manager event tests failed' }
 
       - name: Check theme, media and core regressions
@@ -128,4 +128,48 @@ jobs:
             dist/LogicalLunge-${{ inputs.edition }}-${{ steps.v.outputs.ver }}.zip
             dist/LogicalLunge-${{ inputs.edition }}-${{ steps.v.outputs.ver }}.zip.sha256
           if-no-files-found: error
+          retention-days: 7
+
+  # Runs the package's desktop (core, window manager, shell) for several minutes idle and then with every CPU busy and
+  # memory under pressure, and fails on a restart, crash, silent bar, slow or dropped input hook, long frames or growing
+  # handles/GDI/memory (tools/ci/stress-test.ps1 on main holds the limits). A regression like a watchdog restarting a
+  # healthy shell cannot reach a release past this.
+  stress:
+    name: Stress ${{ inputs.edition }}
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout the stress test from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: tools/ci
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch the package
+        uses: actions/download-artifact@v4
+        with:
+          pattern: LogicalLunge-${{ inputs.edition }}-*-build
+          path: pkg
+          merge-multiple: true
+
+      - name: Unpack it
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem pkg -Filter *.zip | Select-Object -First 1
+          if (-not $zip) { throw 'No package artifact' }
+          Expand-Archive $zip.FullName -DestinationPath unpacked -Force
+
+      - name: Run the desktop under load
+        shell: pwsh
+        run: ./tools/ci/stress-test.ps1 -Package unpacked
+
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-logs-${{ inputs.edition }}
+          path: ~/AppData/Local/LogicalLunge/logs
+          if-no-files-found: warn
           retention-days: 7
