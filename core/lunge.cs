@@ -14470,9 +14470,11 @@ static class Program
             }
             catch (Exception ex) { Slider.Log("first run: " + ex.Message); }
         });
-        // Arkada derleme / oyun / güncelleme CPU'yu doldursa da kayma ve odak gecikmesin: helper ve
-        // tiling yüksek öncelikte (tiling yeniden başlarsa diye 10 sn'de bir yenilenir; yönetici gerekmez).
-        try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.High; } catch { }
+        // Öncelikler: çekirdek ve pencere yöneticisi normalin üstünde (arkada derleme / güncelleme CPU'yu doldursa da kayma
+        // ve odak gecikmesin), kabuk normal (arka plan yoklamaları EcoQoS'ta), canlı duvar kağıdı normalin altında. "Yüksek"
+        // sınıf yok: bir oyunun kendi thread'lerini ve ses / giriş sürücülerinin işini bekletiyordu. Girdi kancası kendi
+        // thread'inde TIME_CRITICAL (NativeInput); yeniden başlayan parça önceliğini aşağıdaki döngüden alır.
+        try { Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.AboveNormal; } catch { }
         // Yerel HTTP sunucusu uzun yoklamaları havuz thread'lerinde bekletir: havuz dolunca .NET yeni thread'i saniyede
         // ~2 tane ekliyor, kısa işler (tıklama, menü) bekliyordu. Alt sınır yükseltilir (thread'ler ancak gerekince açılır).
         { int w, io; ThreadPool.GetMinThreads(out w, out io); ThreadPool.SetMinThreads(Math.Max(w, 32), io); }
@@ -14484,11 +14486,12 @@ static class Program
             {
                 try
                 {
-                    foreach (var name in new[] { Names.Tiling, Names.Shell })
+                    foreach (var name in new[] { Names.Tiling, Names.Shell, LiveWallpaper.Name })
                         foreach (var pr in Process.GetProcessesByName(name))
                             try
                             {
-                                var want = name == Names.Tiling ? ProcessPriorityClass.High : ProcessPriorityClass.AboveNormal;
+                                var want = name == Names.Tiling ? ProcessPriorityClass.AboveNormal
+                                    : name == Names.Shell ? ProcessPriorityClass.Normal : ProcessPriorityClass.BelowNormal;
                                 if (pr.PriorityClass != want) pr.PriorityClass = want;
                             }
                             catch { }
