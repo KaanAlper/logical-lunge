@@ -54,7 +54,7 @@ pub fn handle_window_focused(
   // close/minimize. This will cause focus to briefly flicker to the OS
   // focus target and then to the WM's focus target.
   if should_override_focus(state) {
-    state.pending_sync.queue_focus_change();
+    state.pending_sync.queue_system_focus_change();
     return Ok(());
   }
 

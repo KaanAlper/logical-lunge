@@ -876,6 +876,20 @@ impl WindowManager {
       }
     }
 
+    // Logical Lunge: no window keeps the HWND_TOPMOST the WM gave it
+    // (floating or fullscreen windows shown on top) once the WM is gone.
+    #[cfg(target_os = "windows")]
+    for window in self.state.windows() {
+      let made_topmost = match window.state() {
+        wm_common::WindowState::Floating(c) => c.shown_on_top,
+        wm_common::WindowState::Fullscreen(c) => c.shown_on_top,
+        _ => false,
+      };
+      if made_topmost {
+        let _ = window.native().set_z_order(&wm_platform::WindowZOrder::Normal);
+      }
+    }
+
     // Logical Lunge: and the windows hidden along with them.
     #[cfg(target_os = "windows")]
     for companion in self.state.hidden_companions.drain().flat_map(|(_, c)| c) {

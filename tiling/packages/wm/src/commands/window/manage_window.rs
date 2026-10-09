@@ -110,7 +110,7 @@ pub fn manage_window(
 
     // OS focus should be set to the newly added window in case it's not
     // already focused.
-    state.pending_sync.queue_focus_change();
+    state.pending_sync.queue_system_focus_change();
 
     // Normally, a `PlatformEvent::WindowFocused` event is what triggers
     // focus effects and workspace reordering to be applied. However, when
