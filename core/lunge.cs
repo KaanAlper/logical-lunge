@@ -7063,6 +7063,21 @@ class Keys2
     readonly object inWsLock = new object(); // odak/taşıma istekleri sırayla, ama UI thread'ini (slide) beklemeden
     readonly List<object[]> pend = new List<object[]>();
 
+    // Whether window manager commands switch the shown workspace (the last one focuses a workspace): the
+    // slide's direction (+1 next, -1 previous, 0 from the names) and, for a named workspace, its name
+    internal static bool SwitchesWorkspace(string[] cmds, out int dir, out string target)
+    {
+        dir = 0; target = null;
+        if (cmds == null || cmds.Length == 0 || cmds.Length > 2) return false;
+        string last = cmds[cmds.Length - 1];
+        if (cmds.Length == 2 && !(cmds[0].StartsWith("move --") && last.StartsWith("focus --"))) return false;
+        if (last == "focus --next-workspace" || last == "focus --next-active-workspace") { dir = 1; return true; }
+        if (last == "focus --prev-workspace" || last == "focus --prev-active-workspace") { dir = -1; return true; }
+        if (last == "focus --recent-workspace") return true;
+        if (last.StartsWith("focus --workspace ")) { target = last.Substring("focus --workspace ".Length).Trim(); return target.Length > 0; }
+        return false;
+    }
+
     void Post(string[] cmds, int dir, string target)
     {
         lock (pendLock) pend.Add(new object[] { cmds, dir, target });
@@ -7252,6 +7267,15 @@ class Keys2
             if (reserved != null) { if (reserved.Length > 0) RunAction(reserved); return (IntPtr)1; }
             // Pencere yöneticisinin Super'li kısayolu: komutları IPC ile (pencere yöneticisi Win'i hiç görmez)
             string[] wm = WmBinds.Lookup(mods, vk);
+            int slideDir; string slideTarget;
+            if (wm != null && SwitchesWorkspace(wm, out slideDir, out slideTarget))
+            {
+                // the window manager's own workspace keys (Super+PageUp/PageDown, Super+Ctrl+Alt+←/→, their
+                // Shift forms) slide like ours, through the same queue
+                lastMoveAction = Environment.TickCount;
+                Post(wm, slideDir, slideTarget);
+                return (IntPtr)1;
+            }
             if (wm != null)
             {
                 // state changes (fullscreen, floating) animate through a freeze, as a layout change does
