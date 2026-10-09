@@ -9,7 +9,7 @@ use crate::{
       set_focused_descendant,
     },
     window::dwindle_place,
-    workspace::activate_workspace,
+    workspace::{activate_workspace, destroy_empty_workspaces},
   },
   models::{WindowContainer, WorkspaceTarget},
   traits::{CommonGetters, PositionGetters, WindowGetters},
@@ -157,6 +157,10 @@ pub fn move_window_to_workspace(
     state
       .pending_sync
       .queue_workspace_to_reorder(target_workspace);
+
+    // the source workspace may be hidden and now empty (dragged from the
+    // overview to another workspace): it goes like any other empty one
+    destroy_empty_workspaces(state)?;
   }
 
   Ok(())

@@ -71,18 +71,7 @@ pub fn focus_workspace(
       .queue_container_to_redraw(displayed_workspace)
       .queue_container_to_redraw(target_workspace);
 
-    // Get empty workspace to destroy (if one is found). Cannot destroy
-    // empty workspaces if they're the only workspace on the monitor.
-    let workspace_to_destroy =
-      state.workspaces().into_iter().find(|workspace| {
-        !workspace.config().keep_alive
-          && !workspace.has_children()
-          && !workspace.is_displayed()
-      });
-
-    if let Some(workspace) = workspace_to_destroy {
-      deactivate_workspace(workspace, state)?;
-    }
+    destroy_empty_workspaces(state)?;
 
     // Save the currently focused workspace as recent.
     state.recent_workspace_name = Some(focused_workspace.config().name);
@@ -90,4 +79,43 @@ pub fn focus_workspace(
   }
 
   Ok(())
+}
+
+/// Destroys every empty, hidden workspace that isn't kept alive (only one
+/// went per focus change, so empty workspaces piled up and the "active
+/// workspace" navigation still stopped at them). A displayed workspace
+/// stays, so a monitor always keeps one.
+pub fn destroy_empty_workspaces(state: &mut WmState) -> anyhow::Result<()> {
+  let empty: Vec<_> = state
+    .workspaces()
+    .into_iter()
+    .filter(|workspace| is_disposable(
+      workspace.config().keep_alive,
+      workspace.has_children(),
+      workspace.is_displayed(),
+    ))
+    .collect();
+
+  for workspace in empty {
+    deactivate_workspace(workspace, state)?;
+  }
+
+  Ok(())
+}
+
+fn is_disposable(keep_alive: bool, has_children: bool, displayed: bool) -> bool {
+  !keep_alive && !has_children && !displayed
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_disposable;
+
+  #[test]
+  fn only_empty_hidden_unkept_workspaces_go() {
+    assert!(is_disposable(false, false, false));
+    assert!(!is_disposable(true, false, false));
+    assert!(!is_disposable(false, true, false));
+    assert!(!is_disposable(false, false, true));
+  }
 }
