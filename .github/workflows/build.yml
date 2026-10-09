@@ -98,7 +98,7 @@ jobs:
         shell: pwsh
         working-directory: tiling
         run: |
-          cargo test --release -p wm -- events::handle_window_moved_or_resized commands::general::window_sync_policy wm_state::adjacent_tests commands::container::split_ratio commands::workspace::focus_workspace dwindle_math
+          cargo test --release -p wm -- events::handle_window_moved_or_resized commands::general::window_sync_policy wm_state::adjacent_tests commands::container::split_ratio commands::workspace::focus_workspace dwindle_math user_config::tests::window_border
           if ($LASTEXITCODE) { throw 'Window manager event tests failed' }
 
       - name: Check theme, media and core regressions
