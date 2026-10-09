@@ -16,7 +16,7 @@ use windows::{
     },
     UI::{
       Shell::{
-        Folder, IContextMenu3, IFolderView2, IShellBrowser, IShellDispatch2, IShellExtInit, IShellFolderViewDual,
+        Folder, IContextMenu, IContextMenu3, BHID_SFUIObject, CMF_DEFAULTONLY, IFolderView2, IShellBrowser, IShellDispatch2, IShellExtInit, IShellFolderViewDual,
         IShellItem, IShellItem2, IShellView, IShellWindows, PropertiesSystem::PROPERTYKEY, SHGetKnownFolderIDList,
         SHObjectProperties, ShellWindows, CLSID_NewMenu, CMF_NORMAL, CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO,
         CMINVOKECOMMANDINFOEX, FOLDERFLAGS, FOLDERID_Desktop, FVM_ICON, GCS_VERBW, SHOP_FILEPATH, SIGDN_FILESYSPATH,
@@ -24,13 +24,17 @@ use windows::{
         SVSI_FOCUSED, SVSI_SELECT, SWC_DESKTOP, SWFO_NEEDDISPATCH,
       },
       WindowsAndMessaging::{
-        CreatePopupMenu, DestroyMenu, FindWindowExW, GetAncestor, GetMenuItemCount, GetMenuItemInfoW, GetSubMenu,
+        CreatePopupMenu, DestroyMenu, GetMenuDefaultItem, GET_MENU_DEFAULT_ITEM_FLAGS, FindWindowExW, GetAncestor, GetMenuItemCount, GetMenuItemInfoW, GetSubMenu,
         SetForegroundWindow, GA_ROOT, HMENU, MENUITEMINFOW, MFT_SEPARATOR, MIIM_FTYPE, MIIM_ID, MIIM_STRING,
         SW_SHOWNORMAL, WM_INITMENUPOPUP,
       },
     },
   },
 };
+
+/// CMIC_MASK_FLAG_NO_UI (the SDK defines it as SEE_MASK_FLAG_NO_UI): a verb
+/// shows no error box of its own
+const CMIC_MASK_FLAG_NO_UI: u32 = 0x0000_0400;
 
 /// SFGAO_FOLDER / SFGAO_LINK
 const SFGAO_FOLDER: u32 = 0x2000_0000;
@@ -174,6 +178,62 @@ impl Desktop {
       }
     }
     out
+  }
+
+  /// Opens every selected icon. Items with a file system path go to
+  /// `launch` (the core's checked launcher: our card instead of Windows'
+  /// box); namespace items (This PC, Recycle Bin, Control Panel, Network,
+  /// libraries) run their own default verb through the shell, with
+  /// CMIC_MASK_FLAG_NO_UI so they never show an error box either.
+  pub fn open_selection(&self, launch: impl Fn(&str)) {
+    unsafe {
+      let Ok(items) = self.view.GetSelection(false) else { return };
+      let n = items.GetCount().unwrap_or(0);
+      for k in 0..n {
+        let Ok(item): windows::core::Result<IShellItem> = items.GetItemAt(k) else { continue };
+        match item.GetDisplayName(SIGDN_FILESYSPATH).ok().and_then(pwstr) {
+          Some(path) => launch(&path),
+          None => self.open_default(&item),
+        }
+      }
+    }
+  }
+
+  /// The item's default context-menu verb (what Explorer runs on a double
+  /// click), without any UI of its own.
+  fn open_default(&self, item: &IShellItem) {
+    unsafe {
+      let menu: IContextMenu = match item.BindToHandler(None, &BHID_SFUIObject) {
+        Ok(m) => m,
+        Err(err) => return tracing::warn!("Desktop: no menu for an item: {:?}", err),
+      };
+      let Ok(hmenu) = CreatePopupMenu() else { return };
+      if menu.QueryContextMenu(hmenu, 0, 1, 0x7FFF, CMF_DEFAULTONLY).is_ok() {
+        let id = GetMenuDefaultItem(hmenu, 0, GET_MENU_DEFAULT_ITEM_FLAGS(0));
+        if id != u32::MAX && id >= 1 {
+          let info = CMINVOKECOMMANDINFO {
+            cbSize: std::mem::size_of::<CMINVOKECOMMANDINFO>() as u32,
+            fMask: CMIC_MASK_FLAG_NO_UI,
+            hwnd: self.list,
+            lpVerb: PCSTR((id - 1) as usize as *const u8),
+            nShow: SW_SHOWNORMAL.0,
+            ..Default::default()
+          };
+          if let Err(err) = menu.InvokeCommand(&info) {
+            tracing::warn!("Desktop: default verb: {:?}", err);
+          }
+        }
+      }
+      let _ = DestroyMenu(hmenu);
+    }
+  }
+
+  /// Clears the selection (a single click on empty space when Windows'
+  /// single-click-to-open option is on: the click we held back).
+  pub fn deselect_all(&self) {
+    unsafe {
+      let _ = self.view.SelectItem(-1, SVSI_DESELECTOTHERS.0 as u32);
+    }
   }
 
   /// The focused (selected) icon's middle on the screen, for the menu key.

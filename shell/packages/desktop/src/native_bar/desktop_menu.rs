@@ -162,12 +162,10 @@ fn open_terminal(desk: Option<&Desktop>) {
   let _ = std::process::Command::new("cmd.exe").current_dir(&dir).creation_flags(CREATE_NEW_CONSOLE).spawn();
 }
 
-/// Every selected icon through the core's launcher (checked first; as the
+/// A file system item through the core's launcher (checked first; as the
 /// user; failures on our card with "Birlikte aç" where nothing opens it).
-fn open_entries(sel: &[Entry]) {
-  for e in sel {
-    super::launch::open(e.path.clone(), "", super::launch::Verb::Open);
-  }
+fn launch_path(path: &str) {
+  super::launch::open(path.to_string(), "", super::launch::Verb::Open);
 }
 
 fn open_uri(uri: &str) {
@@ -220,7 +218,21 @@ impl Ui {
       let Some(i) = d.item_at(cursor()) else { return };
       d.select_for_menu(i);
     }
-    open_entries(&d.selection());
+    d.open_selection(launch_path);
+  }
+
+  /// A single click on the desktop while Windows' "single-click to open"
+  /// option is on (the core held it back from Explorer): an icon opens as
+  /// on a double click; empty space clears the selection, as Explorer would.
+  pub(super) fn desktop_click(&mut self) {
+    let Some(d) = Desktop::open() else { return };
+    match d.item_at(cursor()) {
+      Some(i) => {
+        d.select_for_menu(i);
+        d.open_selection(launch_path);
+      }
+      None => d.deselect_all(),
+    }
   }
 
   fn desktop_icon_menu(&mut self, d: Desktop, sel: Vec<Entry>, at: POINT) {
@@ -245,9 +257,8 @@ impl Ui {
       Item::sep(),
       Item::new("properties", Some("info"), tr("Özellikler")),
     ];
-    let to_open = sel.clone();
     self.menu_open(at, MenuFocus::Take, items, move |_ui, id| match id {
-      "open" => open_entries(&to_open),
+      "open" => d.open_selection(launch_path),
       "runas" | "openas" | "cut" | "copy" | "link" | "delete" | "properties" => d.invoke(id),
       "rename" => d.rename(),
       "location" => {
