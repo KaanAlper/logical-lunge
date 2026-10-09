@@ -70,20 +70,29 @@ fn set_tiling_window_length(
 
   if let Some(container_to_resize) = container_to_resize {
     let parent = container_to_resize.parent().context("No parent.")?;
-    let (horizontal_gap, vertical_gap) =
-      container_to_resize.inner_gaps()?;
 
-    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
-    let parent_length = if is_width_resize {
-      parent.to_rect()?.width()
-        - horizontal_gap * container_to_resize.tiling_siblings().count() as i32
-    } else {
-      parent.to_rect()?.height()
-        - vertical_gap * container_to_resize.tiling_siblings().count() as i32
-    };
+    // Logical Lunge: in the dwindle model (see `dwindle_math`) the shares
+    // cut the parent's node box, and the window is its node box less the
+    // gaps on its inner sides; so the target window length plus those gaps
+    // is the node length to give it.
+    let workspace = container_to_resize.workspace().context("No workspace.")?;
+    let work = crate::traits::rect_box(&workspace.to_rect()?);
+    let parent_box = crate::traits::node_box(&parent)?;
+    let own_box = crate::traits::node_box(&container_to_resize.clone().into())?;
+    let gaps = crate::traits::side_gaps(&container_to_resize)?;
+    let gap = crate::dwindle_math::gap_along(own_box, work, gaps, is_width_resize);
+    let parent_length = if is_width_resize { parent_box.w } else { parent_box.h };
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    let target_px = target_length.to_px(parent_length.round() as i32, None) as f64;
 
     // Convert the target length to a tiling size.
-    let tiling_size = target_length.to_percentage(parent_length);
+    #[allow(clippy::cast_possible_truncation)]
+    let tiling_size = if parent_length > 0. {
+      ((target_px + gap) / parent_length) as f32
+    } else {
+      container_to_resize.tiling_size()
+    };
 
     // Skip the resize if the window is already at the target size.
     if container_to_resize.tiling_size() - tiling_size != 0. {

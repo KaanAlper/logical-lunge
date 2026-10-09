@@ -37,6 +37,7 @@ use crate::{
 };
 
 mod commands;
+mod dwindle_math;
 mod events;
 mod ipc_server;
 mod layout_memory;

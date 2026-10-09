@@ -18,20 +18,14 @@ pub fn resize_window(
   let target_width = match width_delta {
     Some(delta) => {
       let parent_width = match window.as_tiling_container() {
+        // Logical Lunge: a percentage is of the parent's node length
+        // (dwindle model, see `dwindle_math`)
+        #[allow(clippy::cast_possible_truncation)]
         Ok(tiling_window) => tiling_window
           .container_to_resize(true)?
           .and_then(|container| {
-            let parent_width = container.parent()?.to_rect().ok()?.width();
-            let (horizontal_gap, _) = tiling_window.inner_gaps().ok()?;
-
-            #[allow(
-              clippy::cast_possible_wrap,
-              clippy::cast_possible_truncation
-            )]
-            Some(
-              parent_width
-                - horizontal_gap * container.tiling_siblings().count() as i32,
-            )
+            let parent = container.parent()?;
+            Some(crate::traits::node_box(&parent).ok()?.w.round() as i32)
           }),
         _ => window.parent().and_then(|parent| {
           parent.to_rect().ok().map(|rect| rect.width())
@@ -48,20 +42,14 @@ pub fn resize_window(
   let target_height = match height_delta {
     Some(delta) => {
       let parent_height = match window.as_tiling_container() {
+        // Logical Lunge: a percentage is of the parent's node length
+        // (dwindle model, see `dwindle_math`)
+        #[allow(clippy::cast_possible_truncation)]
         Ok(tiling_window) => tiling_window
           .container_to_resize(false)?
           .and_then(|container| {
-            let parent_height = container.parent()?.to_rect().ok()?.height();
-            let (_, vertical_gap) = tiling_window.inner_gaps().ok()?;
-
-            #[allow(
-              clippy::cast_possible_wrap,
-              clippy::cast_possible_truncation
-            )]
-            Some(
-              parent_height
-                - vertical_gap * container.tiling_siblings().count() as i32,
-            )
+            let parent = container.parent()?;
+            Some(crate::traits::node_box(&parent).ok()?.h.round() as i32)
           }),
         _ => window.parent().and_then(|parent| {
           parent.to_rect().ok().map(|rect| rect.height())

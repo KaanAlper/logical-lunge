@@ -54,13 +54,14 @@ pub fn split_ratio(
 }
 
 /// The two sizes after moving their split by `delta` (Hyprland units),
-/// keeping their sum and each at least 10% of it.
+/// keeping their sum and Hyprland's ratio range 0.1..1.9 (each side at
+/// least 5% of it).
 fn moved_split(first: f32, second: f32, delta: f32) -> (f32, f32) {
   let total = first + second;
   if total <= 0. {
     return (first, second);
   }
-  let share = (first / total + delta / 2.).clamp(0.1, 0.9);
+  let share = (first / total + delta / 2.).clamp(0.05, 0.95);
   (share * total, (1. - share) * total)
 }
 
@@ -82,7 +83,7 @@ mod tests {
 
   #[test]
   fn stays_within_limits() {
-    assert!(close(moved_split(0.85, 0.15, 0.4), (0.9, 0.1)));
-    assert!(close(moved_split(0.15, 0.85, -0.4), (0.1, 0.9)));
+    assert!(close(moved_split(0.85, 0.15, 0.4), (0.95, 0.05)));
+    assert!(close(moved_split(0.15, 0.85, -0.4), (0.05, 0.95)));
   }
 }

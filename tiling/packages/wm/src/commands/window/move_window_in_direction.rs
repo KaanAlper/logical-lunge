@@ -197,9 +197,10 @@ fn partner_to_swap_with(
 /// Where `dwindle_split` puts the window in the split target.
 #[derive(Clone, Copy, Debug)]
 pub enum DwindlePlacement<'a> {
-  /// A new (or re-tiled) window: the half under the point if the point
-  /// is inside the target, otherwise the second half, which builds
-  /// Hyprland's spiral when windows are opened one after another.
+  /// A new (or re-tiled) window: the half on the point's side of the
+  /// target's middle (Hyprland's `force_split = 0`, also for a point
+  /// outside the target); without a cursor the point is far right/below,
+  /// so the second half, which builds Hyprland's spiral.
   New,
   /// `movewindow`: the half the focal point falls into (as in Hyprland,
   /// that's the half next to where the window came from).
@@ -239,7 +240,20 @@ pub fn dwindle_split(
     }
   }
 
-  let target_rect = target.to_rect()?;
+  // `movewindow` (Hyprland `movedTarget`): with the window out of the
+  // tree, the node closest to the focal point is split — measured now that
+  // its split partner has taken the window's place.
+  let target = match placement {
+    DwindlePlacement::Moved => {
+      closest_tiling_window(&workspace, window, point).unwrap_or_else(|| target.clone())
+    }
+    _ => target.clone(),
+  };
+  let target = &target;
+
+  // Decided on the target's node box (its share of the work area, before
+  // gaps), as Hyprland does with the node it splits.
+  let target_box = crate::traits::node_box(&target.clone().into())?;
 
   let (split_direction, is_first) = match placement {
     DwindlePlacement::Swap(direction) => (
@@ -247,22 +261,16 @@ pub fn dwindle_split(
       matches!(direction, Direction::Up | Direction::Left),
     ),
     DwindlePlacement::New | DwindlePlacement::Moved => {
-      let side_by_side = target_rect.width() > target_rect.height();
+      // force_split = 0: the point's side of the box's middle, also when
+      // the point is outside the box (a point at i32::MAX, i.e. no cursor,
+      // takes the second half)
+      #[allow(clippy::cast_lossless)]
+      let is_first = crate::dwindle_math::new_is_first(
+        target_box,
+        (point.x as f64, point.y as f64),
+      );
 
-      let in_first_half = if side_by_side {
-        point.x < target_rect.left + target_rect.width() / 2
-      } else {
-        point.y < target_rect.top + target_rect.height() / 2
-      };
-
-      let is_first = match placement {
-        DwindlePlacement::New => {
-          target_rect.contains_point(point) && in_first_half
-        }
-        _ => in_first_half,
-      };
-
-      let split_direction = if side_by_side {
+      let split_direction = if crate::dwindle_math::side_by_side(target_box) {
         TilingDirection::Horizontal
       } else {
         TilingDirection::Vertical
@@ -273,9 +281,9 @@ pub fn dwindle_split(
   };
 
   tracing::debug!(
-    "dwindle_split: target_id={} rect={:?} placement={:?} point={:?} split_dir={:?} is_first={}",
+    "dwindle_split: target_id={} node={:?} placement={:?} point={:?} split_dir={:?} is_first={}",
     target.id(),
-    target_rect,
+    target_box,
     placement,
     point,
     split_direction,
@@ -322,6 +330,30 @@ pub fn dwindle_split(
   }
 
   Ok(())
+}
+
+/// The tiling window of the workspace whose node box is closest to the
+/// point (Hyprland's `getClosestNode`), other than `exclude`.
+fn closest_tiling_window(
+  workspace: &Workspace,
+  exclude: &TilingWindow,
+  point: &Point,
+) -> Option<TilingWindow> {
+  let candidates = workspace
+    .descendants()
+    .filter_map(|container| match container.as_tiling_container() {
+      Ok(TilingContainer::TilingWindow(other)) if other.id() != exclude.id() => {
+        crate::traits::node_box(&other.clone().into())
+          .ok()
+          .map(|node| (other, node))
+      }
+      _ => None,
+    })
+    .collect::<Vec<_>>();
+  let boxes = candidates.iter().map(|(_, node)| *node).collect::<Vec<_>>();
+  #[allow(clippy::cast_lossless)]
+  crate::dwindle_math::closest((point.x as f64, point.y as f64), &boxes)
+    .map(|index| candidates[index].0.clone())
 }
 
 /// Gets the tiling window on the same workspace at the focal point.
