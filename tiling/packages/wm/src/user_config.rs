@@ -7,7 +7,7 @@ use wm_common::{
 };
 
 use crate::{
-  models::{Monitor, WindowContainer, Workspace},
+  models::{Monitor, NativeWindowProperties, WindowContainer, Workspace},
   traits::{CommonGetters, WindowGetters},
 };
 
@@ -255,54 +255,73 @@ impl UserConfig {
     window: &WindowContainer,
     event: &WindowRuleEvent,
   ) -> Vec<WindowRuleConfig> {
-    let window_title = window.native_properties().title;
-    #[cfg(target_os = "windows")]
-    let window_class = window.native_properties().class_name;
-    let window_process = window.native_properties().process_name;
+    let properties = window.native_properties();
+    let done = window.done_window_rules();
 
-    let pending_window_rules = self
+    self
       .window_rules_by_event
       .get(event)
       .unwrap_or(&Vec::new())
       .iter()
-      .filter(|rule| {
-        // Skip if window has already ran the rule.
-        if window.done_window_rules().contains(rule) {
-          return false;
-        }
-
-        // Check if the window matches the rule.
-        rule.match_window.iter().any(|match_config| {
-          let is_process_match = match_config
-            .window_process
-            .as_ref()
-            .is_none_or(|match_type| match_type.is_match(&window_process));
-
-          let is_class_match = {
-            #[cfg(target_os = "windows")]
-            {
-              match_config.window_class.as_ref().is_none_or(|match_type| {
-                match_type.is_match(&window_class)
-              })
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-              match_config.window_class.is_none()
-            }
-          };
-
-          let is_title_match = match_config
-            .window_title
-            .as_ref()
-            .is_none_or(|match_type| match_type.is_match(&window_title));
-
-          is_process_match && is_class_match && is_title_match
-        })
-      })
+      // Skip rules the window has already run.
+      .filter(|rule| !done.contains(rule) && Self::rule_matches(rule, &properties))
       .cloned()
-      .collect::<Vec<_>>();
+      .collect::<Vec<_>>()
+  }
 
-    pending_window_rules
+  /// Whether a window with these properties matches any of the rule's
+  /// match configs.
+  fn rule_matches(rule: &WindowRuleConfig, properties: &NativeWindowProperties) -> bool {
+    rule.match_window.iter().any(|match_config| {
+      let is_process_match = match_config
+        .window_process
+        .as_ref()
+        .is_none_or(|match_type| match_type.is_match(&properties.process_name));
+
+      let is_class_match = {
+        #[cfg(target_os = "windows")]
+        {
+          match_config.window_class.as_ref().is_none_or(|match_type| {
+            match_type.is_match(&properties.class_name)
+          })
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+          match_config.window_class.is_none()
+        }
+      };
+
+      let is_title_match = match_config
+        .window_title
+        .as_ref()
+        .is_none_or(|match_type| match_type.is_match(&properties.title));
+
+      is_process_match && is_class_match && is_title_match
+    })
+  }
+
+  /// The state command (`set-floating`, `set-tiling`, `set-fullscreen`)
+  /// that the `manage` rules give a new window, the last one winning as
+  /// when the rules run. Like Hyprland, rules decide before the window is
+  /// placed: a window that a rule floats opens floating, instead of tiling
+  /// first and then jumping out of the layout.
+  pub fn manage_rule_state(&self, properties: &NativeWindowProperties) -> Option<InvokeCommand> {
+    self
+      .window_rules_by_event
+      .get(&WindowRuleEvent::Manage)?
+      .iter()
+      .filter(|rule| Self::rule_matches(rule, properties))
+      .flat_map(|rule| rule.commands.iter())
+      .filter(|command| {
+        matches!(
+          command,
+          InvokeCommand::SetFloating { .. }
+            | InvokeCommand::SetTiling
+            | InvokeCommand::SetFullscreen { .. }
+        )
+      })
+      .last()
+      .cloned()
   }
 
   pub fn inactive_workspace_configs(
