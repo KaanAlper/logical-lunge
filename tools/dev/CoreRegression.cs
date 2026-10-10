@@ -32,6 +32,32 @@ static class CoreRegression
             }
         } finally { listener.Stop(); }
     }
+    // Olay kancalarının kuyruğu: sıra korunur, aynı pencerenin bekleyen konum değişiklikleri en sona tek olay olarak geçer,
+    // süzülen olay hiç gelmez, iş birkaç düzinelik turlarla yapılır
+    static void EventQueueTests() {
+        const uint LOC = 0x800B, SHOW = 0x8002, DESTROY = 0x8001;
+        var seen = new List<string>();
+        var posted = new Queue<Action>();
+        var q = new EventQueue("sınama", e => e.Object == 0, e => e.Event == LOC,
+            e => seen.Add(e.Event.ToString("X") + ":" + e.Hwnd.ToInt64() + ":" + e.Time), a => posted.Enqueue(a));
+        Func<uint, long, uint, WinEventPump.Ev> ev = (k, h, t) => new WinEventPump.Ev { Event = k, Hwnd = new IntPtr(h), Time = t };
+        q.Add(ev(LOC, 1, 1));
+        q.Add(ev(SHOW, 2, 2));
+        q.Add(ev(LOC, 1, 3));      // 1'in bekleyen konumu: en sona, son hâliyle
+        q.Add(ev(LOC, 3, 4));
+        q.Add(new WinEventPump.Ev { Event = SHOW, Hwnd = new IntPtr(4), Object = -4, Time = 5 }); // iç nesne: süzülür
+        q.Add(ev(DESTROY, 1, 6));
+        Check(posted.Count == 1, "The queue must schedule one drain until it runs");
+        while (posted.Count > 0) posted.Dequeue()();
+        Check(string.Join(" ", seen) == "8002:2:2 800B:1:3 800B:3:4 8001:1:6", "Event queue order or coalescing is wrong: " + string.Join(" ", seen));
+        seen.Clear();
+        for (int i = 0; i < EventQueue.Batch + 5; i++) q.Add(ev(SHOW, 10 + i, (uint)i));
+        Check(posted.Count == 1, "A new burst must schedule a drain again");
+        posted.Dequeue()();
+        Check(seen.Count == EventQueue.Batch && posted.Count == 1, "A drain must stop after one batch and schedule the rest");
+        posted.Dequeue()();
+        Check(seen.Count == EventQueue.Batch + 5 && posted.Count == 0 && q.Count == 0, "The rest of the burst was not handled");
+    }
     // Windows kabuğunun devri: asıl değerler kaydedilir, ikinci uygulama onları ezmez, geri yükleme olmayanı siler
     static void TakeoverTests() {
         var reg = new Dictionary<string, object> {
@@ -513,6 +539,7 @@ static class CoreRegression
         if (args.Length == 1 && args[0] == "--restart-only") return;
         TakeoverTests();
         ThemeSyncTests();
+        EventQueueTests();
         BindMigrationTests();
         FocusDirectionTests();
         UiScaleTests();
