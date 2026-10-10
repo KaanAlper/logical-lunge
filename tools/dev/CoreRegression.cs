@@ -658,6 +658,8 @@ static class CoreRegression
         EventQueueTests();
         BindMigrationTests();
         RuleMigrationTests();
+        AnimMigrationTests();
+        SlideRetargetTests();
         FocusDirectionTests();
         BorderLookTests();
         WmWatchdogTests();
@@ -909,6 +911,43 @@ static class CoreRegression
         var dup = run(head + "  - commands: ['x']\n    bindings: ['lwin+z']\n", def2, new string[0], new string[0]);
         Check(dup[1] == "1" && dup[0].Contains("['a']") && !dup[0].Contains("['b']"), "Two defaults took the same key in one run");
         Console.WriteLine("PASS: default shortcut migration (missing only, conflicts, deleted stay deleted, user lines untouched)");
+    }
+
+    static void AnimMigrationTests() {
+        var up = typeof(AnimMigration).GetMethod("Upgrade", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(up != null, "AnimMigration.Upgrade is missing");
+        Func<string, string[]> run = y => { object[] a = { y, 0 }; string n = (string)up.Invoke(null, a); return new[] { n, ((int)a[1]).ToString() }; };
+        string head = "general:\n  x: 1\n\n";
+        string tail = "\nwindow_behavior:\n  initial_state: 'tiling'\n";
+        string old = head + "animations:\n  beziers:\n  # c\n  workspaces: { duration: 520, curve: menu_decel }\n  windows_move: { duration: 300, curve: emphasizedDecel }\n" + tail;
+        var r = run(old);
+        Check(r[1] == "1" && r[0] == old.Replace("duration: 520", "duration: 700"), "The old shipped slide duration was not upgraded to 700 ms alone: " + r[1]);
+        var crlf = run(old.Replace("\n", "\r\n"));
+        Check(crlf[1] == "1" && crlf[0] == old.Replace("duration: 520", "duration: 700").Replace("\n", "\r\n"), "CRLF config was not kept when upgrading");
+        var quoted = run(old.Replace("curve: menu_decel", "curve: \"menu_decel\""));
+        Check(quoted[1] == "1", "A quoted old default was not recognised");
+        string mine = old.Replace("duration: 520", "duration: 450");
+        Check(run(mine)[1] == "0" && run(mine)[0] == mine, "A user-edited duration was changed");
+        Check(run(r[0])[1] == "0", "A second run changed the upgraded config again");
+        string nested = head + "borders:\n  animations:\n    workspaces: { duration: 520, curve: menu_decel }\n" + tail;
+        Check(run(nested)[1] == "0", "A nested animations: block outside the top level was touched");
+        Console.WriteLine("PASS: animation duration migration");
+    }
+
+    static void SlideRetargetTests() {
+        var m = typeof(Slider).GetMethod("RetargetStarts", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(m != null, "Slider.RetargetStarts is missing");
+        Func<int, string, string, int, int, int[]> run = (fdir, target, from, fromPos, toPos) => (int[])m.Invoke(null, new object[] { 1000, fdir, target, from, fromPos, toPos });
+        // 1 -> 2 cut at 30 %: 1 shows at -300, 2 at +700
+        var back = run(-1, "1", "1", -300, 700);
+        Check(back[0] == 700 && back[1] == -300 && back[3] == 0, "Going back to the left workspace did not start from where it shows: " + string.Join(",", back));
+        var on = run(1, "3", "1", -300, 700);
+        Check(on[0] == 700 && on[1] == 1700 && on[2] == -300 && on[3] == 1, "Going on to the next workspace did not continue the strip: " + string.Join(",", on));
+        var past = run(-1, "0", "1", -300, 700);
+        Check(past[1] == -1300 && past[3] == 1, "A target on the cut slide's far side was not placed past the leaving workspace: " + string.Join(",", past));
+        var gone = run(1, "3", "1", -1000, 0);
+        Check(gone[3] == 0 && gone[1] == 1000, "A leaving workspace out of view was kept in the strip: " + string.Join(",", gone));
+        Console.WriteLine("PASS: slide retarget starts");
     }
 
     static void RuleMigrationTests() {

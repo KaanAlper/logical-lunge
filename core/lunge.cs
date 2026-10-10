@@ -580,8 +580,17 @@ static class Anims
     }
 
     // Kaydırma (Super+sayı, Super+Ctrl+←/→), taşı+takip et (Super+Ctrl+Shift+←/→: pencereyi yanında götürür),
-    // pencerelerin yer değiştirmesi (açma / kapama / taşıma), yeni pencerenin büyüyerek belirmesi (popin: başlangıç boyu %)
-    public static volatile Spec Workspaces, Carry, WindowsMove, WindowsIn;
+    // pencerelerin yer değiştirmesi (açma / kapama / taşıma), yeni pencerenin büyüyerek belirmesi (popin: başlangıç boyu %),
+    // kapanan pencerenin küçülerek kaybolması, gizli workspace'in (Super+S) dikey kayarak gelip gidişi
+    public static volatile Spec Workspaces, Carry, WindowsMove, WindowsIn, WindowsOut, SpecialIn, SpecialOut;
+
+    // Under load the eye gets nothing from a long animation and the game loses frames to it: in game mode (a
+    // fullscreen app runs) animations are skipped, and while the last ones kept missing frames they run at half length.
+    public static int Budget(int ms)
+    {
+        if (ms <= 0 || GameMode.On) return 0;
+        return PerfGuard.Late ? ms / 2 : ms;
+    }
     static Anims() { Apply(Defaults(), null); }
 
     static void Apply(Dictionary<string, Curve> curves, Dictionary<string, string> specs)
@@ -604,10 +613,15 @@ static class Anims
             }
             return new Spec(ms, curves[curve], popin);
         };
-        Workspaces = make("workspaces", 520, "menu_decel", 0);
+        // illogical-impulse's values (hyprland general: workspaces 7, windowsIn 3 popin 80%, windowsOut 2 popin 90%,
+        // windowsMove 3, specialWorkspaceIn 2.8 / Out 1.2; one unit = 100 ms)
+        Workspaces = make("workspaces", 700, "menu_decel", 0);
         Carry = make("workspacescarry", 340, "menu_decel", 0);
         WindowsMove = make("windowsmove", 300, "emphasizedDecel", 0);
         WindowsIn = make("windowsin", 300, "emphasizedDecel", 80);
+        WindowsOut = make("windowsout", 200, "emphasizedDecel", 90);
+        SpecialIn = make("specialworkspacein", 280, "emphasizedDecel", 0);
+        SpecialOut = make("specialworkspaceout", 120, "emphasizedAccel", 0);
     }
 
     public static void Load()
@@ -633,6 +647,7 @@ static class Anims
             Apply(curves, specs);
             Slider.Log("hareketler: kayma " + Workspaces.Ms + " ms " + Workspaces.Curve.Name + ", taşı+takip " + Carry.Ms + " ms " + Carry.Curve.Name
                 + ", yer değiştirme " + WindowsMove.Ms + " ms " + WindowsMove.Curve.Name + ", açılış " + WindowsIn.Ms + " ms " + WindowsIn.Curve.Name + " %" + WindowsIn.Popin
+                + ", kapanış " + WindowsOut.Ms + " ms %" + WindowsOut.Popin + ", gizli workspace " + SpecialIn.Ms + "/" + SpecialOut.Ms + " ms"
                 + (blk.Success ? "" : " (varsayılan)"));
         }
         catch (Exception ex) { Slider.Log("hareketler: " + ex.Message + " (varsayılanlar kaldı)"); }
@@ -814,8 +829,8 @@ class Slider
         return BAR_H;
     }
     const int BAR_H = 40;             // ii baseBarHeight — bar sabit kalır, altı kayar
-    // Süreler ve eğriler config.yaml'dan (Anims): kayma 520 ms menu_decel (Hyprland workspaces speed 7 ~700 ms, kuyruğu
-    // kısaltıldı), taşı+takip 340 ms, pencere hareketi 300 ms emphasizedDecel, açılış popin %80
+    // Süreler ve eğriler config.yaml'dan (Anims): kayma 700 ms menu_decel (Hyprland workspaces speed 7, ii), taşı+takip
+    // 340 ms, pencere hareketi 300 ms emphasizedDecel, açılış popin %80
     const int GAP = 50;                // Hyprland general.gaps_workspaces = 50
     // Hyprland r+1 / r-1 (pencere yöneticisinin --next/--prev-workspace'iyle aynı kural): config sırasında bu monitörde
     // yaşayan ya da açılacak bir sonraki workspace; başka monitörde gösterilen ya da başka monitöre bağlı olanlar atlanır,
@@ -907,6 +922,7 @@ class Slider
     {
         Log("animasyon kurtarma: " + why);
         swipe = null;
+        shownLeft = null; // its previews are in liveThumbs (let go below)
         var all = new List<Overlay> { overlay, spare };
         lock (overlays) all.AddRange(overlays.Values);
         foreach (var o in all) { try { o.Conceal(); } catch { } }
@@ -1590,6 +1606,7 @@ class Slider
 
     Frozen FreezeCore(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden, bool wholeMonitor)
     {
+        DropShown(false);
         SwipeAbort(); // aynı katman: süren parmak kaydırması bitsin
         Interrupt = false;
         Interlocked.Increment(ref Gen);
@@ -2194,13 +2211,65 @@ class Slider
 
     public void Run(string[] commands, int dirHint, string targetName)
     {
+        var before = shownLeft;
         try { RunCore(commands, dirHint, targetName); }
         catch (Exception ex) { if (Animating) Recover("kayma: " + ex.Message); throw; }
+        finally { if (before != null && shownLeft == before) DropShown(false); } // this switch did not slide: the cut slide's picture goes
+    }
+
+    // ---- Retarget: a switch while the last slide still plays continues from what is on the screen ----
+    // Keys2.Post sets this before cutting the running slide short: the cut slide keeps its picture (CutSlide) for the next
+    // one instead of taking it down (which showed the real windows for a frame and then jumped back).
+    public volatile bool RetargetNext;
+    sealed class CutSlide
+    {
+        public string Mon, FromName, ToName; public int FromPos, ToPos, At; public Overlay Ov; public List<Thumb> Thumbs;
+    }
+    CutSlide shownLeft;
+
+    void KeepShown(string mon, string from, int fromPos, string to, int toPos, List<Thumb> thumbs)
+    {
+        DropShown(false);
+        shownLeft = new CutSlide { Mon = mon, FromName = from, FromPos = fromPos, ToName = to, ToPos = toPos, At = Environment.TickCount, Ov = overlay, Thumbs = thumbs };
+    }
+
+    // The cut slide's state when this switch starts from the workspace it was going to, on the same monitor, right away
+    CutSlide TakeShown(string mon, string oldName)
+    {
+        var s = shownLeft;
+        if (s == null || s.Mon != mon || s.ToName != oldName || unchecked(Environment.TickCount - s.At) > 500) return null;
+        return s;
+    }
+
+    // takenOver: the new slide's first frame is on the screen (same places): only the old previews are let go
+    void DropShown(bool takenOver)
+    {
+        var s = shownLeft;
+        if (s == null) return;
+        shownLeft = null;
+        if (!takenOver || s.Ov != overlay) s.Ov.Conceal();
+        if (!takenOver) { RingsClear(); PinsClear(); Animating = false; }
+        foreach (var t in s.Thumbs) Unregister(t.Id);
+    }
+
+    // Where the strip's workspaces start (offsets from their real places, px): [old, arriving, third, third shown 0/1].
+    // The cut slide showed `fromName` at fromPos and `toName` (now the old workspace) at toPos. Going back to fromName
+    // takes it from where it is; any other target joins the strip on the far side (past fromName when it lies that way).
+    // fromName stays in the strip while any of it is in view.
+    internal static int[] RetargetStarts(int span, int fdir, string target, string fromName, int fromPos, int toPos)
+    {
+        int oldStart = toPos;
+        if (target == fromName) return new[] { oldStart, fromPos, 0, 0 };
+        bool fromVisible = Math.Abs(fromPos) < span;
+        bool fromOnTargetSide = fdir != 0 && Math.Sign(fromPos - oldStart) == Math.Sign(fdir);
+        int newStart = fromOnTargetSide ? fromPos + fdir * span : oldStart + fdir * span;
+        return new[] { oldStart, newStart, fromPos, fromVisible ? 1 : 0 };
     }
 
     void RunCore(string[] commands, int dirHint, string targetName)
     {
         SwipeAbort();
+        RetargetNext = false;
         // Animasyonlar kapalı (ayarlar) ya da bu hareketin süresi 0 (config.yaml): workspace doğrudan değişir
         bool carry0 = commands.Length == 2 && commands[0].StartsWith("move --") && commands[1].StartsWith("focus --");
         if (!Prefs.Animations || (carry0 ? Anims.Carry : Anims.Workspaces).Ms <= 0) { foreach (var c in commands) tiling.Command(c); return; }
@@ -2341,6 +2410,19 @@ class Slider
             int a2, b2;
             if (fdir == 0) fdir = int.TryParse(oldName, out a2) && int.TryParse(predicted, out b2) && b2 < a2 ? -1 : 1;
 
+            // Retarget (Hyprland): the last slide was cut short by this switch and its picture is still on the screen
+            // (CutSlide): the strip goes on from where it is instead of jumping back to a still workspace
+            int span = mw + GAP, oldStart = 0, newStart = fdir * span, thirdStart = 0;
+            var thirdThumbs = new List<Thumb>();
+            var shown = !moveFollow ? TakeShown(J.Str(mon, "id"), oldName) : null;
+            string third = null;
+            if (shown != null)
+            {
+                var starts = RetargetStarts(span, fdir, predicted, shown.FromName, shown.FromPos, shown.ToPos);
+                oldStart = starts[0]; newStart = starts[1];
+                if (starts[3] != 0) { third = shown.FromName; thirdStart = starts[2]; }
+                foreach (var t in oldThumbs) Move(t, oldStart);
+            }
             if (target != null)
             {
                 var tw = new List<Dictionary<string, object>>();
@@ -2350,7 +2432,21 @@ class Slider
                     object st; var state = w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
                     if (state != null && J.Str(state, "type") == "minimized") continue;
                     var t = RegisterWindow(new IntPtr(Convert.ToInt64(w["handle"])), ox, oy);
-                    if (t != null) { newThumbs.Add(t); thumbs.Add(t); Move(t, fdir * (mw + GAP)); }
+                    if (t != null) { newThumbs.Add(t); thumbs.Add(t); Move(t, newStart); }
+                }
+            }
+            // The workspace the cut slide was leaving, still partly in view: it goes on out with the strip
+            var thirdWs = third == null ? null : WorkspaceNode(mons, third);
+            if (thirdWs != null)
+            {
+                var tw = new List<Dictionary<string, object>>();
+                J.WindowNodes(thirdWs, tw);
+                foreach (var w in tw)
+                {
+                    object st; var state = w.TryGetValue("state", out st) ? st as Dictionary<string, object> : null;
+                    if (state != null && J.Str(state, "type") == "minimized") continue;
+                    var t = RegisterWindow(new IntPtr(Convert.ToInt64(w["handle"])), ox, oy);
+                    if (t != null) { thirdThumbs.Add(t); thumbs.Add(t); Move(t, thirdStart); }
                 }
             }
 
@@ -2358,20 +2454,22 @@ class Slider
             // Kenarlık: taşınan pencerenin (taşı+takip) ya da odaklı pencerenin; tüm önizlemelerden sonra kaydedilir
             // Kenarlıklar: taşınan (taşı+takip) ya da odaklı pencereye etkin, diğerlerine pasif; önizlemelerden sonra
             RingsAttach(thumbs, carried != null ? carried.Src : WorkspaceFocusHandle(target));
-            foreach (var t in oldThumbs) RingPlace(t, t.Dest, 255);
-            foreach (var t in newThumbs) { var r0 = t.Dest; r0.Left += fdir * (mw + GAP); r0.Right += fdir * (mw + GAP); RingPlace(t, r0, 255); }
+            foreach (var t in oldThumbs) Move(t, oldStart);
+            foreach (var t in newThumbs) Move(t, newStart);
+            foreach (var t in thirdThumbs) Move(t, thirdStart);
             if (carried != null) RingPlace(carried, carried.Dest, 255);
             PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, thumbs);
             overlay.Reveal();
             RaisePinned();
             Native.DwmFlush();
-            Log("fast shown " + clock.ElapsedMilliseconds + "ms (kayıt " + regMs + "ms) new=" + newThumbs.Count);
+            DropShown(true); // the cut slide's pictures: this frame shows the same places
+            Log("fast shown " + clock.ElapsedMilliseconds + "ms (kayıt " + regMs + "ms) new=" + newThumbs.Count + (shown != null ? " (sürenin yerinden: " + oldStart + " -> " + newStart + (third != null ? ", " + third + " " + thirdStart : "") + ")" : ""));
 
             var cmdsAll = (string[])commands.Clone();
             var task = Task.Factory.StartNew(() => { foreach (var cm in cmdsAll) tiling.Command(cm); });
             var slide = moveFollow ? Anims.Carry : Anims.Workspaces; // taşıma daha kısa: pencere beklemeden yerine geçsin
             var settle = Anims.WindowsMove.Curve;
-            int dur0 = Adaptive(ref lastSlideStart, slide.Ms);
+            int dur0 = Math.Max(1, Anims.Budget(Adaptive(ref lastSlideStart, slide.Ms)));
             Animating = true;
 
             // Taşı+takip et: tiling komutu bittiği an (genelde kaymanın ilk ~50 ms'i) hedef workspace'teki pencereler
@@ -2393,6 +2491,8 @@ class Slider
             var pc = new PresentClock();
             double rStart = 0;
             var fs = new FrameStats();
+            int stripShift = 0;
+            var noThumbs = new List<Thumb>();
             culledCount = 0;
             while (!Interrupt)
             {
@@ -2406,6 +2506,7 @@ class Slider
                 double p = Prog(at, dur0);
                 double e = slide.Curve.At(p);
                 int shift = (int)Math.Round(e * (mw + GAP));
+                stripShift = (int)Math.Round(e * -newStart); // the whole strip, so that the arriving workspace ends in place
                 if (moveFollow && swR == null && (task.IsCompleted || WindowsMoved()))
                 {
                     // Pencere yeni boyutuna geçti: yerleşme kayma ile BİRLİKTE, en az 300 ms'lik yumuşak bir geçişle
@@ -2415,11 +2516,16 @@ class Slider
                 }
                 double pR = swR == null ? 0 : Prog(at - rStart, durR);
                 double eR = settle.At(pR);
-                foreach (var t in oldThumbs) Move(t, -fdir * shift);
-                foreach (var t in newThumbs)
+                if (!moveFollow)
+                {
+                    foreach (var t in oldThumbs) Move(t, oldStart + stripShift);
+                    foreach (var t in newThumbs) Move(t, newStart + stripShift);
+                    foreach (var t in thirdThumbs) Move(t, thirdStart + stripShift);
+                }
+                else foreach (var t in oldThumbs) Move(t, -fdir * shift);
+                foreach (var t in moveFollow ? newThumbs : noThumbs)
                 {
                     int dx = fdir * (mw + GAP) - fdir * shift;
-                    if (!moveFollow) { Move(t, dx); continue; }
                     var r = swR == null ? from[t] : Lerp(from[t], VisualDest(t.Src, t.Id, ox, oy), eR);
                     r.Left += dx; r.Right += dx;
                     PlaceSliding(t, r, swR != null);
@@ -2442,6 +2548,16 @@ class Slider
             }
             long animEnd = clock.ElapsedMilliseconds;
             Log("slide" + (moveFollow ? "+taşı" : "") + ": " + mfFrames + " kare, en uzun kare " + mfMax + " ms, komut bitti " + cmdDoneAt + " ms, pencere yer değiştirdi " + movedAt + " ms " + fs.Report() + " önizleme=" + Native.LiveThumbs + " gizlenen=" + culledCount);
+            if (Interrupt && RetargetNext && !moveFollow)
+            {
+                // Another switch cut this one short: the picture stays as it is, the next slide starts from it and then
+                // lets these previews go. The window manager gets a moment to finish the switch it was given, so the
+                // next one starts from this workspace.
+                task.Wait(300);
+                KeepShown(J.Str(mon, "id"), oldName, oldStart + stripShift, predicted, newStart + stripShift, thumbs);
+                Log("slide: yarıda kesildi, sonraki geçiş buradan sürer");
+                return;
+            }
             // Katmanı tiling'in yanıtını değil GERÇEK durumu bekleyerek kaldır: eski workspace'in pencereleri gizlenip
             // (cloak) yenininkiler göründüğü an. tiling bazen pencereleri gösterdikten ~250 ms sonra yanıt veriyordu
             // ve hızlı basışta her geçiş bunu bekliyordu. Yanıt arkada gelmeye devam eder.
@@ -2576,6 +2692,7 @@ class Slider
     bool SwipeBeginCore()
     {
         if (swipe != null) return true;
+        DropShown(false);
         if (!Prefs.Animations || Anims.Workspaces.Ms <= 0) return false;
         var clock = Stopwatch.StartNew();
         var mons = tiling.Monitors();
@@ -7655,6 +7772,7 @@ class Keys2
     void Post(string[] cmds, int dir, string target)
     {
         lock (pendLock) pend.Add(new object[] { cmds, dir, target });
+        slider.RetargetNext = true; // süren kayma görüntüsünü bırakmasın: yenisi oradan sürer
         slider.Interrupt = true; // önceki animasyon varsa hemen bitir
         ui.BeginInvoke((Action)DrainSlides);
     }
@@ -12980,6 +13098,21 @@ static class PerfGuard
         new Thread(Loop) { IsBackground = true, Name = "perf-guard", Priority = ThreadPriority.BelowNormal }.Start();
     }
 
+    // The last animations mostly missed their frames (the machine is busy): new ones run shorter (Anims.Budget)
+    public static bool Late
+    {
+        get
+        {
+            lock (gate)
+            {
+                if (recent.Count < 3) return false;
+                double sum = 0;
+                foreach (var r in recent) sum += r;
+                return sum / recent.Count < 0.7;
+            }
+        }
+    }
+
     // Her animasyonun sonunda (FrameStats.Report)
     public static void Record(int onTime, int missed)
     {
@@ -14676,7 +14809,7 @@ static class Program
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s0, e0) => { try { ui.BeginInvoke((Action)slider.Warm); } catch { } };
         Slider.Ui = ui;
         ConfigWatch.Start(ui); // prefs.json (animasyonlar) ve config.yaml (odak rengi) değişince
-        System.Threading.ThreadPool.QueueUserWorkItem(_ => { BindMigration.Run(); RuleMigration.Run(); }); // güncellemeyle gelen yeni varsayılan kısayollar ve pencere kuralları mevcut config.yaml'a eklenir (BindMigration, RuleMigration; ikisi de config.yaml yazar: art arda)
+        System.Threading.ThreadPool.QueueUserWorkItem(_ => { BindMigration.Run(); RuleMigration.Run(); AnimMigration.Run(); }); // güncellemeyle gelen yeni varsayılan kısayollar ve pencere kuralları mevcut config.yaml'a eklenir (BindMigration, RuleMigration; ikisi de config.yaml yazar: art arda)
         ui.BeginInvoke((Action)(() => Touchpad.Start(slider))); // dokunmatik yüzey hareketleri (girdi UI thread'ine)
         var dwindle = new Dwindle(new TilingClient(), ui, slider);
         dwindle.Start(); // kendi IPC bağlantısıyla: slide'ı beklemesin
