@@ -89,6 +89,7 @@ pub(super) enum Key {
 pub(super) enum Sw {
   Animations,
   Gestures,
+  HyprGestures,
   WinToasts,
   Takeover,
   ThemeSync,

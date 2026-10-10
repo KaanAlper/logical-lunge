@@ -544,6 +544,7 @@ static class CoreRegression
         RuleMigrationTests();
         AnimMigrationTests();
         SlideRetargetTests();
+        SwipeRuleTests();
         FocusDirectionTests();
         UiScaleTests();
         BorderLookTests();
@@ -836,6 +837,27 @@ static class CoreRegression
         string nested = head + "borders:\n  animations:\n    workspaces: { duration: 520, curve: menu_decel }\n" + tail;
         Check(run(nested)[1] == "0", "A nested animations: block outside the top level was touched");
         Console.WriteLine("PASS: animation duration migration");
+    }
+
+    static void SwipeRuleTests() {
+        var target = typeof(Slider).GetMethod("SwipeTarget", BindingFlags.NonPublic | BindingFlags.Static);
+        var locked = typeof(Slider).GetMethod("SwipeLocked", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(target != null && locked != null, "Slider swipe rules are missing");
+        Func<double, double, bool, bool, int> t = (p, v, prev, next) => (int)target.Invoke(null, new object[] { p, v, prev, next });
+        Check(t(0.19, 1, true, true) == 0, "A slow swipe short of 20 % did not go back");
+        Check(t(0.21, 1, true, true) == 1 && t(-0.21, 1, true, true) == -1, "A swipe past 20 % did not switch");
+        Check(t(0.05, 6, true, true) == 1, "A fast swipe (average speed over 5) did not force the switch");
+        Check(t(0.002, 50, true, true) == 0, "A swipe that barely moved switched");
+        Check(t(0.5, 1, true, false) == 0, "A swipe past the last workspace switched");
+        object[] a = { 0.01, 0 };
+        locked.Invoke(null, a);
+        Check((int)a[1] == 0, "The direction locked before the 10 px threshold");
+        a = new object[] { 0.02, 0 };
+        locked.Invoke(null, a);
+        Check((int)a[1] == 1, "The direction did not lock past the threshold");
+        a = new object[] { -0.3, 1 };
+        Check((double)locked.Invoke(null, a) == 0, "A locked swipe crossed to the other side");
+        Console.WriteLine("PASS: touchpad swipe release decision and direction lock");
     }
 
     static void SlideRetargetTests() {

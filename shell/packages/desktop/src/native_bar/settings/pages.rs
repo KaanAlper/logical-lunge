@@ -301,10 +301,24 @@ fn look(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Result<f3
     .ctrl(Ctrl::Switch(s.s["animations"].as_bool() != Some(false), Hit::Switch(Sw::Animations)))];
   // only on computers with a touchpad; the core applies it at once
   if s.s["touchpad"].as_bool() == Some(true) {
+    let hypr = s.s["hyprGestures"].as_bool() == Some(true);
     rows.push(
       Row::new("swipe", "Dokunmatik yüzey hareketleri".into())
-        .sub("3 parmak: yana workspace kaydırır, yukarı overview, aşağı sağ panel; 4 parmak: pencereyi taşır".into())
+        .sub(
+          if hypr {
+            "4 parmak: yana workspace kaydırır, yukarı ya da aşağı overview; 3 parmak: pencereyi taşır"
+          } else {
+            "3 parmak: yana workspace kaydırır, yukarı overview, aşağı sağ panel; 4 parmak: pencereyi taşır"
+          }
+          .into(),
+        )
         .ctrl(Ctrl::Switch(s.s["gestures"].as_bool() != Some(false), Hit::Switch(Sw::Gestures))),
+    );
+    // illogical-impulse's finger mapping (Hyprland gestures); off keeps the 3-finger workspace swipe
+    rows.push(
+      Row::new("swipe_vertical", "Hyprland hareketleri".into())
+        .sub("illogical-impulse'un parmak düzeni: workspace'ler 4 parmakla kayar".into())
+        .ctrl(Ctrl::Switch(hypr, Hit::Switch(Sw::HyprGestures))),
     );
   }
   y += cx.card(x, y, w, &rows, 0.0)?;

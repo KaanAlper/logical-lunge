@@ -273,6 +273,7 @@ impl Ui {
         let on = match sw {
           Sw::Animations => s.s["animations"].as_bool() != Some(false),
           Sw::Gestures => s.s["gestures"].as_bool() != Some(false),
+          Sw::HyprGestures => s.s["hyprGestures"].as_bool() == Some(true),
           Sw::WinToasts => s.s["winToasts"].as_bool() != Some(false),
           Sw::Takeover => s.s["takeover"].as_bool() != Some(false),
           Sw::ThemeSync => s.s["themeSync"].as_bool() != Some(false),
@@ -282,6 +283,7 @@ impl Ui {
         match sw {
           Sw::Animations => set_pref("animations", json!(!on), false),
           Sw::Gestures => set_pref("gestures", json!(!on), false),
+          Sw::HyprGestures => set_pref("hyprGestures", json!(!on), false),
           Sw::WinToasts => set_pref("winToasts", json!(!on), false),
           Sw::Takeover => set_pref("takeover", json!(!on), false),
           Sw::ThemeSync => set_pref("themeSync", json!(!on), false),
