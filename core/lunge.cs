@@ -7952,9 +7952,16 @@ class Keys2
         foreach (var d in new[] { "left", "right", "up", "down" })
             if (act == "focus-" + d || act == "move-" + d) return 1;
         int at = act.StartsWith("ws-") ? act.IndexOf('@') : -1;
-        if (at > 0) { string step = act.Substring(0, at); return step == "ws-prev" || step == "ws-next" ? 1 : 0; }
+        if (at > 0) return BarStep(act.Substring(0, at)) ? 1 : 0;
         if (act.StartsWith("ws-")) return 1;
         return Apps.ContainsKey(act) ? 1 : 0;
+    }
+
+    // Bir barın kendi monitöründe çalışan workspace adımları: r±1 ya da numara
+    static bool BarStep(string step)
+    {
+        int n;
+        return step == "ws-prev" || step == "ws-next" || (step.StartsWith("ws-") && int.TryParse(step.Substring(3), out n) && n > 0);
     }
 
     bool RunAction(string act)
@@ -8007,12 +8014,13 @@ class Keys2
                 return true;
             }
         }
-        // Bar tekerleği: ws-next@<monitör adı>, o barın monitöründe r±1 (Hyprland bar'ı gibi); önce o monitör odaklanır
+        // Bar tekerleği ve tıklaması: ws-next@<monitör adı> / ws-3@<monitör adı>, o barın monitöründe (Hyprland bar'ı
+        // gibi: fare oradayken odak da oradadır); önce o monitör odaklanır, yeni workspace de orada açılır
         int at = act.StartsWith("ws-") ? act.IndexOf('@') : -1;
         if (at > 0)
         {
             string device = act.Substring(at + 1), step = act.Substring(0, at);
-            if (step != "ws-prev" && step != "ws-next") return false;
+            if (!BarStep(step)) return false;
             ThreadPool.QueueUserWorkItem(_ =>
             {
                 try

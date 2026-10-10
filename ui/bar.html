@@ -205,7 +205,7 @@
         fetch(`http://127.0.0.1:6131/cmd?a=ws-${encodeURIComponent(target)}`, { method: 'POST', cache: 'no-store' })
           .then(r => { if (r.status !== 204) throw new Error(String(r.status)); })
           .catch(() => {
-            // "next@<monitor>" (the bar's wheel) is the core's; without the core, plain next/prev
+            // "next@<monitor>" / "3@<monitor>" (the bar's wheel and clicks) are the core's; without the core, plain
             const plain = target.split('@')[0];
             lunge.shellSpawn(HELPER, ['--slide', plain]).catch(() => {
               run(plain === 'next' ? 'focus --next-workspace' : plain === 'prev' ? 'focus --prev-workspace' : `focus --workspace ${plain}`);
@@ -765,7 +765,8 @@
           return () => { clearTimeout(timer); [unFlash, unHold, unRelease].forEach(un => un.then(f => f())); };
         }, []);
 
-        const current = parseInt(tiling?.focusedWorkspace?.name ?? '1', 10) || 1;
+        // her monitörün barı kendi monitörünün workspace'ini ve grubunu gösterir (Hyprland)
+        const current = parseInt((tiling?.displayedWorkspace ?? tiling?.focusedWorkspace)?.name ?? '1', 10) || 1;
         const order = tiling?.workspaceOrder?.length ? tiling.workspaceOrder.map(Number) : Array.from({ length: 30 }, (_, i) => i + 1);
         const position = Math.max(0, order.indexOf(current));
         const base = Math.floor(position / SHOWN) * SHOWN;
@@ -820,7 +821,7 @@
                 <button key={n}
                   className={`ws ${occupied.has(n) ? 'occupied' : ''} ${i === idx ? 'active' : ''}${ic ? ' has-icon' : ''}`}
                   title={b ? `${n}: ${b.title}` : String(n)}
-                  onClick={() => slide(String(n), run)}>
+                  onClick={() => slide(BAR_DEVICE ? `${n}@${BAR_DEVICE}` : String(n), run)}>
                   {ic ? <img className="ws-icon" src={ic} alt="" /> : <span className="dot" />}
                   <span className="num">{n}</span>
                 </button>
