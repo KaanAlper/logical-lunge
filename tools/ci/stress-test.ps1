@@ -54,6 +54,7 @@ $MAX_CHURN_THREADS_PER_100 = 4
 $MAX_CHURN_WINDOWS_PER_100 = 2    # top-level windows a part owns
 # slides must not get slower as operations pile up: median longest-frame of the last third vs the first third
 $MAX_CHURN_FRAME_SLOWDOWN_MS = 40
+$MAX_CHURN_THUMB_GROWTH = 8        # registered DWM thumbnails, last third vs first third of the churn
 
 $failures = New-Object System.Collections.Generic.List[string]
 $skipped = New-Object System.Collections.Generic.List[string]
@@ -345,6 +346,15 @@ if ($sw -and $interactive) {
     $me = Median $early; $ml = Median $late
     $churnFrames = "Switch slides, median longest frame: first third $me ms ($($early.Count)), last third $ml ms ($($late.Count))"
     if ($early.Count -ge 5 -and $late.Count -ge 5 -and $ml - $me -gt $MAX_CHURN_FRAME_SLOWDOWN_MS) { Fail "slides got slower over $($sw.Ops) switches: median longest frame $me -> $ml ms (max +$MAX_CHURN_FRAME_SLOWDOWN_MS)" }
+}
+# DWM thumbnails the core holds while an animation plays ("önizleme=N" on slide/anim lines): a frozen layer that is
+# never released stays registered and DWM keeps composing it, so the count must not climb across the switches
+$thumbs = @(@(if ($sw) { In-Phase $sw.From $sw.To }) | Where-Object { $_.Text -match '^(slide|anim).*önizleme=(\d+)' } | ForEach-Object { $null = $_.Text -match 'önizleme=(\d+)'; [double]$Matches[1] })
+if ($thumbs.Count -ge 10) {
+    $n3 = [int]($thumbs.Count / 3)
+    $te = Median $thumbs[0..($n3 - 1)]; $tl = Median $thumbs[($thumbs.Count - $n3)..($thumbs.Count - 1)]
+    $churnFrames += "; DWM thumbnails during animations, median: first third $te, last third $tl"
+    if ($tl - $te -gt $MAX_CHURN_THUMB_GROWTH) { Fail "DWM thumbnails held during animations grew over the churn: median $te -> $tl (max +$MAX_CHURN_THUMB_GROWTH)" }
 }
 
 # ------------------------------------------------------------------ report
