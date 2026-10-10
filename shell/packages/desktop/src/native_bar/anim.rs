@@ -28,6 +28,12 @@ pub const POP_OUT: Curve = Curve(0.3, 0.0, 0.8, 0.15);
 pub const SPRING_IN: Curve = Curve(0.38, 1.21, 0.22, 1.0);
 /// constant speed (a notification's remaining time)
 pub const LINEAR: Curve = Curve(0.0, 0.0, 1.0, 1.0);
+/// illogical-impulse's `menu_decel`: a layer's fade in
+pub const MENU_DECEL: Curve = Curve(0.1, 1.0, 0.0, 1.0);
+/// illogical-impulse's `menu_accel`: a layer sliding out
+pub const MENU_ACCEL: Curve = Curve(0.52, 0.03, 0.72, 0.08);
+/// illogical-impulse's `stall`: a layer's fade out holds, then goes
+pub const STALL: Curve = Curve(1.0, -0.1, 0.7, 0.85);
 
 impl Curve {
   fn bezier(a: f32, b: f32, s: f32) -> f32 {

@@ -85,8 +85,13 @@ const BLUR_GRACE: Duration = Duration::from_millis(300);
 /// page that was open, its scroll, what was typed (it closes whenever the
 /// focus goes elsewhere, e.g. to look something up for an issue report).
 const RESUME: Duration = Duration::from_secs(180);
-const OPEN_MS: f32 = 350.0;
-const CLOSE_MS: f32 = 250.0;
+/// illogical-impulse's sidebars are layers sliding from the right (`layerrule animation slide right`) with
+/// Hyprland's layer animations: layersIn 2.7 emphasizedDecel, fadeLayersIn 0.5 menu_decel; layersOut 2.4
+/// menu_accel, fadeLayersOut 2.7 stall (one unit = 100 ms)
+const OPEN_MS: f32 = 270.0;
+const CLOSE_MS: f32 = 240.0;
+const FADE_IN_MS: f32 = 50.0;
+const FADE_OUT_MS: f32 = 270.0;
 const PAGE_IN_MS: f32 = 340.0;
 const PAGE_OUT_MS: f32 = 260.0;
 
@@ -559,7 +564,7 @@ impl Ui {
       self.sidebar_destroy();
       return;
     }
-    unsafe { SetTimer(self.msg_hwnd, TIMER_SB_CLOSE, (CLOSE_MS + 10.0) as u32, None) };
+    unsafe { SetTimer(self.msg_hwnd, TIMER_SB_CLOSE, (CLOSE_MS.max(FADE_OUT_MS) + 10.0) as u32, None) };
   }
 
   fn quick_drop_cancel(&mut self) -> bool {
@@ -597,8 +602,9 @@ impl Ui {
     self.sidebar.dash = None;
   }
 
-  /// Slides the panel in from the right (350 ms, emphasized decelerate) or
-  /// out (250 ms, emphasized accelerate) with its fade.
+  /// Slides the panel in from the right (270 ms, emphasized decelerate, a
+  /// 50 ms fade) or out (240 ms, menu_accel, a 270 ms stalling fade) as
+  /// illogical-impulse's sidebar layers.
   fn sb_slide(&self, open: bool) -> windows::core::Result<()> {
     let Some(w) = &self.sidebar.win else { return Ok(()) };
     let dcomp = &self.gfx.dcomp;
@@ -610,9 +616,10 @@ impl Ui {
         w.root.SetOffsetX2(if open { 0.0 } else { full })?;
         return dcomp.Commit();
       }
-      let (from, to, ms, curve) = if open { (full, 0.0, OPEN_MS, POP_IN) } else { (0.0, full, CLOSE_MS, POP_OUT) };
+      let (from, to, ms, curve) = if open { (full, 0.0, OPEN_MS, POP_IN) } else { (0.0, full, CLOSE_MS, anim::MENU_ACCEL) };
       w.root.SetOffsetX(&anim::build(dcomp, from, to, ms, curve)?)?;
-      v.SetOpacity(&anim::build(dcomp, if open { 0.0 } else { 1.0 }, if open { 1.0 } else { 0.0 }, 250.0, anim::LINEAR)?)?;
+      let fade = if open { anim::build(dcomp, 0.0, 1.0, FADE_IN_MS, anim::MENU_DECEL)? } else { anim::build(dcomp, 1.0, 0.0, FADE_OUT_MS, anim::STALL)? };
+      v.SetOpacity(&fade)?;
       dcomp.Commit()
     }
   }
