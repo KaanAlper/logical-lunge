@@ -31,6 +31,17 @@ const RIGHT: u8 = 2;
 const MIDDLE: u8 = 3;
 const XBUTTON: u8 = 4;
 
+/// The core's mark on its hook probe ("LLPR"): a one-pixel move that tells it
+/// the hook is still called. The hook eats it, so neither the cursor nor a
+/// game's raw input ever moves (a zero move or wheel turn is not delivered to
+/// hooks at all, so the probe has to be a real move).
+pub const PROBE_MARK: usize = 0x4C4C_5052;
+
+/// The event is the core's probe: injected and carrying its mark.
+pub fn is_probe(injected: bool, extra: usize) -> bool {
+  injected && extra == PROBE_MARK
+}
+
 /// The last real pointer position (x in the high half, y in the low).
 static LAST_POS: AtomicU64 = AtomicU64::new(pack(i32::MIN, i32::MIN));
 /// A MOVE record waits in the ring: a 1000 Hz mouse sends one per packet,
@@ -238,6 +249,19 @@ pub fn decide<S: Sys>(sys: &S, st: &mut MouseState, msg: u32, x: i32, y: i32, ti
       false
     }
     _ => false,
+  }
+}
+
+#[cfg(test)]
+mod probe_tests {
+  use super::*;
+
+  #[test]
+  fn only_the_injected_marked_move_is_the_probe() {
+    assert!(is_probe(true, PROBE_MARK));
+    assert!(!is_probe(false, PROBE_MARK)); // a device cannot carry the mark
+    assert!(!is_probe(true, 0x4C4C_4B31)); // the core's other injected input (LL_MARK) passes on
+    assert!(!is_probe(true, 0));
   }
 }
 

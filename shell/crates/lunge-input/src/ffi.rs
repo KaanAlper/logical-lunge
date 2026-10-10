@@ -502,6 +502,9 @@ pub mod imp {
     let m = &*(lparam as *const MSLLHOOKSTRUCT);
     let st = &mut *MOUSE.0.get();
     let injected = m.flags & 1 != 0; // LLMHF_INJECTED
+    if crate::mouse::is_probe(injected, m.extra) {
+      return 1; // the core's probe: the tick above was its answer; nobody else sees the move
+    }
     let swallow =
       catch_unwind(AssertUnwindSafe(|| mouse::decide(&Win, st, wparam as u32, m.pt.x, m.pt.y, m.time, injected, m.data))).unwrap_or(false);
     let us = elapsed_us(start);
