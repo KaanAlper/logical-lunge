@@ -3704,10 +3704,14 @@ class Dwindle
                 ws.Options.Proxy = null;
                 if (!ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(3000)) throw new TimeoutException("WM event connection timed out");
                 var sub = Encoding.UTF8.GetBytes("sub --events focus_changed window_managed window_unmanaged focused_container_moved " +
-                    "workspace_activated workspace_deactivated workspace_updated monitor_added monitor_updated monitor_removed tiling_direction_changed");
+                    "workspace_activated workspace_deactivated workspace_updated monitor_added monitor_updated monitor_removed tiling_direction_changed " +
+                    "workspace_activation_requested");
                 cacheDirty.Set(); // yeniden bağlandı: aradaki değişiklikler
                 if (!ws.SendAsync(new ArraySegment<byte>(sub), WebSocketMessageType.Text, true, CancellationToken.None).Wait(1500)) throw new TimeoutException("WM event subscription timed out");
                 cacheConnected = true;
+                // An app activating itself on a hidden workspace: the window manager asks us, the switch slides
+                // (Hyprland focus_on_activate with its workspace animation); it switches by itself if we do not answer
+                ThreadPool.QueueUserWorkItem(_ => { try { tiling.Command("wm-slide-activations on"); } catch (Exception ex) { Slider.Log("etkinleştirme kayması: " + ex.Message); } });
                 var buf = new byte[1 << 16];
                 while (ws.State == WebSocketState.Open)
                 {
@@ -3736,6 +3740,13 @@ class Dwindle
         var data = msg["data"] as Dictionary<string, object>;
         if (data == null) return;
         if (SnapshotEvent(J.Str(data, "eventType"))) cacheDirty.Set();
+        if (J.Str(data, "eventType") == "workspace_activation_requested")
+        {
+            var k = Keys2.Instance;
+            string wsName = J.Str(data, "workspaceName"), winId = J.Str(data, "windowId");
+            if (k != null && wsName.Length > 0 && winId.Length > 0) k.SlideToWindow(winId, wsName);
+            return;
+        }
         if (J.Str(data, "eventType") == "window_unmanaged")
         {
             OnClosed(J.Str(data, "unmanagedId"));
@@ -8061,6 +8072,14 @@ class Keys2
         if (last == "focus --recent-workspace") return true;
         if (last.StartsWith("focus --workspace ")) { target = last.Substring("focus --workspace ".Length).Trim(); return target.Length > 0; }
         return false;
+    }
+
+    // An app activated its window on a hidden workspace (the window manager's workspace_activation_requested): the
+    // switch slides like Super+number and lands on that window
+    public void SlideToWindow(string windowId, string workspace)
+    {
+        Slider.Log("uygulama kendini öne getirdi: workspace " + workspace + "'e kayılıyor");
+        Post(new[] { "focus --container-id " + windowId }, 0, workspace);
     }
 
     void Post(string[] cmds, int dir, string target)

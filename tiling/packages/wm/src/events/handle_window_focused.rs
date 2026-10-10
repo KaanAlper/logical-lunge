@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tracing::info;
 use wm_common::{DisplayState, WindowRuleEvent, WmEvent};
-use wm_platform::NativeWindow;
+use wm_platform::{NativeWindow, NativeWindowWindowsExt};
 
 use crate::{
   commands::{
@@ -89,6 +89,22 @@ pub fn handle_window_focused(
     // if Discord is forcefully shown by the OS when it's on a hidden
     // workspace, switch focus to Discord's workspace.
     if window.display_state() == DisplayState::Hidden {
+      // Logical Lunge: the core slides there (the workspace animation);
+      // `WindowManager::process_pending_activation` switches if it does not
+      if state.slide_activations && !state.game_mode {
+        if state.pending_activation.is_some_and(|(id, _)| id == window.id()) {
+          return Ok(());
+        }
+        info!("Handing the activation of off-screen window {window} to the core.");
+        state.pending_activation = Some((window.id(), std::time::Instant::now()));
+        state.emit_event(WmEvent::WorkspaceActivationRequested {
+          workspace_name: workspace.config().name,
+          window_id: window.id(),
+          window_handle: window.native().hwnd().0,
+        });
+        return Ok(());
+      }
+
       info!("Focusing off-screen window: {window}");
 
       focus_workspace(
