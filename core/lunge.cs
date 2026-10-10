@@ -2808,7 +2808,6 @@ class Dwindle
     // yerleştirir. Hyprland pencereyi son yerini alana kadar hiç göstermez: burada da pencere görünür olduğu an
     // (EVENT_OBJECT_SHOW) ekranı mevcut pencerelerle donduruyoruz; ortadaki pencere katmanın altında kalır,
     // tiling yer açınca son yerinde %80'den büyüyüp belirir. Yönetilmezse (açılış ekranı vb.) 0.9 sn'de kalkar.
-    Native.WinEventDelegate showCb;
     readonly object pendLock = new object();
     Slider.Frozen pendFrozen;
     long pendHandle;
@@ -2822,13 +2821,15 @@ class Dwindle
         if (ui == null) return;
         ui.BeginInvoke((Action)(() =>
         {
-            showCb = Callback.Guard("yeni pencere olayı", OnWinEvent);
+            // Pompada yalnızca pencere düzeyindeki olaylar kalır: iç nesnelerin (imleç, menü, kaydırma çubuğu) göster /
+            // gizle'leri UI thread'ine hiç gelmez
+            var q = new EventQueue("pencere", e => e.Object == 0 && e.Hwnd != IntPtr.Zero, null, OnWinEvent, a => ui.BeginInvoke(a));
             // EVENT_OBJECT_DESTROY (0x8001) .. EVENT_OBJECT_SHOW (0x8002) .. EVENT_OBJECT_HIDE (0x8003)
-            Native.SetWinEventHook(0x8001, 0x8003, IntPtr.Zero, showCb, 0, 0, 0x0002 | 0x0000); // OUTOFCONTEXT
+            WinEventPump.Hook(0x8001, 0x8003, q);
         }));
     }
 
-    void OnWindowShown(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    void OnWindowShown(IntPtr hwnd, int idObject)
     {
         try
         {
@@ -2884,12 +2885,12 @@ class Dwindle
         catch (Exception ex2) { Slider.Log("show hook: " + ex2.Message); }
     }
 
-    void OnWinEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    // UI thread'inde (olay kancalarının pompasından)
+    void OnWinEvent(WinEventPump.Ev e)
     {
-        EventLag.Note("pencere", time);
-        if (ev == Native.EVENT_OBJECT_SHOW) { OnWindowShown(hook, ev, hwnd, idObject, idChild, thread, time); return; }
-        if (idObject != 0 || idChild != 0 || hwnd == IntPtr.Zero) return;
-        try { OnWindowGone(hwnd); } catch (Exception ex) { Slider.Log("gone hook: " + ex.Message); }
+        if (e.Event == Native.EVENT_OBJECT_SHOW) { OnWindowShown(e.Hwnd, e.Object); return; }
+        if (e.Object != 0 || e.Child != 0 || e.Hwnd == IntPtr.Zero) return;
+        try { OnWindowGone(e.Hwnd); } catch (Exception ex) { Slider.Log("gone hook: " + ex.Message); }
     }
 
     // ---- Pencere kapanıyor / gizleniyor: Windows'un olayı tiling'in bildiriminden ~30-40 ms önce gelir; o arada tiling
@@ -6786,7 +6787,7 @@ class Rounder
     readonly Dictionary<IntPtr, long> applied = new Dictionary<IntPtr, long>();
     readonly Dictionary<IntPtr, List<long>> resets = new Dictionary<IntPtr, List<long>>();
     readonly HashSet<IntPtr> giveUp = new HashSet<IntPtr>();
-    Native.WinEventDelegate cb;
+    EventQueue events;
     const int WS_EX_LAYERED = 0x00080000, WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
     [DllImport("user32.dll")] static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);
     static readonly HashSet<string> skipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -6822,7 +6823,6 @@ class Rounder
 
     // Oyun kipi: konum kancası (her pencerenin, imlecin her hareketi) ve periyodik kontrol durur; bitince bir tam tur.
     // Kanca onu kuran thread'de sökülür: istek bu thread'e gönderilir.
-    [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
     Control invoker;
     IntPtr locHook;
     System.Windows.Forms.Timer timer;
@@ -6834,12 +6834,12 @@ class Rounder
         {
             if (quiet)
             {
-                if (locHook != IntPtr.Zero) { UnhookWinEvent(locHook); locHook = IntPtr.Zero; }
+                if (locHook != IntPtr.Zero) { WinEventPump.Unhook(locHook); locHook = IntPtr.Zero; }
                 timer.Stop();
                 return;
             }
             if (locHook == IntPtr.Zero)
-                locHook = Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, cb, 0, 0, 0x0002);
+                locHook = WinEventPump.Hook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, events);
             timer.Start();
             Native.EnumWindows(delegate (IntPtr h, IntPtr l) { Apply(h); return true; }, IntPtr.Zero);
         }));
@@ -6850,12 +6850,15 @@ class Rounder
         invoker = new Control();
         invoker.CreateControl();
         var unusedHandle = invoker.Handle;
-        cb = Callback.Guard("köşe olayı", OnEvent);
-        Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
-        locHook = Native.SetWinEventHook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, IntPtr.Zero, cb, 0, 0, 0x0002);
-        Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, cb, 0, 0, 0x0002);
-        Native.SetWinEventHook(0x8001, 0x8001, IntPtr.Zero, cb, 0, 0, 0x0002); // EVENT_OBJECT_DESTROY: kapanan pencereyi unut
-        Native.SetWinEventHook(0x8018, 0x8018, IntPtr.Zero, cb, 0, 0, 0x0002); // EVENT_OBJECT_UNCLOAKED: workspace geçişinde görünen
+        // Olaylar bu thread'de işlenir (kayıtlar ve zamanlayıcı da burada); bir pencerenin bekleyen konum değişiklikleri
+        // tek olaya iner: Apply pencerenin o anki yerini okur
+        events = new EventQueue("köşe", e => e.Object == 0 && e.Hwnd != IntPtr.Zero, // OBJID_WINDOW
+            e => e.Event == Native.EVENT_OBJECT_LOCATIONCHANGE, OnEvent, a => invoker.BeginInvoke(a));
+        WinEventPump.Hook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, events);
+        locHook = WinEventPump.Hook(Native.EVENT_OBJECT_LOCATIONCHANGE, Native.EVENT_OBJECT_LOCATIONCHANGE, events);
+        WinEventPump.Hook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, events);
+        WinEventPump.Hook(0x8001, 0x8001, events); // EVENT_OBJECT_DESTROY: kapanan pencereyi unut
+        WinEventPump.Hook(0x8018, 0x8018, events); // EVENT_OBJECT_UNCLOAKED: workspace geçişinde görünen
         Native.EnumWindows(delegate (IntPtr h, IntPtr l) { Apply(h); return true; }, IntPtr.Zero);
 
         // Aynı thread'de (mesaj döngüsü var) periyodik kontrol. Uygulamanın kendisi sıfırladığı bölge yalnızca köşesi
@@ -6963,13 +6966,11 @@ class Rounder
         if ((ex & Native.WS_EX_NOACTIVATE) == 0) Native.SetWindowLong(h, Native.GWL_EXSTYLE, ex | Native.WS_EX_NOACTIVATE);
     }
 
-    void OnEvent(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    void OnEvent(WinEventPump.Ev e)
     {
-        EventLag.Note("köşe", time);
-        if (idObject != 0 || hwnd == IntPtr.Zero) return; // OBJID_WINDOW
-        if (ev == 0x8001) { Forget(hwnd); return; }
-        if (ev == Native.EVENT_OBJECT_LOCATIONCHANGE) Dwindle.WindowMoved(hwnd);
-        Apply(hwnd);
+        if (e.Event == 0x8001) { Forget(e.Hwnd); return; }
+        if (e.Event == Native.EVENT_OBJECT_LOCATIONCHANGE) Dwindle.WindowMoved(e.Hwnd);
+        Apply(e.Hwnd);
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr GetProp(IntPtr h, string name);
@@ -10469,7 +10470,6 @@ class Switcher : Form
     static Switcher inst;
     static Control ui;
     static readonly List<long> fgOrder = new List<long>(); // en yeni önde (Windows'un ön plan değişimlerinden)
-    static Native.WinEventDelegate fgCb;
     const int VK_MENU = 0x12, VK_TAB = 0x09;
     const byte VK_DUMMY = 0xE8;
 
@@ -10524,19 +10524,19 @@ class Switcher : Form
             inst = new Switcher();
             inst.CreateControl(); var h = inst.Handle;
             NativeInput.SetFlag(NativeInput.SWITCHER_READY, true);
-            fgCb = Callback.Guard("alt-tab olayı", OnForeground);
-            Native.SetWinEventHook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, fgCb, 0, 0, 0x0002);
+            // ön plan sırası UI thread'inde tutulur (kartlar orada dizilir)
+            WinEventPump.Hook(Native.EVENT_SYSTEM_FOREGROUND, Native.EVENT_SYSTEM_FOREGROUND,
+                new EventQueue("alt-tab", null, null, OnForeground, a => ui.BeginInvoke(a)));
             IntPtr cur = Native.GetAncestor(Native.GetForegroundWindow(), 2);
             if (cur != IntPtr.Zero) fgOrder.Add(cur.ToInt64());
         }));
     }
 
-    static void OnForeground(IntPtr hook, uint ev, IntPtr hwnd, int idObject, int idChild, uint thread, uint time)
+    static void OnForeground(WinEventPump.Ev e)
     {
-        EventLag.Note("alt-tab", time);
         try
         {
-            IntPtr root = Native.GetAncestor(hwnd, 2);
+            IntPtr root = Native.GetAncestor(e.Hwnd, 2);
             if (root == IntPtr.Zero || (inst != null && root == inst.Handle)) return;
             long k = root.ToInt64();
             fgOrder.Remove(k); fgOrder.Insert(0, k);

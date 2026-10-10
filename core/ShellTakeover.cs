@@ -510,7 +510,7 @@ static class ShellTakeover
     // ---------------- görev çubuğu ----------------
     static class Taskbar
     {
-        static Native.WinEventDelegate cb;
+        static EventQueue events;
         static System.Windows.Forms.Timer timer;
         static Listener listener;
         static bool failOpen;
@@ -520,10 +520,12 @@ static class ShellTakeover
         // failOpen (asıl çekirdek): bizim bar'ımız yoksa Windows'un parçaları geri açılır (ShellState).
         public static void Install(bool failOpenMode)
         {
-            if (cb != null) return;
+            if (events != null) return;
             failOpen = failOpenMode;
-            cb = Callback.Guard("görev çubuğu olayı", (hook, ev, h, idObject, idChild, thread, time) => { EventLag.Note("görev çubuğu", time); if (idObject == 0 && h != IntPtr.Zero) Hide(h); });
-            Native.SetWinEventHook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, IntPtr.Zero, cb, 0, 0, 0x0002);
+            // Gizleme hiçbir thread'e bağlı değil (ShowWindowAsync): kendi işçi thread'inde
+            events = new EventQueue("görev çubuğu", e => e.Object == 0 && e.Hwnd != IntPtr.Zero, null, e => Hide(e.Hwnd),
+                EventQueue.Worker("görev-çubuğu-olayları"));
+            WinEventPump.Hook(Native.EVENT_OBJECT_SHOW, Native.EVENT_OBJECT_SHOW, events);
             listener = new Listener();
             Sweep();
             if (!failOpen) return;
