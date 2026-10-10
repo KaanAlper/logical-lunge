@@ -73,13 +73,18 @@ animations:
     # ad: [x1, y1, x2, y2] (cubic-bezier; x 0..1 arası, y 1'i aşarsa hedefi geçip geri döner)
     # benim_egrim: [0.2, 0.9, 0.1, 1]
   # Workspace kayması (Super+sayı, Super+Ctrl+←/→)
-  workspaces: { duration: 520, curve: menu_decel }
+  workspaces: { duration: 700, curve: menu_decel }
   # Pencereyi yanında götürerek kayma (Super+Ctrl+Shift+←/→)
   workspaces_carry: { duration: 340, curve: menu_decel }
   # Pencerelerin yer değiştirmesi (açma / kapama / taşıma)
   windows_move: { duration: 300, curve: emphasizedDecel }
   # Yeni pencere: popin boyutundan (%) büyüyerek belirir
   windows_in: { duration: 300, curve: emphasizedDecel, popin: 80 }
+  # Kapanan pencere: popin boyutuna (%) küçülerek kaybolur
+  windows_out: { duration: 200, curve: emphasizedDecel, popin: 90 }
+  # Gizli workspace (Super+S): yukarıdan iner, kapanırken geri çıkar
+  special_workspace_in: { duration: 280, curve: emphasizedDecel }
+  special_workspace_out: { duration: 120, curve: emphasizedAccel }
 
 window_behavior:
   initial_state: 'tiling'
