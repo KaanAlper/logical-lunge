@@ -57,6 +57,8 @@ async fn main() -> anyhow::Result<()> {
 
   let cli = Cli::parse();
   setup_logging(&cli)?;
+  // threads outside the runtime (the bar's start and rebuilds) spawn on it
+  common::runtime::init(tokio::runtime::Handle::current());
   // A panic's message and place go to shell.log (the bar and providers
   // recover from it; only "panic" was logged, with no way to tell why).
   let default_hook = std::panic::take_hook();

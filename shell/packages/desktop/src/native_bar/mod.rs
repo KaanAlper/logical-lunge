@@ -428,11 +428,12 @@ pub struct Options {
 pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()> {
   let (tx, rx) = unbounded();
   SENDER.set(tx).map_err(|_| anyhow::anyhow!("native bar already started"))?;
-  let wm_cmd = wm::spawn(|state| {
+  // the stored runtime: start can run on a plain thread (after a pause)
+  let rt = crate::common::runtime::handle().ok_or_else(|| anyhow::anyhow!("native bar: no async runtime"))?;
+  let wm_cmd = wm::spawn(&rt, |state| {
     remember(|l| l.wm = Some(state.clone()));
     send(Msg::Wm(state));
   });
-  let rt = tokio::runtime::Handle::current();
 
   // the same providers (and intervals) as ui/bar.html
   let creator = manager.clone();

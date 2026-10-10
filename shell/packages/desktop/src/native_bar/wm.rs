@@ -110,9 +110,9 @@ pub enum Command {
 pub type CommandTx = mpsc::UnboundedSender<Command>;
 
 /// Runs forever: connects (retrying 0.5 s .. 5 s), reports every new state.
-pub fn spawn(on_state: impl Fn(WmState) + Send + 'static) -> CommandTx {
+pub fn spawn(rt: &tokio::runtime::Handle, on_state: impl Fn(WmState) + Send + 'static) -> CommandTx {
   let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
-  tokio::spawn(async move {
+  rt.spawn(async move {
     let mut retry = Duration::from_millis(500);
     let mut last: Option<WmState> = None;
     loop {
