@@ -55,6 +55,12 @@ pub trait Sys {
   /// the held left press given back to Explorer at its own place, then the
   /// pointer moved on to where the drag is
   fn replay_left_down(&self, x: i32, y: i32, to_x: i32, to_y: i32);
+
+  /// Super is held (the keyboard hook's own state: Win never reaches
+  /// Windows, so its key state says up)
+  fn win_held(&self) -> bool;
+  /// a mouse combination used Super: its release opens no overview
+  fn win_combo(&self);
 }
 
 pub fn is_modifier(vk: u32) -> bool {
@@ -118,6 +124,8 @@ pub mod fake {
     pub desktop_point: Cell<bool>,
     pub edit_point: Cell<bool>,
     pub injected: RefCell<Vec<String>>,
+    pub win: Cell<bool>,
+    pub combos: Cell<u32>,
   }
 
   impl Fake {
@@ -208,6 +216,12 @@ pub mod fake {
     }
     fn replay_left_down(&self, x: i32, y: i32, to_x: i32, to_y: i32) {
       self.injected.borrow_mut().push(format!("left {x},{y} to {to_x},{to_y}"));
+    }
+    fn win_held(&self) -> bool {
+      self.win.get()
+    }
+    fn win_combo(&self) {
+      self.combos.set(self.combos.get() + 1);
     }
   }
 }
