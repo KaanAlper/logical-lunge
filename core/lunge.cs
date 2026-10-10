@@ -3935,6 +3935,14 @@ static class Prefs
     // Windows'un yerini aldığımız parçaları (görev çubuğu, yerleşim önerileri ...) kaynağında kapat (ShellTakeover)
     public static bool Takeover { get { return takeover; } }
     public static event Action TakeoverChanged;
+    // Windows temasını bizimkine eşitle (ShellTakeover.SyncTheme): kabuk teması, vurgu rengi ve tercih; yalnızca çekirdek abone olur
+    public static bool ThemeSync { get { return themeSync; } }
+    public static bool ThemeLight { get { return theme == "light"; } }
+    public static string FocusColorHex { get { return focusHex; } }
+    public static event Action ThemeInputsChanged;
+    static volatile bool themeSync = true;
+    static volatile string focusHex = "#b69df8";
+    static string themeInputs;
     // Dokunmatik yüzey hareketleri (3/4 parmak); dokunmatik yüzey yoksa etkisiz
     public static bool Gestures { get { return gestures; } }
     public static string FilePath { get { return System.IO.Path.Combine(Paths.ConfigDir, "prefs.json"); } }
@@ -4004,6 +4012,12 @@ static class Prefs
             string th = d.TryGetValue("theme", out v) && "light".Equals(v) ? "light" : "dark";
             string was = theme;
             theme = th;
+            themeSync = !(d.TryGetValue("themeSync", out v) && v is bool && !(bool)v);
+            focusHex = d.TryGetValue("focusColor", out v) && v is string && System.Text.RegularExpressions.Regex.IsMatch((string)v, "^#[0-9a-fA-F]{6}$") ? ((string)v).ToLowerInvariant() : "#b69df8";
+            string inputs = th + focusHex + themeSync;
+            bool inputsChanged = themeInputs != null && themeInputs != inputs;
+            themeInputs = inputs;
+            if (inputsChanged) { var ti = ThemeInputsChanged; if (ti != null) ti(); }
             if (was != null && was != th) Toasts.Emit("ll:theme-" + th);
             string all = new JavaScriptSerializer().Serialize(d);
             if (last != null && last != all) Toasts.Emit("ll:prefs");
@@ -4033,6 +4047,7 @@ static class Prefs
             case "gestures":
             case "winToasts":
             case "takeover":
+            case "themeSync":
             // rahatsız etme: native bildirim kartları gösterilmez
             case "dnd":
                 if (value != "true" && value != "false") return false;
@@ -4531,6 +4546,7 @@ static class Settings
             // açık/kapalı tercihler: yoksa açık (ayarlar penceresi anahtarın gerçek hâlini göstersin)
             { "winToasts", PrefOn(p, "winToasts") },
             { "takeover", PrefOn(p, "takeover") },
+            { "themeSync", PrefOn(p, "themeSync") },
             { "toastInfo", Prefs.ToastSeconds(p, "toastInfo") },
             { "toastError", Prefs.ToastSeconds(p, "toastError") },
             { "touchpad", Touchpad.Present() },

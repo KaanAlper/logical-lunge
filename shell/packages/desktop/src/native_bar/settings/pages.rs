@@ -545,7 +545,10 @@ fn advanced(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Resul
   y = cx.sec_title(x, y, "Windows")?;
   let rows = [Row::new("desktop_windows", "Windows'un yerini al".into())
     .sub("Logical Lunge açıkken Windows'un görev çubuğu, yerleşim önerileri ve benzeri parçaları kapanır; kapanınca eski hâline döner".into())
-    .ctrl(Ctrl::Switch(s.s["takeover"].as_bool() != Some(false), Hit::Switch(Sw::Takeover)))];
+    .ctrl(Ctrl::Switch(s.s["takeover"].as_bool() != Some(false), Hit::Switch(Sw::Takeover))),
+    Row::new("palette", "Windows temasını eşitle".into())
+      .sub("Koyu/açık tercihiniz ve vurgu renginiz Windows'a da uygulanır; Windows'un kendi pencereleri bize uyar. Windows'un yerini al açıkken çalışır; kapanınca eski tema geri gelir".into())
+      .ctrl(Ctrl::Switch(s.s["themeSync"].as_bool() != Some(false), Hit::Switch(Sw::ThemeSync)))];
   y += cx.card(x, y, w, &rows, 0.0)?;
   Ok(y)
 }

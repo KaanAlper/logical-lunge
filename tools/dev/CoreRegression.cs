@@ -61,6 +61,56 @@ static class CoreRegression
         Check(ShellTakeover.TryParse(withAh, out saved, out autoHide) && autoHide == 3, "Auto-hide state did not survive the record");
     }
 
+    // Windows teması eşitleme: değer eşlemesi, değişiklik tespiti, birleştirme kararı, kayıt / geri yükleme
+    static void ThemeSyncTests() {
+        string P = ShellTakeover.PersonalizeKey, D = ShellTakeover.DwmKey, A = ShellTakeover.AccentKey;
+        var vals = ShellTakeover.ThemeValues(false, "#b69df8");
+        var map = new Dictionary<string, int>();
+        foreach (var v in vals) map[(string)v[0] + "\\" + (string)v[1]] = (int)v[2];
+        Check(map[P + "\\AppsUseLightTheme"] == 0 && map[P + "\\SystemUsesLightTheme"] == 0, "Dark preference did not map to light=0");
+        Check(map[D + "\\AccentColor"] == unchecked((int)0xFFF89DB6), "AccentColor must be 0xAABBGGRR");
+        Check(map[A + "\\AccentColorMenu"] == unchecked((int)0xFFF89DB6), "AccentColorMenu must be 0xAABBGGRR");
+        Check(map[D + "\\ColorizationColor"] == unchecked((int)0xC4B69DF8) && map[D + "\\ColorizationAfterglow"] == unchecked((int)0xC4B69DF8), "Colorization values must be 0xAARRGGBB");
+        var light = ShellTakeover.ThemeValues(true, "nope");
+        Check(light.Count == 2 && (int)light[0][2] == 1 && (int)light[1][2] == 1, "Light preference or an invalid colour mapped wrongly");
+        foreach (var v in vals) Check(ShellTakeover.IsThemeEntry((string)v[0], (string)v[1]), "Mapped value is not in the owned theme names");
+
+        // change detection: only differing / missing values are written
+        var cur = new Dictionary<string, object>();
+        foreach (var v in vals) cur[(string)v[0] + "\\" + (string)v[1]] = v[2];
+        Func<string, string, object> read = (k, n) => { object o; return cur.TryGetValue(k + "\\" + n, out o) ? o : null; };
+        Check(ShellTakeover.ThemeChanges(vals, read).Count == 0, "Identical values were scheduled for writing");
+        cur[P + "\\AppsUseLightTheme"] = 1;
+        cur.Remove(D + "\\AccentColor");
+        cur[A + "\\AccentColorMenu"] = "text";
+        Check(ShellTakeover.ThemeChanges(vals, read).Count == 3, "Differing, missing and wrong-typed values must be written");
+
+        // debounce: wait until the last request is 300 ms old; tick wrap-around is safe
+        Check(ShellTakeover.DebounceWait(1000, 1000, 300) == 300, "A fresh request must wait the full time");
+        Check(ShellTakeover.DebounceWait(1000, 1100, 300) == 200, "A partly elapsed wait was wrong");
+        Check(ShellTakeover.DebounceWait(1000, 1300, 300) == 0 && ShellTakeover.DebounceWait(1000, 5000, 300) == 0, "An elapsed wait must be zero");
+        Check(ShellTakeover.DebounceWait(int.MaxValue - 50, int.MinValue + 49, 300) == 200, "Tick wrap-around broke the debounce");
+
+        // save / restore record: originals captured once, kept across repeats, removable on their own
+        var orig = new Dictionary<string, object> { { P + "\\AppsUseLightTheme", 1 } };
+        Func<string, string, object> readOrig = (k, n) => { object o; return orig.TryGetValue(k + "\\" + n, out o) ? o : null; };
+        var reg = new List<Dictionary<string, object>>();
+        Check(ShellTakeover.AddMissing(reg, ShellTakeover.CaptureTheme(readOrig)), "Originals were not added");
+        Check(reg.Count == ShellTakeover.ThemeNames.Length, "Not every theme value got a record");
+        orig[P + "\\AppsUseLightTheme"] = 0; // our own write
+        Check(!ShellTakeover.AddMissing(reg, ShellTakeover.CaptureTheme(readOrig)), "A second capture added or replaced records");
+        foreach (var e in reg) {
+            if ((string)e["n"] == "AppsUseLightTheme") Check((int)ShellTakeover.RestoreValue(e) == 1, "Original theme value was overwritten");
+            if ((string)e["n"] == "AccentColor") Check(ShellTakeover.RestoreValue(e) == null, "A value that did not exist must be deleted on restore");
+        }
+        List<Dictionary<string, object>> back; int ah;
+        Check(ShellTakeover.TryParse(ShellTakeover.Serialize(reg, 2), out back, out ah) && back.Count == reg.Count && ah == 2, "Theme records did not survive serialization");
+        var other = new List<Dictionary<string, object>>(reg);
+        other.AddRange(ShellTakeover.Capture((k, n) => null));
+        Check(ShellTakeover.ThemeEntries(other).Count == ShellTakeover.ThemeNames.Length, "Theme records were not told apart from takeover records");
+        Check(ShellTakeover.WithoutTheme(other).Count == other.Count - ShellTakeover.ThemeNames.Length && other.Count > reg.Count, "Dropping the theme records touched the others");
+    }
+
     static void FullscreenLayerTests() {
         // the workspace slide's layer covers the bar when a window covers its monitor (a game, a video)
         Check(Slider.CoversMonitor(new Native.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 }, 0, 0, 1920, 1080), "A monitor-sized window was no fullscreen");
@@ -462,6 +512,7 @@ static class CoreRegression
         RestartTests();
         if (args.Length == 1 && args[0] == "--restart-only") return;
         TakeoverTests();
+        ThemeSyncTests();
         BindMigrationTests();
         UiScaleTests();
         BorderLookTests();

@@ -91,6 +91,7 @@ pub(super) enum Sw {
   Gestures,
   WinToasts,
   Takeover,
+  ThemeSync,
   Night,
   WallpaperColors,
 }
