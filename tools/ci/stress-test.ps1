@@ -42,10 +42,11 @@ $MAX_USER_GROWTH     = 100
 $MAX_PRIVATE_MB_GROWTH = 200
 # churn: many workspace switches and window open/close cycles after the load phase; anything a switch or a window
 # leaves behind (overlay windows, thumbnails, visuals, timers, tasks, tree nodes) shows up as growth per operation.
-# Growth is the least-squares slope over all samples, scaled to 100 operations.
+# Growth is the median step between consecutive samples, scaled to 100 operations: a one-time jump (a first WMI query
+# loads ~250 handles of COM plumbing once) moves a single step, a leak moves them all.
 $CHURN_SWITCHES      = 320   # workspace switches (ws-1 .. ws-4 in turn)
 $CHURN_WINDOW_CYCLES = 100   # open two windows, close them
-$CHURN_SAMPLE_EVERY  = 30    # operations between samples
+$CHURN_SAMPLE_EVERY  = 10    # operations between samples
 $MAX_CHURN_HANDLES_PER_100 = 40
 $MAX_CHURN_MB_PER_100      = 6
 $MAX_CHURN_GDI_PER_100     = 10
@@ -319,13 +320,11 @@ $growth = foreach ($k in @('core', 'shell', 'tiling')) {
     $g
 }
 
-# churn: growth per 100 operations (least-squares slope over the samples of each kind)
-function Slope($xs, $ys) {
-    $n = $xs.Count; if ($n -lt 3) { return 0 }
-    $mx = ($xs | Measure-Object -Average).Average; $my = ($ys | Measure-Object -Average).Average
-    $num = 0.0; $den = 0.0
-    for ($i = 0; $i -lt $n; $i++) { $num += ($xs[$i] - $mx) * ($ys[$i] - $my); $den += ($xs[$i] - $mx) * ($xs[$i] - $mx) }
-    if ($den -eq 0) { 0 } else { $num / $den }
+# churn: growth per 100 operations (median step between consecutive samples of each kind, per operation)
+function Rate($xs, $ys) {
+    $r = @(); for ($i = 1; $i -lt $xs.Count; $i++) { if ($xs[$i] -gt $xs[$i - 1]) { $r += ($ys[$i] - $ys[$i - 1]) / ($xs[$i] - $xs[$i - 1]) } }
+    if ($r.Count -lt 3) { return 0 }
+    Median $r
 }
 $churnLimits = [ordered]@{ Handles = $MAX_CHURN_HANDLES_PER_100; PrivateMB = $MAX_CHURN_MB_PER_100; Gdi = $MAX_CHURN_GDI_PER_100
     User = $MAX_CHURN_USER_PER_100; Threads = $MAX_CHURN_THREADS_PER_100; Windows = $MAX_CHURN_WINDOWS_PER_100 }
@@ -336,7 +335,7 @@ $churnRows = foreach ($c in $churn) {
         $xs = @($pts | ForEach-Object { [double]$_.Op })
         $row = [ordered]@{ Kind = $c.Kind; Part = $k }
         foreach ($m in $churnLimits.Keys) {
-            $per100 = [math]::Round((Slope $xs @($pts | ForEach-Object { [double]$_.Sample[$k].$m })) * 100, 1)
+            $per100 = [math]::Round((Rate $xs @($pts | ForEach-Object { [double]$_.Sample[$k].$m })) * 100, 1)
             $row[$m] = $per100
             if ($per100 -gt $churnLimits[$m]) { Fail "churn $($c.Kind): $k $m grows $per100 per 100 operations (max $($churnLimits[$m]))" }
         }
