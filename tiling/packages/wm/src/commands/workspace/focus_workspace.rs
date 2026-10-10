@@ -7,7 +7,7 @@ use crate::{
     container::set_focused_descendant, workspace::deactivate_workspace,
   },
   models::WorkspaceTarget,
-  traits::CommonGetters,
+  traits::{CommonGetters, PositionGetters},
   user_config::UserConfig,
   wm_state::WmState,
 };
@@ -62,6 +62,24 @@ pub fn focus_workspace(
       .next()
       .unwrap_or_else(|| target_workspace.clone().into());
 
+    // Hyprland: switching workspaces on the same monitor, when the last
+    // focused window is tiled, focuses the tiled window under the cursor
+    // (the cursor stays where it is: no jump).
+    let same_monitor = displayed_workspace.id() != target_workspace.id()
+      && focused_workspace.monitor().map(|m| m.id())
+        == target_workspace.monitor().map(|m| m.id());
+    let under_cursor = (same_monitor && container_to_focus.as_tiling_window().is_some())
+      .then(|| state.dispatcher.cursor_position().ok())
+      .flatten()
+      .and_then(|point| {
+        target_workspace
+          .descendants()
+          .filter(|c| c.as_tiling_window().is_some())
+          .find(|c| c.to_rect().is_ok_and(|rect| rect.contains_point(&point)))
+      });
+    let jump = under_cursor.is_none();
+    let container_to_focus = under_cursor.unwrap_or(container_to_focus);
+
     set_focused_descendant(&container_to_focus, None);
     state.pending_sync.queue_focus_change();
 
@@ -75,7 +93,9 @@ pub fn focus_workspace(
 
     // Save the currently focused workspace as recent.
     state.recent_workspace_name = Some(focused_workspace.config().name);
-    state.pending_sync.queue_cursor_jump();
+    if jump {
+      state.pending_sync.queue_cursor_jump();
+    }
   }
 
   Ok(())
