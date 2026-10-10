@@ -982,10 +982,13 @@ impl Ui {
         }
         WM_TIMER if wp.0 == TIMER_DRAG_DWELL => {
           let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_DRAG_DWELL) };
-          if let Some((_, workspace)) = self.drag_hover {
+          if let Some((bar_hwnd, workspace)) = self.drag_hover {
             if self.drag_activated != Some(workspace) {
               self.drag_activated = Some(workspace);
-              self.slide(workspace.to_string());
+              match self.bars.iter().position(|b| b.hwnd == bar_hwnd) {
+                Some(i) => self.slide_on(i, workspace),
+                None => self.slide(workspace.to_string()),
+              }
             }
           }
         }
@@ -1637,7 +1640,7 @@ impl Ui {
       let mut frame = None;
       gfx::draw_surface(&bar.bg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        match view::paint(&mut p, model, &theme, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
+        match view::paint(&mut p, model, &theme, &bar.device, bar.width, bar.hover.as_ref(), bar.hover_left, bar.hover_right) {
           Ok(f) => frame = Some(f),
           Err(err) => tracing::warn!("Native bar paint: {:?}", err),
         }
@@ -1655,7 +1658,7 @@ impl Ui {
       }
       gfx::draw_surface(&bar.fg.surface, s, |dc| {
         let mut p = Painter { dc, gfx, fonts, res, icons, requests: &mut requests };
-        if let Err(err) = view::paint_ws(&mut p, model, &theme, bar.hover.as_ref(), show_numbers) {
+        if let Err(err) = view::paint_ws(&mut p, model, &theme, &bar.device, bar.hover.as_ref(), show_numbers) {
           tracing::warn!("Native bar paint (workspaces): {:?}", err);
         }
         Ok(())
@@ -2116,6 +2119,18 @@ impl Ui {
     });
   }
 
+  /// Workspace `n` on bar `i`'s own monitor (Hyprland: the cursor is
+  /// there, so that monitor has focus): focuses that monitor first, and a
+  /// workspace that does not exist yet opens there.
+  fn slide_on(&self, i: usize, n: u32) {
+    let device = self.bars[i].device.replace('\\', "%5C");
+    let wm = self.wm_cmd.clone();
+    let fallback = format!("command focus --workspace {}", n);
+    core_api::slide(format!("{}@{}", n, device), move || {
+      let _ = wm.send(wm::Command::Raw(fallback));
+    });
+  }
+
   fn toggle_native_overview(&mut self) {
     if !self.native_overview {
       return;
@@ -2159,7 +2174,7 @@ impl Ui {
       (HitKind::Search, 0) => self.toggle_overview_from_bar(),
       (HitKind::Paused, 0) => self.wm_command("command wm-toggle-pause".into()),
       (HitKind::Mode(name), 0) => self.wm_command(format!("command wm-disable-binding-mode --name {}", name)),
-      (HitKind::Workspace(n), 0) => self.slide(n.to_string()),
+      (HitKind::Workspace(n), 0) => self.slide_on(i, n),
       (HitKind::Workspace(_), 1) => self.toggle_overview_from_bar(),
       (HitKind::Media, 0) => self.provider("media", media(MediaFunction::TogglePlayPause)),
       (HitKind::Media, 1) => self.provider("media", media(MediaFunction::Next)),

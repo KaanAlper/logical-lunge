@@ -514,7 +514,7 @@ pub(super) const fn style(size: f32) -> TextStyle {
 }
 
 /// Paints the whole bar (`w` DIPs wide) and returns its hit areas.
-pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKind>, hover_left: bool, hover_right: bool) -> anyhow::Result<Frame> {
+pub fn paint(p: &mut Painter, m: &Model, t: &Theme, device: &str, w: f32, hover: Option<&HitKind>, hover_left: bool, hover_right: bool) -> anyhow::Result<Frame> {
   let mut f = Frame::default();
   let level = shorten_level(w);
   let side_w = SIDE_W[level];
@@ -635,7 +635,7 @@ pub fn paint(p: &mut Painter, m: &Model, t: &Theme, w: f32, hover: Option<&HitKi
   p.fill_round(ws_group, GROUP_R, t.layer1)?;
   let track = Rect::new(x + 3.0, gy + (GROUP_H - WS) / 2.0, track_w, WS);
   f.ws_track = track;
-  workspaces(p, m, t, track, &mut f)?;
+  workspaces(p, m, t, device, track, &mut f)?;
   x += track_w + 6.0 + 4.0;
 
   // right side group: clock, utils, battery
@@ -783,8 +783,18 @@ fn media(p: &mut Painter, m: &Model, t: &Theme, r: Rect) -> anyhow::Result<()> {
 }
 
 /// (first workspace shown, index of the focused one) -- pages of 10.
-fn ws_page(m: &Model) -> (u32, usize) {
-  let current = m.wm.focused_workspace().map(|w| w.name.as_str()).unwrap_or("1");
+/// Each monitor's bar shows its own monitor's workspace and group (as in
+/// Hyprland); the focused one while the monitor is not known yet.
+fn ws_page(m: &Model, device: &str) -> (u32, usize) {
+  let current = m
+    .wm
+    .monitors
+    .iter()
+    .find(|mon| mon.device_name == device)
+    .and_then(|mon| mon.workspaces.iter().find(|w| w.displayed))
+    .or_else(|| m.wm.focused_workspace())
+    .map(|w| w.name.as_str())
+    .unwrap_or("1");
   let position = m.wm.workspace_order.iter().position(|name| name == current)
     .unwrap_or_else(|| current.parse::<usize>().unwrap_or(1).saturating_sub(1));
   let base = position / SHOWN * SHOWN;
@@ -808,8 +818,8 @@ fn occupied(m: &Model, base: u32) -> Vec<bool> {
 /// Workspaces, bottom layer: the merged "occupied" background. The
 /// active pill is its own visual (animated in the compositor) and the icons /
 /// dots are a layer above it (`paint_ws`).
-fn workspaces(p: &mut Painter, m: &Model, t: &Theme, track: Rect, f: &mut Frame) -> anyhow::Result<()> {
-  let (base, idx) = ws_page(m);
+fn workspaces(p: &mut Painter, m: &Model, t: &Theme, device: &str, track: Rect, f: &mut Frame) -> anyhow::Result<()> {
+  let (base, idx) = ws_page(m, device);
   f.ws_base = base;
   f.ws_idx = m.wm.connected.then_some(idx);
   let occ = occupied(m, base);
@@ -844,8 +854,8 @@ pub const PILL_MARGIN: f32 = MARGIN;
 pub const CELL: f32 = WS;
 
 /// Top layer of the workspaces, in track coordinates: hover, app icons / dots.
-pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>, numbers: f32) -> anyhow::Result<()> {
-  let (base, idx) = ws_page(m);
+pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, device: &str, hover: Option<&HitKind>, numbers: f32) -> anyhow::Result<()> {
+  let (base, idx) = ws_page(m, device);
   let occ = occupied(m, base);
   let active = |i: usize| m.wm.connected && i == idx;
   for i in 0..SHOWN {
