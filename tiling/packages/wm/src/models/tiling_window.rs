@@ -131,6 +131,7 @@ impl TilingWindow {
       class_name: self.native_properties().class_name,
       process_name: self.native_properties().process_name,
       active_drag: self.active_drag(),
+      is_pinned: false,
     }))
   }
 }

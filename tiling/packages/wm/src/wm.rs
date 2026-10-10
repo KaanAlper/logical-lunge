@@ -177,6 +177,21 @@ impl WindowManager {
     Ok(())
   }
 
+  /// Hyprland's Super+mouse move / resize: the window follows the pointer
+  /// (called on a short interval while a drag is on).
+  pub fn process_mouse_drag(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    let state = &mut self.state;
+
+    if crate::commands::window::mouse_drag_tick(state, config)? {
+      platform_sync(state, config)?;
+    }
+
+    Ok(())
+  }
+
   pub fn process_commands(
     &mut self,
     commands: &Vec<InvokeCommand>,
@@ -769,6 +784,32 @@ impl WindowManager {
           crate::commands::window::toggle_fullscreen_spoof(window, state, config)?;
         }
         Ok(())
+      }
+      InvokeCommand::TogglePin => match subject_container.as_window_container() {
+        Ok(window) => {
+          let pinned = !crate::commands::window::is_pinned(&window);
+          crate::commands::window::set_pinned(window, pinned, state, config)
+        }
+        _ => Ok(()),
+      },
+      InvokeCommand::SetPinned => match subject_container.as_window_container() {
+        Ok(window) => crate::commands::window::set_pinned(window, true, state, config),
+        _ => Ok(()),
+      },
+      InvokeCommand::ToggleSpecialWorkspace => {
+        crate::commands::workspace::toggle_special_workspace(state, config)
+      }
+      InvokeCommand::MoveToSpecialWorkspace => match subject_container.as_window_container() {
+        Ok(window) => crate::commands::workspace::move_window_to_special_workspace(window, state, config),
+        _ => Ok(()),
+      },
+      InvokeCommand::WmMouseDrag { action } => {
+        use crate::commands::window::{end_mouse_drag, start_mouse_drag, MouseDragKind};
+        match action {
+          wm_common::MouseDragAction::Move => start_mouse_drag(MouseDragKind::Move, state, config),
+          wm_common::MouseDragAction::Resize => start_mouse_drag(MouseDragKind::Resize, state, config),
+          wm_common::MouseDragAction::End => end_mouse_drag(state, config),
+        }
       }
       InvokeCommand::ToggleMinimized => {
         match subject_container.as_window_container() {

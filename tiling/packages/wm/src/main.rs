@@ -205,6 +205,12 @@ async fn start_wm(
   // Create an interval for periodically cleaning up invalid windows.
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
 
+  // Hyprland's Super+mouse move / resize: while one is on, the window
+  // follows the pointer (polled, ~120 Hz; nothing runs otherwise).
+  let mut mouse_drag_interval = tokio::time::interval(Duration::from_millis(8));
+  mouse_drag_interval
+    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
   loop {
     let res = tokio::select! {
       _ = signal::ctrl_c() => {
@@ -227,6 +233,9 @@ async fn start_wm(
       Some(()) = display_listener.next_event() => {
         tracing::debug!("Received display settings changed event.");
         wm.process_event(PlatformEvent::DisplaySettingsChanged, &mut config)
+      },
+      _ = mouse_drag_interval.tick(), if wm.state.mouse_drag.is_some() => {
+        wm.process_mouse_drag(&mut config)
       },
       _ = cleanup_interval.tick() => {
         if wm.state.is_paused || wm.state.game_mode {

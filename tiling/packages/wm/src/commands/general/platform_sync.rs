@@ -67,6 +67,10 @@ pub fn platform_sync(
   state: &mut WmState,
   config: &UserConfig,
 ) -> anyhow::Result<()> {
+  // Hyprland's pin: pinned windows are on the displayed workspace of their
+  // monitor before anything is drawn (see `carry_pinned_windows`).
+  crate::commands::window::carry_pinned_windows(state)?;
+
   // Logical Lunge: the tree never keeps a split with a single child or with
   // its parent's direction (dwindle has neither). Some path still left e.g.
   // `H[1]` inside a column, and later moves then acted on unexpected
@@ -465,47 +469,53 @@ fn redraw_containers(
     // lost independent flip and stayed topmost if the WM died.
     let fullscreen_in_front = workspace_focused_window(window)
       .is_some_and(|focused| matches!(focused.state(), WindowState::Fullscreen(_)));
-    let z_order = match window.state() {
-      WindowState::Floating(config)
-        if config.shown_on_top && !fullscreen_in_front =>
-      {
-        WindowZOrder::TopMost
-      }
-      // An app's own fullscreen: in front of the bar and every other normal
-      // window while it is its workspace's focused window (the top of the
-      // non-topmost band -- the bar is not topmost), never HWND_TOPMOST: a
-      // game must keep its own z-order (independent flip) and must not be
-      // left topmost if the WM stops. The window focused next comes in
-      // front of it (as with Alt+Tab), and it comes back when focused.
-      WindowState::Fullscreen(_) => WindowZOrder::Normal,
-      // a floating window under a focused fullscreen one: below it
-      WindowState::Floating(config) if config.shown_on_top => WindowZOrder::Normal,
-      // Raised to the top, after the focused tiling window (see above).
-      WindowState::Floating(_)
-        if should_bring_to_front
-          && workspace_focused_window(window).is_some_and(|focused| {
-            floats_over_tiling(window, &focused)
-          }) =>
-      {
-        WindowZOrder::Normal
-      }
-      _ if should_bring_to_front => {
-        let focused_descendant = workspace
-          .descendant_focus_order()
-          .next()
-          .and_then(|container| container.as_window_container().ok());
-
-        if let Some(focused_descendant) = focused_descendant {
-          if window.id() == focused_descendant.id() {
-            WindowZOrder::Normal
-          } else {
-            WindowZOrder::AfterWindow(focused_descendant.native().id())
-          }
-        } else {
+    // the open special workspace is drawn over the monitor's workspace
+    // (and over its dim, see `sync_backdrop`)
+    let z_order = if workspace.is_special() {
+      WindowZOrder::TopMost
+    } else {
+      match window.state() {
+        WindowState::Floating(config)
+          if config.shown_on_top && !fullscreen_in_front =>
+        {
+          WindowZOrder::TopMost
+        }
+        // An app's own fullscreen: in front of the bar and every other normal
+        // window while it is its workspace's focused window (the top of the
+        // non-topmost band -- the bar is not topmost), never HWND_TOPMOST: a
+        // game must keep its own z-order (independent flip) and must not be
+        // left topmost if the WM stops. The window focused next comes in
+        // front of it (as with Alt+Tab), and it comes back when focused.
+        WindowState::Fullscreen(_) => WindowZOrder::Normal,
+        // a floating window under a focused fullscreen one: below it
+        WindowState::Floating(config) if config.shown_on_top => WindowZOrder::Normal,
+        // Raised to the top, after the focused tiling window (see above).
+        WindowState::Floating(_)
+          if should_bring_to_front
+            && workspace_focused_window(window).is_some_and(|focused| {
+              floats_over_tiling(window, &focused)
+            }) =>
+        {
           WindowZOrder::Normal
         }
-      }
-      _ => WindowZOrder::Normal,
+        _ if should_bring_to_front => {
+          let focused_descendant = workspace
+            .descendant_focus_order()
+            .next()
+            .and_then(|container| container.as_window_container().ok());
+
+          if let Some(focused_descendant) = focused_descendant {
+            if window.id() == focused_descendant.id() {
+              WindowZOrder::Normal
+            } else {
+              WindowZOrder::AfterWindow(focused_descendant.native().id())
+            }
+          } else {
+            WindowZOrder::Normal
+          }
+        }
+        _ => WindowZOrder::Normal,
+    }
     };
 
     // Set the z-order of the window.

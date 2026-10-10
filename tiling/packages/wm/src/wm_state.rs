@@ -90,6 +90,9 @@ pub struct WmState {
   /// Logical Lunge: where every window is, kept for a restart.
   pub layout_memory: crate::layout_memory::LayoutMemory,
 
+  /// Hyprland's Super+mouse move / resize in progress (see `mouse_drag`).
+  pub mouse_drag: Option<crate::commands::window::MouseDrag>,
+
   /// Configs of currently enabled binding modes.
   pub binding_modes: Vec<BindingModeConfig>,
 
@@ -147,6 +150,7 @@ impl WmState {
       self_resizes: std::collections::HashMap::new(),
       transition_moves: std::collections::HashMap::new(),
       layout_memory: crate::layout_memory::LayoutMemory::default(),
+      mouse_drag: None,
       binding_modes: Vec::new(),
       ignored_windows: Vec::new(),
       is_paused: false,
@@ -468,6 +472,11 @@ impl WmState {
       .find(|window| &*window.native() == native_window)
   }
 
+  /// Hyprland's special workspace, on whichever monitor it is.
+  pub fn special_workspace(&self) -> Option<Workspace> {
+    self.monitors().iter().find_map(Monitor::special_workspace)
+  }
+
   pub fn workspace_by_name(
     &self,
     workspace_name: &str,
@@ -489,6 +498,19 @@ impl WmState {
     target: WorkspaceTarget,
     config: &UserConfig,
   ) -> anyhow::Result<(Option<String>, Option<Workspace>)> {
+    // From the special workspace, relative targets count from the
+    // workspace it is shown over.
+    let displayed_under_special;
+    let origin_workspace = if origin_workspace.is_special() {
+      displayed_under_special = origin_workspace
+        .monitor()
+        .and_then(|monitor| monitor.displayed_workspace())
+        .context("No displayed workspace.")?;
+      &displayed_under_special
+    } else {
+      origin_workspace
+    };
+
     let (name, workspace) = match target {
       WorkspaceTarget::Name(name) => {
         #[allow(clippy::match_bool)]

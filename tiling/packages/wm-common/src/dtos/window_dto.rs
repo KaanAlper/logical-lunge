@@ -29,4 +29,8 @@ pub struct WindowDto {
   pub class_name: String,
   pub process_name: String,
   pub active_drag: Option<ActiveDrag>,
+  /// Hyprland's pin: the floating window is shown on every workspace of
+  /// its monitor (it moves along with workspace switches).
+  #[serde(default)]
+  pub is_pinned: bool,
 }

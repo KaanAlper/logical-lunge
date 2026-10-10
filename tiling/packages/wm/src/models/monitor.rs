@@ -28,6 +28,9 @@ struct MonitorInner {
   child_focus_order: VecDeque<Uuid>,
   native: Display,
   native_properties: NativeMonitorProperties,
+  /// The special workspace is attached here and shown over the displayed
+  /// workspace.
+  special_shown: bool,
 }
 
 impl Monitor {
@@ -42,6 +45,7 @@ impl Monitor {
       child_focus_order: VecDeque::new(),
       native: native_display,
       native_properties,
+      special_shown: false,
     };
 
     Self(Rc::new(RefCell::new(monitor)))
@@ -66,19 +70,40 @@ impl Monitor {
     self.0.borrow_mut().native_properties = native_properties;
   }
 
+  /// The regular workspace the monitor shows (the special workspace, even
+  /// when focused and shown over it, is never the displayed one).
   pub fn displayed_workspace(&self) -> Option<Workspace> {
     self
       .child_focus_order()
-      .next()
-      .and_then(|child| child.as_workspace().cloned())
+      .filter_map(|child| child.as_workspace().cloned())
+      .find(|workspace| !workspace.is_special())
   }
 
+  /// The regular workspaces (without the special one).
   pub fn workspaces(&self) -> Vec<Workspace> {
     self
       .children()
       .into_iter()
       .filter_map(|container| container.as_workspace().cloned())
+      .filter(|workspace| !workspace.is_special())
       .collect()
+  }
+
+  /// The special workspace, when it is attached to this monitor.
+  pub fn special_workspace(&self) -> Option<Workspace> {
+    self
+      .children()
+      .into_iter()
+      .filter_map(|container| container.as_workspace().cloned())
+      .find(Workspace::is_special)
+  }
+
+  pub fn special_shown(&self) -> bool {
+    self.0.borrow().special_shown
+  }
+
+  pub fn set_special_shown(&self, shown: bool) {
+    self.0.borrow_mut().special_shown = shown;
   }
 
   /// Whether there is a difference in DPI between this monitor and the
@@ -99,11 +124,15 @@ impl Monitor {
 
   pub fn to_dto(&self) -> anyhow::Result<ContainerDto> {
     let rect = self.to_rect()?;
+    // the special workspace is reported apart (see `MonitorDto`): IPC
+    // clients see only regular workspaces among the children
     let children = self
       .children()
       .iter()
+      .filter(|child| !child.as_workspace().is_some_and(Workspace::is_special))
       .map(CommonGetters::to_dto)
       .try_collect()?;
+    let special = self.special_workspace();
 
     Ok(ContainerDto::Monitor(MonitorDto {
       id: self.id(),
@@ -131,6 +160,10 @@ impl Monitor {
       #[cfg(not(target_os = "windows"))]
       hardware_id: None,
       working_rect: self.native_properties().working_area,
+      special_window_count: special.as_ref().map_or(0, |workspace| {
+        workspace.descendants().filter(|c| c.as_window_container().is_ok()).count()
+      }),
+      special_shown: self.special_shown() && special.is_some(),
     }))
   }
 }

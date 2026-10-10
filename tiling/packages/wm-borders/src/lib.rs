@@ -3,6 +3,7 @@ extern crate log;
 
 pub mod anim_timer;
 pub mod animations;
+mod backdrop;
 pub mod border_config;
 pub mod border_drawer;
 pub mod colors;
@@ -607,6 +608,8 @@ pub(crate) fn is_managed(hwnd: HWND) -> bool {
 
 /// Sets the windows managed by the window manager. Newly managed windows get a border (if visible), windows that are
 /// no longer managed lose theirs. Can be called before `start`.
+pub use backdrop::set_special_backdrop;
+
 pub fn set_managed(handles: HashSet<isize>) {
     guarded("set_managed", (), || set_managed_impl(handles));
 }
