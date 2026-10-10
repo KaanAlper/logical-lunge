@@ -84,7 +84,10 @@ public static class LLStress {
     public struct POINT { public int X, Y; }
     // a lone Shift tap: goes through the low-level keyboard hook, triggers no shortcut
     public static void TapShift() { keybd_event(0x10, 0, 0, UIntPtr.Zero); keybd_event(0x10, 0, 2, UIntPtr.Zero); }
-    public static void Nudge(int dx) { POINT p; if (GetCursorPos(out p)) SetCursorPos(p.X + dx, p.Y); }
+    // a real relative move, as a mouse sends it: the low-level mouse hook is called for it (a SetCursorPos warp
+    // reaches no hook, so the mouse hook was never exercised and a dead one could not show)
+    [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+    public static void Nudge(int dx) { mouse_event(0x0001, dx, 0, 0, UIntPtr.Zero); }
     public static bool InteractiveDesktop() { IntPtr d = OpenInputDesktop(0, false, 0x0001); if (d == IntPtr.Zero) return false; CloseDesktop(d); return true; }
     delegate bool EnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
@@ -283,6 +286,12 @@ $hookLoad = @(In-Phase $tLoad $tEnd | Where-Object { $_.Text -match 'klavye kanc
 if ($hookIdle -gt $MAX_HOOK_SLOW_IDLE) { Fail "keyboard hook slow $hookIdle times while idle (max $MAX_HOOK_SLOW_IDLE)" }
 if ($hookLoad -gt $MAX_HOOK_SLOW_LOAD) { Fail "keyboard hook slow $hookLoad times under load (max $MAX_HOOK_SLOW_LOAD)" }
 foreach ($e in $run) { if ($e.Text -match 'kancası girdi görmüyordu|sınama girdisini görmedi') { Fail "input hook dropped by Windows: $($e.Text)" } }
+# the mouse is moved every second of the run: the native mouse hook must have counted those moves
+if ($interactive) {
+    $mouseSeen = 0
+    foreach ($e in $run) { if ($e.Text -match 'hooks native key \d+ .*?mouse (\d+)') { $mouseSeen += [int]$Matches[1] } }
+    if ($mouseSeen -eq 0) { Fail 'the mouse hook counted no input during the run (it was moved every second)' } else { Note "mouse hook calls counted in the core's reports: $mouseSeen" }
+}
 
 # the core's own handle/thread/connection report (LL_TEST=1, every 30 s): printed for diagnosis
 foreach ($e in @($run | Where-Object { $_.Text -match '^test: handles ' })) { Note "$($e.At.ToString('HH:mm:ss')) $($e.Text)" }
