@@ -890,6 +890,9 @@
               <Row icon="desktop_windows" label="Windows'un yerini al" sub="Logical Lunge açıkken Windows'un görev çubuğu, yerleşim önerileri ve benzeri parçaları kapanır; kapanınca eski hâline döner">
                 <Switch on={s.takeover !== false} onChange={v => helper(['--set-pref', 'takeover', String(v)]).then(() => update({ takeover: v })).catch(() => {})} />
               </Row>
+              <Row icon="palette" label="Windows temasını eşitle" sub="Koyu/açık tercihiniz ve vurgu renginiz Windows'a da uygulanır; Windows'un kendi pencereleri bize uyar. Windows'un yerini al açıkken çalışır; kapanınca eski tema geri gelir">
+                <Switch on={s.themeSync !== false} onChange={v => helper(['--set-pref', 'themeSync', String(v)]).then(() => update({ themeSync: v })).catch(() => {})} />
+              </Row>
             </div>
           </>
         );

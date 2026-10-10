@@ -205,11 +205,13 @@ static class ShellTakeover
             if (tray != IntPtr.Zero) SetAutoHideState(tray, AutoHideState(tray) | ABS_AUTOHIDE);
         }
         Broadcast();
+        SyncTheme();
     }
 
     // Kaydedilmiş asıl değerleri geri yazar ve kaydı siler (kayıt yoksa bir şey yapmaz)
     public static void Restore()
     {
+        bool themeBack = false;
         lock (gate)
         {
             active = false;
@@ -222,6 +224,7 @@ static class ShellTakeover
             {
                 string key = (string)e["k"], name = (string)e["n"];
                 object v = RestoreValue(e);
+                if (IsThemeEntry(key, name)) themeBack = true;
                 try
                 {
                     if (key == ArrangeKey && name == ArrangeName)
@@ -245,6 +248,7 @@ static class ShellTakeover
             try { System.IO.File.Delete(StatePath); } catch { }
         }
         Broadcast();
+        if (themeBack) BroadcastTheme();
     }
 
     // Explorer görev çubuğu ayarlarını WM_SETTINGCHANGE "TraySettings" ile yeniden okur; askıdaki bir pencere
@@ -258,6 +262,204 @@ static class ShellTakeover
         });
     }
 
+    // ---- Windows teması (Prefs: theme, focusColor, themeSync) ----
+    // Windows'un kendi pencereleri ve temaya uyan uygulamalar bizimle aynı görünsün: koyu/açık tercih Personalize'a, vurgu
+    // rengi belgelenmiş kullanıcı değerlerine yazılır. DWM'in belgelenmemiş renklendirme işlevleri çağrılmaz.
+    // Asıl değerler ilk yazımdan ÖNCE aynı kayıt dosyasına (shell-takeover.json) girer; devir bırakılınca ya da tema
+    // eşitleme kapanınca aynen geri yazılır. Değişmeyen değer yazılmaz; ardışık değişiklikler tek yazıma birleşir
+    // (son değer kazanır); WM_SETTINGCHANGE "ImmersiveColorSet" arka planda, zaman aşımlı yayınlanır.
+    internal const string PersonalizeKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+    internal const string DwmKey = @"Software\Microsoft\Windows\DWM";
+    internal const string AccentKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent";
+    internal const int ThemeDebounceMs = 300, ThemeBroadcastTimeoutMs = 200;
+
+    // Tema eşitlemenin dokunabileceği tüm değerler (anahtar, ad)
+    internal static readonly string[][] ThemeNames =
+    {
+        new[] { PersonalizeKey, "AppsUseLightTheme" },
+        new[] { PersonalizeKey, "SystemUsesLightTheme" },
+        new[] { DwmKey, "AccentColor" },               // 0xAABBGGRR
+        new[] { DwmKey, "ColorizationColor" },         // 0xAARRGGBB
+        new[] { DwmKey, "ColorizationAfterglow" },     // 0xAARRGGBB
+        new[] { AccentKey, "AccentColorMenu" },        // 0xAABBGGRR
+    };
+
+    internal static bool IsThemeEntry(string key, string name)
+    {
+        foreach (var t in ThemeNames) if (t[0] == key && t[1] == name) return true;
+        return false;
+    }
+
+    // Tercihlerden Windows değerleri: her biri {anahtar, ad, int}. Geçersiz renkte yalnızca koyu/açık yazılır.
+    internal static List<object[]> ThemeValues(bool light, string hex)
+    {
+        var list = new List<object[]>();
+        int l = light ? 1 : 0;
+        list.Add(new object[] { PersonalizeKey, "AppsUseLightTheme", l });
+        list.Add(new object[] { PersonalizeKey, "SystemUsesLightTheme", l });
+        if (hex == null || !System.Text.RegularExpressions.Regex.IsMatch(hex, "^#[0-9a-fA-F]{6}$")) return list;
+        uint r = Convert.ToUInt32(hex.Substring(1, 2), 16), g = Convert.ToUInt32(hex.Substring(3, 2), 16), b = Convert.ToUInt32(hex.Substring(5, 2), 16);
+        int abgr = unchecked((int)(0xFF000000u | (b << 16) | (g << 8) | r));
+        int argb = unchecked((int)(0xC4000000u | (r << 16) | (g << 8) | b));
+        list.Add(new object[] { DwmKey, "AccentColor", abgr });
+        list.Add(new object[] { DwmKey, "ColorizationColor", argb });
+        list.Add(new object[] { DwmKey, "ColorizationAfterglow", argb });
+        list.Add(new object[] { AccentKey, "AccentColorMenu", abgr });
+        return list;
+    }
+
+    // Gerçekten değişecek olanlar (şimdiki değer yok ya da farklı); hiçbiri değişmiyorsa boş: hiçbir şey yazılmaz
+    internal static List<object[]> ThemeChanges(List<object[]> desired, Func<string, string, object> read)
+    {
+        var list = new List<object[]>();
+        foreach (var d in desired)
+        {
+            object cur = read((string)d[0], (string)d[1]);
+            if (!(cur is int) || (int)cur != (int)d[2]) list.Add(d);
+        }
+        return list;
+    }
+
+    // Tema değerlerinin şimdiki hâli (asıl değerler olarak kaydedilir)
+    internal static List<Dictionary<string, object>> CaptureTheme(Func<string, string, object> read)
+    {
+        var list = new List<Dictionary<string, object>>();
+        foreach (var t in ThemeNames) list.Add(Entry(t[0], t[1], read(t[0], t[1])));
+        return list;
+    }
+
+    // Kayıtta olmayanları ekler (mevcut asıl değerler korunur); eklendiyse true
+    internal static bool AddMissing(List<Dictionary<string, object>> reg, List<Dictionary<string, object>> entries)
+    {
+        var have = new HashSet<string>();
+        foreach (var e in reg) have.Add((string)e["k"] + "\\" + (string)e["n"]);
+        bool added = false;
+        foreach (var e in entries)
+            if (have.Add((string)e["k"] + "\\" + (string)e["n"])) { reg.Add(e); added = true; }
+        return added;
+    }
+
+    internal static List<Dictionary<string, object>> ThemeEntries(List<Dictionary<string, object>> reg)
+    {
+        var list = new List<Dictionary<string, object>>();
+        foreach (var e in reg) if (IsThemeEntry((string)e["k"], (string)e["n"])) list.Add(e);
+        return list;
+    }
+
+    internal static List<Dictionary<string, object>> WithoutTheme(List<Dictionary<string, object>> reg)
+    {
+        var list = new List<Dictionary<string, object>>();
+        foreach (var e in reg) if (!IsThemeEntry((string)e["k"], (string)e["n"])) list.Add(e);
+        return list;
+    }
+
+    // Birleştirme: son istekten bu yana kaç ms daha beklenmeli (0: yazma zamanı). Tick sayacı taşsa da doğru.
+    internal static int DebounceWait(int lastRequestTick, int nowTick, int ms)
+    {
+        int elapsed = unchecked(nowTick - lastRequestTick);
+        if (elapsed < 0) elapsed = 0;
+        return elapsed >= ms ? 0 : ms - elapsed;
+    }
+
+    static readonly object themeTimerGate = new object();
+    static System.Threading.Timer themeTimer;
+    static int themeLastRequest;
+
+    // Tema ya da vurgu rengi ya da tercih değişti: engellemez; son istek 300 ms sakinleşince tek yazım yapılır
+    public static void SyncTheme()
+    {
+        lock (themeTimerGate)
+        {
+            themeLastRequest = Environment.TickCount;
+            if (themeTimer == null) themeTimer = new System.Threading.Timer(ThemeTick, null, ThemeDebounceMs, Timeout.Infinite);
+            else themeTimer.Change(ThemeDebounceMs, Timeout.Infinite);
+        }
+    }
+
+    static void ThemeTick(object state)
+    {
+        lock (themeTimerGate)
+        {
+            int wait = DebounceWait(themeLastRequest, Environment.TickCount, ThemeDebounceMs);
+            if (wait > 0) { themeTimer.Change(wait, Timeout.Infinite); return; }
+        }
+        try { ApplyTheme(); }
+        catch (Exception ex) { Slider.Log("devir: Windows teması eşitlenemedi: " + ex.Message); }
+    }
+
+    // Thread havuzunda çalışır; çekirdeğin arayüz / giriş thread'lerinde değil
+    static void ApplyTheme()
+    {
+        bool changed = false, restored = false;
+        lock (gate)
+        {
+            if (!active) return; // devir yok: Restore her şeyi zaten geri yazdı
+            string existing = ReadState();
+            List<Dictionary<string, object>> reg;
+            int autoHide;
+            if (existing == null || !TryParse(existing, out reg, out autoHide)) return; // asıl değerler bilinmiyor: dokunma
+            if (!Prefs.ThemeSync)
+            {
+                restored = RestoreThemeEntries(reg, autoHide);
+            }
+            else
+            {
+                var todo = ThemeChanges(ThemeValues(Prefs.ThemeLight, Prefs.FocusColorHex), ReadValue);
+                if (todo.Count == 0) return;
+                if (AddMissing(reg, CaptureTheme(ReadValue)))
+                {
+                    try { WriteState(Serialize(reg, autoHide)); }
+                    catch (Exception ex) { Slider.Log("devir: tema asıl değerleri kaydedilemedi, değiştirilmedi: " + ex.Message); return; }
+                }
+                foreach (var d in todo)
+                {
+                    try { using (var k = Registry.CurrentUser.CreateSubKey((string)d[0])) k.SetValue((string)d[1], (int)d[2], RegistryValueKind.DWord); changed = true; }
+                    catch (Exception ex) { Slider.Log("devir: " + d[1] + " yazılamadı: " + ex.Message); }
+                }
+            }
+        }
+        if (changed || restored) BroadcastTheme();
+    }
+
+    // Tema değerlerini kayıttaki asıl hâline döndürür ve kayıttan çıkarır (gate tutulurken)
+    static bool RestoreThemeEntries(List<Dictionary<string, object>> reg, int autoHide)
+    {
+        var mine = ThemeEntries(reg);
+        if (mine.Count == 0) return false;
+        foreach (var e in mine)
+        {
+            string key = (string)e["k"], name = (string)e["n"];
+            object v = RestoreValue(e);
+            try
+            {
+                using (var k = Registry.CurrentUser.CreateSubKey(key))
+                {
+                    if (v == null) k.DeleteValue(name, false);
+                    else if (v is int) k.SetValue(name, (int)v, RegistryValueKind.DWord);
+                    else k.SetValue(name, v);
+                }
+            }
+            catch (Exception ex) { Slider.Log("devir: " + name + " geri yazılamadı: " + ex.Message); }
+        }
+        try { WriteState(Serialize(WithoutTheme(reg), autoHide)); }
+        catch (Exception ex) { Slider.Log("devir: kayıt güncellenemedi: " + ex.Message); }
+        return true;
+    }
+
+    // WM_SETTINGCHANGE "ImmersiveColorSet": yalnızca arka planda, zaman aşımlı (SMTO_ABORTIFHUNG); asla SendMessage değil
+    static void BroadcastTheme()
+    {
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                IntPtr r;
+                SendMessageTimeout((IntPtr)0xFFFF, 0x001A, IntPtr.Zero, "ImmersiveColorSet", 0x0002 /*SMTO_ABORTIFHUNG*/ | 0x0000 /*SMTO_NORMAL*/, (uint)ThemeBroadcastTimeoutMs, out r);
+            }
+            catch (Exception ex) { Slider.Log("devir: tema bildirimi gönderilemedi: " + ex.Message); }
+        });
+    }
+
     // Asıl çekirdek açılırken (mesaj döngüsü olan bir thread'de): ayarlar + görev çubuğu
     public static void Start()
     {
@@ -267,6 +469,7 @@ static class ShellTakeover
             if (!Prefs.Takeover) { Restore(); Taskbar.ShowAll(); }
             else if (ShellState.Up) Resume();
         });
+        Prefs.ThemeInputsChanged += SyncTheme; // tema / vurgu rengi / eşitleme tercihi değişince (engellemez)
         Apply();
         Taskbar.Install(true);
     }
