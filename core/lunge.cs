@@ -13692,7 +13692,8 @@ static class Keep
 // no hook is called for, a cursor warp above all (SetCursorPos; the window manager puts the cursor on the focused window
 // after a workspace switch). Reinstalling on the suspicion alone did it every couple of seconds while workspaces were
 // switched from the bar or a script, each time forgetting the held keys. So a probe goes through the hook first, a marked
-// key nobody uses (0xE8) or a zero mouse move, and only a hook that does not see its own probe in a second is reinstalled.
+// key nobody uses (0xE8) or a horizontal wheel turn of zero (a zero move is not delivered to any hook; a real move
+// would nudge a game's aim), and only a hook that does not see its own probe in a second is reinstalled.
 static class HookProbe
 {
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
@@ -13710,7 +13711,7 @@ static class HookProbe
     // From the mouse hook's thread, once a second
     public static bool MouseDead(bool suspect)
     {
-        return Check(ref mouseAt, MouseFocus.LastHookTick, suspect, () => mouse_event(0x0001 /*MOVE*/, 0, 0, 0, Native.LL_MARK));
+        return Check(ref mouseAt, MouseFocus.LastHookTick, suspect, () => mouse_event(0x01000 /*HWHEEL*/, 0, 0, 0, Native.LL_MARK));
     }
 
     static bool Check(ref int at, int seen, bool suspect, Action probe)
