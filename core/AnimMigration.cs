@@ -19,8 +19,7 @@ static class AnimMigration
         upgraded = 0;
         if (string.IsNullOrEmpty(yaml)) return yaml;
         var blk = Regex.Match(yaml, @"(?m)^animations:[ \t]*(?:#.*)?\r?\n((?:(?:[ \t]+[^\r\n]*|[ \t]*)(?:\r?\n|$))*)");
-        if (!blk.Success) return yaml;
-        string body = blk.Groups[1].Value;
+        string body = blk.Success ? blk.Groups[1].Value : "";
         int count = 0;
         string next = Regex.Replace(body, @"(?m)^([ \t]+)([A-Za-z_][\w-]*)([ \t]*:[ \t]*)(\{[^}\r\n]*\})", m =>
         {
@@ -33,9 +32,16 @@ static class AnimMigration
                 }
             return m.Value;
         });
-        upgraded = count;
-        if (count == 0) return yaml;
-        return yaml.Substring(0, blk.Groups[1].Index) + next + yaml.Substring(blk.Groups[1].Index + body.Length);
+        string result = count == 0 ? yaml : yaml.Substring(0, blk.Groups[1].Index) + next + yaml.Substring(blk.Groups[1].Index + body.Length);
+        // Kenarlığın odak renk geçişi: gönderilen 180 ms EaseInOutQuad -> ii'nin border'ı (1000 ms emphasizedDecel)
+        int borders = 0;
+        result = Regex.Replace(result, @"(?m)^([ \t]+-[ \t]+type:[ \t]*Fade[ \t]*\r?\n[ \t]+duration:[ \t]*)180([ \t]*\r?\n[ \t]+easing:[ \t]*)EaseInOutQuad(?=[ \t]*(?:\r?\n|\z))", m =>
+        {
+            borders++;
+            return m.Groups[1].Value + "1000" + m.Groups[2].Value + "[0.05, 0.7, 0.1, 1.0]";
+        });
+        upgraded = count + borders;
+        return upgraded == 0 ? yaml : result;
     }
 
     // RuleMigration'dan sonra aynı iş parçacığında (hepsi config.yaml'ı yazar)

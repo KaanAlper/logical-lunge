@@ -322,15 +322,16 @@ borders:
     active_color: "#b69df8cc"
     # Hyprland inactive_border: hafif görünür
     inactive_color: "#3a3a4099"
+    # Odak değişince renk geçişi: ii'nin border animasyonu (1000 ms emphasizedDecel)
     animations:
       active:
         - type: Fade
-          duration: 180
-          easing: EaseInOutQuad
+          duration: 1000
+          easing: [0.05, 0.7, 0.1, 1.0]
       inactive:
         - type: Fade
-          duration: 180
-          easing: EaseInOutQuad
+          duration: 1000
+          easing: [0.05, 0.7, 0.1, 1.0]
       # 0 = ekranın yenileme hızı (144 Hz ekranda 144 kare)
       fps: 0
       enabled: true

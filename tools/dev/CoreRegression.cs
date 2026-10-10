@@ -836,6 +836,13 @@ static class CoreRegression
         Check(run(r[0])[1] == "0", "A second run changed the upgraded config again");
         string nested = head + "borders:\n  animations:\n    workspaces: { duration: 520, curve: menu_decel }\n" + tail;
         Check(run(nested)[1] == "0", "A nested animations: block outside the top level was touched");
+        string border = head + "borders:\n    animations:\n      active:\n        - type: Fade\n          duration: 180\n          easing: EaseInOutQuad\n      inactive:\n        - type: Fade\n          duration: 180\n          easing: EaseInOutQuad\n      fps: 0\n" + tail;
+        string borderNew = border.Replace("duration: 180", "duration: 1000").Replace("easing: EaseInOutQuad", "easing: [0.05, 0.7, 0.1, 1.0]");
+        var b = run(border);
+        Check(b[1] == "2" && b[0] == borderNew, "The shipped border fade was not upgraded to 1000 ms emphasizedDecel: " + b[1]);
+        var bc = run(border.Replace("\n", "\r\n"));
+        Check(bc[1] == "2" && bc[0] == borderNew.Replace("\n", "\r\n"), "The border fade upgrade broke CRLF");
+        Check(run(border.Replace("duration: 180", "duration: 250"))[1] == "0", "A user-edited border fade was changed");
         Console.WriteLine("PASS: animation duration migration");
     }
 
