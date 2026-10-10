@@ -750,16 +750,19 @@
         const lastWheel = useRef(0);
         const prevIdx = useRef(null);
         const [dir, setDir] = useState(0);
-        // Ctrl+Super (+Shift) ile gezinme: çekirdek kısayolu duyurur, numaralar kısa süre noktaların yerini alır
+        // Ctrl+Super (+Shift) ile gezinme: çekirdek kısayolu duyurur, numaralar kısa süre noktaların yerini alır.
+        // Super basılı tutulunca (100 ms) numaralar Super bırakılana dek kalır (ii).
         const [numbers, setNumbers] = useState(false);
         useEffect(() => {
-          let timer;
-          const un = listen('ll:ws-numbers', () => {
+          let timer, held = false;
+          const unFlash = listen('ll:ws-numbers', () => {
             setNumbers(true);
             clearTimeout(timer);
-            timer = setTimeout(() => setNumbers(false), 700);
+            if (!held) timer = setTimeout(() => setNumbers(false), 700);
           });
-          return () => { clearTimeout(timer); un.then(f => f()); };
+          const unHold = listen('ll:ws-numbers-hold', () => { held = true; clearTimeout(timer); setNumbers(true); });
+          const unRelease = listen('ll:ws-numbers-release', () => { held = false; clearTimeout(timer); setNumbers(false); });
+          return () => { clearTimeout(timer); [unFlash, unHold, unRelease].forEach(un => un.then(f => f())); };
         }, []);
 
         const current = parseInt(tiling?.focusedWorkspace?.name ?? '1', 10) || 1;

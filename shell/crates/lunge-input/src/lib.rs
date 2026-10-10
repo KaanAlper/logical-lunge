@@ -87,6 +87,8 @@ pub mod kind {
   pub const BIND: u16 = 15; // id; flag: Win held
   pub const RESERVED: u16 = 16; // id
   pub const WM: u16 = 17; // id; flag: repeat
+  pub const WIN_DOWN: u16 = 18; // Super pressed (the bar shows workspace numbers while it is held)
+  pub const WIN_UP: u16 = 19; // Super released
   pub const SLOW_KEY: u16 = 20; // id: ms, vk
   pub const SLOW_MOUSE: u16 = 21; // id: ms
   pub const DESK_MENU: u16 = 30;

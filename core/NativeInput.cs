@@ -33,7 +33,7 @@ static class NativeInput
     public const uint SHELL_UP = 0, SWITCHER_ACTIVE = 1, CAPTURING = 2, SWITCHER_DEMO = 3, SINGLE_CLICK_OPEN = 5, SWITCHER_READY = 6;
     // Kayıt türleri (lib.rs > kind)
     public const ushort SW_OPEN = 1, SW_MOVE = 2, SW_COMMIT = 3, SW_CLOSE = 4, SW_ALT_UP = 5, SW_LOST_ALT = 6, SW_FULLSCREEN = 7,
-        DESK_MENU_KEY = 10, DESK_OPEN_KEY = 11, WIN_UP_DOCK = 12, WIN_UP_OVERVIEW = 13, CAPTURE = 14, BIND = 15, RESERVED = 16, WM = 17,
+        DESK_MENU_KEY = 10, DESK_OPEN_KEY = 11, WIN_UP_DOCK = 12, WIN_UP_OVERVIEW = 13, CAPTURE = 14, BIND = 15, RESERVED = 16, WM = 17, WIN_DOWN = 18, WIN_UP = 19,
         SLOW_KEY = 20, SLOW_MOUSE = 21, DESK_MENU = 30, CLICK = 31, MOVE = 32, DESK_CLICK = 33, DESK_OPEN = 34, DROPPED = 40;
     // Tablo türleri (table.rs)
     const int T_BIND = 1, T_RESERVED = 2, T_WM = 3;

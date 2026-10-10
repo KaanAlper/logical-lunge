@@ -7596,7 +7596,7 @@ class Keys2
     // Bırakmaları bize gelmeyen basılı tuş bilgisini unut (kanca söküldü, masaüstü değişti)
     void ForgetKeys()
     {
-        winDown = false; dockChord = false; dockMasked = false; held.Clear();
+        winDown = false; dockChord = false; dockMasked = false; held.Clear(); SuperHold.Up();
         desktopMenuKeys.Clear();
         NativeInput.Forget();
     }
@@ -7765,9 +7765,11 @@ class Keys2
                 dockChord = Down(VK_MENU) && !Down(VK_CONTROL) && !Down(VK_SHIFT);
                 dockMasked = false;
                 if (dockChord) MaskAltMenu();
+                SuperHold.Down();
             }
             if (isUp)
             {
+                SuperHold.Up();
                 bool toggleDock = dockChord && !otherKeyWhileWin && !Binds.Capturing;
                 winDown = false;
                 dockChord = false;
@@ -7882,6 +7884,8 @@ class Keys2
         {
             case NativeInput.DESK_MENU_KEY: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu-key")); break;
             case NativeInput.DESK_OPEN_KEY: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-open-key")); break;
+            case NativeInput.WIN_DOWN: SuperHold.Down(); break;
+            case NativeInput.WIN_UP: SuperHold.Up(); break;
             case NativeInput.WIN_UP_DOCK: ui.BeginInvoke((Action)(() => Toasts.Emit("ll:dock-toggle"))); break;
             case NativeInput.WIN_UP_OVERVIEW: ui.BeginInvoke((Action)ToggleOverview); break;
             case NativeInput.CAPTURE: Binds.FinishCapture(e.Vk == 0x1B && e.Mods == 0 ? "" : Binds.Combo(e.Mods, e.Vk)); break;
