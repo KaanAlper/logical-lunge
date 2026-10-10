@@ -832,10 +832,11 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, hover: Option<&HitKind>) 
       };
       p.fill_circle(cx, cy, 4.7 / 2.0, c)?;
     }
-    // the scratchpad (Hyprland's special workspace) has windows on this
-    // monitor: a dot at the active cell's top left, filled while it is open
+    // the scratchpad (Hyprland's special workspace) has windows on the
+    // focused monitor: a dot at the active cell's top left, filled while it
+    // is open
     if active(i) {
-      if let Some(mon) = m.wm.monitors.iter().find(|mon| mon.device_name == device && mon.special_windows > 0) {
+      if let Some(mon) = m.wm.monitors.iter().find(|mon| mon.has_focus && mon.special_windows > 0) {
         let dot = if mon.special_shown { t.primary } else { t.on_sec_container };
         p.fill_circle(cell.x + 5.0, cell.y + 5.0, 2.5, dot)?;
       }
