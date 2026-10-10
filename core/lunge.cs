@@ -13922,6 +13922,48 @@ static class Keep
     public static Rounder Round;
 }
 
+// The input hooks' watchdog. "Input the hooks did not see" is only a suspicion: GetLastInputInfo also moves for things
+// no hook is called for, a cursor warp above all (SetCursorPos; the window manager puts the cursor on the focused window
+// after a workspace switch). Reinstalling on the suspicion alone did it every couple of seconds while workspaces were
+// switched from the bar or a script, each time forgetting the held keys. So a probe goes through the hook first, a marked
+// key nobody uses (0xE8) or a zero mouse move, and only a hook that does not see its own probe in a second is reinstalled.
+static class HookProbe
+{
+    [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+    static int keyAt, mouseAt; // when the probe went out, 0: none out
+
+    // From the keyboard hook's thread, once a second: true when the hook is to be reinstalled
+    public static bool KeyboardDead(bool suspect)
+    {
+        return Check(ref keyAt, Keys2.LastHookTick, suspect, () =>
+        {
+            Native.keybd_event(0xE8, 0, 0, Native.LL_MARK); Native.keybd_event(0xE8, 0, 2, Native.LL_MARK);
+        });
+    }
+
+    // From the mouse hook's thread, once a second
+    public static bool MouseDead(bool suspect)
+    {
+        return Check(ref mouseAt, MouseFocus.LastHookTick, suspect, () => mouse_event(0x0001 /*MOVE*/, 0, 0, 0, Native.LL_MARK));
+    }
+
+    static bool Check(ref int at, int seen, bool suspect, Action probe)
+    {
+        int now = Environment.TickCount;
+        if (at != 0)
+        {
+            if (seen - at >= 0) { at = 0; return false; } // the hook saw its probe: alive
+            if (now - at < 1000) return false;
+            at = 0;
+            return true;
+        }
+        if (!suspect) return false;
+        at = now == 0 ? 1 : now;
+        probe();
+        return false;
+    }
+}
+
 static class Program
 {
     // Kullanıcı girdisi var ama iki kanca da 1,5 sn'dir çağrılmadı: Windows kancaları sökmüş
@@ -14642,7 +14684,7 @@ static class Program
                 NativeInput.SyncTicks();
                 if (++healthTicks % 300 == 0) NativeInput.LogStats();
                 keys.Unstick();
-                if (HooksStale()) { keys.Reinstall(true); Keys2.LastHookTick = Environment.TickCount; Slider.Log("klavye kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
+                if (HookProbe.KeyboardDead(HooksStale())) { keys.Reinstall(true); Keys2.LastHookTick = Environment.TickCount; Slider.Log("klavye kancası kendi sınama girdisini görmedi (Windows sökmüş): yeniden kuruldu"); }
             };
             health.Start();
             re.Start();
@@ -14671,7 +14713,7 @@ static class Program
                 beat();
                 NativeInput.SetFlag(NativeInput.SINGLE_CLICK_OPEN, DesktopClick.SingleClickOpen());
                 NativeInput.SyncTicks();
-                if (HooksStale()) { mouse.Reinstall(); MouseFocus.LastHookTick = Environment.TickCount; Slider.Log("fare kancası girdi görmüyordu (Windows sökmüş olabilir): yeniden kuruldu"); }
+                if (HookProbe.MouseDead(HooksStale())) { mouse.Reinstall(); MouseFocus.LastHookTick = Environment.TickCount; Slider.Log("fare kancası kendi sınama girdisini görmedi (Windows sökmüş): yeniden kuruldu"); }
             };
             health.Start();
             re.Start();
