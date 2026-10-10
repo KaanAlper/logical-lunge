@@ -657,6 +657,7 @@ static class CoreRegression
         ThemeSyncTests();
         EventQueueTests();
         BindMigrationTests();
+        FocusDirectionTests();
         BorderLookTests();
         WmWatchdogTests();
         FullscreenLayerTests();
@@ -829,6 +830,38 @@ static class CoreRegression
     }
 
     // Yeni varsayılan kısayolların mevcut config.yaml'a göçü: saf birleştirme
+    static void FocusDirectionTests() {
+        Func<string, int, int, int, int, bool, int, FocusDirection.Win> W = (id, x, y, w, h, fl, rank) =>
+            new FocusDirection.Win { Id = id, X = x, Y = y, W = w, H = h, Floating = fl, Rank = rank };
+        // master left, two stacked on the right: from the left one, "right" goes to the most recently focused
+        var a = W("a", 0, 0, 950, 1000, false, 0);
+        var b = W("b", 966, 0, 950, 490, false, 2);
+        var c = W("c", 966, 506, 950, 490, false, 1);
+        var tiled = new List<FocusDirection.Win> { a, b, c };
+        Check(FocusDirection.Pick(tiled, a, "right") == "c", "directional focus must prefer the most recently focused neighbour");
+        Check(FocusDirection.Pick(tiled, b, "down") == "c", "directional focus must find the neighbour below");
+        Check(FocusDirection.Pick(tiled, b, "up") == null, "nothing above the top window");
+        Check(FocusDirection.Pick(tiled, c, "left") == "a", "left of a stacked window is the master");
+        // a window not touching the edge (behind another) is not a candidate
+        var far = W("far", 1932, 0, 500, 1000, false, 0);
+        Check(FocusDirection.Pick(new List<FocusDirection.Win> { a, b, far }, a, "right") == "b", "only edge-adjacent windows count");
+        // floating: chooses by angle among floating windows
+        var f1 = W("f1", 100, 100, 200, 200, true, 1);
+        var f2 = W("f2", 600, 120, 200, 200, true, 3);
+        var f3 = W("f3", 500, 700, 200, 200, true, 0);
+        var floats = new List<FocusDirection.Win> { f1, f2, f3, a };
+        Check(FocusDirection.Pick(floats, f1, "right") == "f2", "floating focus must pick the window most in that direction");
+        Check(FocusDirection.Pick(floats, f1, "down") == "f3", "floating focus down");
+        // monitors: the one whose edge touches in that direction
+        var m1 = W("m1", 0, 0, 1920, 1080, false, 0);
+        var m2 = W("m2", 1920, 0, 2560, 1440, false, 0);
+        var m0 = W("m0", -1280, 54, 1280, 1024, false, 0);
+        var mons = new List<FocusDirection.Win> { m1, m2, m0 };
+        Check(FocusDirection.PickMonitor(mons, m1, "right") == 1, "monitor to the right");
+        Check(FocusDirection.PickMonitor(mons, m1, "left") == 2, "monitor to the left");
+        Check(FocusDirection.PickMonitor(mons, m1, "up") == -1, "no monitor above");
+    }
+
     static void BindMigrationTests() {
         var merge = typeof(BindMigration).GetMethod("Merge", BindingFlags.NonPublic | BindingFlags.Static);
         Check(merge != null, "BindMigration.Merge is missing");

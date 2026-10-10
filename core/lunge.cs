@@ -1978,6 +1978,69 @@ class Slider
         return best;
     }
 
+    // Pencere kimlikleri, workspace içinde en son odaklanandan başlayarak (pencere yöneticisinin descendant_focus_order'ı)
+    static void FocusOrder(Dictionary<string, object> node, List<string> into)
+    {
+        if (J.Str(node, "type") == "window") { into.Add(J.Str(node, "id")); return; }
+        var children = J.Children(node);
+        var seen = new HashSet<string>();
+        object order;
+        var ids = node.TryGetValue("childFocusOrder", out order) ? order as object[] : null;
+        if (ids != null)
+            foreach (var id in ids)
+                foreach (Dictionary<string, object> child in children)
+                    if (id != null && J.Str(child, "id") == id.ToString() && seen.Add(id.ToString())) FocusOrder(child, into);
+        foreach (Dictionary<string, object> child in children)
+            if (seen.Add(J.Str(child, "id"))) FocusOrder(child, into);
+    }
+
+    static FocusDirection.Win AsWin(Dictionary<string, object> w, Dictionary<string, int> ranks)
+    {
+        int rank;
+        return new FocusDirection.Win
+        {
+            Id = J.Str(w, "id"), X = J.Int(w, "x"), Y = J.Int(w, "y"), W = J.Int(w, "width"), H = J.Int(w, "height"),
+            Floating = StateType(w) == "floating",
+            Rank = ranks != null && ranks.TryGetValue(J.Str(w, "id"), out rank) ? rank : int.MaxValue
+        };
+    }
+
+    // Super+ok odağı (Hyprland): bu workspace'te o yöndeki komşu (FocusDirection); yoksa o yöndeki monitörün
+    // gösterilen workspace'inde en son odaklanan pencere (boşsa o monitörün kendisi). Odak değişince imleç de gider.
+    void FocusDirectional(Dictionary<string, object> mon, Dictionary<string, object> ws, List<Dictionary<string, object>> wins,
+        Dictionary<string, object> cur, string dir)
+    {
+        var order = new List<string>();
+        FocusOrder(ws, order);
+        var ranks = new Dictionary<string, int>();
+        for (int i = 0; i < order.Count; i++) if (!ranks.ContainsKey(order[i])) ranks[order[i]] = i;
+        var list = new List<FocusDirection.Win>();
+        foreach (var w in wins) list.Add(AsWin(w, ranks));
+        string pick = FocusDirection.Pick(list, AsWin(cur, ranks), dir);
+        if (pick != null)
+        {
+            foreach (var w in wins)
+                if (J.Str(w, "id") == pick)
+                {
+                    tiling.Command("focus --container-id " + pick);
+                    WarpTo(w);
+                    return;
+                }
+        }
+        var mons = new List<Dictionary<string, object>>(tiling.Monitors());
+        var monWins = new List<FocusDirection.Win>();
+        foreach (var m in mons) monWins.Add(AsWin(m, null));
+        int next = FocusDirection.PickMonitor(monWins, AsWin(mon, null), dir);
+        if (next < 0) return; // o yönde ne pencere ne monitör var
+        Dictionary<string, object> shown = null;
+        foreach (Dictionary<string, object> w in J.Children(mons[next])) if (J.Bool(w, "isDisplayed")) shown = w;
+        if (shown == null) return;
+        var target = WorkspaceFocusNode(shown);
+        if (target != null) tiling.Command("focus --container-id " + J.Str(target, "id"));
+        else tiling.Command("focus --workspace " + J.Str(shown, "name"));
+        WarpInto(mons[next], shown);
+    }
+
     static Dictionary<string, object> ParentOf(Dictionary<string, object> node, string id)
     {
         foreach (Dictionary<string, object> ch in J.Children(node))
@@ -2041,14 +2104,8 @@ class Slider
         List<Dictionary<string, object>> wins;
         if (!Current(out mon, out ws, out wins, out cur)) return; // boş workspace ya da pencere odakta değil
 
+        if (!move) { FocusDirectional(mon, ws, wins, cur, dir); return; }
         var best = Neighbor(wins, cur, dir);
-        if (!move)
-        {
-            if (best == null) return; // o yönde bu workspace'te pencere yok
-            tiling.Command("focus --container-id " + J.Str(best, "id"));
-            WarpTo(best);
-            return;
-        }
 
         string id = J.Str(cur, "id");
         if (best == null)
