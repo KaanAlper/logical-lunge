@@ -21,6 +21,7 @@ pub fn handle_window_destroyed(
     state.spoof_fullscreen.remove(&native_window_id.0);
     state.background_fullscreen_frames.remove(&native_window_id.0);
     state.self_resizes.remove(&native_window_id.0);
+    state.restore_maximized.remove(&native_window_id.0);
   }
   // Logical Lunge: what was hidden with it comes back (if it is still there).
   #[cfg(target_os = "windows")]
