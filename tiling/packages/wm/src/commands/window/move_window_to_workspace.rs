@@ -200,6 +200,11 @@ pub fn move_window_into_workspace(
     // the source workspace may be hidden and now empty (dragged from the
     // overview to another workspace): it goes like any other empty one
     destroy_empty_workspaces(state)?;
+
+    // Hyprland: the special workspace closes with its last window
+    if current_workspace.is_special() && !current_workspace.has_children() {
+      crate::commands::workspace::hide_special_workspace(&current_monitor, state)?;
+    }
   }
 
   Ok(())
