@@ -912,6 +912,14 @@ pub fn paint_ws(p: &mut Painter, m: &Model, t: &Theme, device: &str, hover: Opti
     if urgent {
       p.fill_circle(cell.x + WS - 5.0, cell.y + 5.0, 3.0, t.error)?;
     }
+    // the scratchpad (Hyprland's special workspace) has windows on this
+    // monitor: a dot at the active cell's top left, filled while it is open
+    if active(i) {
+      if let Some(mon) = m.wm.monitors.iter().find(|mon| mon.device_name == device && mon.special_windows > 0) {
+        let dot = if mon.special_shown { t.primary } else { t.on_sec_container };
+        p.fill_circle(cell.x + 5.0, cell.y + 5.0, 2.5, dot)?;
+      }
+    }
   }
   Ok(())
 }

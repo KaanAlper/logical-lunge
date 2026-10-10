@@ -197,6 +197,9 @@ fn tiling_label(cmds: &[String]) -> String {
     "move --next-workspace ; focus --next-workspace" => "Pencereyi sonraki workspace'e taşı (PageDown)",
     "toggle-fullscreen" => "Tam ekran",
     "toggle-fullscreen-spoof" => "Yuvasında tam ekran (spoof)",
+    "toggle-special-workspace" => "Gizli workspace’i aç / kapat",
+    "move-to-special-workspace" => "Pencereyi gizli workspace’e gönder",
+    "toggle-pin" => "Pencereyi sabitle (her workspace’te)",
     "toggle-floating --centered" => "Yüzen pencere",
     "toggle-tiling-direction" => "Bölme yönünü değiştir",
     "toggle-minimized" => "Simge durumuna küçült",
@@ -319,6 +322,11 @@ impl Keys {
     let mut rows = vec![
       Row { key: "super".into(), group: "sys", label: tr("Arama / overview"), combo: "Super".into(), default: String::new(), extra: vec![], src: Src::Fixed, app: false },
       Row { key: "dock".into(), group: "sys", label: tr("Uygulama Dock’u"), combo: "Super+Alt".into(), default: String::new(), extra: vec![], src: Src::Fixed, app: false },
+      // Hyprland's mouse binds (ii), in the input hook
+      Row { key: "mouse-move".into(), group: "win", label: tr("Pencereyi taşı (sürükle)"), combo: "Super+Mouse L".into(), default: String::new(), extra: vec![], src: Src::Fixed, app: false },
+      Row { key: "mouse-resize".into(), group: "win", label: tr("Pencereyi boyutlandır (sürükle)"), combo: "Super+Mouse R".into(), default: String::new(), extra: vec![], src: Src::Fixed, app: false },
+      Row { key: "mouse-wheel".into(), group: "ws", label: tr("Workspace değiştir (tekerlek)"), combo: "Super+Wheel".into(), default: String::new(), extra: vec![], src: Src::Fixed, app: false },
+      Row { key: "mouse-back".into(), group: "ws", label: tr("Gizli workspace’i aç / kapat"), combo: "Super+Mouse 4".into(), default: String::new(), extra: vec![], src: Src::Fixed, app: false },
     ];
     for b in self.model["core"].as_array().into_iter().flatten() {
       if b["custom"].as_bool() == Some(true) {

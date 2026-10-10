@@ -140,6 +140,13 @@ window_rules:
     match:
       - window_process: { regex: 'SndVol' }
 
+  # Picture-in-picture video windows that are managed float pinned: shown on
+  # every workspace, as Hyprland's pin rule in ii.
+  - commands: ['set-floating', 'set-pinned']
+    match:
+      # the whole title (rules match whole values): Firefox / Chromium in English and Turkish
+      - window_title: { regex: '(?i)(picture.in.picture|resim i[cç]inde resim|g[oö]r[uü]nt[uü] i[cç]inde g[oö]r[uü]nt[uü]|pencere i[cç]inde pencere)' }
+
   # Other applications are classified by window properties, ownership,
   # resizability and topmost state. Add user-specific rules here if wanted.
 
@@ -203,6 +210,14 @@ keybindings:
 
   # --- Super + sayı, Super+Ctrl+←/→, Super+Ctrl+Shift+←/→: çekirdekte (keybinds.json, sağ panel > Kısayollar) ---
 
+  # --- Gizli workspace (Hyprland special / scratchpad, ii) ---
+  # Super+S (ya da Super+Ctrl+S, Super + farenin geri tuşu): bu monitörün workspace'inin üstünde açılır, arkası kararır;
+  # workspace değişince kapanır. Super+Alt+S: pencereyi oraya gönder (takip etmeden)
+  - commands: ['toggle-special-workspace']
+    bindings: ['lwin+s', 'lwin+ctrl+s']
+  - commands: ['move-to-special-workspace']
+    bindings: ['lwin+alt+s']
+
   # --- Super + Alt + sayı: pencereyi gönder (takip etmeden, Hyprland'daki gibi) ---
   - commands: ['move --workspace 1']
     bindings: ['lwin+alt+1']
@@ -238,6 +253,9 @@ keybindings:
     bindings: ['lwin+alt+f']
   - commands: ['toggle-floating --centered']
     bindings: ['lwin+alt+space']
+  # Hyprland pin (ii: Super+P): pencere her workspace'te görünür, döşeli pencerelerin üstünde kalır (döşeliyse önce yüzer)
+  - commands: ['toggle-pin']
+    bindings: ['lwin+p']
   # Hyprland togglesplit: pencerenin içinde olduğu bölme döner (yan yana <-> alt alta)
   - commands: ['toggle-tiling-direction']
     bindings: ['lwin+j']
