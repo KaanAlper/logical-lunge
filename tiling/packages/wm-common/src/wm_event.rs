@@ -60,6 +60,13 @@ pub enum WmEvent {
   WorkspaceUpdated {
     updated_workspace: ContainerDto,
   },
+  /// A window on a hidden workspace was activated by its app (see
+  /// `wm-slide-activations`): the core slides to the workspace.
+  WorkspaceActivationRequested {
+    workspace_name: String,
+    window_id: Uuid,
+    window_handle: isize,
+  },
   PauseChanged {
     is_paused: bool,
   },

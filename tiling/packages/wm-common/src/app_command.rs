@@ -150,6 +150,7 @@ pub enum SubscribableEvent {
   WorkspaceActivated,
   WorkspaceDeactivated,
   WorkspaceUpdated,
+  WorkspaceActivationRequested,
   PauseChanged,
 }
 
@@ -291,6 +292,15 @@ pub enum InvokeCommand {
   },
   WmRedraw,
   WmReloadConfig,
+  /// Logical Lunge: an app activating itself on a hidden workspace no
+  /// longer switches to it here; a `workspace_activation_requested` event
+  /// asks the core to slide there (Hyprland's focus_on_activate with its
+  /// workspace animation). Without an answer the switch happens anyway
+  /// after a moment.
+  WmSlideActivations {
+    #[clap(required = true)]
+    state: GameModeState,
+  },
   WmTogglePause,
 }
 

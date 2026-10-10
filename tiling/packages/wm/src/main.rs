@@ -211,6 +211,12 @@ async fn start_wm(
   mouse_drag_interval
     .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+  // A window activation handed to the core: checked until it slides there
+  // (or the WM switches itself after a moment).
+  let mut activation_interval = tokio::time::interval(Duration::from_millis(25));
+  activation_interval
+    .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
   loop {
     let res = tokio::select! {
       _ = signal::ctrl_c() => {
@@ -236,6 +242,9 @@ async fn start_wm(
       },
       _ = mouse_drag_interval.tick(), if wm.state.mouse_drag.is_some() => {
         wm.process_mouse_drag(&mut config)
+      },
+      _ = activation_interval.tick(), if wm.state.pending_activation.is_some() => {
+        wm.process_pending_activation(&mut config)
       },
       _ = cleanup_interval.tick() => {
         if wm.state.is_paused || wm.state.game_mode {

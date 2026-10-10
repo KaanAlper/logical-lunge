@@ -106,6 +106,14 @@ pub struct WmState {
   /// Logical Lunge: the core's game mode is on (a fullscreen app in front).
   pub game_mode: bool,
 
+  /// Logical Lunge: the core slides to a workspace whose window its app
+  /// activated (`wm-slide-activations`).
+  pub slide_activations: bool,
+
+  /// A window activated on a hidden workspace, handed to the core (see
+  /// `slide_activations`) and when.
+  pub pending_activation: Option<(Uuid, Instant)>,
+
   /// Whether the OS focused window is the same as the WM focused window.
   pub is_focus_synced: bool,
 
@@ -155,6 +163,8 @@ impl WmState {
       ignored_windows: Vec::new(),
       is_paused: false,
       game_mode: false,
+      slide_activations: false,
+      pending_activation: None,
       is_focus_synced: false,
       has_initialized: false,
       event_tx,

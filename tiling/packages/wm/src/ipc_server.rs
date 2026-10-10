@@ -433,6 +433,9 @@ impl IpcServer {
       WmEvent::WorkspaceUpdated { .. } => {
         SubscribableEvent::WorkspaceUpdated
       }
+      WmEvent::WorkspaceActivationRequested { .. } => {
+        SubscribableEvent::WorkspaceActivationRequested
+      }
       WmEvent::PauseChanged { .. } => SubscribableEvent::PauseChanged,
     };
 

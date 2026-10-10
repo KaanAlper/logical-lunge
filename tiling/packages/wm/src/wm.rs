@@ -177,6 +177,50 @@ impl WindowManager {
     Ok(())
   }
 
+  /// A window activation handed to the core (`slide_activations`): once
+  /// the core switched (the window is shown) it is done; without an answer
+  /// in `ACTIVATION_WAIT` the workspace is switched here as before.
+  pub fn process_pending_activation(
+    &mut self,
+    config: &mut UserConfig,
+  ) -> anyhow::Result<()> {
+    const ACTIVATION_WAIT: std::time::Duration = std::time::Duration::from_millis(400);
+    let state = &mut self.state;
+    let Some((id, at)) = state.pending_activation else {
+      return Ok(());
+    };
+
+    let window = state
+      .container_by_id(id)
+      .and_then(|container| container.as_window_container().ok());
+
+    let Some(window) = window else {
+      state.pending_activation = None;
+      return Ok(());
+    };
+
+    if window.display_state() != wm_common::DisplayState::Hidden {
+      state.pending_activation = None;
+      return Ok(());
+    }
+
+    if at.elapsed() < ACTIVATION_WAIT {
+      return Ok(());
+    }
+
+    state.pending_activation = None;
+    let workspace = window.workspace().context("No workspace.")?;
+    tracing::info!("The core did not slide to {window}: switching to its workspace.");
+    crate::commands::workspace::focus_workspace(
+      crate::models::WorkspaceTarget::Name(workspace.config().name),
+      state,
+      config,
+    )?;
+    crate::commands::container::set_focused_descendant(&window.clone().into(), None);
+    state.pending_sync.queue_focus_change();
+    platform_sync(state, config)
+  }
+
   /// Hyprland's Super+mouse move / resize: the window follows the pointer
   /// (called on a short interval while a drag is on).
   pub fn process_mouse_drag(
@@ -893,6 +937,13 @@ impl WindowManager {
         Ok(())
       }
       InvokeCommand::WmReloadConfig => reload_config(state, config),
+      InvokeCommand::WmSlideActivations { state: on } => {
+        state.slide_activations = *on == wm_common::GameModeState::On;
+        if !state.slide_activations {
+          state.pending_activation = None;
+        }
+        Ok(())
+      }
       InvokeCommand::WmTogglePause => {
         toggle_pause(state);
         Ok(())
