@@ -80,6 +80,14 @@ pub fn move_window_to_workspace(
     // Focus target is `None` if the window is not focused.
     let focus_target = state.focus_target_after_removal(&window);
 
+    // Hyprland (movetoworkspacesilent): focus stays at the moved window's
+    // old place, on the window whose node box is closest to its middle.
+    let freed_center = focus_target
+      .as_ref()
+      .filter(|_| window.state() == WindowState::Tiling)
+      .and_then(|_| window.to_rect().ok())
+      .map(|rect| rect.center_point());
+
     let focus_reset_target = if target_workspace.is_displayed() {
       None
     } else {
@@ -123,6 +131,20 @@ pub fn move_window_to_workspace(
 
     normalize_split_containers(&current_workspace.clone().into())?;
     normalize_split_containers(&target_workspace.clone().into())?;
+
+    let focus_target = freed_center
+      .and_then(|center| {
+        let candidates = current_workspace
+          .descendants()
+          .filter(|c| c.as_tiling_window().is_some())
+          .filter_map(|c| crate::traits::node_box(&c).ok().map(|node| (c, node)))
+          .collect::<Vec<_>>();
+        let boxes = candidates.iter().map(|(_, node)| *node).collect::<Vec<_>>();
+        #[allow(clippy::cast_lossless)]
+        crate::dwindle_math::closest((center.x as f64, center.y as f64), &boxes)
+          .map(|index| candidates[index].0.clone())
+      })
+      .or(focus_target);
 
     // When moving a focused window within the tree to another workspace,
     // the target workspace will get displayed. If moving the window e.g.
