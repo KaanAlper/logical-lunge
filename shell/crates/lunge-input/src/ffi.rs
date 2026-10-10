@@ -503,7 +503,7 @@ pub mod imp {
     let st = &mut *MOUSE.0.get();
     let injected = m.flags & 1 != 0; // LLMHF_INJECTED
     let swallow =
-      catch_unwind(AssertUnwindSafe(|| mouse::decide(&Win, st, wparam as u32, m.pt.x, m.pt.y, m.time, injected))).unwrap_or(false);
+      catch_unwind(AssertUnwindSafe(|| mouse::decide(&Win, st, wparam as u32, m.pt.x, m.pt.y, m.time, injected, m.data))).unwrap_or(false);
     let us = elapsed_us(start);
     MOUSE_STATS.add(us);
     if us > SLOW_MS * 1000 {
@@ -625,6 +625,13 @@ pub mod imp {
     }
     fn replay_left_down(&self, x: i32, y: i32, to_x: i32, to_y: i32) {
       inject(&[Op::LeftDown(x, y), Op::MoveTo(to_x, to_y)]);
+    }
+    // both hooks run on this thread: the keyboard hook's state is read here
+    fn win_held(&self) -> bool {
+      unsafe { (*KEYS.0.get()).win_down() }
+    }
+    fn win_combo(&self) {
+      unsafe { (*KEYS.0.get()).mark_combo() }
     }
   }
 }

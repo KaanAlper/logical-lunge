@@ -388,7 +388,9 @@ static class J
     {
         foreach (Dictionary<string, object> c in Children(node))
         {
-            if (Str(c, "type") == "window") into.Add(new IntPtr(Convert.ToInt64(c["handle"])));
+            // Hyprland'deki pin: sabitlenmiş pencere workspace'le kaymaz (her workspace'te yerinde durur; kayarken
+            // PinsAttach onu en üstte, yerinde gösterir)
+            if (Str(c, "type") == "window") { if (!Bool(c, "isPinned")) into.Add(new IntPtr(Convert.ToInt64(c["handle"]))); }
             else Windows(c, into);
         }
     }
@@ -3029,7 +3031,7 @@ class Dwindle
     // the window manager changes the state behind the layer, and the pictures move to the new layout.
     static readonly string[] stateCommands = {
         "toggle-fullscreen", "set-fullscreen", "toggle-floating", "set-floating", "toggle-tiling", "set-tiling",
-        "toggle-fullscreen-spoof" };
+        "toggle-fullscreen-spoof", "toggle-pin" };
     public static bool ChangesState(string[] commands)
     {
         foreach (var c in commands)
@@ -7885,6 +7887,20 @@ class Keys2
             case NativeInput.DESK_MENU_KEY: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-menu-key")); break;
             case NativeInput.DESK_OPEN_KEY: ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:desktop-open-key")); break;
             case NativeInput.WIN_DOWN: SuperHold.Down(); break;
+            // Hyprland'in fare kısayolları (ii): Super + sol/orta tuş taşır, sağ tuş boyutlandırır (pencere yöneticisi
+            // pencereyi imlecin peşinden götürür), tekerlek workspace değiştirir (Shift/Alt ile pencereyi de taşır),
+            // geri tuşu gizli workspace'i açıp kapatır
+            case NativeInput.SUPER_DRAG: SuperMouse.Drag(e.Id == 2); break;
+            case NativeInput.SUPER_DRAG_END: SuperMouse.End(); break;
+            case NativeInput.SUPER_WHEEL:
+                {
+                    bool next = e.Id > 0;
+                    bool carry = (e.Mods & (Binds.SHIFT | Binds.ALT)) != 0;
+                    string act = carry ? (next ? "ws-move-next" : "ws-move-prev") : (next ? "ws-next" : "ws-prev");
+                    if (RunAction(act)) ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:ws-numbers"));
+                    break;
+                }
+            case NativeInput.SUPER_XBUTTON: if (e.Id == 1) RunWm(new[] { "toggle-special-workspace" }); break;
             case NativeInput.WIN_UP: SuperHold.Up(); break;
             case NativeInput.WIN_UP_DOCK: ui.BeginInvoke((Action)(() => Toasts.Emit("ll:dock-toggle"))); break;
             case NativeInput.WIN_UP_OVERVIEW: ui.BeginInvoke((Action)ToggleOverview); break;

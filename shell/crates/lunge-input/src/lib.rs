@@ -91,6 +91,11 @@ pub mod kind {
   pub const WIN_UP: u16 = 19; // Super released
   pub const SLOW_KEY: u16 = 20; // id: ms, vk
   pub const SLOW_MOUSE: u16 = 21; // id: ms
+  // Hyprland's mouse binds (ii): Super + a button / the wheel
+  pub const SUPER_DRAG: u16 = 22; // id: 1 move (left / middle), 2 resize (right); x, y
+  pub const SUPER_DRAG_END: u16 = 23; // the drag's button released
+  pub const SUPER_WHEEL: u16 = 24; // id: 1 down (next), -1 up (previous); mods: Ctrl / Shift / Alt
+  pub const SUPER_XBUTTON: u16 = 25; // id: 1 back, 2 forward
   pub const DESK_MENU: u16 = 30;
   pub const CLICK: u16 = 31; // x, y
   pub const MOVE: u16 = 32; // position: li_mouse_pos

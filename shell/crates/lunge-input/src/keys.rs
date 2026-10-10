@@ -65,6 +65,15 @@ impl KeyState {
   pub fn win_down(&self) -> bool {
     self.win_down
   }
+
+  /// Super was part of a combination made elsewhere (a Super + mouse
+  /// bind): its release opens neither the overview nor the dock.
+  pub fn mark_combo(&mut self) {
+    if self.win_down {
+      self.other_key_while_win = true;
+      self.dock_chord = false;
+    }
+  }
 }
 
 fn ev(kind: u16, vk: u32) -> Ev {
