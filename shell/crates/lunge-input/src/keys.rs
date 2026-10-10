@@ -241,8 +241,10 @@ fn win_key<S: Sys>(sys: &S, st: &mut KeyState, vk: u32, is_down: bool, is_up: bo
     if st.dock_chord {
       mask_alt_menu(sys, st);
     }
+    sys.push(ev(kind::WIN_DOWN, vk));
   }
   if is_up {
+    sys.push(ev(kind::WIN_UP, vk));
     let capturing = sys.flag(flag::CAPTURING);
     let toggle_dock = st.dock_chord && !st.other_key_while_win && !capturing;
     st.win_down = false;
@@ -332,6 +334,16 @@ mod tests {
     assert!(press(&f, &mut st, VK_LWIN));
     assert!(release(&f, &mut st, VK_LWIN));
     assert_eq!(f.kinds(), vec![kind::WIN_UP_OVERVIEW]);
+  }
+
+  #[test]
+  fn super_press_and_release_are_announced_once() {
+    let f = Fake::new();
+    let mut st = KeyState::new();
+    press(&f, &mut st, VK_LWIN);
+    press(&f, &mut st, VK_LWIN); // auto-repeat
+    release(&f, &mut st, VK_LWIN);
+    assert_eq!(f.all_kinds(), vec![kind::WIN_DOWN, kind::WIN_UP, kind::WIN_UP_OVERVIEW]);
   }
 
   #[test]

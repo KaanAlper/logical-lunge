@@ -192,6 +192,8 @@ numbered! { Timer: usize = 0;
 
 /// how long the workspace dots and numbers take to swap
 const NUMBERS_FADE: Duration = Duration::from_millis(140);
+/// "until released" while Super is held (released sooner by `ll:ws-numbers-release`)
+const NUMBERS_HELD: Duration = Duration::from_secs(3600);
 /// The core finds the bar by this title (slides, focus guard, taskbar fallback, splash).
 const TITLE: &str = "Logical Lunge · bar";
 /// The first four tray icons are pinned until the user moves them.
@@ -599,10 +601,12 @@ struct Ui {
   pins_file: PathBuf,
   last_wheel: Instant,
   last_ws_wheel: Instant,
-  /// Brief numeric workspace overlay after Ctrl+Super navigation.
-  /// Ctrl+Super navigation: when the numbers came in, when they go
+  /// Workspace numbers instead of dots (Ctrl+Super navigation, Super
+  /// held): when they came in, when they go
   numbers_from: Option<Instant>,
   numbers_until: Option<Instant>,
+  /// Super is held: the numbers stay until it is released
+  numbers_held: bool,
   /// device of the bar last scrolled for volume, and when
   volume_wheel: Option<(String, Instant)>,
   last_volume: Option<(u32, bool)>,
@@ -732,6 +736,7 @@ fn ui_thread(
         last_ws_wheel: Instant::now(),
         numbers_from: None,
         numbers_until: None,
+        numbers_held: false,
         volume_wheel: None,
         last_volume: None,
         last_mic: None,
@@ -1010,6 +1015,9 @@ impl Ui {
             let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_WS_NUMBERS) };
             self.numbers_from = None;
             self.numbers_until = None;
+          } else if steady && self.numbers_held {
+            // shown while Super is held: no frames until it is released
+            let _ = unsafe { KillTimer(self.msg_hwnd, TIMER_WS_NUMBERS) };
           }
           if !steady {
             self.redraw_all();
@@ -1750,9 +1758,24 @@ impl Ui {
     // already showing (or fading out): carry on from where it is
     let k = self.numbers_k();
     self.numbers_from = Some(now - NUMBERS_FADE.mul_f32(k));
-    self.numbers_until = Some(now + Duration::from_millis(700));
+    self.numbers_until = Some(now + if self.numbers_held { NUMBERS_HELD } else { Duration::from_millis(700) });
     unsafe { SetTimer(self.msg_hwnd, TIMER_WS_NUMBERS, 16, None) };
     self.redraw_all();
+  }
+
+  /// Super held for a moment (ii): numbers until it is released.
+  fn hold_numbers(&mut self, held: bool) {
+    if held {
+      self.numbers_held = true;
+      self.flash_numbers();
+    } else if std::mem::take(&mut self.numbers_held) {
+      let now = Instant::now();
+      // fades out from where it is (also mid fade-in)
+      let k = self.numbers_k();
+      self.numbers_until = Some(now - NUMBERS_FADE.mul_f32(1.0 - k));
+      unsafe { SetTimer(self.msg_hwnd, TIMER_WS_NUMBERS, 16, None) };
+      self.redraw_all();
+    }
   }
 
   /// 0: dots and icons, 1: numbers; eased in between (a short cross-fade,
@@ -1810,6 +1833,8 @@ impl Ui {
       Some("ll:theme-color" | "ll:prefs") => return self.reload_custom_theme(),
       Some("ll:tray-pins") => return self.reload_pins(),
       Some("ll:ws-numbers") => return self.flash_numbers(),
+      Some("ll:ws-numbers-hold") => return self.hold_numbers(true),
+      Some("ll:ws-numbers-release") => return self.hold_numbers(false),
       // the core rewrote the app list (an app was installed or removed)
       Some("ll:apps") => {
         std::thread::spawn(fetch_apps);

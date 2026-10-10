@@ -128,12 +128,28 @@ pub mod fake {
       f
     }
 
+    /// Event kinds, without the Super down/up notices (most tests are
+    /// about what a combination does, not about Super itself).
     pub fn kinds(&self) -> Vec<u16> {
+      self
+        .events
+        .borrow()
+        .iter()
+        .map(|e| e.kind)
+        .filter(|k| !matches!(*k, crate::kind::WIN_DOWN | crate::kind::WIN_UP))
+        .collect()
+    }
+
+    pub fn all_kinds(&self) -> Vec<u16> {
       self.events.borrow().iter().map(|e| e.kind).collect()
     }
 
+    /// The events so far (without the Super notices, as `kinds`).
     pub fn take(&self) -> Vec<Ev> {
       std::mem::take(&mut *self.events.borrow_mut())
+        .into_iter()
+        .filter(|e| !matches!(e.kind, crate::kind::WIN_DOWN | crate::kind::WIN_UP))
+        .collect()
     }
   }
 
