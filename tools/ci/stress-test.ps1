@@ -3,9 +3,10 @@
 # Runs the core (which brings up the window manager and the shell, as the sign-in task does) straight from the package's
 # app folder, with no install, then keeps the desktop busy: workspace switches through the core's test pipe
 # (\\.\pipe\lunge-test, opened only with LL_TEST=1), synthetic key and mouse input through the input hooks, a few
-# minutes idle and a few minutes with every core busy and memory under pressure (a heavy game's footprint). It fails when
-# the desktop does not hold up: a part restarted or crashed, the bar stopped sending heartbeats, the keyboard hook got
-# slow or was dropped, slide frames got too long, or handles / GDI / memory kept growing.
+# minutes idle and a few minutes with every core busy and memory under pressure (a heavy game's footprint), then a churn
+# of hundreds of workspace switches, window open/close cycles, popups and fullscreen toggles. It fails when the desktop
+# does not hold up: a part restarted or crashed, the bar stopped sending heartbeats, the keyboard hook got slow or was
+# dropped, slide frames got too long or slower over time, or handles / GDI / memory / windows kept growing.
 #
 #   pwsh tools/ci/stress-test.ps1 -Package <folder with app\lunge.exe>
 param(
@@ -27,11 +28,32 @@ $MAX_FRAME_IDLE_MS   = 150   # longest slide/animation frame while idle
 $MAX_FRAME_LOAD_MS   = 500   # longest frame with every core busy
 $MAX_HOOK_SLOW_IDLE  = 0     # "klavye kancası yavaş" (>100 ms in the keyboard hook) lines while idle
 $MAX_HOOK_SLOW_LOAD  = 3     # ... under load (Windows drops a hook after repeated ~300 ms timeouts)
-# growth from the end of warm-up to the end of the run, per part (core, shell, window manager)
+# growth from the end of warm-up to the end of the run, per part (core, shell, window manager). A one-time
+# initialisation after warm-up (e.g. the first WMI query loads its COM plumbing: ~250 handles, ~12 MB once) fits
+# under these; a leak is caught by the steady-growth rate below instead.
 $MAX_HANDLE_GROWTH   = 400
+# steady growth: the median of the 30 s steps between samples, per minute. A single jump moves one step only; a
+# leak moves them all (0.7 handles/s is ~42/min).
+$SAMPLE_EVERY_SEC    = 30
+$MAX_HANDLE_RATE     = 8     # handles per minute
+$MAX_PRIVATE_MB_RATE = 2     # MB per minute
 $MAX_GDI_GROWTH      = 100
 $MAX_USER_GROWTH     = 100
 $MAX_PRIVATE_MB_GROWTH = 200
+# churn: many workspace switches and window open/close cycles after the load phase; anything a switch or a window
+# leaves behind (overlay windows, thumbnails, visuals, timers, tasks, tree nodes) shows up as growth per operation.
+# Growth is the least-squares slope over all samples, scaled to 100 operations.
+$CHURN_SWITCHES      = 320   # workspace switches (ws-1 .. ws-4 in turn)
+$CHURN_WINDOW_CYCLES = 100   # open two windows, close them
+$CHURN_SAMPLE_EVERY  = 30    # operations between samples
+$MAX_CHURN_HANDLES_PER_100 = 40
+$MAX_CHURN_MB_PER_100      = 6
+$MAX_CHURN_GDI_PER_100     = 10
+$MAX_CHURN_USER_PER_100    = 10
+$MAX_CHURN_THREADS_PER_100 = 4
+$MAX_CHURN_WINDOWS_PER_100 = 2    # top-level windows a part owns
+# slides must not get slower as operations pile up: median longest-frame of the last third vs the first third
+$MAX_CHURN_FRAME_SLOWDOWN_MS = 40
 
 $failures = New-Object System.Collections.Generic.List[string]
 $skipped = New-Object System.Collections.Generic.List[string]
@@ -57,6 +79,15 @@ public static class LLStress {
     public static void TapShift() { keybd_event(0x10, 0, 0, UIntPtr.Zero); keybd_event(0x10, 0, 2, UIntPtr.Zero); }
     public static void Nudge(int dx) { POINT p; if (GetCursorPos(out p)) SetCursorPos(p.X + dx, p.Y); }
     public static bool InteractiveDesktop() { IntPtr d = OpenInputDesktop(0, false, 0x0001); if (d == IntPtr.Zero) return false; CloseDesktop(d); return true; }
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    // top-level windows (visible or not) owned by a process: a window created per operation and never destroyed
+    public static int TopLevelWindows(int pid) {
+        int n = 0;
+        EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == (uint)pid) n++; return true; }, IntPtr.Zero);
+        return n;
+    }
     public static int VisibleWindowsTitled(string title) {
         int n = 0; IntPtr h = IntPtr.Zero;
         while ((h = FindWindowEx(IntPtr.Zero, h, null, title)) != IntPtr.Zero) if (IsWindowVisible(h)) n++;
@@ -114,10 +145,15 @@ function Sample {
         $p = Get-Process -Id $pids[$k] -ErrorAction SilentlyContinue
         if (-not $p) { $r[$k] = $null; continue }
         $r[$k] = [pscustomobject]@{ Handles = $p.HandleCount; PrivateMB = [math]::Round($p.PrivateMemorySize64 / 1MB, 1)
-            Gdi = [LLStress]::GetGuiResources($p.Handle, 0); User = [LLStress]::GetGuiResources($p.Handle, 1) }
+            Gdi = [LLStress]::GetGuiResources($p.Handle, 0); User = [LLStress]::GetGuiResources($p.Handle, 1)
+            Threads = $p.Threads.Count; Windows = [LLStress]::TopLevelWindows($p.Id) }
     }
     $r
 }
+
+# samples every $SAMPLE_EVERY_SEC s from the end of warm-up (steady-growth check)
+$script:series = New-Object System.Collections.Generic.List[object]
+$script:sampling = $false
 
 # one second of the run: input through the hooks, a workspace switch now and then, the parts still the same processes
 $script:tick = 0
@@ -133,6 +169,7 @@ function Run-Phase([int]$seconds) {
                 $pids.Remove($k)
             }
         }
+        if ($script:sampling -and $script:tick % $SAMPLE_EVERY_SEC -eq 0) { $script:series.Add((Sample)) }
         Start-Sleep -Milliseconds 1000
     }
 }
@@ -140,6 +177,7 @@ function Run-Phase([int]$seconds) {
 $t0 = Get-Date
 Run-Phase $WARMUP_SEC
 $base = Sample
+$script:series.Add($base); $script:sampling = $true
 $tIdle = Get-Date
 Run-Phase $IDLE_SEC
 $tLoad = Get-Date
@@ -157,6 +195,41 @@ finally { $load | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction Si
 $tEnd = Get-Date
 Run-Phase 20   # back to calm: anything that broke under load shows up here
 $final = Sample
+$script:series.Add($final); $script:sampling = $false
+
+# ------------------------------------------------------------------ churn
+# Each kind of operation on its own, sampled every $CHURN_SAMPLE_EVERY operations: what a kind leaves behind shows as a
+# slope against the operation count, and the kind that leaks is named.
+function Alive-Check { foreach ($k in @($pids.Keys)) { if (-not (Get-Process -Id $pids[$k] -ErrorAction SilentlyContinue)) { Fail "$k (pid $($pids[$k])) ended during churn at $(Get-Date -Format HH:mm:ss)"; $pids.Remove($k) } } }
+function Churn([string]$kind, [int]$ops, [scriptblock]$op) {
+    $s = New-Object System.Collections.Generic.List[object]
+    $from = Get-Date
+    $s.Add([pscustomobject]@{ Op = 0; Sample = (Sample) })
+    for ($i = 1; $i -le $ops; $i++) {
+        & $op $i
+        if ($i % $CHURN_SAMPLE_EVERY -eq 0 -or $i -eq $ops) { Alive-Check; $s.Add([pscustomobject]@{ Op = $i; Sample = (Sample) }) }
+    }
+    $to = Get-Date
+    Note "churn ${kind}: $ops operations in $([math]::Round(($to - $from).TotalSeconds)) s"
+    [pscustomobject]@{ Kind = $kind; Ops = $ops; From = $from; To = $to; Series = $s }
+}
+$churn = @()
+$churn += Churn 'switch' $CHURN_SWITCHES { param($i) Send-Test "ws-$((($i - 1) % 4) + 1)"; Start-Sleep -Milliseconds 850 }
+Send-Test 'ws-1'; Start-Sleep 1
+$churn += Churn 'window' $CHURN_WINDOW_CYCLES {
+    $w = @(1..2 | ForEach-Object { Start-Process notepad -PassThru })
+    Start-Sleep -Milliseconds 700
+    $w | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 500
+}
+# overview and sidebar opened and closed in turn
+$churn += Churn 'popup' 60 { param($i)
+    $a = if ($i % 2) { 'overview' } else { 'sidebar' }
+    Send-Test $a; Start-Sleep -Milliseconds 600; Send-Test $a; Start-Sleep -Milliseconds 500
+}
+# Super+F on the focused window: the freeze/snapshot animation (an even count leaves it as it was)
+$churn += Churn 'state' 60 { Send-Test 'wm toggle-fullscreen'; Start-Sleep -Milliseconds 800 }
+Start-Sleep 2
 
 # ------------------------------------------------------------------ checks
 function Read-Log([string]$name) { $p = Join-Path $logs $name; if (Test-Path $p) { Get-Content $p -Encoding UTF8 } else { @() } }
@@ -215,6 +288,7 @@ if ($interactive) {
 }
 
 # growth
+function Median([double[]]$v) { if (-not $v -or $v.Count -eq 0) { return 0 }; $o = $v | Sort-Object; $n = $o.Count; if ($n % 2) { $o[[int](($n - 1) / 2)] } else { ($o[$n / 2 - 1] + $o[$n / 2]) / 2 } }
 $growth = foreach ($k in @('core', 'shell', 'tiling')) {
     $a = $base[$k]; $b = $final[$k]
     if (-not $a -or -not $b) { continue }
@@ -223,7 +297,54 @@ $growth = foreach ($k in @('core', 'shell', 'tiling')) {
     if ($g.Gdi -gt $MAX_GDI_GROWTH) { Fail "$k GDI objects grew by $($g.Gdi) (max $MAX_GDI_GROWTH)" }
     if ($g.User -gt $MAX_USER_GROWTH) { Fail "$k USER objects grew by $($g.User) (max $MAX_USER_GROWTH)" }
     if ($g.PrivateMB -gt $MAX_PRIVATE_MB_GROWTH) { Fail "$k private memory grew by $($g.PrivateMB) MB (max $MAX_PRIVATE_MB_GROWTH)" }
+    # steady growth: median step between consecutive samples, scaled to a minute
+    $steps = @(); $mbSteps = @()
+    for ($i = 1; $i -lt $script:series.Count; $i++) {
+        $p = $script:series[$i - 1][$k]; $q = $script:series[$i][$k]
+        if ($p -and $q) { $steps += ($q.Handles - $p.Handles); $mbSteps += ($q.PrivateMB - $p.PrivateMB) }
+    }
+    $perMin = 60.0 / $SAMPLE_EVERY_SEC
+    $g | Add-Member HandleRate ([math]::Round((Median $steps) * $perMin, 1))
+    $g | Add-Member MBRate ([math]::Round((Median $mbSteps) * $perMin, 2))
+    if ($steps.Count -ge 4 -and $g.HandleRate -gt $MAX_HANDLE_RATE) { Fail "$k handles grow steadily: $($g.HandleRate)/min (max $MAX_HANDLE_RATE)" }
+    if ($mbSteps.Count -ge 4 -and $g.MBRate -gt $MAX_PRIVATE_MB_RATE) { Fail "$k private memory grows steadily: $($g.MBRate) MB/min (max $MAX_PRIVATE_MB_RATE)" }
     $g
+}
+
+# churn: growth per 100 operations (least-squares slope over the samples of each kind)
+function Slope($xs, $ys) {
+    $n = $xs.Count; if ($n -lt 3) { return 0 }
+    $mx = ($xs | Measure-Object -Average).Average; $my = ($ys | Measure-Object -Average).Average
+    $num = 0.0; $den = 0.0
+    for ($i = 0; $i -lt $n; $i++) { $num += ($xs[$i] - $mx) * ($ys[$i] - $my); $den += ($xs[$i] - $mx) * ($xs[$i] - $mx) }
+    if ($den -eq 0) { 0 } else { $num / $den }
+}
+$churnLimits = [ordered]@{ Handles = $MAX_CHURN_HANDLES_PER_100; PrivateMB = $MAX_CHURN_MB_PER_100; Gdi = $MAX_CHURN_GDI_PER_100
+    User = $MAX_CHURN_USER_PER_100; Threads = $MAX_CHURN_THREADS_PER_100; Windows = $MAX_CHURN_WINDOWS_PER_100 }
+$churnRows = foreach ($c in $churn) {
+    foreach ($k in @('core', 'shell', 'tiling')) {
+        $pts = @($c.Series | Where-Object { $_.Sample[$k] })
+        if ($pts.Count -lt 3) { continue }
+        $xs = @($pts | ForEach-Object { [double]$_.Op })
+        $row = [ordered]@{ Kind = $c.Kind; Part = $k }
+        foreach ($m in $churnLimits.Keys) {
+            $per100 = [math]::Round((Slope $xs @($pts | ForEach-Object { [double]$_.Sample[$k].$m })) * 100, 1)
+            $row[$m] = $per100
+            if ($per100 -gt $churnLimits[$m]) { Fail "churn $($c.Kind): $k $m grows $per100 per 100 operations (max $($churnLimits[$m]))" }
+        }
+        [pscustomobject]$row
+    }
+}
+# slides must not slow down as switches pile up
+$sw = $churn | Where-Object { $_.Kind -eq 'switch' } | Select-Object -First 1
+$churnFrames = ''
+if ($sw -and $interactive) {
+    $third = [timespan]::FromTicks(($sw.To - $sw.From).Ticks / 3)
+    $early = @(In-Phase $sw.From ($sw.From + $third) | Where-Object { $_.Text -match '^slide.*en uzun kare (\d+) ms' } | ForEach-Object { $null = $_.Text -match 'en uzun kare (\d+) ms'; [double]$Matches[1] })
+    $late = @(In-Phase ($sw.To - $third) $sw.To | Where-Object { $_.Text -match '^slide.*en uzun kare (\d+) ms' } | ForEach-Object { $null = $_.Text -match 'en uzun kare (\d+) ms'; [double]$Matches[1] })
+    $me = Median $early; $ml = Median $late
+    $churnFrames = "Switch slides, median longest frame: first third $me ms ($($early.Count)), last third $ml ms ($($late.Count))"
+    if ($early.Count -ge 5 -and $late.Count -ge 5 -and $ml - $me -gt $MAX_CHURN_FRAME_SLOWDOWN_MS) { Fail "slides got slower over $($sw.Ops) switches: median longest frame $me -> $ml ms (max +$MAX_CHURN_FRAME_SLOWDOWN_MS)" }
 }
 
 # ------------------------------------------------------------------ report
@@ -236,9 +357,19 @@ $lines = @(
     "| Keyboard hook slow | $hookIdle | $hookLoad | $MAX_HOOK_SLOW_IDLE / $MAX_HOOK_SLOW_LOAD |",
     "| Bar heartbeat reports | $($beats.Count) |  |  |",
     "",
-    "| Part | Handles | GDI | USER | Private MB |",
-    "|---|---|---|---|---|"
-) + @($growth | ForEach-Object { "| $($_.Part) | $($_.Handles) | $($_.Gdi) | $($_.User) | $($_.PrivateMB) |" }) + @(
+    "| Part | Handles | GDI | USER | Private MB | Handles/min (steady) | MB/min (steady) |",
+    "|---|---|---|---|---|---|---|"
+) + @($growth | ForEach-Object { "| $($_.Part) | $($_.Handles) | $($_.Gdi) | $($_.User) | $($_.PrivateMB) | $($_.HandleRate) | $($_.MBRate) |" }) + @(
+    "",
+    "Limits: growth $MAX_HANDLE_GROWTH handles / $MAX_PRIVATE_MB_GROWTH MB; steady $MAX_HANDLE_RATE handles/min, $MAX_PRIVATE_MB_RATE MB/min.",
+    "",
+    "### Churn: growth per 100 operations",
+    "",
+    "| Operation | Part | Handles | Private MB | GDI | USER | Threads | Top-level windows |",
+    "|---|---|---|---|---|---|---|---|"
+) + @($churnRows | ForEach-Object { "| $($_.Kind) | $($_.Part) | $($_.Handles) | $($_.PrivateMB) | $($_.Gdi) | $($_.User) | $($_.Threads) | $($_.Windows) |" }) + @(
+    "",
+    "Limits per 100: $MAX_CHURN_HANDLES_PER_100 handles, $MAX_CHURN_MB_PER_100 MB, $MAX_CHURN_GDI_PER_100 GDI, $MAX_CHURN_USER_PER_100 USER, $MAX_CHURN_THREADS_PER_100 threads, $MAX_CHURN_WINDOWS_PER_100 windows. $churnFrames",
     "",
     "Interactive desktop: $([bool]$interactive)"
 ) + @($skipped | ForEach-Object { "- skipped: $_" }) + @($failures | ForEach-Object { "- **failed:** $_" })

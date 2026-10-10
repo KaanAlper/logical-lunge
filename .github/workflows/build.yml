@@ -138,7 +138,7 @@ jobs:
     name: Stress ${{ inputs.edition }}
     needs: build
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 55
     steps:
       - name: Checkout the stress test from main
         uses: actions/checkout@v4
