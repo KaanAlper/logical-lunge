@@ -112,7 +112,7 @@ static class BindMigration
         catch (Exception ex) { Slider.Log("kısayol göçü: durum dosyası okunamadı, atlandı: " + ex.Message); return false; }
     }
 
-    static string Sha(string text)
+    internal static string Sha(string text)
     {
         using (var sha = System.Security.Cryptography.SHA256.Create())
             return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(text))).Replace("-", "");
