@@ -202,7 +202,11 @@ $script:series.Add($final); $script:sampling = $false
 # Each kind of operation on its own, sampled every $CHURN_SAMPLE_EVERY operations: what a kind leaves behind shows as a
 # slope against the operation count, and the kind that leaks is named.
 function Alive-Check { foreach ($k in @($pids.Keys)) { if (-not (Get-Process -Id $pids[$k] -ErrorAction SilentlyContinue)) { Fail "$k (pid $($pids[$k])) ended during churn at $(Get-Date -Format HH:mm:ss)"; $pids.Remove($k) } } }
-function Churn([string]$kind, [int]$ops, [scriptblock]$op) {
+# $warm operations first, unsampled: the first open of a panel loads what it keeps for good (fonts, images, the quick
+# settings' radios and Bluetooth), which is not growth per operation
+function Churn([string]$kind, [int]$ops, [scriptblock]$op, [int]$warm = 4) {
+    for ($i = 1; $i -le $warm; $i++) { & $op $i }
+    Start-Sleep 2
     $s = New-Object System.Collections.Generic.List[object]
     $from = Get-Date
     $s.Add([pscustomobject]@{ Op = 0; Sample = (Sample) })
@@ -212,6 +216,9 @@ function Churn([string]$kind, [int]$ops, [scriptblock]$op) {
     }
     $to = Get-Date
     Note "churn ${kind}: $ops operations in $([math]::Round(($to - $from).TotalSeconds)) s"
+    foreach ($k in @('core', 'shell', 'tiling')) {
+        Note ("  $k " + (($s | Where-Object { $_.Sample[$k] } | ForEach-Object { $x = $_.Sample[$k]; "$($_.Op):h$($x.Handles)/t$($x.Threads)/u$($x.User)/w$($x.Windows)/$($x.PrivateMB)MB" }) -join ' '))
+    }
     [pscustomobject]@{ Kind = $kind; Ops = $ops; From = $from; To = $to; Series = $s }
 }
 $churn = @()
@@ -261,7 +268,7 @@ $hookIdle = @(In-Phase $tIdle $tLoad | Where-Object { $_.Text -match 'klavye kan
 $hookLoad = @(In-Phase $tLoad $tEnd | Where-Object { $_.Text -match 'klavye kancası yavaş' }).Count
 if ($hookIdle -gt $MAX_HOOK_SLOW_IDLE) { Fail "keyboard hook slow $hookIdle times while idle (max $MAX_HOOK_SLOW_IDLE)" }
 if ($hookLoad -gt $MAX_HOOK_SLOW_LOAD) { Fail "keyboard hook slow $hookLoad times under load (max $MAX_HOOK_SLOW_LOAD)" }
-foreach ($e in $run) { if ($e.Text -match 'kancası girdi görmüyordu') { Fail "input hook dropped by Windows: $($e.Text)" } }
+foreach ($e in $run) { if ($e.Text -match 'kancası girdi görmüyordu|sınama girdisini görmedi') { Fail "input hook dropped by Windows: $($e.Text)" } }
 
 # the core's own handle/thread/connection report (LL_TEST=1, every 30 s): printed for diagnosis
 foreach ($e in @($run | Where-Object { $_.Text -match '^test: handles ' })) { Note "$($e.At.ToString('HH:mm:ss')) $($e.Text)" }
