@@ -14349,7 +14349,7 @@ static class Program
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s0, e0) => { try { ui.BeginInvoke((Action)slider.Warm); } catch { } };
         Slider.Ui = ui;
         ConfigWatch.Start(ui); // prefs.json (animasyonlar) ve config.yaml (odak rengi) değişince
-        System.Threading.ThreadPool.QueueUserWorkItem(_ => BindMigration.Run()); // güncellemeyle gelen yeni varsayılan kısayollar mevcut config.yaml'a eklenir (BindMigration)
+        System.Threading.ThreadPool.QueueUserWorkItem(_ => { BindMigration.Run(); RuleMigration.Run(); }); // güncellemeyle gelen yeni varsayılan kısayollar ve pencere kuralları mevcut config.yaml'a eklenir (BindMigration, RuleMigration; ikisi de config.yaml yazar: art arda)
         ui.BeginInvoke((Action)(() => Touchpad.Start(slider))); // dokunmatik yüzey hareketleri (girdi UI thread'ine)
         var dwindle = new Dwindle(new TilingClient(), ui, slider);
         dwindle.Start(); // kendi IPC bağlantısıyla: slide'ı beklemesin

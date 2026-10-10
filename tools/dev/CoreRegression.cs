@@ -541,6 +541,7 @@ static class CoreRegression
         ThemeSyncTests();
         EventQueueTests();
         BindMigrationTests();
+        RuleMigrationTests();
         FocusDirectionTests();
         UiScaleTests();
         BorderLookTests();
@@ -812,6 +813,69 @@ static class CoreRegression
         var dup = run(head + "  - commands: ['x']\n    bindings: ['lwin+z']\n", def2, new string[0], new string[0]);
         Check(dup[1] == "1" && dup[0].Contains("['a']") && !dup[0].Contains("['b']"), "Two defaults took the same key in one run");
         Console.WriteLine("PASS: default shortcut migration (missing only, conflicts, deleted stay deleted, user lines untouched)");
+    }
+
+    static void RuleMigrationTests() {
+        var merge = typeof(RuleMigration).GetMethod("Merge", BindingFlags.NonPublic | BindingFlags.Static);
+        Check(merge != null, "RuleMigration.Merge is missing");
+        Func<string, string, string[], string[]> run = (u0, d0, offered) => {
+            object[] a = { u0, d0, new HashSet<string>(offered), null, 0, 0 };
+            string next = (string)merge.Invoke(null, a);
+            var now = (HashSet<string>)a[3];
+            return new[] { next, ((int)a[4]).ToString(), ((int)a[5]).ToString(), string.Join("|", now.OrderBy(x => x, StringComparer.Ordinal)) };
+        };
+        string tail = "\nbinding_modes:\n  - name: 'resize'\n";
+        string defRules = "window_rules:\n  - commands: ['ignore']\n    match:\n      - window_process: { equals: 'lunge-shell' }\n      - window_process: { equals: 'lunge' }\n\n  # c\n  - commands: ['set-floating --centered --width=45% --height=45%']\n    match:\n      - window_process: { regex: 'SndVol' }\n\n  # trailing comment\n";
+        string def = "general:\n  x: 1\n\n" + defRules + tail;
+        // eski sürümün kuralları (gönderilen son büyük liste): iki kural, kısmi eşleşmeye dayanan ifadelerle
+        string oldRules = "window_rules:\n  - commands: ['ignore']\n    match:\n      - window_process: { equals: 'lunge-shell' }\n      - window_process: { equals: 'lunge' }\n      - window_process: { equals: 'TaskBarHero' }\n"
+            + "      - window_title: { regex: '[Pp]icture.in.[Pp]icture' }\n        window_class: { regex: 'Chrome_WidgetWin_1|MozillaDialogClass' }\n"
+            + "      - window_process: { equals: 'PowerToys' }\n        window_class: { regex: 'HwndWrapper\\[PowerToys\\.PowerAccent.*?\\]' }\n"
+            + "      - window_title: { equals: 'Command Palette' }\n        window_class: { equals: 'WinUIDesktopWin32WindowClass' }\n"
+            + "      - window_process: { equals: 'PowerToys' }\n        window_title: { regex: '.*? - Peek' }\n"
+            + "      - window_process: { equals: 'Lively' }\n        window_class: { regex: 'HwndWrapper' }\n"
+            + "      - window_process: { equals: 'EXCEL' }\n        window_class: { not_regex: 'XLMAIN' }\n"
+            + "      - window_process: { equals: 'WINWORD' }\n        window_class: { not_regex: 'OpusApp' }\n"
+            + "      - window_process: { equals: 'POWERPNT' }\n        window_class: { not_regex: 'PPTFrameClass' }\n\n"
+            + "  - commands: ['set-floating --centered']\n    match:\n      - window_class: { equals: 'MozillaDialogClass' }\n      - window_title: { regex: '^(Open|Save|Save As|Aç|Kaydet|Farklı Kaydet).*' }\n      - window_class: { equals: '#32770' }\n";
+        string user = "general:\n  x: 1\n\n" + oldRules + tail;
+        var r = run(user, def, new string[0]);
+        Check(r[1] == "1", "The missing SndVol rule was not added exactly once: " + r[1]);
+        Check(r[0].Contains("  - commands: ['set-floating --centered --width=45% --height=45%']\n    match:\n      - window_process: { regex: 'SndVol' }\n"), "The added rule has the wrong text");
+        Check(r[0].IndexOf("SndVol") < r[0].IndexOf("binding_modes:") && r[0].EndsWith(tail), "The new rule was not appended inside window_rules, or the text after it changed");
+        Check(r[2] == "7", "Old shipped partial-match entries were not all upgraded: " + r[2]);
+        Check(r[0].Contains("regex: '.*[Pp]icture.in.[Pp]icture.*' }\n        window_class: { regex: '.*(?:Chrome_WidgetWin_1|MozillaDialogClass).*' }")
+            && r[0].Contains("{ regex: '.*HwndWrapper\\[PowerToys\\.PowerAccent.*?\\].*' }") && r[0].Contains("{ regex: '.*? - Peek.*' }")
+            && r[0].Contains("{ regex: '.*HwndWrapper.*' }") && r[0].Contains("not_regex: '.*XLMAIN.*'") && r[0].Contains("not_regex: '.*OpusApp.*'") && r[0].Contains("not_regex: '.*PPTFrameClass.*'"),
+            "An old regex was not rewritten to its whole-value equivalent");
+        Check(r[0].Contains("'^(Open|Save|Save As|Aç|Kaydet|Farklı Kaydet).*'") && r[0].Contains("equals: 'TaskBarHero'") && r[0].Contains("equals: '#32770'"), "An entry that needs no change was touched");
+        Check(!r[0].Contains("lunge-shell' }\n      - window_process: { equals: 'lunge' }\n\n  # yeni"), "A default already present was added again");
+        // her sonuç gerçekten tam eşlemede eskiyle aynı kümeyi eşler
+        Func<string, string, string, bool> same = (oldRe, newRe, v) => System.Text.RegularExpressions.Regex.IsMatch(v, oldRe) == System.Text.RegularExpressions.Regex.IsMatch(v, "^(?:" + newRe + ")$");
+        Check(same(@"HwndWrapper\[PowerToys\.PowerAccent.*?\]", @".*HwndWrapper\[PowerToys\.PowerAccent.*?\].*", "HwndWrapper[PowerToys.PowerAccent.x;1;y]") && same("XLMAIN", ".*XLMAIN.*", "XLMAIN") && same(".*? - Peek", ".*? - Peek.*", "a - Peek (1)"), "Upgrade is not equivalent to the old partial match");
+        // ikinci tur: hiçbir şey değişmez
+        var again = run(r[0], def, r[3].Split('|'));
+        Check(again[1] == "0" && again[2] == "0" && again[0] == r[0], "A second run changed the config");
+        // kullanıcı eklenen kuralı silerse (sunuldu olarak kayıtlı) geri gelmez
+        var gone = run(r[0].Replace("  - commands: ['set-floating --centered --width=45% --height=45%']\n    match:\n      - window_process: { regex: 'SndVol' }\n", ""), def, r[3].Split('|'));
+        Check(gone[1] == "0" && !gone[0].Contains("SndVol"), "A rule the user deleted came back");
+        // kullanıcının kendi ya da değiştirdiği kurallar: dokunulmaz (eski ifade ama başka komut / başka içerik)
+        string mine = "window_rules:\n  - commands: ['set-floating']\n    match:\n      - window_class: { regex: 'HwndWrapper' }\n  - commands: ['ignore']\n    match:\n      - window_process: { equals: 'Lively' }\n        window_class: { regex: 'HwndWrapper.*' }\n      - window_process: { regex: 'foo' }\n";
+        var m = run("general:\n  x: 1\n\n" + mine + tail, def, new[] { "ignore => window_process: {equals: 'lunge-shell'}", "ignore => window_process: {equals: 'lunge'}" });
+        Check(m[2] == "0" && m[0].Contains("{ regex: 'HwndWrapper' }") && m[0].Contains("{ regex: 'HwndWrapper.*' }") && m[0].Contains("{ regex: 'foo' }"), "A user-written or edited rule was rewritten");
+        Check(m[0].StartsWith("general:\n  x: 1\n\n" + mine.TrimEnd('\n')) && m[1] == "1", "User rules changed or the new rule was added wrongly");
+        // CRLF korunur
+        var crlf = run(user.Replace("\n", "\r\n"), def.Replace("\n", "\r\n"), new string[0]);
+        Check(crlf[1] == "1" && crlf[0].Replace("\r\n", "").IndexOf('\n') < 0 && crlf[0].Contains("SndVol"), "Line endings were mixed or CRLF input was not handled");
+        // window_rules: [] ya da bölüm yok: elle yazılmış, dokunulmaz
+        var empty = run("general:\n  x: 1\nwindow_rules: []\n", def, new string[0]);
+        Check(empty[1] == "0" && empty[0] == "general:\n  x: 1\nwindow_rules: []\n", "A config with inline window_rules was modified");
+        var nosec = run("general:\n  x: 1\n", def, new string[0]);
+        Check(nosec[1] == "0" && nosec[0] == "general:\n  x: 1\n", "A config without window_rules was modified");
+        // bölüm dosyanın sonundaysa da eklenir
+        var atEnd = run("general:\n  x: 1\n\nwindow_rules:\n  - commands: ['ignore']\n    match:\n      - window_process: { equals: 'lunge-shell' }\n      - window_process: { equals: 'lunge' }\n", def, new string[0]);
+        Check(atEnd[1] == "1" && atEnd[0].Contains("SndVol"), "A rule was not added to a window_rules section at the end of the file");
+        Console.WriteLine("PASS: window rule migration (missing only, deleted stay deleted, old regexes upgraded, user rules untouched, CRLF)");
     }
 
     static void WorkspaceOutlineTests() {
