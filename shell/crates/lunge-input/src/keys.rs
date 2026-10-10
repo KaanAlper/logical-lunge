@@ -272,7 +272,7 @@ fn win_key<S: Sys>(sys: &S, st: &mut KeyState, vk: u32, is_down: bool, is_up: bo
     // the press reached Windows (a late hook): release it behind a dummy key
     if sys.down(vk) {
       sys.suppress_start();
-      sys.release_key(vk);
+      sys.release_key(vk, true);
     }
     if toggle_dock {
       sys.push(ev(kind::WIN_UP_DOCK, vk));
@@ -301,12 +301,14 @@ fn switcher<S: Sys>(sys: &S, vk: u32, is_down: bool, is_up: bool, shift: bool, a
     }
     return false;
   }
-  // Alt released: open the selection (the release goes on; a dummy key keeps
-  // the menu bar from activating)
+  // Alt released: open the selection. A dummy key keeps the app's menu bar
+  // from activating; it is sent after the hook returns, so the release is
+  // swallowed here and sent again behind it (right Alt is an extended key)
   if is_up && (vk == VK_MENU || vk == 0xA4 || vk == 0xA5) {
     sys.suppress_start();
+    sys.release_key(vk, vk == 0xA5);
     sys.push(ev(kind::SW_ALT_UP, vk));
-    return false;
+    return true;
   }
   // a missed Alt release: never stay locked open
   if !alt_down && !sys.flag(flag::SWITCHER_DEMO) {
@@ -459,7 +461,7 @@ mod tests {
     press(&f, &mut st, VK_LWIN);
     // Windows still sees Win down when the release arrives
     assert!(decide(&f, &mut st, WM_KEYUP, VK_LWIN, 0, false));
-    assert_eq!(f.injected.borrow().as_slice(), ["dummy", "up 5B"]);
+    assert_eq!(f.injected.borrow().as_slice(), ["dummy", "up 5B ext"]);
   }
 
   #[test]
@@ -471,8 +473,20 @@ mod tests {
     assert!(release(&f, &mut st, VK_TAB));
     assert!(press(&f, &mut st, VK_TAB));
     assert!(press(&f, &mut st, 0x41)); // any key: swallowed while open
-    assert!(!release(&f, &mut st, VK_MENU));
+    // the release is swallowed and sent again behind the dummy key
+    assert!(release(&f, &mut st, VK_MENU));
     assert_eq!(f.kinds(), vec![kind::SW_OPEN, kind::SW_MOVE, kind::SW_ALT_UP]);
+    assert_eq!(f.injected.borrow().as_slice(), ["dummy", "up 12"]);
+  }
+
+  #[test]
+  fn right_alt_is_released_as_an_extended_key() {
+    let f = Fake::new();
+    f.set_flag(flag::SWITCHER_ACTIVE, true);
+    let mut st = KeyState::new();
+    f.down.borrow_mut().insert(VK_MENU);
+    assert!(decide(&f, &mut st, WM_KEYUP, 0xA5, 0, false));
+    assert_eq!(f.injected.borrow().as_slice(), ["dummy", "up A5 ext"]);
   }
 
   #[test]

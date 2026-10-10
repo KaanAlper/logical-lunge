@@ -50,10 +50,11 @@ pub trait Sys {
   /// an unassigned key down and up (marked as ours): Windows opens neither
   /// Start nor a menu bar for a lone Win or Alt
   fn suppress_start(&self);
-  /// a Win release sent to Windows (marked as ours)
-  fn release_key(&self, vk: u32);
-  /// the held left press given back to Explorer at its own place
-  fn replay_left_down(&self, x: i32, y: i32);
+  /// a key release sent to Windows (marked as ours)
+  fn release_key(&self, vk: u32, extended: bool);
+  /// the held left press given back to Explorer at its own place, then the
+  /// pointer moved on to where the drag is
+  fn replay_left_down(&self, x: i32, y: i32, to_x: i32, to_y: i32);
 }
 
 pub fn is_modifier(vk: u32) -> bool {
@@ -186,11 +187,11 @@ pub mod fake {
     fn suppress_start(&self) {
       self.injected.borrow_mut().push("dummy".into());
     }
-    fn release_key(&self, vk: u32) {
-      self.injected.borrow_mut().push(format!("up {vk:X}"));
+    fn release_key(&self, vk: u32, extended: bool) {
+      self.injected.borrow_mut().push(format!("up {vk:X}{}", if extended { " ext" } else { "" }));
     }
-    fn replay_left_down(&self, x: i32, y: i32) {
-      self.injected.borrow_mut().push(format!("left {x},{y}"));
+    fn replay_left_down(&self, x: i32, y: i32, to_x: i32, to_y: i32) {
+      self.injected.borrow_mut().push(format!("left {x},{y} to {to_x},{to_y}"));
     }
   }
 }
