@@ -247,6 +247,7 @@ fn snapshot_of(state: &WmState) -> Option<Snapshot> {
   let focused_workspace = state
     .focused_container()
     .and_then(|c| c.workspace())
+    .filter(|ws| !ws.is_special())
     .map(|ws| ws.config().name);
   Some(Snapshot { boot: boot_time(), workspaces, focused_workspace })
 }

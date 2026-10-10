@@ -24,8 +24,6 @@ pub fn move_window_to_workspace(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   let current_workspace = window.workspace().context("No workspace.")?;
-  let current_monitor =
-    current_workspace.monitor().context("No monitor.")?;
 
   let (target_workspace_name, target_workspace) =
     state.workspace_by_target(&current_workspace, target, config)?;
@@ -44,6 +42,25 @@ pub fn move_window_to_workspace(
   }?;
 
   if let Some(target_workspace) = target_workspace {
+    move_window_into_workspace(window, target_workspace, state, config)?;
+  }
+
+  Ok(())
+}
+
+/// Moves `window` into `target_workspace` (Hyprland's
+/// `movetoworkspacesilent`): the focus stays on the window's old workspace.
+pub fn move_window_into_workspace(
+  window: WindowContainer,
+  target_workspace: crate::models::Workspace,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<()> {
+  let current_workspace = window.workspace().context("No workspace.")?;
+  let current_monitor =
+    current_workspace.monitor().context("No monitor.")?;
+
+  {
     if target_workspace.id() == current_workspace.id() {
       return Ok(());
     }

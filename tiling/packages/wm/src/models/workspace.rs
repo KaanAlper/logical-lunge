@@ -20,6 +20,12 @@ use crate::{
   traits::{CommonGetters, PositionGetters, TilingDirectionGetters},
 };
 
+/// Name of Hyprland's special workspace (the scratchpad). It is not one of
+/// the configured workspaces: it is created on demand, shown over a
+/// monitor's displayed workspace and never counted among a monitor's
+/// regular workspaces (`Monitor::workspaces`).
+pub const SPECIAL_WORKSPACE: &str = "special";
+
 #[derive(Clone)]
 pub struct Workspace(Rc<RefCell<WorkspaceInner>>);
 
@@ -63,8 +69,18 @@ impl Workspace {
     self.0.borrow_mut().config = config;
   }
 
-  /// Whether the workspace is currently displayed by the parent monitor.
+  /// Whether this is the special workspace (scratchpad).
+  pub fn is_special(&self) -> bool {
+    self.0.borrow().config.name == SPECIAL_WORKSPACE
+  }
+
+  /// Whether the workspace is currently displayed by the parent monitor
+  /// (the special workspace: while it is toggled open over it).
   pub fn is_displayed(&self) -> bool {
+    if self.is_special() {
+      return self.monitor().is_some_and(|monitor| monitor.special_shown());
+    }
+
     self
       .monitor()
       .and_then(|monitor| monitor.displayed_workspace())

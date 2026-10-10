@@ -200,6 +200,8 @@ pub enum InvokeCommand {
   },
   SetMinimized,
   SetTiling,
+  /// Hyprland's pin (window rule `set-pinned`): see `TogglePin`.
+  SetPinned,
   SetTitleBarVisibility {
     #[clap(required = true, value_enum)]
     visibility: TitleBarVisibility,
@@ -232,6 +234,14 @@ pub enum InvokeCommand {
   /// stays in its tile; the app is asked into (or out of) its fullscreen.
   ToggleFullscreenSpoof,
   ToggleMinimized,
+  /// Hyprland's `pin` (ii: Super+P): the floating window is shown on every
+  /// workspace of its monitor; a tiled window floats first.
+  TogglePin,
+  /// Hyprland's `togglespecialworkspace` (ii: Super+S): the scratchpad
+  /// opens over the focused monitor's workspace, or closes.
+  ToggleSpecialWorkspace,
+  /// Hyprland's `movetoworkspacesilent special` (ii: Super+Alt+S).
+  MoveToSpecialWorkspace,
   ToggleTiling,
   ToggleTilingDirection,
   /// Hyprland's splitratio: moves the split above the focused tiled
@@ -272,9 +282,25 @@ pub enum InvokeCommand {
     #[clap(required = true)]
     state: GameModeState,
   },
+  /// Logical Lunge: the core's input hook saw Super + a mouse button
+  /// (Hyprland's `movewindow` / `resizewindow` mouse binds) pressed on the
+  /// window under the pointer, or released (`end`).
+  WmMouseDrag {
+    #[clap(required = true)]
+    action: MouseDragAction,
+  },
   WmRedraw,
   WmReloadConfig,
   WmTogglePause,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, ValueEnum)]
+#[clap(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum MouseDragAction {
+  Move,
+  Resize,
+  End,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, ValueEnum)]

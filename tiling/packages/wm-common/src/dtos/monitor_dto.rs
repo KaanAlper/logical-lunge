@@ -26,4 +26,11 @@ pub struct MonitorDto {
   pub device_path: Option<String>,
   pub hardware_id: Option<String>,
   pub working_rect: Rect,
+  /// Hyprland's special workspace (scratchpad) when it is on this monitor:
+  /// its window count (it is not among `children`, which hold the regular
+  /// workspaces) and whether it is shown over the displayed workspace.
+  #[serde(default)]
+  pub special_window_count: usize,
+  #[serde(default)]
+  pub special_shown: bool,
 }

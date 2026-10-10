@@ -129,7 +129,9 @@ pub fn move_workspace_to_monitor(
     .queue_container_to_redraw(workspace.clone())
     .queue_container_to_redraw(displayed_workspace);
 
-  match origin_monitor.child_count() {
+  // (the special workspace, attached to a monitor too, is no workspace it
+  // can display)
+  match origin_monitor.workspaces().len() {
     0 => {
       // Prevent origin monitor from having no workspaces.
       activate_workspace(None, Some(origin_monitor), state, config)?;

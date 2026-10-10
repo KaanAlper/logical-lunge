@@ -42,6 +42,9 @@ struct NonTilingWindowInner {
   has_custom_floating_placement: bool,
   done_window_rules: Vec<WindowRuleConfig>,
   active_drag: Option<ActiveDrag>,
+  /// Hyprland's pin (see `WindowDto::is_pinned`). A window that leaves
+  /// the floating state becomes a tiling window, which drops it.
+  pinned: bool,
 }
 
 impl NonTilingWindow {
@@ -76,6 +79,7 @@ impl NonTilingWindow {
       has_custom_floating_placement,
       done_window_rules,
       active_drag,
+      pinned: false,
     };
 
     Self(Rc::new(RefCell::new(window)))
@@ -90,6 +94,14 @@ impl NonTilingWindow {
     insertion_target: Option<InsertionTarget>,
   ) {
     self.0.borrow_mut().insertion_target = insertion_target;
+  }
+
+  pub fn is_pinned(&self) -> bool {
+    self.0.borrow().pinned
+  }
+
+  pub fn set_pinned(&self, pinned: bool) {
+    self.0.borrow_mut().pinned = pinned;
   }
 
   pub fn to_tiling(&self, gaps_config: GapsConfig) -> TilingWindow {
@@ -137,6 +149,7 @@ impl NonTilingWindow {
       class_name: self.native_properties().class_name,
       process_name: self.native_properties().process_name,
       active_drag: self.active_drag(),
+      is_pinned: self.is_pinned(),
     }))
   }
 }

@@ -49,6 +49,23 @@ pub fn remove_monitor(
     });
   }
 
+  // the special workspace (scratchpad) keeps its windows, closed
+  if let Some(special) = monitor.special_workspace() {
+    monitor.set_special_shown(false);
+    crate::commands::workspace::sync_backdrop(state);
+    if special.has_children() {
+      move_container_within_tree(
+        &special.clone().into(),
+        &target_monitor.clone().into(),
+        target_monitor.child_count(),
+        state,
+      )?;
+      state
+        .pending_sync
+        .queue_container_to_redraw(special.clone());
+    }
+  }
+
   detach_container(monitor.clone().into())?;
 
   state.emit_event(WmEvent::MonitorRemoved {

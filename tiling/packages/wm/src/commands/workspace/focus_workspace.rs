@@ -1,7 +1,7 @@
 use anyhow::Context;
 use tracing::info;
 
-use super::activate_workspace;
+use super::{activate_workspace, hide_special_for_switch};
 use crate::{
   commands::{
     container::set_focused_descendant, workspace::deactivate_workspace,
@@ -48,6 +48,9 @@ pub fn focus_workspace(
   if let Some(target_workspace) = target_workspace {
     info!("Focusing workspace: {target_workspace}");
 
+    // Hyprland's `hide_special_on_workspace_change` (on in ii)
+    hide_special_for_switch(target_workspace.monitor().as_ref(), state)?;
+
     // Get the currently displayed workspace on the same monitor that the
     // workspace to focus is on.
     let displayed_workspace = target_workspace
@@ -91,8 +94,16 @@ pub fn focus_workspace(
 
     destroy_empty_workspaces(state)?;
 
-    // Save the currently focused workspace as recent.
-    state.recent_workspace_name = Some(focused_workspace.config().name);
+    // Save the currently focused workspace as recent (from the special
+    // workspace: the one it was shown over).
+    let recent = if focused_workspace.is_special() {
+      focused_workspace.monitor().and_then(|monitor| monitor.displayed_workspace())
+    } else {
+      Some(focused_workspace.clone())
+    };
+    if let Some(recent) = recent {
+      state.recent_workspace_name = Some(recent.config().name);
+    }
     if jump {
       state.pending_sync.queue_cursor_jump();
     }
