@@ -41,6 +41,10 @@ pub struct WmMonitor {
   pub height: i32,
   pub has_focus: bool,
   pub workspaces: Vec<WmWorkspace>,
+  /// Hyprland's special workspace (scratchpad) on this monitor: its window
+  /// count and whether it is open over the workspace.
+  pub special_windows: usize,
+  pub special_shown: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -162,6 +166,8 @@ async fn query_all(tx: &mut Tx, rx: &mut Rx, again: &mut bool) -> Option<WmState
       width: m["width"].as_i64().unwrap_or(0) as i32,
       height: m["height"].as_i64().unwrap_or(0) as i32,
       has_focus: m["hasFocus"].as_bool().unwrap_or(false),
+      special_windows: m["specialWindowCount"].as_u64().unwrap_or(0) as usize,
+      special_shown: m["specialShown"].as_bool().unwrap_or(false),
       workspaces: m["children"]
         .as_array()
         .into_iter()

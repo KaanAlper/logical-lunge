@@ -299,6 +299,8 @@
           'focus --prev-active-workspace': 'Önceki dolu workspace', 'focus --next-active-workspace': 'Sonraki dolu workspace',
           'move --prev-workspace ; focus --prev-workspace': "Pencereyi önceki workspace'e taşı (PageUp)",
           'move --next-workspace ; focus --next-workspace': "Pencereyi sonraki workspace'e taşı (PageDown)",
+          'toggle-special-workspace': 'Gizli workspace’i aç / kapat', 'move-to-special-workspace': 'Pencereyi gizli workspace’e gönder',
+          'toggle-pin': 'Pencereyi sabitle (her workspace’te)',
           'toggle-fullscreen': 'Tam ekran', 'toggle-fullscreen-spoof': 'Yuvasında tam ekran (spoof)', 'toggle-floating --centered': 'Yüzen pencere', 'toggle-tiling-direction': 'Bölme yönünü değiştir',
           'toggle-minimized': 'Simge durumuna küçült', 'wm-cycle-focus': 'Yüzen / döşeli pencereler arasında geç',
           'resize --width -10%': 'Pencereyi daralt', 'resize --width +10%': 'Pencereyi genişlet', 'wm-enable-binding-mode --name resize': 'Boyutlandırma modu',
@@ -391,6 +393,11 @@
         const rows = [
           { key: 'super', group: 'sys', label: 'Arama / overview', combo: 'Super', fixed: true },
           { key: 'dock', group: 'sys', label: 'Uygulama Dock’u', combo: 'Super+Alt', fixed: true },
+          // Hyprland'in fare kısayolları (ii), girdi kancasında
+          { key: 'mouse-move', group: 'win', label: 'Pencereyi taşı (sürükle)', combo: 'Super+Mouse L', fixed: true },
+          { key: 'mouse-resize', group: 'win', label: 'Pencereyi boyutlandır (sürükle)', combo: 'Super+Mouse R', fixed: true },
+          { key: 'mouse-wheel', group: 'ws', label: 'Workspace değiştir (tekerlek)', combo: 'Super+Wheel', fixed: true },
+          { key: 'mouse-back', group: 'ws', label: 'Gizli workspace’i aç / kapat', combo: 'Super+Mouse 4', fixed: true },
         ];
         if (model) {
           for (const b of model.core) {

@@ -7207,7 +7207,8 @@ static class Binds
         { "terminal", "Super+Enter" }, { "terminal-alt", "Super+T" },
         { "browser", "Super+W" }, { "files", "Super+E" }, { "code", "Super+C" }, { "editor", "Super+X" },
         { "close", "Alt+F4" }, { "screenshot", "Print" }, { "screenshot-screen", "Ctrl+Print" }, { "clipboard", "Super+V" },
-        { "file-search", "Super+S" },
+        // Super+S: Hyprland'in gizli workspace'i (ii), pencere yöneticisinde (config.yaml)
+        { "file-search", "Super+Shift+F" },
         // Windows'un kendi kabuğunun kombinasyonları da bizim: hiçbiri Windows'a ulaşmaz (Başlat, Arama, Bildirim
         // merkezi açılmasın), karşılıkları Logical Lunge'da
         { "overview-alt", "Ctrl+Escape" }, { "run", "Super+R" }, { "search", "Super+Q" }, { "workspaces", "Super+Tab" },
