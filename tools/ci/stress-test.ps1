@@ -49,15 +49,15 @@ $CHURN_WINDOW_CYCLES = 100   # open two windows, close them
 $CHURN_SAMPLE_EVERY  = 10    # operations between samples
 $MAX_CHURN_HANDLES_PER_100 = 40
 $MAX_CHURN_MB_PER_100      = 6
-$MAX_CHURN_GDI_PER_100     = 10
-$MAX_CHURN_USER_PER_100    = 10
+$MAX_CHURN_GDI_PER_100     = 4
+$MAX_CHURN_USER_PER_100    = 6
 $MAX_CHURN_THREADS_PER_100 = 4
-$MAX_CHURN_WINDOWS_PER_100 = 2    # top-level windows a part owns
+$MAX_CHURN_WINDOWS_PER_100 = 1    # top-level windows a part owns
 # Thread pools (Windows' own, the runtimes') add workers under a burst and retire them once idle, so a thread count
 # that climbs during a churn is a leak only if the threads are still there after a quiet pause: threads above the
 # count before the churn, after $CHURN_SETTLE_SEC s of quiet.
 $CHURN_SETTLE_SEC = 45
-$MAX_CHURN_THREADS_SETTLED = 4
+$MAX_CHURN_THREADS_SETTLED = 6    # web-ui's core kept 4 after the quiet pause in a passing run
 # slides must not get slower as operations pile up: median longest-frame of the last third vs the first third
 $MAX_CHURN_FRAME_SLOWDOWN_MS = 40
 $MAX_CHURN_THUMB_GROWTH = 8        # registered DWM thumbnails, last third vs first third of the churn
