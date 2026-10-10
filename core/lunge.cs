@@ -1896,11 +1896,38 @@ class Slider
             fs.Flushed();
             if (p >= 1.0 && pIn >= 1.0 && pOut >= 1.0) break;
         }
+        // Hyprland draws a resized window's old picture until the app commits a frame at the new size. Here the real
+        // window shows when the layer goes: taken down before the app painted at its new size it showed half drawn and
+        // then snapped. The layer stays (pictures at their end places) until every resized window's picture has
+        // changed size, i.e. the app presented its first frame at the new size, at most FIRST_PAINT_MS.
+        const int FIRST_PAINT_MS = 150;
+        var painting = new List<Anim>();
+        foreach (var a in items) if (a.Resizes && a.T != pop && a.SrcAt < 0 && Native.IsWindow(a.H)) painting.Add(a);
+        long paintWait = 0;
+        if (painting.Count > 0 && !Interrupt && !GameMode.On)
+        {
+            var pw = Stopwatch.StartNew();
+            while (!Interrupt && pw.ElapsedMilliseconds < FIRST_PAINT_MS)
+            {
+                bool waiting = false;
+                foreach (var a in painting)
+                {
+                    if (a.SrcAt >= 0) continue;
+                    var r = VisualDest(a.H, IntPtr.Zero, f.Ox, f.Oy);
+                    PlaceVisible(a.T, r, true);
+                    RingPlace(a.T, r, 255);
+                    if (a.T.Cx != a.Cx0 || a.T.Cy != a.Cy0) a.SrcAt = sw.ElapsedMilliseconds; else waiting = true;
+                }
+                if (!waiting) break;
+                Native.DwmFlush();
+            }
+            paintWait = pw.ElapsedMilliseconds;
+        }
         if (f.CloseThumb != IntPtr.Zero) { Unregister(f.CloseThumb); f.CloseThumb = IntPtr.Zero; }
         if (f.Close != null) { f.Close.Dispose(); f.Close = null; }
         var sb = new StringBuilder();
         foreach (var a in items) if (a.Resizes && a.T != pop) sb.Append(" | içerik " + a.Cx0 + "x" + a.Cy0 + "->" + a.T.Cx + "x" + a.T.Cy + (a.SrcAt >= 0 ? " @" + a.SrcAt + "ms" : " (değişmedi)"));
-        Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + items.Count + " pencere" + sb + " " + fs.Report() + " önizleme=" + Native.LiveThumbs);
+        Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + items.Count + " pencere" + sb + (paintWait > 0 ? ", ilk çizim beklendi " + paintWait + " ms" : "") + " " + fs.Report() + " önizleme=" + Native.LiveThumbs);
         overlay.Conceal();
         RingsClear();
         PinsClear();
