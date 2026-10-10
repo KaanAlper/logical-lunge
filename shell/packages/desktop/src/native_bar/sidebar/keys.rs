@@ -164,6 +164,8 @@ fn ll_label(id: &str) -> String {
   };
   if !fixed.is_empty() {
     fixed.to_string()
+  } else if let Some(n) = id.strip_prefix("ws-move-") {
+    format!("Pencereyi workspace {n}'e taşı")
   } else if let Some(n) = id.strip_prefix("ws-") {
     format!("Workspace {n}")
   } else {
@@ -1030,6 +1032,7 @@ mod tests {
   #[test]
   fn core_shortcuts_get_names_and_groups() {
     assert_eq!(ll_label("ws-4"), "Workspace 4");
+    assert_eq!(ll_label("ws-move-3"), "Pencereyi workspace 3'e taşı");
     assert_eq!(ll_group("ws-4", false), "ws");
     assert_eq!(ll_group("clipboard", false), "sys");
     assert_eq!(ll_group("browser", true), "app");
