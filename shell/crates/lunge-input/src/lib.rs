@@ -26,6 +26,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod ffi;
+mod inject;
 mod keys;
 mod mouse;
 mod ring;

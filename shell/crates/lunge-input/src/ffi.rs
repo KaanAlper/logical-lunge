@@ -22,6 +22,7 @@ pub mod imp {
   use std::panic::{catch_unwind, AssertUnwindSafe};
   use std::sync::atomic::{AtomicI64, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 
+  use crate::inject::{Op, Queue};
   use crate::keys::{self, KeyState};
   use crate::mouse::{self, MouseState};
   use crate::sys::Sys;
@@ -95,6 +96,44 @@ pub mod imp {
     entry: usize,
   }
 
+  #[repr(C)]
+  #[derive(Clone, Copy)]
+  struct MOUSEINPUT {
+    dx: i32,
+    dy: i32,
+    data: u32,
+    flags: u32,
+    time: u32,
+    extra: usize,
+  }
+
+  #[repr(C)]
+  #[derive(Clone, Copy)]
+  struct KEYBDINPUT {
+    vk: u16,
+    scan: u16,
+    flags: u32,
+    time: u32,
+    extra: usize,
+  }
+
+  #[repr(C)]
+  #[derive(Clone, Copy)]
+  union INPUT_U {
+    mi: MOUSEINPUT,
+    ki: KEYBDINPUT,
+  }
+
+  #[repr(C)]
+  #[derive(Clone, Copy)]
+  struct INPUT {
+    kind: u32,
+    u: INPUT_U,
+  }
+
+  #[cfg(target_pointer_width = "64")]
+  const _: () = assert!(std::mem::size_of::<INPUT>() == 40);
+
   #[link(name = "user32")]
   extern "system" {
     fn SetWindowsHookExW(id: i32, proc_: usize, module: isize, thread: u32) -> isize;
@@ -106,8 +145,7 @@ pub mod imp {
     fn DispatchMessageW(msg: *const MSG) -> isize;
     fn PostThreadMessageW(thread: u32, msg: u32, wparam: usize, lparam: isize) -> i32;
     pub fn GetAsyncKeyState(vk: i32) -> i16;
-    pub fn keybd_event(vk: u8, scan: u8, flags: u32, extra: usize);
-    pub fn mouse_event(flags: u32, dx: i32, dy: i32, data: u32, extra: usize);
+    fn SendInput(count: u32, inputs: *const INPUT, size: i32) -> u32;
     pub fn GetForegroundWindow() -> isize;
     pub fn GetAncestor(hwnd: isize, flags: u32) -> isize;
     pub fn GetClassNameW(hwnd: isize, name: *mut u16, max: i32) -> i32;
@@ -187,6 +225,93 @@ pub mod imp {
   static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
   static FREQ: AtomicI64 = AtomicI64::new(0);
 
+  /// What the hook procedures send back to Windows, sent by the injector
+  /// thread once they returned (see `inject`).
+  static INJECT: Queue = Queue::new();
+  static INJECT_EVENT: AtomicIsize = AtomicIsize::new(0);
+  const THREAD_PRIORITY_HIGHEST: i32 = 2;
+  const INFINITE: u32 = 0xFFFF_FFFF;
+
+  /// Hook thread: queues `ops` (in order) and wakes the injector. Nothing
+  /// is sent without the injector (its thread could not start).
+  fn inject(ops: &[Op]) {
+    let event = INJECT_EVENT.load(Ordering::Acquire);
+    if event == 0 {
+      return;
+    }
+    for op in ops {
+      if !INJECT.push(*op) {
+        break;
+      }
+    }
+    unsafe { SetEvent(event) };
+  }
+
+  fn key_input(vk: u8, flags: u32) -> INPUT {
+    INPUT { kind: 1, u: INPUT_U { ki: KEYBDINPUT { vk: vk as u16, scan: 0, flags, time: 0, extra: LL_MARK } } }
+  }
+
+  fn mouse_input(flags: u32, dx: i32, dy: i32) -> INPUT {
+    INPUT { kind: 0, u: INPUT_U { mi: MOUSEINPUT { dx, dy, data: 0, flags, time: 0, extra: LL_MARK } } }
+  }
+
+  /// A screen point in SendInput's absolute coordinates (0..65535 over the
+  /// virtual desktop).
+  fn absolute(x: i32, y: i32) -> (i32, i32) {
+    unsafe {
+      let (vx, vy) = (GetSystemMetrics(76), GetSystemMetrics(77));
+      let (vw, vh) = (GetSystemMetrics(78).max(2), GetSystemMetrics(79).max(2));
+      (((x - vx) as i64 * 65535 / (vw - 1) as i64) as i32, ((y - vy) as i64 * 65535 / (vh - 1) as i64) as i32)
+    }
+  }
+
+  fn move_to(x: i32, y: i32) -> INPUT {
+    let (nx, ny) = absolute(x, y);
+    mouse_input(0x0001 | 0x8000 | 0x4000, nx, ny) // MOVE | ABSOLUTE | VIRTUALDESK
+  }
+
+  /// Injector thread: sends what the hooks queued, everything pending in one
+  /// SendInput (nothing else comes in between).
+  fn run_injector(event: isize) {
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST) };
+    let mut batch: Vec<INPUT> = Vec::with_capacity(crate::inject::CAPACITY * 2);
+    loop {
+      unsafe { WaitForSingleObject(event, INFINITE) };
+      batch.clear();
+      while let Some(op) = INJECT.pop() {
+        match op {
+          Op::Dummy => {
+            batch.push(key_input(0xE8, 0));
+            batch.push(key_input(0xE8, 0x2)); // KEYUP
+          }
+          Op::Release(vk, extended) => batch.push(key_input(vk, 0x2 | extended as u32)), // KEYUP | EXTENDEDKEY
+          Op::LeftDown(x, y) => {
+            batch.push(move_to(x, y));
+            batch.push(mouse_input(0x0002, 0, 0)); // LEFTDOWN
+          }
+          Op::MoveTo(x, y) => batch.push(move_to(x, y)),
+        }
+      }
+      if !batch.is_empty() {
+        unsafe { SendInput(batch.len() as u32, batch.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
+      }
+    }
+  }
+
+  fn start_injector() {
+    if INJECT_EVENT.load(Ordering::Acquire) != 0 {
+      return;
+    }
+    let event = unsafe { CreateEventW(0, 0, 0, 0) };
+    if event == 0 {
+      return;
+    }
+    let spawned = std::thread::Builder::new().name("ll-inject".into()).stack_size(64 * 1024).spawn(move || run_injector(event));
+    if spawned.is_ok() {
+      INJECT_EVENT.store(event, Ordering::Release);
+    }
+  }
+
   pub fn signal(event: isize) {
     if event != 0 {
       unsafe { SetEvent(event) };
@@ -226,6 +351,7 @@ pub mod imp {
       if ring::event() == 0 {
         ring::set_event(CreateEventW(0, 0, 0, 0));
       }
+      start_injector();
       let ready = CreateEventW(0, 1, 0, 0);
       let spawned = std::thread::Builder::new()
         .name("ll-input".into())
@@ -490,24 +616,15 @@ pub mod imp {
     fn dragged(&self, x0: i32, y0: i32, x1: i32, y1: i32) -> bool {
       unsafe { (x1 - x0).abs() * 2 > GetSystemMetrics(68) || (y1 - y0).abs() * 2 > GetSystemMetrics(69) }
     }
+    // queued: sent by the injector after the hook procedure returned
     fn suppress_start(&self) {
-      unsafe {
-        keybd_event(0xE8, 0, 0, LL_MARK);
-        keybd_event(0xE8, 0, 2, LL_MARK);
-      }
+      inject(&[Op::Dummy]);
     }
-    fn release_key(&self, vk: u32) {
-      unsafe { keybd_event(vk as u8, 0, 0x2 | 0x1, LL_MARK) }; // KEYUP | EXTENDEDKEY
+    fn release_key(&self, vk: u32, extended: bool) {
+      inject(&[Op::Release(vk as u8, extended)]);
     }
-    fn replay_left_down(&self, x: i32, y: i32) {
-      unsafe {
-        let (vx, vy) = (GetSystemMetrics(76), GetSystemMetrics(77));
-        let (vw, vh) = (GetSystemMetrics(78).max(2), GetSystemMetrics(79).max(2));
-        let nx = ((x - vx) as i64 * 65535 / (vw - 1) as i64) as i32;
-        let ny = ((y - vy) as i64 * 65535 / (vh - 1) as i64) as i32;
-        mouse_event(0x0001 | 0x8000 | 0x4000, nx, ny, 0, LL_MARK); // MOVE | ABSOLUTE | VIRTUALDESK
-        mouse_event(0x0002, 0, 0, 0, LL_MARK); // LEFTDOWN
-      }
+    fn replay_left_down(&self, x: i32, y: i32, to_x: i32, to_y: i32) {
+      inject(&[Op::LeftDown(x, y), Op::MoveTo(to_x, to_y)]);
     }
   }
 }

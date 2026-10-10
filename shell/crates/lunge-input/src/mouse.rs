@@ -90,10 +90,12 @@ pub fn decide<S: Sys>(sys: &S, st: &mut MouseState, msg: u32, x: i32, y: i32, ti
       true
     }
     WM_MOUSEMOVE => {
-      if st.held_down && !injected && sys.dragged(st.held_x, st.held_y, x, y) {
-        // a drag started: Explorer gets the held press back
+      // a drag started: Explorer gets the held press back. It is sent after
+      // the hook returns, so this move is swallowed and sent again behind it
+      let replayed = st.held_down && !injected && sys.dragged(st.held_x, st.held_y, x, y);
+      if replayed {
         st.held_down = false;
-        sys.replay_left_down(st.held_x, st.held_y);
+        sys.replay_left_down(st.held_x, st.held_y, x, y);
       }
       if !injected && last_pos() != (x, y) {
         LAST_POS.store(pack(x, y), Ordering::Release);
@@ -101,7 +103,7 @@ pub fn decide<S: Sys>(sys: &S, st: &mut MouseState, msg: u32, x: i32, y: i32, ti
           sys.push(at(kind::MOVE, x, y));
         }
       }
-      false
+      replayed
     }
     WM_LBUTTONUP if st.swallow_left_up => {
       // the release of a double click's swallowed press
@@ -187,9 +189,10 @@ mod tests {
     assert!(decide(&f, &mut st, WM_LBUTTONDOWN, 5, 5, 0, false));
     assert!(decide(&f, &mut st, WM_LBUTTONUP, 5, 5, 0, false));
     assert!(decide(&f, &mut st, WM_LBUTTONDOWN, 5, 5, 0, false));
-    assert!(!decide(&f, &mut st, WM_MOUSEMOVE, 50, 5, 0, false));
+    // the move is swallowed: the press and then the move are sent again
+    assert!(decide(&f, &mut st, WM_MOUSEMOVE, 50, 5, 0, false));
     assert!(!decide(&f, &mut st, WM_LBUTTONUP, 50, 5, 0, false));
-    assert_eq!(f.injected.borrow().as_slice(), ["left 5,5"]);
+    assert_eq!(f.injected.borrow().as_slice(), ["left 5,5 to 50,5"]);
     assert_eq!(f.kinds()[0], kind::DESK_CLICK);
   }
 
