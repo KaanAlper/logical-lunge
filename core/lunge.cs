@@ -1549,7 +1549,85 @@ class Slider
         Native.DwmUpdateThumbnailProperties(t.Id, ref pr);
     }
 
-    public class Frozen { public int Ox, Oy; public Rectangle Mon; public readonly List<Thumb> All = new List<Thumb>(); public readonly Dictionary<long, Thumb> Win = new Dictionary<long, Thumb>(); public Overlay Ov; }
+    public class Frozen
+    {
+        public int Ox, Oy; public Rectangle Mon; public readonly List<Thumb> All = new List<Thumb>(); public readonly Dictionary<long, Thumb> Win = new Dictionary<long, Thumb>(); public Overlay Ov;
+        // the closed window's last picture (CloseShots), shrinking and fading on the border layer above the others
+        public IntPtr CloseThumb; public Native.RECT CloseRect; public CloseShots.Shot Close;
+    }
+
+    // A closed window's picture over a frozen layout (UI thread): it plays in Finish with the windows filling its place
+    public void AttachClosing(Frozen f, CloseShots.Shot shot)
+    {
+        if (f == null || shot == null || f.Ov == null) { if (shot != null) shot.Dispose(); return; }
+        var r = Shift(shot.Frame, f.Ox, f.Oy);
+        IntPtr id = RegisterOn(f.Ov.Rings.Hwnd, shot.Win.Hwnd, r, 255);
+        if (id == IntPtr.Zero) { shot.Dispose(); return; }
+        if (f.Close != null) { Unregister(f.CloseThumb); f.Close.Dispose(); }
+        f.CloseThumb = id; f.CloseRect = r; f.Close = shot;
+    }
+
+    static IntPtr RegisterOn(IntPtr dest, IntPtr src, Native.RECT r, byte opacity)
+    {
+        IntPtr id;
+        if (Native.DwmRegisterThumbnail(dest, src, out id) != 0) return IntPtr.Zero;
+        lock (liveThumbs) liveThumbs.Add(id);
+        var p = new Native.DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_VISIBLE | Native.DWM_TNP_OPACITY | Native.DWM_TNP_SOURCECLIENTAREAONLY,
+            rcDestination = r, opacity = opacity, fVisible = true, fSourceClientAreaOnly = false
+        };
+        Native.DwmUpdateThumbnailProperties(id, ref p);
+        return id;
+    }
+
+    static void PlaceClosing(IntPtr id, Native.RECT start, double e)
+    {
+        var p = new Native.DWM_THUMBNAIL_PROPERTIES
+        {
+            dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_OPACITY,
+            rcDestination = CloseShots.Shrink(start, Anims.WindowsOut.Popin, e),
+            opacity = (byte)Math.Max(0, Math.Min(255, (int)Math.Round(255 * (1 - e))))
+        };
+        Native.DwmUpdateThumbnailProperties(id, ref p);
+    }
+
+    // A closed window with nothing moving into its place (floating, or the last one): its picture shrinks and fades
+    // alone on the monitor's border layer, a transparent layer above the screen (UI thread)
+    public void CloseAlone(CloseShots.Shot shot)
+    {
+        int ms = Anims.Budget(Anims.WindowsOut.Ms);
+        if (shot == null) return;
+        if (Animating || ms <= 0) { shot.Dispose(); return; }
+        try
+        {
+            var mon = Screen.FromRectangle(Rectangle.FromLTRB(shot.Frame.Left, shot.Frame.Top, shot.Frame.Right, shot.Frame.Bottom)).Bounds;
+            int barH = BarPx(mon.X + mon.Width / 2, mon.Y + mon.Height / 2);
+            var area = new Rectangle(mon.X, mon.Y + barH, mon.Width, mon.Height - barH);
+            UseOverlay(area);
+            var r = Shift(shot.Frame, area.X, area.Y);
+            IntPtr id = RegisterOn(overlay.Rings.Hwnd, shot.Win.Hwnd, r, 255);
+            if (id == IntPtr.Zero) return;
+            Animating = true;
+            overlay.Rings.Reveal();
+            var pc = new PresentClock();
+            var fs = new FrameStats();
+            while (!Interrupt)
+            {
+                fs.Begin();
+                double q = Prog(pc.Ms(), ms);
+                PlaceClosing(id, r, Anims.WindowsOut.Curve.At(q));
+                fs.Updated();
+                Native.DwmFlush();
+                fs.Flushed();
+                if (q >= 1.0) break;
+            }
+            overlay.Rings.Conceal();
+            Unregister(id);
+            Log("kapanış: " + ms + " ms " + fs.Report());
+        }
+        finally { Animating = false; shot.Dispose(); }
+    }
 
     // Dondur: katmanı aç, pencereleri şu anki görünür yerlerinde (ya da verilen eski ekran dikdörtgenlerinde)
     // canlı görüntüleriyle göster. Arkasında tiling ne yaparsa yapsın kullanıcı zıplama görmez. UI thread'inde.
@@ -1563,6 +1641,18 @@ class Slider
     {
         try { return FreezeCore(mon, handles, startScreen, hidden, wholeMonitor); }
         catch (Exception ex) { Recover("donma: " + ex.Message); throw; }
+    }
+
+    // The windows in their real stacking, lowest first: a later preview is drawn over an earlier one, so a window
+    // on top (a fullscreen one, a floating one) stays on top in the frozen picture
+    static List<long> BottomFirst(IEnumerable<long> handles)
+    {
+        var want = new HashSet<long>(handles);
+        var order = new List<long>();
+        Native.EnumWindows(delegate (IntPtr h, IntPtr l) { if (want.Remove(h.ToInt64())) order.Add(h.ToInt64()); return want.Count > 0; }, IntPtr.Zero);
+        order.Reverse();
+        order.InsertRange(0, want); // not top-level any more: under the rest
+        return order;
     }
 
     // A window covering its whole monitor (to the pixel the OS can be off by): a fullscreen game or video
@@ -1630,7 +1720,7 @@ class Slider
         }
         DesktopWidgetsAttach(f.All, new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy);
         if (wholeMonitor) BarAttach(f.All, mon, ox, oy);
-        foreach (var h in handles)
+        foreach (var h in BottomFirst(handles))
         {
             var hw = new IntPtr(h);
             if (!Native.IsWindowVisible(hw) || Native.IsIconic(hw)) continue; // küçültülmüş: ekranda yok
@@ -1748,6 +1838,16 @@ class Slider
         var pc = new PresentClock();
         var fs = new FrameStats();
         int frames = 0; long lastFrame = 0, maxGap = 0;
+        int outMs = f.CloseThumb != IntPtr.Zero ? Math.Max(1, Anims.Budget(Anims.WindowsOut.Ms)) : 0;
+        // Fullscreen in or out (Super+F, an app's own): the other windows fade out as the window grows over them and
+        // fade back in as it shrinks, so none of them is drawn over the growing window or pops out at the end
+        Anim fsWin = null; int fsDir = 0;
+        foreach (var a in items)
+        {
+            bool s0 = CoversMonitor(Unshift(a.Start, f.Ox, f.Oy), f.Mon.X, f.Mon.Y, f.Mon.Width, f.Mon.Height);
+            bool s1 = CoversMonitor(Unshift(a.End, f.Ox, f.Oy), f.Mon.X, f.Mon.Y, f.Mon.Width, f.Mon.Height);
+            if (s0 != s1) { fsWin = a; fsDir = s1 ? 1 : -1; break; }
+        }
         while (!Interrupt)
         {
             fs.Begin();
@@ -1755,8 +1855,9 @@ class Slider
             if (frames > 0 && nowMs - lastFrame > maxGap) maxGap = nowMs - lastFrame;
             lastFrame = nowMs; frames++;
             double at = pc.Ms();
-            double p = Prog(at, durationMs), pIn = pop != null ? Prog(at, inSpec.Ms) : 1.0;
+            double p = Prog(at, durationMs), pIn = pop != null ? Prog(at, inSpec.Ms) : 1.0, pOut = outMs > 0 ? Prog(at, outMs) : 1.0;
             double e = moveCurve.At(p), eIn = inSpec.Curve.At(pIn);
+            if (outMs > 0) PlaceClosing(f.CloseThumb, f.CloseRect, Anims.WindowsOut.Curve.At(pOut));
             foreach (var a in items)
             {
                 if (!a.Moved)
@@ -1769,8 +1870,8 @@ class Slider
                 byte op = 255;
                 if (a.T == pop)
                 {
-                    // Hyprland windowsIn "popin 80%": ölçekli büyüyerek ve belirerek
-                    op = (byte)Math.Min(255, (int)(255 * Math.Min(1.0, pIn * 2.5)));
+                    // Hyprland windowsIn "popin 80%" + fadeIn (ii: ikisi de 300 ms emphasizedDecel): ölçekli büyüyerek ve belirerek
+                    op = (byte)Math.Max(0, Math.Min(255, (int)Math.Round(255 * eIn)));
                     var pr = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_RECTDESTINATION | Native.DWM_TNP_OPACITY, rcDestination = r, opacity = op };
                     Native.DwmUpdateThumbnailProperties(a.T.Id, ref pr);
                 }
@@ -1778,6 +1879,12 @@ class Slider
                 {
                     PlaceVisible(a.T, r, a.Resizes);
                     if (a.Resizes && a.SrcAt < 0 && (a.T.Cx != a.Cx0 || a.T.Cy != a.Cy0)) a.SrcAt = nowMs;
+                    if (fsWin != null && a != fsWin)
+                    {
+                        op = (byte)Math.Max(0, Math.Min(255, (int)Math.Round(255 * (fsDir > 0 ? 1 - e : e))));
+                        var po = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_OPACITY, opacity = op };
+                        Native.DwmUpdateThumbnailProperties(a.T.Id, ref po);
+                    }
                 }
                 RingPlace(a.T, r, op);
                 lock (ShownLock) Shown[a.H.ToInt64()] = Unshift(r, f.Ox, f.Oy);
@@ -1786,8 +1893,10 @@ class Slider
             fs.Updated();
             Native.DwmFlush();
             fs.Flushed();
-            if (p >= 1.0 && pIn >= 1.0) break;
+            if (p >= 1.0 && pIn >= 1.0 && pOut >= 1.0) break;
         }
+        if (f.CloseThumb != IntPtr.Zero) { Unregister(f.CloseThumb); f.CloseThumb = IntPtr.Zero; }
+        if (f.Close != null) { f.Close.Dispose(); f.Close = null; }
         var sb = new StringBuilder();
         foreach (var a in items) if (a.Resizes && a.T != pop) sb.Append(" | içerik " + a.Cx0 + "x" + a.Cy0 + "->" + a.T.Cx + "x" + a.T.Cy + (a.SrcAt >= 0 ? " @" + a.SrcAt + "ms" : " (değişmedi)"));
         Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + items.Count + " pencere" + sb + " " + fs.Report() + " önizleme=" + Native.LiveThumbs);
@@ -2954,6 +3063,7 @@ class Dwindle
     {
         this.ui = ui; this.slider = slider;
         current = this;
+        CloseShots.Ui = ui;
         var t = new Thread(() =>
         {
             while (true)
@@ -3136,24 +3246,34 @@ class Dwindle
     {
         long h = hwnd.ToInt64();
         ReleasePending(h, "yeni pencere hemen kapandı");
-        if (Slider.Animating || !Prefs.Animations) return;
+        // Super+Q ile kapatılan pencerenin son görüntüsü (CloseShots): yerine kayan pencereler varsa onlarla, yoksa tek başına
+        var shot = CloseShots.Take(h);
+        if (Slider.Animating || !Prefs.Animations) { if (shot != null) shot.Dispose(); return; }
+        if (!CloseWithLayout(hwnd, shot) && shot != null) slider.CloseAlone(shot);
+    }
+
+    // true: the layout animates (the closed window's picture, if any, plays over it)
+    bool CloseWithLayout(IntPtr hwnd, CloseShots.Shot shot)
+    {
+        long h = hwnd.ToInt64();
         string mid; Rectangle mon;
         Dictionary<long, Native.RECT> vis; Dictionary<long, string> mo; HashSet<long> tl;
         lock (cacheLock)
         {
-            if (!tiledSet.Contains(h) || !monOf.TryGetValue(h, out mid) || !monRects.TryGetValue(mid, out mon)) return;
+            if (!tiledSet.Contains(h) || !monOf.TryGetValue(h, out mid) || !monRects.TryGetValue(mid, out mon)) return false;
             vis = visual; mo = monOf; tl = tiledSet;
         }
-        lock (pendLock) if (pendFrozen != null) return;
+        lock (pendLock) if (pendFrozen != null) return false;
         var hs = new List<long>();
         bool otherTiled = false;
         foreach (var kv in mo)
             if (kv.Value == mid && kv.Key != h) { hs.Add(kv.Key); if (tl.Contains(kv.Key)) otherTiled = true; }
-        if (!otherTiled) return; // yer değiştirecek başka döşeli pencere yok
+        if (!otherTiled) return false; // yer değiştirecek başka döşeli pencere yok
         var start = new Dictionary<long, Native.RECT>();
         foreach (var x in hs) { Native.RECT r; if (vis.TryGetValue(x, out r)) start[x] = r; }
 
         var f = slider.Freeze(mon, hs, start, 0); // UI thread'indeyiz
+        if (shot != null) slider.AttachClosing(f, shot);
         lock (pendLock) { pendFrozen = f; pendHandle = h; pendAt = Environment.TickCount; }
         Slider.Log("kapanan pencere dondu");
 
@@ -3170,6 +3290,7 @@ class Dwindle
             }
         };
         timer.Start();
+        return true;
     }
 
     Slider.Frozen TakePending(long h)
@@ -7004,7 +7125,7 @@ class Rounder
     [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr h);
     // Köşe yarıçapı tek kaynaktan: config.yaml borders.global.border_radius (BorderStyle), pencerenin monitörünün ölçeğiyle
     // büyür (kenarlık motoru da aynı yarıçapı aynı ölçekle çizer; önceden sabit 14 px, %150'de köşe kenarlığa uymuyordu)
-    static int RadiusFor(IntPtr h)
+    internal static int RadiusFor(IntPtr h)
     {
         uint dpi = 0;
         try { dpi = GetDpiForWindow(h); } catch { }
@@ -8280,7 +8401,9 @@ class Keys2
             string c = cls.ToString(), t = title.ToString();
             bool shell = fg == IntPtr.Zero || c == "Progman" || c == "WorkerW" || c == "Shell_TrayWnd" || t.StartsWith(Names.TitlePrefix) || t.StartsWith("lunge-");
             if (shell) return false;
-            Native.PostMessage(fg, 0x0112, (IntPtr)0xF060, IntPtr.Zero); // WM_SYSCOMMAND SC_CLOSE
+            // Hyprland windowsOut: pencerenin son görüntüsü kapatmadan hemen önce alınır (CloseShots)
+            var target = fg;
+            CloseShots.CloseWithShot(target, () => Native.PostMessage(target, 0x0112, (IntPtr)0xF060, IntPtr.Zero)); // WM_SYSCOMMAND SC_CLOSE
             return true;
         }
         return false;
