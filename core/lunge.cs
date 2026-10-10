@@ -3793,6 +3793,7 @@ class MouseFocus
     IntPtr Hook(int nCode, IntPtr wParam, IntPtr lParam)
     {
         LastHookTick = Environment.TickCount;
+        if (nCode >= 0 && HookProbe.IsMouseProbe(lParam)) return (IntPtr)1; // the probe: answered by the tick, eaten
         var mark = InputLatency.Start();
         IntPtr r = HookInner(nCode, wParam, lParam);
         string slow = InputLatency.Slow(mark);
@@ -14005,12 +14006,23 @@ static class Keep
 // no hook is called for, a cursor warp above all (SetCursorPos; the window manager puts the cursor on the focused window
 // after a workspace switch). Reinstalling on the suspicion alone did it every couple of seconds while workspaces were
 // switched from the bar or a script, each time forgetting the held keys. So a probe goes through the hook first, a marked
-// key nobody uses (0xE8) or a horizontal wheel turn of zero (a zero move is not delivered to any hook; a real move
-// would nudge a game's aim), and only a hook that does not see its own probe in a second is reinstalled.
+// key nobody uses (0xE8) or a one-pixel mouse move carrying the probe's own mark, and only a hook that does not see its
+// own probe in a second is reinstalled. Windows does not call the hooks for a zero move or a zero wheel turn (CI showed
+// every probe of that kind unanswered and the mouse hook reinstalled every few seconds), so the probe is a real move;
+// the hook that sees it eats it (lunge-input mouse::is_probe), so the cursor and a game's raw input never move. Only a
+// hook that is really gone lets it through: one pixel, once, before the reinstall.
 static class HookProbe
 {
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, int dx, int dy, uint data, UIntPtr extra);
+    public static readonly UIntPtr PROBE_MARK = (UIntPtr)0x4C4C5052u; // "LLPR", as lunge-input's mouse::PROBE_MARK
     static int keyAt, mouseAt; // when the probe went out, 0: none out
+
+    // The managed hook (no lunge_input.dll) eats the probe like the native one
+    public static bool IsMouseProbe(IntPtr lParam)
+    {
+        var m = (Native.MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(Native.MSLLHOOKSTRUCT));
+        return (m.flags & 1) != 0 && (ulong)m.extra.ToInt64() == PROBE_MARK.ToUInt64();
+    }
 
     // From the keyboard hook's thread, once a second: true when the hook is to be reinstalled
     public static bool KeyboardDead(bool suspect)
@@ -14024,7 +14036,7 @@ static class HookProbe
     // From the mouse hook's thread, once a second
     public static bool MouseDead(bool suspect)
     {
-        return Check(ref mouseAt, MouseFocus.LastHookTick, suspect, () => mouse_event(0x01000 /*HWHEEL*/, 0, 0, 0, Native.LL_MARK));
+        return Check(ref mouseAt, MouseFocus.LastHookTick, suspect, () => mouse_event(0x0001 /*MOVE*/, 1, 0, 0, PROBE_MARK));
     }
 
     static bool Check(ref int at, int seen, bool suspect, Action probe)
