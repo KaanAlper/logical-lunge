@@ -194,7 +194,7 @@
             if (wantOpen.current) return;
             live.current = false;
             lunge.hideWindow(win).catch(() => {});
-          }, 260);
+          }, 280); // kapanışın en uzun parçası: 270 ms solma
         }, []);
         const show = useCallback(async () => {
           wantOpen.current = true;

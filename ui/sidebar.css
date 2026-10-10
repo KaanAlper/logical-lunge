@@ -51,9 +51,11 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   padding: 10px;
   display: flex; flex-direction: column; gap: 10px;
   transform: translateX(0);
-  transition: transform 350ms var(--emphDecel), opacity 250ms;
+  /* ii'nin sağ paneli bir katman (layerrule slide right): layersIn 270 ms emphasizedDecel, fadeLayersIn 50 ms menu_decel;
+     layersOut 240 ms menu_accel, fadeLayersOut 270 ms stall */
+  transition: transform 270ms var(--emphDecel), opacity 50ms cubic-bezier(0.1, 1, 0, 1);
 }
-.panel.closed { transform: translateX(110%); opacity: 0; transition: transform 250ms var(--emphAccel), opacity 250ms; }
+.panel.closed { transform: translateX(110%); opacity: 0; transition: transform 240ms cubic-bezier(0.52, 0.03, 0.72, 0.08), opacity 270ms cubic-bezier(1, -0.1, 0.7, 0.85); }
 
 /* SystemButtonRow */
 .sysrow { display: flex; justify-content: space-between; align-items: stretch; margin-top: 5px; }
