@@ -679,8 +679,16 @@
               </Row>
               {/* Yalnızca dokunmatik yüzeyli bilgisayarlarda; çekirdek hemen uygular */}
               {s.touchpad && (
-                <Row icon="swipe" label="Dokunmatik yüzey hareketleri" sub="3 parmak: yana workspace kaydırır, yukarı overview, aşağı sağ panel; 4 parmak: pencereyi taşır">
+                <Row icon="swipe" label="Dokunmatik yüzey hareketleri" sub={s.hyprGestures === true
+                  ? "4 parmak: yana workspace kaydırır, yukarı ya da aşağı overview; 3 parmak: pencereyi taşır"
+                  : "3 parmak: yana workspace kaydırır, yukarı overview, aşağı sağ panel; 4 parmak: pencereyi taşır"}>
                   <Switch on={s.gestures !== false} onChange={v => helper(['--set-pref', 'gestures', String(v)]).then(() => update({ gestures: v })).catch(() => {})} />
+                </Row>
+              )}
+              {/* illogical-impulse'un parmak düzeni (Hyprland hareketleri); kapalıyken 3 parmak workspace kaydırır */}
+              {s.touchpad && (
+                <Row icon="swipe_vertical" label="Hyprland hareketleri" sub="illogical-impulse'un parmak düzeni: workspace'ler 4 parmakla kayar">
+                  <Switch on={s.hyprGestures === true} onChange={v => helper(['--set-pref', 'hyprGestures', String(v)]).then(() => update({ hyprGestures: v })).catch(() => {})} />
                 </Row>
               )}
             </div>

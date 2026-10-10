@@ -2660,6 +2660,49 @@ class Slider
         public int Mw;
         public readonly List<Thumb> All = new List<Thumb>(), Old = new List<Thumb>(), Prev = new List<Thumb>(), Next = new List<Thumb>();
         public double Progress;
+        // Hyprland: the direction locks once the fingers went past the threshold; the average speed of all updates
+        // (swipe px per update) can force the switch at release
+        public int Lock;
+        public double LastRaw, AvgSpeed;
+        public int SpeedPoints;
+    }
+
+    // illogical-impulse's gestures: workspace_swipe_distance 700, cancel_ratio 0.2, min_speed_to_force 5,
+    // direction_lock on with threshold 10 (swipe px)
+    const double SWIPE_DIST = 700, SWIPE_CANCEL = 0.2, SWIPE_FORCE = 5, SWIPE_LOCK = 10;
+
+    // Hyprland's release decision: back unless the swipe went past the cancel ratio or its average speed forces it
+    // (or it barely moved); the side is where the workspace was dragged, not the last flick
+    internal static int SwipeTarget(double p, double avgSpeed, bool hasPrev, bool hasNext)
+    {
+        double delta = p * SWIPE_DIST;
+        if ((Math.Abs(delta) < SWIPE_DIST * SWIPE_CANCEL && avgSpeed < SWIPE_FORCE) || Math.Abs(delta) < 2) return 0;
+        if (delta > 0) return hasNext ? 1 : 0;
+        return hasPrev ? -1 : 0;
+    }
+
+    // Direction lock: past the threshold the swipe keeps that side; the other side clamps to 0
+    internal static double SwipeLocked(double p, ref int lockDir)
+    {
+        if (lockDir == 0) { if (Math.Abs(p) * SWIPE_DIST > SWIPE_LOCK) lockDir = Math.Sign(p); return p; }
+        return Math.Sign(p) == -lockDir ? 0 : p;
+    }
+
+    // Hyprland m±1: the next workspace that is open on this monitor in that direction; past the last one a new one
+    // (workspace_swipe_create_new: the next number this monitor may open); nothing before the first
+    static string SwipeNeighbor(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, int cur, int dir)
+    {
+        int best = 0; bool found = false;
+        foreach (Dictionary<string, object> w in J.Children(mon))
+        {
+            int n;
+            if (!int.TryParse(J.Str(w, "name"), out n) || n == cur || Math.Sign(n - cur) != dir) continue;
+            if (!found || Math.Abs(n - cur) < Math.Abs(best - cur)) { best = n; found = true; }
+        }
+        if (found) return best.ToString();
+        if (dir < 0) return null;
+        string next = AdjacentWorkspace(mons, mon, cur.ToString(), 1);
+        return next != null && !LivesElsewhere(mons, mon, next) ? next : null;
     }
     SwipeScene swipe;
     public bool Swiping { get { return swipe != null; } }
@@ -2700,10 +2743,8 @@ class Slider
         var mon = FocusedMonitor(mons, out oldWs);
         int cur;
         if (mon == null || oldWs == null || !int.TryParse(J.Str(oldWs, "name"), out cur)) return false;
-        string prevCandidate = AdjacentWorkspace(mons, mon, cur.ToString(), -1);
-        string nextCandidate = AdjacentWorkspace(mons, mon, cur.ToString(), 1);
-        string prevName = prevCandidate != null && !LivesElsewhere(mons, mon, prevCandidate) ? prevCandidate : null;
-        string nextName = nextCandidate != null && !LivesElsewhere(mons, mon, nextCandidate) ? nextCandidate : null;
+        string prevName = SwipeNeighbor(mons, mon, cur, -1);
+        string nextName = SwipeNeighbor(mons, mon, cur, 1);
 
         int mx = J.Int(mon, "x"), my = J.Int(mon, "y"), mw = J.Int(mon, "width"), mh = J.Int(mon, "height");
         int barH = BarPx(mx + mw / 2, my + mh / 2);
@@ -2778,6 +2819,10 @@ class Slider
         var s = swipe;
         if (s == null || double.IsNaN(p)) return;
         swipeTouched = Environment.TickCount;
+        s.AvgSpeed = (s.AvgSpeed * s.SpeedPoints + Math.Abs(p - s.LastRaw) * SWIPE_DIST) / (s.SpeedPoints + 1);
+        s.SpeedPoints++;
+        s.LastRaw = p;
+        p = SwipeLocked(p, ref s.Lock);
         const double RUBBER = 0.06;
         if (p > 0 && s.NextName == null) p = RUBBER * (1 - Math.Exp(-p / RUBBER));
         else if (p < 0 && s.PrevName == null) p = -RUBBER * (1 - Math.Exp(p / RUBBER));
@@ -2798,20 +2843,18 @@ class Slider
     {
         var s = swipe;
         if (s == null) return;
-        const double COMMIT = 0.2, FLICK = 0.0015; // hızlı fiske: ~0.7 sn'de bir workspace boyu
         if (double.IsNaN(velocity)) velocity = 0;
         double p = s.Progress;
-        int target = 0;
-        if (s.NextName != null && ((p > COMMIT && velocity > -FLICK) || (p > 0 && velocity > FLICK))) target = 1;
-        else if (s.PrevName != null && ((p < -COMMIT && velocity < FLICK) || (p < 0 && velocity < -FLICK))) target = -1;
+        int target = SwipeTarget(p, s.AvgSpeed, s.PrevName != null, s.NextName != null);
         string name = target > 0 ? s.NextName : target < 0 ? s.PrevName : null;
         Task task = null;
         if (name != null) task = Task.Factory.StartNew(() => tiling.Command("focus --workspace " + name));
 
-        // Kalan yol workspace hareketinin eğrisiyle; süre kalan yolla orantılı (en az 120 ms)
+        // Hyprland: the workspaces animate from where the fingers left them with the full workspace animation
+        // (ii: 700 ms menu_decel), whatever is left of the way
         var spec = Anims.Workspaces;
         double from = p, to = target;
-        int dur = spec.Ms <= 0 ? 0 : Math.Max(120, (int)(Math.Abs(to - from) * spec.Ms));
+        int dur = Anims.Budget(spec.Ms);
         var pc = new PresentClock();
         var fs = new FrameStats();
         int frames = 0;
@@ -2842,7 +2885,7 @@ class Slider
             }
         }
         SwipeClear();
-        Log("parmakla kaydırma: " + (name == null ? "geri döndü" : "-> " + name) + ", bırakılan yer " + p.ToString("0.00") + ", hız " + (velocity * 1000).ToString("0.00") + "/sn, " + frames + " kare " + fs.Report());
+        Log("parmakla kaydırma: " + (name == null ? "geri döndü" : "-> " + name) + ", bırakılan yer " + p.ToString("0.00") + ", ortalama hız " + s.AvgSpeed.ToString("0.0") + " px/rapor, son hız " + (velocity * 1000).ToString("0.00") + "/sn, " + frames + " kare " + fs.Report());
     }
 
     // Klavyeyle kaydırma ya da taşıma başlarken süren parmak kaydırması hemen kapanır
@@ -4174,6 +4217,10 @@ static class Prefs
     static string themeInputs;
     // Dokunmatik yüzey hareketleri (3/4 parmak); dokunmatik yüzey yoksa etkisiz
     public static bool Gestures { get { return gestures; } }
+    // Hyprland hareketleri (illogical-impulse'un parmak düzeni): 4 parmak yana workspace, yukarı/aşağı overview; 3 parmak
+    // pencereyi taşır. Kapalıyken (varsayılan) 3 parmak workspace kaydırır.
+    public static bool HyprGestures { get { return hyprGestures; } }
+    static volatile bool hyprGestures;
     public static string FilePath { get { return System.IO.Path.Combine(Paths.ConfigDir, "prefs.json"); } }
     static readonly object gate = new object();
 
@@ -4224,6 +4271,7 @@ static class Prefs
             object v;
             animations = !(d.TryGetValue("animations", out v) && v is bool && !(bool)v);
             gestures = !(d.TryGetValue("gestures", out v) && v is bool && !(bool)v);
+            hyprGestures = d.TryGetValue("hyprGestures", out v) && v is bool && (bool)v;
             bool wt = !(d.TryGetValue("winToasts", out v) && v is bool && !(bool)v);
             if (wt != winToasts)
             {
@@ -4274,6 +4322,7 @@ static class Prefs
                 val = value; break;
             case "animations":
             case "gestures":
+            case "hyprGestures":
             case "winToasts":
             case "takeover":
             case "themeSync":
@@ -4767,6 +4816,7 @@ static class Settings
             { "clock", p.TryGetValue("clock", out clock) ? clock : "24" },
             { "animations", !(p.TryGetValue("animations", out anim) && anim is bool && !(bool)anim) },
             { "gestures", !(p.TryGetValue("gestures", out gest) && gest is bool && !(bool)gest) },
+            { "hyprGestures", p.ContainsKey("hyprGestures") && p["hyprGestures"] is bool && (bool)p["hyprGestures"] },
             // açık/kapalı tercihler: yoksa açık (ayarlar penceresi anahtarın gerçek hâlini göstersin)
             { "winToasts", PrefOn(p, "winToasts") },
             { "takeover", PrefOn(p, "takeover") },
@@ -8744,7 +8794,7 @@ static class Touchpad
     // ---- Hareket tanıma (parmak sayısı ve ağırlık merkezi, mm) ----
     enum St { Idle, Pending, Swipe, Discrete, Done }
     static St st;
-    static int fingers;
+    static int fingers, swipeFingers = 3;
     static bool horizontal;
     static double x0, y0, lastX, lastY;
     static readonly List<KeyValuePair<long, double>> trail = new List<KeyValuePair<long, double>>();
@@ -8776,10 +8826,14 @@ static class Touchpad
                 if (Math.Abs(dx) < LOCK_MM && Math.Abs(dy) < LOCK_MM) return;
                 horizontal = Math.Abs(dx) >= Math.Abs(dy);
                 // Animasyonlar kapalıysa kaydırma parmağı izlemez: yeterince gidince workspace doğrudan değişir
-                if (fingers == 3 && horizontal && slider != null && slider.SwipeBegin())
+                swipeFingers = Prefs.HyprGestures ? 4 : 3;
+                if (fingers == swipeFingers && horizontal && slider != null && slider.SwipeBegin())
                 {
                     st = St.Swipe;
                     trail.Clear();
+                    // Kaydırma yön kilidinin aşıldığı yerden başlar: ilk karede kilit payı kadar (4 mm, ekranın ~%7'si)
+                    // sıçramasın
+                    x0 = cx;
                     Swipe(cx, t);
                 }
                 else st = fingers <= 4 ? St.Discrete : St.Done; // 5 parmak: hareket yok
@@ -8790,7 +8844,7 @@ static class Touchpad
                 if (Math.Abs(d) >= FIRE_MM) { Fire(fingers, horizontal, d); st = St.Done; }
                 return;
             case St.Swipe:
-                if (n < 3) { EndSwipe(); st = n == 0 ? St.Idle : St.Done; return; }
+                if (n < swipeFingers) { EndSwipe(); st = n == 0 ? St.Idle : St.Done; return; }
                 Swipe(cx, t);
                 return;
             default: // Done: hepsi kalkana kadar yeni hareket yok
@@ -8824,8 +8878,11 @@ static class Touchpad
     {
         var k = Keys2.Instance;
         if (k == null) return;
-        string act = n == 3
-            ? (isHorizontal ? (d < 0 ? "ws-next" : "ws-prev") : (d < 0 ? "overview" : "sidebar"))
+        // Hyprland hareketleri (ii): 4 parmak yana workspace, yukarı da aşağı da overview; 3 parmak pencereyi taşır
+        bool hypr = Prefs.HyprGestures;
+        bool workspaceFingers = n == (hypr ? 4 : 3);
+        string act = workspaceFingers
+            ? (isHorizontal ? (d < 0 ? "ws-next" : "ws-prev") : hypr ? "overview" : (d < 0 ? "overview" : "sidebar"))
             : "move-" + (isHorizontal ? (d < 0 ? "left" : "right") : (d < 0 ? "up" : "down"));
         Slider.Log("parmak hareketi: " + n + " parmak -> " + act);
         k.Dispatch(act);
