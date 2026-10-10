@@ -7556,6 +7556,9 @@ class Keys2
                             {
                                 line = line.Trim();
                                 if (line.Length == 0) continue;
+                                // "gc": a full collection before the stress test samples the core, so the count is the
+                                // handles the core still holds, not the closed sockets and waits only a GC would free
+                                if (line == "gc") { GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect(); continue; }
                                 Slider.Log("test: " + line);
                                 // "wm <command>": a window manager bind (toggle-fullscreen, toggle-floating ...) as a key runs it
                                 try { if (line.StartsWith("wm ")) RunWm(new[] { line.Substring(3) }); else RunAction(line); }
