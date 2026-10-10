@@ -7473,7 +7473,7 @@ class Keys2
     static int lastMoveAction = Environment.TickCount - 100000;
 
     // Test kanalı (yalnızca LL_TEST=1 ortam değişkeniyle başlatılınca açılır): \\.\pipe\lunge-test'e yazılan her
-    // satır (ws-3, move-left, ws-move-next ...) klavyenin çağırdığı RunAction'a gider. Kanca enjekte tuşları bilerek yok
+    // satır (ws-3, move-left, ws-move-next ...) klavyenin çağırdığı RunAction'a, "wm <komut>" RunWm'e gider. Kanca enjekte tuşları bilerek yok
     // saydığı için otomatik animasyon testinin tek yolu.
     public void StartTestPipe()
     {
@@ -7495,7 +7495,9 @@ class Keys2
                                 line = line.Trim();
                                 if (line.Length == 0) continue;
                                 Slider.Log("test: " + line);
-                                try { RunAction(line); } catch (Exception ex) { Slider.Log("test hata: " + ex.Message); }
+                                // "wm <command>": a window manager bind (toggle-fullscreen, toggle-floating ...) as a key runs it
+                                try { if (line.StartsWith("wm ")) RunWm(new[] { line.Substring(3) }); else RunAction(line); }
+                                catch (Exception ex) { Slider.Log("test hata: " + ex.Message); }
                             }
                         }
                     }
