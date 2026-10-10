@@ -53,6 +53,11 @@ $MAX_CHURN_GDI_PER_100     = 10
 $MAX_CHURN_USER_PER_100    = 10
 $MAX_CHURN_THREADS_PER_100 = 4
 $MAX_CHURN_WINDOWS_PER_100 = 2    # top-level windows a part owns
+# Thread pools (Windows' own, the runtimes') add workers under a burst and retire them once idle, so a thread count
+# that climbs during a churn is a leak only if the threads are still there after a quiet pause: threads above the
+# count before the churn, after $CHURN_SETTLE_SEC s of quiet.
+$CHURN_SETTLE_SEC = 45
+$MAX_CHURN_THREADS_SETTLED = 4
 # slides must not get slower as operations pile up: median longest-frame of the last third vs the first third
 $MAX_CHURN_FRAME_SLOWDOWN_MS = 40
 $MAX_CHURN_THUMB_GROWTH = 8        # registered DWM thumbnails, last third vs first third of the churn
@@ -238,7 +243,12 @@ $churn += Churn 'popup' 60 { param($i)
 }
 # Super+F on the focused window: the freeze/snapshot animation (an even count leaves it as it was)
 $churn += Churn 'state' 60 { Send-Test 'wm toggle-fullscreen'; Start-Sleep -Milliseconds 800 }
-Start-Sleep 2
+Start-Sleep $CHURN_SETTLE_SEC
+$churnBefore = $churn[0].Series[0].Sample
+$churnSettled = Sample
+foreach ($k in @('core', 'shell', 'tiling')) {
+    if ($churnBefore[$k] -and $churnSettled[$k]) { Note "after the churn and $CHURN_SETTLE_SEC s of quiet: $k threads $($churnBefore[$k].Threads) -> $($churnSettled[$k].Threads), handles $($churnBefore[$k].Handles) -> $($churnSettled[$k].Handles)" }
+}
 
 # ------------------------------------------------------------------ checks
 function Read-Log([string]$name) { $p = Join-Path $logs $name; if (Test-Path $p) { Get-Content $p -Encoding UTF8 } else { @() } }
@@ -337,7 +347,12 @@ $churnRows = foreach ($c in $churn) {
         foreach ($m in $churnLimits.Keys) {
             $per100 = [math]::Round((Rate $xs @($pts | ForEach-Object { [double]$_.Sample[$k].$m })) * 100, 1)
             $row[$m] = $per100
-            if ($per100 -gt $churnLimits[$m]) { Fail "churn $($c.Kind): $k $m grows $per100 per 100 operations (max $($churnLimits[$m]))" }
+            if ($per100 -le $churnLimits[$m]) { continue }
+            if ($m -eq 'Threads' -and $churnBefore[$k] -and $churnSettled[$k]) {
+                $kept = $churnSettled[$k].Threads - $churnBefore[$k].Threads
+                if ($kept -le $MAX_CHURN_THREADS_SETTLED) { Note "churn $($c.Kind): $k threads rose $per100 per 100 operations but retired once idle ($kept kept)"; continue }
+            }
+            Fail "churn $($c.Kind): $k $m grows $per100 per 100 operations (max $($churnLimits[$m]))"
         }
         [pscustomobject]$row
     }
