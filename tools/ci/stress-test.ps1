@@ -146,7 +146,10 @@ function Send-Test([string]$line) {
 }
 
 $pids = @{ core = $coreProc.Id; tiling = $tiling.Id; shell = $shell.Id }
+# The core is a .NET process: closed sockets and waits keep their handles until a collection runs, so its count moves
+# with the GC's timing. It collects first ("gc" on the test pipe), and what is left is what it really holds.
 function Sample {
+    Send-Test 'gc'; Start-Sleep -Milliseconds 300
     $r = @{}
     foreach ($k in $pids.Keys) {
         $p = Get-Process -Id $pids[$k] -ErrorAction SilentlyContinue
