@@ -1300,11 +1300,12 @@ class Slider
     static readonly Dictionary<uint, string> pinProcs = new Dictionary<uint, string>();
     static readonly HashSet<string> pinSkipProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { Names.Core, Names.Shell, Names.Tiling, "explorer", "ShellExperienceHost", "StartMenuExperienceHost", "SearchApp", "SearchUI", "TextInputHost", "LockApp" };
-    void PinsAttach(Rectangle monArea, int ox, int oy, IEnumerable<Thumb> animated)
+    void PinsAttach(Rectangle monArea, int ox, int oy, IEnumerable<Thumb> animated, IEnumerable<IntPtr> hidden = null)
     {
         PinsClear();
         var skip = new HashSet<IntPtr>();
         if (animated != null) foreach (var t in animated) if (t != null) skip.Add(t.Src);
+        if (hidden != null) foreach (var h in hidden) skip.Add(h);
         var found = new List<KeyValuePair<IntPtr, Native.RECT>>();
         var title = new StringBuilder(64);
         Native.EnumWindows(delegate (IntPtr h, IntPtr l)
@@ -1961,6 +1962,120 @@ class Slider
         RingPlace(t, r, 255);
     }
 
+    // Hyprland's special workspace (Super+S, the window manager's "special"): open over its monitor's workspace
+    internal const string SpecialName = "special";
+
+    // A slide leaves the special workspace out: it starts from the workspace under it, and the special's windows
+    // (hidden by the window manager as the workspace changes, Hyprland hide_special_on_workspace_change) are not drawn
+    // in the sliding picture. Returns their handles; `ws` becomes the displayed workspace when it was the special.
+    static HashSet<IntPtr> LeaveSpecialOut(Dictionary<string, object> mon, ref Dictionary<string, object> ws)
+    {
+        var skip = new HashSet<IntPtr>();
+        if (mon == null) return skip;
+        Dictionary<string, object> special = null, shown = null;
+        foreach (Dictionary<string, object> w in J.Children(mon))
+        {
+            if (J.Str(w, "name") == SpecialName) special = w;
+            else if (J.Bool(w, "isDisplayed")) shown = w;
+        }
+        if (special == null) return skip;
+        var hs = new List<IntPtr>();
+        J.Windows(special, hs);
+        foreach (var h in hs) skip.Add(h);
+        if (ws == special && shown != null) ws = shown;
+        return skip;
+    }
+
+    // Super+S (UI thread): the special workspace's windows slide down from above as it opens (ii: specialWorkspaceIn
+    // 280 ms emphasizedDecel, slidevert) and back up as it closes (Out: 120 ms emphasizedAccel), while the workspace
+    // under it dims to dim_special 0.2 (the layer is black: its pictures turn 80 % opaque) and back. The window
+    // manager's own dimming backdrop takes over when the layer goes.
+    public void ToggleSpecial(string[] commands)
+    {
+        DropShown(false); // a slide cut short for this: its picture goes
+        bool done = false;
+        try { done = ToggleSpecialCore(commands); }
+        catch (Exception ex) { if (Animating) Recover("gizli workspace: " + ex.Message); Log("gizli workspace: " + ex.Message); }
+        if (!done) Commands(commands);
+    }
+
+    bool ToggleSpecialCore(string[] commands)
+    {
+        if (!Prefs.Animations || Animating) return false;
+        var mons = tiling.Monitors();
+        Dictionary<string, object> ws;
+        var mon = FocusedMonitor(mons, out ws);
+        if (mon == null) return false;
+        Dictionary<string, object> special = null, under = null;
+        foreach (Dictionary<string, object> w in J.Children(mon))
+        {
+            if (J.Str(w, "name") == SpecialName) special = w;
+            else if (J.Bool(w, "isDisplayed")) under = w;
+        }
+        if (special == null || under == null) return false; // empty (made on first use) or open on another monitor
+        bool opening = !J.Bool(mon, "specialShown");
+        var spec = opening ? Anims.SpecialIn : Anims.SpecialOut;
+        int ms = Anims.Budget(spec.Ms);
+        var specialWins = new List<IntPtr>();
+        J.Windows(special, specialWins);
+        if (ms <= 0 || specialWins.Count == 0) return false;
+
+        var monRect = new Rectangle(J.Int(mon, "x"), J.Int(mon, "y"), J.Int(mon, "width"), J.Int(mon, "height"));
+        var underWins = new List<IntPtr>();
+        J.Windows(under, underWins);
+        var handles = new List<long>();
+        foreach (var h in underWins) handles.Add(h.ToInt64());
+        var f = FreezeCore(monRect, handles, null, 0, false);
+        // windows kept on top (a pinned one) stay still above the layer, the special's own move with it
+        PinsAttach(new Rectangle(monRect.X, f.Oy, monRect.Width, monRect.Bottom - f.Oy), f.Ox, f.Oy, f.All, specialWins);
+        int span = monRect.Height; // fully above the monitor
+        var moving = new List<Thumb>();
+        foreach (var h in BottomFirst(specialWins.ConvertAll(x => x.ToInt64())))
+        {
+            var t = RegisterWindow(new IntPtr(h), f.Ox, f.Oy);
+            if (t != null) { moving.Add(t); f.All.Add(t); }
+        }
+        const double DIM = 0.2; // ii: decoration dim_special
+        Action<double> place = e =>
+        {
+            int dy = (int)Math.Round(opening ? -span * (1 - e) : -span * e);
+            foreach (var t in moving) { var r = t.Dest; r.Top += dy; r.Bottom += dy; PlaceSliding(t, r, false); }
+            double dim = opening ? DIM * e : DIM * (1 - e);
+            var po = new Native.DWM_THUMBNAIL_PROPERTIES { dwFlags = Native.DWM_TNP_OPACITY, opacity = (byte)Math.Round(255 * (1 - dim)) };
+            foreach (var t in f.All) if (!moving.Contains(t)) Native.DwmUpdateThumbnailProperties(t.Id, ref po);
+        };
+        place(0);
+        Native.DwmFlush();
+        var task = Task.Factory.StartNew(() => { foreach (var c in commands) tiling.Command(c); });
+        var pc = new PresentClock();
+        var fs = new FrameStats();
+        while (!Interrupt)
+        {
+            fs.Begin();
+            double q = Prog(pc.Ms(), ms);
+            place(spec.Curve.At(q));
+            fs.Updated();
+            Native.DwmFlush();
+            fs.Flushed();
+            if (q >= 1.0) break;
+        }
+        // the real windows are where the picture ends: shown (opening) or hidden (closing)
+        Func<IntPtr, bool> cloaked = hw => { int cv; return Native.DwmGetWindowAttribute(hw, Native.DWMWA_CLOAKED, out cv, 4) == 0 && cv != 0; };
+        var waitSw = Stopwatch.StartNew();
+        while (waitSw.ElapsedMilliseconds < 500)
+        {
+            bool ready = task.IsCompleted;
+            if (ready) foreach (var h in specialWins) if (cloaked(h) == opening) { ready = false; break; }
+            if (ready) break;
+            Thread.Sleep(4);
+        }
+        overlay.Conceal(); RingsClear(); PinsClear();
+        foreach (var t in f.All) Unregister(t.Id);
+        Animating = false;
+        Log("gizli workspace " + (opening ? "açıldı" : "kapandı") + ": " + ms + " ms " + fs.Report());
+        return true;
+    }
+
     static Dictionary<string, object> FocusedMonitor(List<Dictionary<string, object>> mons, out Dictionary<string, object> ws)
     {
         ws = null;
@@ -2389,6 +2504,7 @@ class Slider
         var mon = FocusedMonitor(mons, out oldWs);
         Log("query " + clock.ElapsedMilliseconds + "ms monitors=" + mons.Count + " focusedMon=" + (mon != null));
         if (mon == null || oldWs == null) { foreach (var c in commands) tiling.Command(c); return; }
+        var specialWins = LeaveSpecialOut(mon, ref oldWs);
 
         string oldName = J.Str(oldWs, "name");
         if (targetName != null && targetName == oldName) return;
@@ -2461,8 +2577,8 @@ class Slider
         DesktopWidgetsAttach(thumbs, new Rectangle(mx, oy, mw, mh - barH), ox, oy);
         if (wholeMonitor) BarAttach(thumbs, new Rectangle(mx, my, mw, mh), ox, oy);
 
-        // Super+Ctrl+Shift+←/→: pencereyi taşı ve takip et. Taşınan pencere yerinde kalır, workspace'ler onun
-        // arkasında kayar (pencereyi yanında götürüyormuşsun gibi), sonra yeni yerleşimdeki yerine oturur.
+        // Super+Shift+sayı, Super+Ctrl+Shift+←/→: pencereyi taşı ve takip et (Hyprland movetoworkspace). Taşınan pencere
+        // gelen workspace'in parçası: onunla birlikte kayarak gelir ve yeni yerleşimdeki yerine oturur.
         bool moveFollow = commands.Length == 2 && commands[0].StartsWith("move --") && commands[1].StartsWith("focus --");
         IntPtr carriedH = IntPtr.Zero;
         if (moveFollow)
@@ -2478,7 +2594,7 @@ class Slider
         foreach (var h in oldWins)
         {
             Native.RECT r;
-            if (!Native.IsWindowVisible(h) || !Native.GetWindowRect(h, out r)) continue;
+            if (specialWins.Contains(h) || !Native.IsWindowVisible(h) || !Native.GetWindowRect(h, out r)) continue;
             var t = RegisterWindow(h, ox, oy);
             if (t == null) continue;
             thumbs.Add(t);
@@ -2566,8 +2682,9 @@ class Slider
             foreach (var t in oldThumbs) Move(t, oldStart);
             foreach (var t in newThumbs) Move(t, newStart);
             foreach (var t in thirdThumbs) Move(t, thirdStart);
-            if (carried != null) RingPlace(carried, carried.Dest, 255);
-            PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, thumbs);
+            // Hyprland movetoworkspace: the moved window belongs to the arriving workspace and slides in with it
+            if (carried != null) Move(carried, fdir * (mw + GAP));
+            PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, thumbs, specialWins);
             overlay.Reveal();
             RaisePinned();
             Native.DwmFlush();
@@ -2642,8 +2759,9 @@ class Slider
                 if (moveFollow && carried != null)
                 {
                     var rc = swR == null ? from[carried] : Lerp(from[carried], VisualDest(carried.Src, carried.Id, ox, oy), eR);
-                    PlaceVisible(carried, rc, swR != null);
-                    RingPlace(carried, rc, 255);
+                    int dxc = fdir * (mw + GAP) - fdir * shift;
+                    rc.Left += dxc; rc.Right += dxc;
+                    PlaceSliding(carried, rc, swR != null);
                 }
                 fs.Updated();
                 // An app's own fullscreen on the target workspace is raised to the top by the window manager as
@@ -2691,7 +2809,7 @@ class Slider
 
         RingsAttach(oldThumbs, FocusedTop());
         foreach (var t in oldThumbs) RingPlace(t, t.Dest, 255);
-        PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, thumbs);
+        PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, thumbs, specialWins);
         overlay.Reveal();
         RaisePinned();
         Native.DwmFlush();
@@ -2850,6 +2968,7 @@ class Slider
         var mons = tiling.Monitors();
         Dictionary<string, object> oldWs;
         var mon = FocusedMonitor(mons, out oldWs);
+        var specialWins = LeaveSpecialOut(mon, ref oldWs);
         int cur;
         if (mon == null || oldWs == null || !int.TryParse(J.Str(oldWs, "name"), out cur)) return false;
         string prevName = SwipeNeighbor(mons, mon, cur, -1);
@@ -2880,7 +2999,7 @@ class Slider
         foreach (var h in oldWins)
         {
             Native.RECT r;
-            if (!Native.IsWindowVisible(h) || !Native.GetWindowRect(h, out r)) continue;
+            if (specialWins.Contains(h) || !Native.IsWindowVisible(h) || !Native.GetWindowRect(h, out r)) continue;
             var t = RegisterWindow(h, ox, oy);
             if (t != null) { s.All.Add(t); s.Old.Add(t); }
         }
@@ -2902,7 +3021,7 @@ class Slider
         swipe = s;
         RingsAttach(s.All, s.OldFocus);
         SwipePlace(0);
-        PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, s.All);
+        PinsAttach(new Rectangle(mx, my + barH, mw, mh - barH), ox, oy, s.All, specialWins);
         overlay.Reveal();
         RaisePinned();
         Animating = true;
@@ -7493,6 +7612,10 @@ static class Binds
         { "ws-move-prev", "Super+Ctrl+Shift+Left" }, { "ws-move-next", "Super+Ctrl+Shift+Right" },
         { "ws-1", "Super+1" }, { "ws-2", "Super+2" }, { "ws-3", "Super+3" }, { "ws-4", "Super+4" }, { "ws-5", "Super+5" },
         { "ws-6", "Super+6" }, { "ws-7", "Super+7" }, { "ws-8", "Super+8" }, { "ws-9", "Super+9" }, { "ws-10", "Super+0" },
+        // Hyprland movetoworkspace: pencereyi götür ve takip et (pencere gelen workspace'le birlikte kayar)
+        { "ws-move-1", "Super+Shift+1" }, { "ws-move-2", "Super+Shift+2" }, { "ws-move-3", "Super+Shift+3" }, { "ws-move-4", "Super+Shift+4" },
+        { "ws-move-5", "Super+Shift+5" }, { "ws-move-6", "Super+Shift+6" }, { "ws-move-7", "Super+Shift+7" }, { "ws-move-8", "Super+Shift+8" },
+        { "ws-move-9", "Super+Shift+9" }, { "ws-move-10", "Super+Shift+0" },
         { "terminal", "Super+Enter" }, { "terminal-alt", "Super+T" },
         { "browser", "Super+W" }, { "files", "Super+E" }, { "code", "Super+C" }, { "editor", "Super+X" },
         { "close", "Alt+F4" }, { "screenshot", "Print" }, { "screenshot-screen", "Ctrl+Print" }, { "clipboard", "Super+V" },
@@ -7961,7 +8084,9 @@ class Keys2
         {
             for (int i = 0; i < batch.Count - 1; i++) slider.Commands((string[])batch[i][0]);
             var last = batch[batch.Count - 1];
-            slider.Run((string[])last[0], (int)last[1], (string)last[2]);
+            var lastCmds = (string[])last[0];
+            if (lastCmds.Length == 1 && lastCmds[0] == "toggle-special-workspace") slider.ToggleSpecial(lastCmds);
+            else slider.Run(lastCmds, (int)last[1], (string)last[2]);
         }
         catch (Exception ex) { Slider.Log("slide: " + ex.Message); }
     }
@@ -8169,6 +8294,12 @@ class Keys2
             Post(wm, slideDir, slideTarget);
             return;
         }
+        // the special workspace (Super+S) slides down over the dimming workspace and back up (UI thread)
+        if (wm.Length == 1 && wm[0] == "toggle-special-workspace")
+        {
+            Post(wm, 0, null);
+            return;
+        }
         // state changes (fullscreen, floating) animate through a freeze, as a layout change does
         ThreadPool.QueueUserWorkItem(_ => { lock (inWsLock) { try { if (!Dwindle.AnimateState(wm)) slider.Commands(wm); } catch (Exception ex) { Slider.Log("kısayol: " + ex.Message); } } });
     }
@@ -8351,6 +8482,12 @@ class Keys2
             string d = dir > 0 ? "next" : "prev";
             if (act.StartsWith("ws-move-")) Post(new[] { "move --" + d + "-workspace", "focus --" + d + "-workspace" }, dir, null);
             else Post(new[] { "focus --" + d + "-workspace" }, dir, null);
+            return true;
+        }
+        int moveTo;
+        if (act.StartsWith("ws-move-") && int.TryParse(act.Substring("ws-move-".Length), out moveTo) && moveTo > 0)
+        {
+            Post(new[] { "move --workspace " + moveTo, "focus --workspace " + moveTo }, 0, moveTo.ToString());
             return true;
         }
         // Hyprland focusurgentorlast: en son dikkat isteyen pencere (workspace'i başkaysa kayarak), yoksa bir önceki workspace

@@ -287,7 +287,9 @@
         run: 'Çalıştır', search: 'Ara (Super menüsü)', workspaces: "Workspace'ler (Super menüsü)", settings: 'Ayarlar',
         sidebar: 'Sağ panel', notifications: 'Bildirimler', 'task-manager': 'Görev Yöneticisi', 'focus-urgent-or-last': 'Dikkat isteyen pencereye git',
       };
-      const llLabel = id => LL_LABELS[id] || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
+      const llLabel = id => LL_LABELS[id]
+        || (/^ws-move-\d+$/.test(id) ? `Pencereyi workspace ${id.slice(8)}'e taşı` : null)
+        || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
       const llGroup = id => id.startsWith('focus-') || id.startsWith('move-') || id === 'close' ? 'win'
         : (id.startsWith('ws-') || id === 'workspaces') ? 'ws' : 'sys';
       function tilingLabel(cmds) {
