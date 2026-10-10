@@ -133,6 +133,13 @@ window_rules:
       - window_process: { equals: 'lunge-shell' }
       - window_process: { equals: 'lunge' }
 
+  # Small utility windows open floating, centred, at 45% of the screen
+  # (decided before placement, so they never tile first). Regexes match the
+  # whole value, as in Hyprland.
+  - commands: ['set-floating --centered --width=45% --height=45%']
+    match:
+      - window_process: { regex: 'SndVol' }
+
   # Other applications are classified by window properties, ownership,
   # resizability and topmost state. Add user-specific rules here if wanted.
 

@@ -365,14 +365,34 @@ impl MatchType {
       MatchType::Equals { equals } => value == equals,
       MatchType::Includes { includes } => value.contains(includes),
       MatchType::Regex { regex } => {
-        regex::Regex::new(regex).is_ok_and(|re| re.is_match(value))
+        full_match(regex, value).unwrap_or(false)
       }
       MatchType::NotEquals { not_equals } => value != not_equals,
       MatchType::NotRegex { not_regex } => {
-        regex::Regex::new(not_regex).is_ok_and(|re| !re.is_match(value))
+        full_match(not_regex, value).is_some_and(|matched| !matched)
       }
     }
   }
+}
+
+/// Like Hyprland's window rules, a regex has to match the whole value
+/// (`firefox` does not match `firefox-dev`). Compiled once per pattern:
+/// rules are checked for every new and focused window. `None` for an
+/// invalid pattern, which then matches nothing.
+fn full_match(pattern: &str, value: &str) -> Option<bool> {
+  use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+  };
+
+  static CACHE: LazyLock<Mutex<HashMap<String, Option<regex::Regex>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+  let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+  let compiled = cache
+    .entry(pattern.to_string())
+    .or_insert_with(|| regex::Regex::new(&format!("^(?:{pattern})$")).ok());
+  compiled.as_ref().map(|re| re.is_match(value))
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
@@ -486,5 +506,27 @@ where
   #[cfg(not(target_os = "macos"))]
   {
     Ok(method)
+  }
+}
+
+#[cfg(test)]
+mod match_type_tests {
+  use super::MatchType;
+
+  #[test]
+  fn regex_matches_the_whole_value() {
+    let rule = MatchType::Regex { regex: "firefox".to_string() };
+    assert!(rule.is_match("firefox"));
+    assert!(!rule.is_match("firefox-dev"));
+    let any = MatchType::Regex { regex: "Snd(Vol|Volume)".to_string() };
+    assert!(any.is_match("SndVol"));
+    assert!(!any.is_match("xSndVol"));
+  }
+
+  #[test]
+  fn invalid_regex_matches_nothing() {
+    assert!(!MatchType::Regex { regex: "(".to_string() }.is_match("("));
+    assert!(!MatchType::NotRegex { not_regex: "(".to_string() }.is_match("x"));
+    assert!(MatchType::NotRegex { not_regex: "a.c".to_string() }.is_match("abcd"));
   }
 }

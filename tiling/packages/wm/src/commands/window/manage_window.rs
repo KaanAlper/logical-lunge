@@ -1,7 +1,10 @@
 use anyhow::Context;
 use tracing::info;
-use wm_common::{try_warn, WindowRuleEvent, WindowState, WmEvent};
-use wm_platform::{NativeWindow, Point, RectDelta};
+use wm_common::{
+  try_warn, FloatingStateConfig, FullscreenStateConfig, InvokeCommand,
+  WindowRuleEvent, WindowState, WmEvent,
+};
+use wm_platform::{NativeWindow, Point, Rect, RectDelta};
 
 use crate::{
   commands::{
@@ -244,7 +247,39 @@ fn create_window(
     .context("No nearest workspace.")?;
 
   let gaps_config = config.value.gaps.clone();
-  let window_state = if controllable {
+  // A `manage` rule's state command decides the state up front (see
+  // `UserConfig::manage_rule_state`); the rule still runs afterwards and
+  // then finds the window already in that state.
+  let rule_state = config
+    .manage_rule_state(&native_properties)
+    .filter(|_| controllable && !native_properties.is_minimized);
+  let floating_defaults = &config.value.window_behavior.state_defaults.floating;
+  let (rule_window_state, rule_size) = match &rule_state {
+    Some(InvokeCommand::SetTiling) => (Some(WindowState::Tiling), None),
+    Some(InvokeCommand::SetFloating { centered, shown_on_top, width, height, .. }) => (
+      Some(WindowState::Floating(FloatingStateConfig {
+        centered: centered.unwrap_or(floating_defaults.centered),
+        shown_on_top: shown_on_top.unwrap_or(floating_defaults.shown_on_top),
+      })),
+      Some((width.clone(), height.clone())),
+    ),
+    Some(InvokeCommand::SetFullscreen { maximized, shown_on_top }) => {
+      let defaults = &config.value.window_behavior.state_defaults.fullscreen;
+      (
+        Some(WindowState::Fullscreen(FullscreenStateConfig {
+          maximized: maximized.unwrap_or(defaults.maximized),
+          shown_on_top: shown_on_top.unwrap_or(defaults.shown_on_top),
+        })),
+        None,
+      )
+    }
+    _ => (None, None),
+  };
+
+  let has_rule_state = rule_window_state.is_some();
+  let window_state = if let Some(rule_window_state) = rule_window_state {
+    rule_window_state
+  } else if controllable {
     window_state_to_create(&native_window, &native_properties, &nearest_monitor, config)?
   } else if native_properties.is_minimized {
     WindowState::Minimized
@@ -264,25 +299,38 @@ fn create_window(
   let target_workspace =
     target_parent.workspace().context("No target workspace.")?;
 
-  let prefers_centered = config
-    .value
-    .window_behavior
-    .state_defaults
-    .floating
-    .centered;
+  let prefers_centered = match &window_state {
+    WindowState::Floating(floating) if has_rule_state => floating.centered,
+    _ => floating_defaults.centered,
+  };
 
   // Calculate where window should be placed when floating is enabled. Use
   // the original width/height of the window and optionally position it in
   // the center of the workspace.
   let is_same_workspace = nearest_workspace.id() == target_workspace.id();
   let floating_placement = {
+    // the size a floating rule asks for (e.g. `--width=45%`), of the
+    // workspace the window opens on
+    let workspace_rect = target_workspace.to_rect()?;
+    let frame = match &rule_size {
+      Some((width, height)) if width.is_some() || height.is_some() => {
+        let scale = Some(target_workspace.monitor().map_or(1.0, |m| m.native_properties().scale_factor));
+        let frame = &native_properties.frame;
+        Rect::from_xy(
+          frame.x(),
+          frame.y(),
+          width.as_ref().map_or(frame.width(), |w| w.to_px(workspace_rect.width(), scale)),
+          height.as_ref().map_or(frame.height(), |h| h.to_px(workspace_rect.height(), scale)),
+        )
+      }
+      _ => native_properties.frame.clone(),
+    };
+
     // a window we may not move is floating where it already is
     let placement = if controllable && (!is_same_workspace || prefers_centered) {
-      native_properties
-        .frame
-        .translate_to_center(&target_workspace.to_rect()?)
+      frame.translate_to_center(&workspace_rect)
     } else {
-      native_properties.frame.clone()
+      frame
     };
 
     // Clamp the window size to be within the workspace's outer gaps. 10px
