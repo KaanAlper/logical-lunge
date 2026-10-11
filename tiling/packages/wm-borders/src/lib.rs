@@ -238,7 +238,7 @@ impl DisplayAdaptersWatcher {
         let changed_handle_isize = changed_event.0.0 as isize;
         let stop_handle_isize = stop_event.0.0 as isize;
 
-        let thread_handle = thread::spawn(move || {
+        let thread_handle = crate::utils::spawn_named("adapters-watcher", move || {
             debug!("entering display adapters watcher thread");
 
             let events = [
