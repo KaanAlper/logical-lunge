@@ -86,7 +86,7 @@ impl ThemeWatcher {
         let changed_handle_isize = changed_event.0.0 as isize;
         let stop_handle_isize = stop_event.0.0 as isize;
 
-        let thread_handle = thread::spawn(move || {
+        let thread_handle = crate::utils::spawn_named("theme-watcher", move || {
             debug!("entering theme watcher thread");
 
             // Reconvert isize back to the original types

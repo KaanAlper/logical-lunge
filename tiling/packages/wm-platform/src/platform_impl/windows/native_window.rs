@@ -279,7 +279,7 @@ impl NativeWindow {
   /// Implements [`NativeWindowWindowsExt::press_fullscreen_key`].
   pub(crate) fn press_fullscreen_key(&self) {
     let handle = self.handle;
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("fullscreen-key".into()).spawn(move || {
       // F11 while Super/Alt of the shortcut are still down would arrive as
       // another shortcut
       let held = |vk: VIRTUAL_KEY| unsafe { GetAsyncKeyState(i32::from(vk.0)) } < 0;

@@ -685,10 +685,21 @@ pub fn has_native_border(hwnd: HWND) -> bool {
     !style.contains(WS_MAXIMIZE) && ex_style.contains(WS_EX_WINDOWEDGE)
 }
 
+/// Logical Lunge: a thread with a name (thread lists show it, so a thread left running is attributable).
+pub fn spawn_named<T: Send + 'static>(
+    name: &str,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> thread::JoinHandle<T> {
+    thread::Builder::new()
+        .name(name.into())
+        .spawn(f)
+        .expect("failed to spawn thread")
+}
+
 pub fn create_border_for_window(tracking_window: HWND, window_rule: WindowRule) {
     let tracking_window_isize = tracking_window.0 as isize;
 
-    let _ = thread::spawn(move || {
+    let _ = spawn_named("border", move || {
         let tracking_window = HWND(tracking_window_isize as _);
 
         // Note: 'key' for the hashmap is the tracking window, 'value' is the border window
@@ -887,7 +898,7 @@ pub fn hide_border_for_window(hwnd: HWND) {
 
     // Spawn a new thread to guard against re-entrancy in the event hook, though it honestly isn't
     // that important for our purposes I think
-    let _ = thread::spawn(move || {
+    let _ = spawn_named("border-hide", move || {
         let hwnd = HWND(hwnd_isize as _);
 
         if let Some(border) = get_border_for_window(hwnd) {
@@ -902,7 +913,7 @@ pub fn hide_border_for_window(hwnd: HWND) {
 pub fn spawn_window_state_poller() {
     const POLL_DELAY: u64 = 100;
 
-    let _ = thread::spawn(move || {
+    let _ = spawn_named("border-poller", move || {
         loop {
             crate::wait_while_idle();
             // Handle any changes in terms of which window is foreground/active

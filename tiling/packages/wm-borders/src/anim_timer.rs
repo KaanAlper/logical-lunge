@@ -20,7 +20,7 @@ impl AnimationTimer {
         let hwnd_isize = hwnd.0 as isize;
 
         // Spawn a worker thread for the timer
-        thread::spawn(move || {
+        crate::utils::spawn_named("border-anim", move || {
             let hwnd = HWND(hwnd_isize as _);
 
             while !*stop_flag_clone.lock().unwrap_or_else(std::sync::PoisonError::into_inner) {
