@@ -319,7 +319,9 @@ try {
     function Stop-Process { [CmdletBinding()] param([int]$Id, [switch]$Force)
         if (-not @($script:cim | Where-Object { $_.ProcessId -eq $Id }).Count) { Write-Error "Cannot find a process with the process identifier $Id."; return }
         $script:events.Add("kill:$Id")
-        if ($Id -eq 13) { $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne 10 }) } # the core leaves with its helper
+        # the core and its helper leave together (either may be ended first: both are lunge.exe)
+        if ($Id -eq 13) { $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne 10 }) }
+        if ($Id -eq 10) { $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne 13 }) }
         if ($Id -eq 11 -and -not $script:restarted) { $script:restarted = $true; $script:cim += [pscustomobject]@{ Name = 'lunge-tiling.exe'; ExecutablePath = (Join-Path $app 'lunge-tiling.exe'); ProcessId = 21; SessionId = 7 } }
         if ($script:linger.ContainsKey($Id)) { return }
         $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne $Id })
@@ -329,8 +331,8 @@ try {
     $script:events.Clear()
     Stop-LLDesktop $app $state $true 7
     $order = $script:events -join ','
-    Assert ($order -match '^--stop-desktop,--restore-banners,--takeover-restore,kill:13,kill:11') "The core and its helpers did not go first: $order"
-    Assert ($order -notmatch 'kill:10') 'A part that had already ended was ended again'
+    Assert ($order -match '^--stop-desktop,--restore-banners,--takeover-restore,kill:1[03],kill:11') "The core and its helpers did not go first: $order"
+    Assert (-not ($order -match 'kill:10' -and $order -match 'kill:13')) "A part that had already ended was ended again: $order"
     Assert ($order -match 'kill:21' -and $order.EndsWith('--uncloak-orphans')) "A restarted part was left running: $order"
     Assert (-not @(Get-LLOwnedProcesses $app).Count) 'Parts were left running'
     # A part that does not end: the wait is bounded and the error names it; nothing after the stop runs
