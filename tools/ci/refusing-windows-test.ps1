@@ -21,9 +21,11 @@ $STARTUP_TIMEOUT_SEC = 180
 $SETTLE_SEC          = 30    # after startup, before the baseline
 $PHASE_SEC           = 12    # each storm phase runs this long
 $STORM_SEC           = 4 * $PHASE_SEC
-# % of one logical CPU, window manager process, in the busiest phase. A window manager spinning without end (the
-# v1.5.2 hang) holds a whole CPU; following an app that moves itself a few hundred times a second costs less.
-$MAX_TILING_CPU      = 95
+# % of one logical CPU, window manager process (all its threads: hooks, borders), in the busiest phase. The v1.5.2 hang
+# measured 119-121%: a thread spinning without end plus the rest. Following a window that moves itself ~550 times a
+# second measured 49-91% on CI runners (the window manager's own thread under half of it), so only more than a whole
+# CPU fails; a stuck step of the window manager's thread (its stall watch, "busy for") fails on its own.
+$MAX_TILING_CPU      = 110
 $MAX_PING_MS         = 2000  # slowest answer to an IPC query during the storm
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -243,6 +245,7 @@ function Log-Since([string]$path, [long]$start) {
 # the window manager's own notes on the storm (stall watch, correction budget)
 foreach ($l in (Log-Since $tilingLogPath $tilingLogStart)) {
     if ($l -match 'panicked') { Fail "window manager: $l" }
+    elseif ($l -match 'thread busy for') { Fail "window manager thread stuck: $l" }
     elseif ($l -match 'busy for|was busy|Slow step|event storm|keeps moving itself|can''t take its tile|bigger than its tile') { Note "tiling.log: $l" }
 }
 foreach ($l in (Log-Since $coreLogPath $coreLogStart)) {
