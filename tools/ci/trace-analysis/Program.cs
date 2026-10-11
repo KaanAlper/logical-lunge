@@ -20,6 +20,8 @@ static class Program
         foreach (var f in s.Frames)
         {
             string img = f.Image?.FileName ?? "?";
+            // the kernel part (context switch, ETW stack walk) is the same for every wait; the user part says what was waited on
+            if (img.Equals("ntoskrnl.exe", StringComparison.OrdinalIgnoreCase) || img.Equals("hal.dll", StringComparison.OrdinalIgnoreCase)) continue;
             string fn = f.Symbol?.FunctionName;
             string p = fn != null ? img + "!" + fn : img;
             if (parts.Count == 0 || parts[parts.Count - 1] != p) parts.Add(p);
@@ -59,9 +61,11 @@ static class Program
             double wait = D(a.WaitingDuration);
             double ready = D(a.ReadyDuration);
             if (wait + ready < minWait) continue;
-            string stack = Frames(a.SwitchIn.Stack, 40);
+            string stack = Frames(a.SwitchIn.Stack, 60);
+            // waits inside dwmapi (DwmFlush, thumbnail calls) or in win32u calls that DWM answers; a timer wait readied from a DPC
+            // that happened to interrupt dwm.exe is not one of them
             bool dwmWait = stack.IndexOf("dwmapi", StringComparison.OrdinalIgnoreCase) >= 0
-                || string.Equals(a.ReadyingProcess?.ImageName, "dwm.exe", StringComparison.OrdinalIgnoreCase);
+                || stack.IndexOf("NtDwm", StringComparison.OrdinalIgnoreCase) >= 0 || stack.IndexOf("dcomp", StringComparison.OrdinalIgnoreCase) >= 0;
             if (dwmWait) ours.Add(a);
         }
         Console.WriteLine("lunge.exe: DWM'i bekleyen " + ours.Count + " uzun bekleme (>= " + minWait + " ms)");
