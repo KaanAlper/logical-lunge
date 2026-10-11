@@ -837,7 +837,7 @@ class FrameStats
         sb.AppendFormat("; aralık {0:0.0} ms: zamanında {1} / 1 kaçık {2} / 2+ kaçık {3}", period, onTime, miss1, miss2);
         sb.AppendFormat("; bizim payımız en çok {0:0.0} ms, DWM'in en uzun kompozisyon beklemesi {1:0.0} ms", maxOurs, maxDwm);
         sb.Append("]");
-        PerfGuard.Record(onTime, miss1 + miss2);
+        PerfGuard.Record(onTime, miss1 + miss2, sw.Elapsed.TotalMilliseconds, period);
         return sb.ToString();
     }
 }
@@ -13370,15 +13370,25 @@ static class PerfGuard
         }
     }
 
-    // Her animasyonun sonunda (FrameStats.Report)
-    public static void Record(int onTime, int missed)
+    // Share of the animation's vsync slots that got a frame on time; -1 when it ran too short to judge. Counted by slots,
+    // not by frames: a slide with one 480 ms frame has only 6 frames, and a count of at least 10 frames left exactly the
+    // worst animations out (PerfGuard.Late never saw them).
+    internal static double OnTimeShare(int onTime, int missed, double elapsedMs, double periodMs)
     {
-        int total = onTime + missed;
-        if (total < 10) return; // kısa / yarıda kesilen animasyonlar yanıltır
+        if (elapsedMs < 100 || periodMs <= 0) return -1;
+        double slots = Math.Max(onTime + missed, elapsedMs / periodMs);
+        return slots <= 0 ? -1 : Math.Min(1.0, onTime / slots);
+    }
+
+    // Her animasyonun sonunda (FrameStats.Report)
+    public static void Record(int onTime, int missed, double elapsedMs, double periodMs)
+    {
+        double share = OnTimeShare(onTime, missed, elapsedMs, periodMs);
+        if (share < 0) return; // kısa / yarıda kesilen animasyonlar yanıltır
         double avg = 0;
         lock (gate)
         {
-            recent.Enqueue(onTime / (double)total);
+            recent.Enqueue(share);
             while (recent.Count > 5) recent.Dequeue();
             if (recent.Count < 5) return;
             foreach (var r in recent) avg += r;
