@@ -24,12 +24,12 @@ $SWITCH_EVERY_SEC    = 6     # one workspace switch (there and back) this often
 $MEMORY_PRESSURE     = 0.75  # the load phase takes this share of the free memory it starts with
 # GitHub's runners have no GPU: DWM and our surfaces render on WARP (software), so frame budgets are loose; they still
 # catch a frame that waits on a stuck call (hundreds of ms).
-$MAX_FRAME_IDLE_MS   = 150   # longest slide/animation frame while idle
-$MAX_FRAME_LOAD_MS   = 500   # longest frame with every core busy
-# the core's own share of a frame (update + gap + waking after DWM composed), apart from DWM's composing: a long frame
-# under load on the runner was DWM not composing at all (its refresh counter stood still) while the core waited idle
-$MAX_OURS_IDLE_MS    = 60
-$MAX_OURS_LOAD_MS    = 120
+$MAX_FRAME_IDLE_MS   = 100   # longest slide/animation frame while idle
+$MAX_FRAME_LOAD_MS   = 200   # longest frame with every core busy
+# the core's own share of a frame (update + gap + waking after DWM composed), apart from DWM's composing; under load the
+# 300-500 ms frames were the core re-raising its layer every fourth frame (fixed: only when something rose over it)
+$MAX_OURS_IDLE_MS    = 40
+$MAX_OURS_LOAD_MS    = 80
 $MAX_HOOK_SLOW_IDLE  = 0     # "klavye kancası yavaş" (>100 ms in the keyboard hook) lines while idle
 $MAX_HOOK_SLOW_LOAD  = 3     # ... under load (Windows drops a hook after repeated ~300 ms timeouts)
 # growth from the end of warm-up to the end of the run, per part (core, shell, window manager). A one-time
