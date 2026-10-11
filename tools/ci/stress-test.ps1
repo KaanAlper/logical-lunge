@@ -59,8 +59,13 @@ $MAX_CHURN_THREADS_PER_100 = 4
 $MAX_CHURN_WINDOWS_PER_100 = 1    # top-level windows a part owns
 # Thread pools (Windows' own, the runtimes') add workers under a burst and retire them once idle, so a thread count
 # that climbs during a churn is a leak only if the threads are still there after a quiet pause: threads above the
-# count before the churn, after $CHURN_SETTLE_SEC s of quiet.
+# count before the churn, after at least $CHURN_SETTLE_SEC s of quiet. While a part still holds more, the pause goes
+# on (sampled every $CHURN_SETTLE_POLL_SEC s) up to $CHURN_SETTLE_MAX_SEC s: Windows retires idle pool workers in
+# batches, not all at once (the window manager's WARP workers on a runner without a GPU dropped by 3-8 at a time,
+# 45-165 s after the window churn).
 $CHURN_SETTLE_SEC = 45
+$CHURN_SETTLE_POLL_SEC = 15
+$CHURN_SETTLE_MAX_SEC = 180
 $MAX_CHURN_THREADS_SETTLED = 6    # web-ui's core kept 4 after the quiet pause in a passing run
 # slides must not get slower as operations pile up: median longest-frame of the last third vs the first third
 $MAX_CHURN_FRAME_SLOWDOWN_MS = 40
@@ -357,11 +362,23 @@ $churn += Churn 'popup' 60 { param($i)
 # Super+F on the focused window: the freeze/snapshot animation (an even count leaves it as it was)
 $churn += Churn 'state' 60 { Send-Test 'wm toggle-fullscreen'; Start-Sleep -Milliseconds 800 }
 Start-Sleep $CHURN_SETTLE_SEC
-Thread-Diff 'kept after the churn and the quiet pause' $threadsBefore (Thread-Snapshot)
 $churnBefore = $churn[0].Series[0].Sample
 $churnSettled = Sample
+# the parts still holding more threads than before the churn (beyond what a quiet pause must give back)
+function Holding { @('core', 'shell', 'tiling') | Where-Object { $churnBefore[$_] -and $churnSettled[$_] -and $churnSettled[$_].Threads - $churnBefore[$_].Threads -gt $MAX_CHURN_THREADS_SETTLED } }
+$quiet = $CHURN_SETTLE_SEC
+$quietThreads = @{}
+foreach ($k in @('core', 'shell', 'tiling')) { if ($churnSettled[$k]) { $quietThreads[$k] = @("${quiet}s:$($churnSettled[$k].Threads)") } }
+while ($quiet -lt $CHURN_SETTLE_MAX_SEC -and @(Holding).Count) {
+    Start-Sleep $CHURN_SETTLE_POLL_SEC
+    $quiet += $CHURN_SETTLE_POLL_SEC
+    $churnSettled = Sample
+    foreach ($k in @($quietThreads.Keys)) { if ($churnSettled[$k]) { $quietThreads[$k] += "${quiet}s:$($churnSettled[$k].Threads)" } }
+}
+if ($quiet -gt $CHURN_SETTLE_SEC) { foreach ($k in @('core', 'shell', 'tiling')) { if ($quietThreads[$k]) { Note "threads over the quiet pause: $k $($quietThreads[$k] -join ' ')" } } }
+Thread-Diff 'kept after the churn and the quiet pause' $threadsBefore (Thread-Snapshot)
 foreach ($k in @('core', 'shell', 'tiling')) {
-    if ($churnBefore[$k] -and $churnSettled[$k]) { Note "after the churn and $CHURN_SETTLE_SEC s of quiet: $k threads $($churnBefore[$k].Threads) -> $($churnSettled[$k].Threads), handles $($churnBefore[$k].Handles) -> $($churnSettled[$k].Handles)" }
+    if ($churnBefore[$k] -and $churnSettled[$k]) { Note "after the churn and $quiet s of quiet: $k threads $($churnBefore[$k].Threads) -> $($churnSettled[$k].Threads), handles $($churnBefore[$k].Handles) -> $($churnSettled[$k].Handles)" }
 }
 
 # ------------------------------------------------------------------ checks
@@ -462,11 +479,17 @@ $growth = foreach ($k in @('core', 'shell', 'tiling')) {
     $g
 }
 
-# churn: growth per 100 operations (median step between consecutive samples of each kind, per operation)
+# churn: growth per 100 operations, by two estimates that must both see it: the median step between consecutive
+# samples (a one-time jump moves one step only) and the median slope between all pairs of samples (Theil-Sen; noise
+# from what is in flight when a sample is taken cancels out). A leak grows every step and both see the same slope. A
+# warm-up spread over two or three samples tips the median step (the window manager's private memory over the window
+# churn: +6.8 and +4.5 MB in the first 20 operations, then 66-69 MB for 80 operations, read 9 MB per 100) but not the
+# pairwise slope (2.4); a single jump from noise tips the slope but not the step.
 function Rate($xs, $ys) {
     $r = @(); for ($i = 1; $i -lt $xs.Count; $i++) { if ($xs[$i] -gt $xs[$i - 1]) { $r += ($ys[$i] - $ys[$i - 1]) / ($xs[$i] - $xs[$i - 1]) } }
     if ($r.Count -lt 3) { return 0 }
-    Median $r
+    $p = @(); for ($i = 0; $i -lt $xs.Count; $i++) { for ($j = $i + 1; $j -lt $xs.Count; $j++) { if ($xs[$j] -gt $xs[$i]) { $p += ($ys[$j] - $ys[$i]) / ($xs[$j] - $xs[$i]) } } }
+    [math]::Min((Median $r), (Median $p))
 }
 $churnLimits = [ordered]@{ Handles = $MAX_CHURN_HANDLES_PER_100; PrivateMB = $MAX_CHURN_MB_PER_100; Gdi = $MAX_CHURN_GDI_PER_100
     User = $MAX_CHURN_USER_PER_100; Threads = $MAX_CHURN_THREADS_PER_100; Windows = $MAX_CHURN_WINDOWS_PER_100 }
