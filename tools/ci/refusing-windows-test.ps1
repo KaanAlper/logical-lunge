@@ -19,8 +19,11 @@ $ErrorActionPreference = 'Stop'
 
 $STARTUP_TIMEOUT_SEC = 180
 $SETTLE_SEC          = 30    # after startup, before the baseline
-$STORM_SEC           = 40    # the refusing windows run this long
-$MAX_TILING_CPU      = 60    # % of one logical CPU, window manager process, over the storm
+$PHASE_SEC           = 12    # each storm phase runs this long
+$STORM_SEC           = 4 * $PHASE_SEC
+# % of one logical CPU, window manager process, in the busiest phase. A window manager spinning without end (the
+# v1.5.2 hang) holds a whole CPU; following an app that moves itself a few hundred times a second costs less.
+$MAX_TILING_CPU      = 95
 $MAX_PING_MS         = 2000  # slowest answer to an IPC query during the storm
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -64,6 +67,8 @@ public static class LLRefuse
     static volatile bool fightPending, stop;
     static Thread thread;
     public static long Fights, Moves, Renames;
+    /// what runs now: 1 the mover, 2 the renamer (the two refusing windows always)
+    public static volatile int Mode;
 
     static IntPtr Proc(IntPtr h, uint m, IntPtr w, IntPtr l)
     {
@@ -117,18 +122,22 @@ public static class LLRefuse
             }
             // about 2000 moves and 2000 renames a second
             long now = sw.ElapsedTicks * 1000000 / Stopwatch.Frequency;
-            if (now >= nextOp)
+            int mode = Mode;
+            if (mode != 0 && now >= nextOp)
             {
                 nextOp = now + 500;
                 step++;
                 RECT r;
-                if (GetWindowRect(mover, out r))
+                if ((mode & 1) != 0 && GetWindowRect(mover, out r))
                 {
                     SetWindowPos(mover, IntPtr.Zero, r.L + (step % 2 == 0 ? 1 : -1), r.T, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
                     Moves++;
                 }
-                SetWindowTextW(titler, "LL refuse: title " + step);
-                Renames++;
+                if ((mode & 2) != 0)
+                {
+                    SetWindowTextW(titler, "LL refuse: title " + step);
+                    Renames++;
+                }
             }
             else Thread.Sleep(0);
         }
@@ -188,28 +197,36 @@ if ($tiling) {
     $idleCpu = Cpu-Percent $tiling 5 $before
     Note "baseline: window manager $idleCpu% of a CPU, IPC answer $idlePing ms"
 
-    [LLRefuse]::Start($STORM_SEC)
+    # phases: the two refusing windows alone, then with the mover, then with the renamer, then all
+    $phases = @(@{ Name = 'refusing windows only'; Mode = 0 }, @{ Name = 'mover'; Mode = 1 }, @{ Name = 'renamer'; Mode = 2 }, @{ Name = 'all at once'; Mode = 3 })
+    [LLRefuse]::Mode = 0
+    [LLRefuse]::Start($STORM_SEC + 30)
     Start-Sleep 3   # the windows are managed (floated, tiled) first
-    $tiling.Refresh(); $before = $tiling.TotalProcessorTime; $t = [System.Diagnostics.Stopwatch]::StartNew()
     $pings = New-Object System.Collections.Generic.List[int]
-    while ([LLRefuse]::Running -and $t.Elapsed.TotalSeconds -lt ($STORM_SEC - 5)) {
-        $pings.Add((Ping-Wm))
-        Start-Sleep -Milliseconds 1000
+    $cpus = @()
+    foreach ($ph in $phases) {
+        [LLRefuse]::Mode = $ph.Mode
+        $m0 = [LLRefuse]::Moves; $r0 = [LLRefuse]::Renames
+        $tiling.Refresh(); $before = $tiling.TotalProcessorTime; $t = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($t.Elapsed.TotalSeconds -lt $PHASE_SEC) { $pings.Add((Ping-Wm)); Start-Sleep -Milliseconds 1000 }
+        $cpu = Cpu-Percent $tiling $t.Elapsed.TotalSeconds $before
+        $rate = [math]::Round((([LLRefuse]::Moves - $m0) + ([LLRefuse]::Renames - $r0)) / $t.Elapsed.TotalSeconds)
+        $cpus += [pscustomobject]@{ Name = $ph.Name; Cpu = $cpu; Rate = $rate }
+        Note "phase '$($ph.Name)': window manager $cpu% of a CPU, $rate own moves + renames a second"
     }
-    $stormCpu = Cpu-Percent $tiling $t.Elapsed.TotalSeconds $before
     [LLRefuse]::Stop()
+    $stormCpu = ($cpus | Measure-Object -Property Cpu -Maximum).Maximum
     $missed = @($pings | Where-Object { $_ -lt 0 }).Count
     $worst = if ($pings.Count) { ($pings | Measure-Object -Maximum).Maximum } else { -1 }
-    $median = if ($pings.Count) { ($pings | Where-Object { $_ -ge 0 } | Sort-Object)[[int][math]::Floor(($pings.Count - $missed) / 2)] } else { -1 }
-    Note "storm: window manager $stormCpu% of a CPU; IPC answers $($pings.Count - $missed)/$($pings.Count), median $median ms, slowest $worst ms; the window resized itself back $([LLRefuse]::Fights) times, moved $([LLRefuse]::Moves), renamed $([LLRefuse]::Renames)"
+    $median = if ($pings.Count -gt $missed) { ($pings | Where-Object { $_ -ge 0 } | Sort-Object)[[int][math]::Floor(($pings.Count - $missed) / 2)] } else { -1 }
+    Note "storm: IPC answers $($pings.Count - $missed)/$($pings.Count), median $median ms, slowest $worst ms; the window resized itself back $([LLRefuse]::Fights) times, moved $([LLRefuse]::Moves), renamed $([LLRefuse]::Renames)"
 
     if ($stormCpu -gt $MAX_TILING_CPU) { Fail "window manager used $stormCpu% of a CPU against refusing windows (max $MAX_TILING_CPU)" }
     if ($missed -gt 0) { Fail "$missed of $($pings.Count) IPC queries got no answer during the storm" }
     if ($worst -gt $MAX_PING_MS) { Fail "slowest IPC answer during the storm $worst ms (max $MAX_PING_MS)" }
     $now = Part 'lunge-tiling'
     if (-not $now -or $now.Id -ne $tiling.Id) { Fail 'the window manager was restarted or ended during the storm' }
-    $rows = @(
-        "| Window manager CPU (% of one CPU) | $idleCpu | $stormCpu | $MAX_TILING_CPU |",
+    $rows = @($cpus | ForEach-Object { "| Window manager CPU (% of one CPU): $($_.Name), $($_.Rate)/s | $idleCpu | $($_.Cpu) | $MAX_TILING_CPU |" }) + @(
         "| IPC answer (ms) | $idlePing | median $median, slowest $worst, missed $missed | $MAX_PING_MS |",
         "| Self-resizes / moves / renames |  | $([LLRefuse]::Fights) / $([LLRefuse]::Moves) / $([LLRefuse]::Renames) |  |"
     )
