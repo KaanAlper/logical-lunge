@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { palette, contrast } from '../../ui/lib/theme-palette.mjs';
+import './color-math-tests.mjs';
 const oldDark = {
   m3primary: '#d0bcff', m3onPrimary: '#381e72', m3primaryContainer: '#4f378b',
   colLayer0: '#141218', colLayer1: '#1d1b20', colLayer1Hover: '#2b2930',

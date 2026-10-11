@@ -131,8 +131,9 @@
       // Görünüm (tema, odak rengi, animasyonlar), dil ve saat, kısayollar, gece ışığı, sistem sağlığı, gelişmiş, hakkında.
       // Değişiklikleri çekirdek yapar (lunge.exe --set-focus-color / --set-pref / ...); dil ve saat gibi arayüz tercihleri
       // kabuk yeniden açılınca uygulanır.
-      import React, { useState, useEffect, useRef, useCallback } from 'react';
+      import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
       import { applyAccent } from 'lunge/theme';
+      import { hexToRgb, rgbToHex, hsvToRgb, rgbToHsv } from '../lib/color-math.mjs';
       import { createRoot } from 'react-dom/client';
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
@@ -590,6 +591,124 @@
         }
 
 
+      // ---------------------------------------------------------------- Renk seçici
+      // The custom accent's colour picker: the dot left of the hex field opens it by the colour row. A saturation /
+      // brightness square and a hue bar; the hex field follows it (onPick) and it follows a whole colour typed in the
+      // field. The colour is applied (onApply) when the pointer lets go and a moment after the last arrow key, not at
+      // every move: each colour rewrites config.yaml, reloads the window manager and repaints every shell part.
+      // Esc, a click outside or the dot again close it; what was applied stays.
+      const PICK_STEP = 0.01, PICK_BIG = 0.1, HUE_STEP = 1, HUE_BIG = 10, PICK_COMMIT_MS = 450;
+      const unit = x => Math.min(1, Math.max(0, x));
+      function ColorPicker({ row, hex, typed, initial, onPick, onApply, onClose }) {
+        const start = hexToRgb(initial) || [0xb6, 0x9d, 0xf8];
+        const [hsv, setHsvState] = useState(() => rgbToHsv(start));
+        const latest = useRef(hsv), was = useRef(rgbToHex(start)), timer = useRef(0), waiting = useRef(null);
+        const panel = useRef(null), sv = useRef(null);
+        const [pos, setPos] = useState(null);
+        const setHsv = next => { latest.current = next; setHsvState(next); };
+        const now = rgbToHex(hsvToRgb(hsv));
+
+        // a whole colour typed in the field leads (only typing: the field's echo of a drag would pull it back);
+        // the picker writes its colour into the field
+        useEffect(() => {
+          const c = hexToRgb(typed.v);
+          if (c && rgbToHex(c) !== rgbToHex(hsvToRgb(latest.current))) setHsv(rgbToHsv(c, latest.current.h));
+        }, [typed]);
+        useEffect(() => { if (now !== hex.toLowerCase()) onPick(now); }, [now]);
+
+        const applyNow = c => { clearTimeout(timer.current); waiting.current = null; onApply(c); };
+        const applyLater = c => {
+          clearTimeout(timer.current); waiting.current = c;
+          timer.current = setTimeout(() => applyNow(c), PICK_COMMIT_MS);
+        };
+        // closing with an arrow-key colour still waiting sends it
+        useEffect(() => () => { clearTimeout(timer.current); if (waiting.current) onApply(waiting.current); }, []);
+
+        // under the colour row, or over it when the page has no room below; always inside the page
+        useLayoutEffect(() => {
+          const place = () => {
+            const a = row.current?.getBoundingClientRect(), view = row.current?.closest('.body')?.getBoundingClientRect(), p = panel.current;
+            if (!a || !view || !p) return;
+            const w = p.offsetWidth, h = p.offsetHeight;
+            // below the save error too, when there is one
+            const note = row.current.parentElement?.querySelector(':scope > .note');
+            const bottom = Math.max(a.bottom, note ? note.getBoundingClientRect().bottom : 0);
+            const left = Math.max(view.left + 8, Math.min(a.left + 12, view.right - 8 - w));
+            let top = bottom + 4;
+            if (top + h > view.bottom - 8 && a.top - 4 - h >= view.top + 8) top = a.top - 4 - h;
+            setPos({ left, top: Math.max(view.top + 8, Math.min(top, view.bottom - 8 - h)) });
+          };
+          place();
+          const card = new ResizeObserver(place);
+          if (row.current?.parentElement) card.observe(row.current.parentElement);
+          window.addEventListener('resize', place);
+          document.addEventListener('scroll', place, true);
+          return () => { card.disconnect(); window.removeEventListener('resize', place); document.removeEventListener('scroll', place, true); };
+        }, []);
+        // the square takes the keyboard once it is placed (a hidden element cannot)
+        const focused = useRef(false);
+        useEffect(() => { if (pos && !focused.current) { focused.current = true; sv.current?.focus({ preventScroll: true }); } }, [pos]);
+        useEffect(() => {
+          const outside = e => { if (!row.current?.contains(e.target)) onClose(false); };
+          document.addEventListener('pointerdown', outside, true);
+          return () => document.removeEventListener('pointerdown', outside, true);
+        }, [onClose]);
+
+        const at = (part, e) => {
+          const r = e.currentTarget.getBoundingClientRect(), kx = unit((e.clientX - r.left) / r.width);
+          const h = latest.current;
+          return part === 'sv' ? { ...h, s: kx, v: 1 - unit((e.clientY - r.top) / r.height) } : { ...h, h: kx * 360 };
+        };
+        const pointer = part => ({
+          onPointerDown: e => { if (e.button !== 0) return; e.currentTarget.setPointerCapture(e.pointerId); e.currentTarget.focus({ preventScroll: true }); setHsv(at(part, e)); },
+          onPointerMove: e => { if (e.currentTarget.hasPointerCapture(e.pointerId)) setHsv(at(part, e)); },
+          onPointerUp: e => {
+            if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+            e.currentTarget.releasePointerCapture(e.pointerId);
+            const next = at(part, e);
+            setHsv(next);
+            applyNow(rgbToHex(hsvToRgb(next)));
+          },
+        });
+        const keys = part => e => {
+          const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
+          if (e.key === 'Enter') { e.preventDefault(); applyNow(now); return; }
+          if (!d) return;
+          e.preventDefault();
+          const h = latest.current;
+          let next;
+          if (part === 'sv') {
+            const k = e.shiftKey ? PICK_BIG : PICK_STEP;
+            next = { ...h, s: unit(h.s + d[0] * k), v: unit(h.v + d[1] * k) };
+          } else {
+            next = { ...h, h: Math.min(360, Math.max(0, h.h + (d[0] + d[1]) * (e.shiftKey ? HUE_BIG : HUE_STEP))) };
+          }
+          setHsv(next);
+          applyLater(rgbToHex(hsvToRgb(next)));
+        };
+
+        const pct = x => Math.round(x * 100);
+        return (
+          <div className="picker" ref={panel} dir="ltr" role="dialog" aria-label="Renk seç"
+            style={pos ? { left: pos.left, top: pos.top } : { visibility: 'hidden' }}>
+            <div className="picker-head"><span>Renk seç</span><code>{now}</code></div>
+            <div className="picker-sv" ref={sv} tabIndex={0} role="slider" aria-label="Doygunluk ve parlaklık"
+              aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct(hsv.s)} aria-valuetext={`${pct(hsv.s)}% · ${pct(hsv.v)}%`}
+              style={{ '--hue': hsv.h }} onKeyDown={keys('sv')} {...pointer('sv')}>
+              <span className="picker-thumb" style={{ left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%`, background: now }} />
+            </div>
+            <div className="picker-hue" tabIndex={0} role="slider" aria-label="Ton" aria-valuemin={0} aria-valuemax={360}
+              aria-valuenow={Math.round(hsv.h)} onKeyDown={keys('hue')} {...pointer('hue')}>
+              <span className="picker-thumb" style={{ left: `${hsv.h / 360 * 100}%`, top: '50%', background: `hsl(${hsv.h} 100% 50%)` }} />
+            </div>
+            <div className="picker-foot">
+              <span className="picker-pill" aria-hidden="true"><span style={{ background: was.current }} /><span style={{ background: now }} /></span>
+              <span className="picker-hint">Bırakınca uygulanır</span>
+            </div>
+          </div>
+        );
+      }
+
       // ---------------------------------------------------------------- Görünüm
         function LookPage({ s, update }) {
         const [theme, setTheme] = useState(window.llTheme?.get?.() ?? 'dark');
@@ -611,8 +730,12 @@
           return () => observer.disconnect();
         }, []);
         const setThemeTo = t => { if (window.llTheme && window.llTheme.get() !== t) window.llTheme.toggle(); setTheme(t); };
+        // the picker can pick again while a colour is being saved: the newest goes right after it
+        const latestS = useRef(s); latestS.current = s;
+        const savingNow = useRef(false), nextColor = useRef(null);
         const setColor = async c => {
-          if (saving) return;
+          if (savingNow.current) { nextColor.current = c; return; }
+          savingNow.current = true;
           setSaving(true); setColorError('');
           try {
             const response = await fetch('http://127.0.0.1:6131/focus-color?v=' + encodeURIComponent(c), { method: 'POST', signal: AbortSignal.timeout(8000) });
@@ -620,17 +743,41 @@
             if (!response.ok || !r?.ok) throw new Error(r?.error || 'Color could not be saved');
             update({ focusColor: r.focusColor }); applyAccent(r.focusColor);
             // Choosing a colour is choosing it over the wallpaper's: the shell, panels and borders take it
-            if (s.wallpaperColors === true) helper(['--set-pref', 'wallpaperColors', 'false']).then(() => update({ wallpaperColors: false })).catch(e => console.error('Wallpaper colors:', e));
+            if (latestS.current.wallpaperColors === true) {
+              latestS.current = { ...latestS.current, wallpaperColors: false };
+              helper(['--set-pref', 'wallpaperColors', 'false']).then(() => update({ wallpaperColors: false })).catch(e => console.error('Wallpaper colors:', e));
+            }
           } catch (error) {
             console.error('Accent color:', error);
             setColorError('Renk kaydedilemedi. Yeniden dene.');
-          } finally { setSaving(false); }
+          } finally {
+            savingNow.current = false;
+            setSaving(false);
+            const next = nextColor.current;
+            nextColor.current = null;
+            if (next) setColor(next);
+          }
         };
         const applyHex = () => {
           const v = (hex.startsWith('#') ? hex : '#' + hex).toLowerCase();
           if (/^#[0-9a-f]{6}$/.test(v)) { setBad(false); setColor(v); } else setBad(true);
         };
         const custom = !COLORS.some(([, c]) => c === s.focusColor);
+        // the colour picker (the dot); the hex field and the dot show its colour while it is open
+        const [picking, setPicking] = useState(false);
+        const hexRow = useRef(null), dot = useRef(null);
+        const pickerFrom = useRef(s.focusColor);
+        const togglePicker = () => {
+          if (!picking) pickerFrom.current = hexToRgb(hex) ? hex : (s.focusColor || '#b69df8');
+          setPicking(!picking);
+        };
+        const closePicker = useCallback(refocus => { setPicking(false); if (refocus) dot.current?.focus(); }, []);
+        const pickerApply = useCallback(c => {
+          if (c !== latestS.current.focusColor || savingNow.current) setColor(c);
+        }, []);
+        const pickerPick = useCallback(c => { setHex(c); setBad(false); }, []);
+        const [typed, setTyped] = useState({ v: '' });
+        const dotColor = picking && hexToRgb(hex) ? rgbToHex(hexToRgb(hex)) : s.focusColor;
         return (
           <>
             <div className="sec-title">Tema</div>
@@ -647,10 +794,12 @@
                   <button type="button" key={c} title={name} aria-label={name} aria-pressed={s.focusColor === c} disabled={saving} className={`sw ${s.focusColor === c ? 'sel' : ''}`} style={{ background: c }} onClick={() => setColor(c)} />
                 ))}
               </div>
-              <div className="hexrow">
-                <span className="dot" style={{ background: s.focusColor }} />
+              <div className="hexrow" ref={hexRow} onKeyDown={e => { if (picking && e.key === 'Escape') { e.stopPropagation(); closePicker(true); } }}>
+                <button type="button" ref={dot} className={`dot ${picking ? 'open' : ''}`} style={{ background: dotColor }} title="Renk seçiciyi aç"
+                  aria-label="Renk seçiciyi aç" aria-haspopup="dialog" aria-expanded={picking} onClick={togglePicker} />
+                {picking && <ColorPicker row={hexRow} hex={hex} typed={typed} initial={pickerFrom.current} onPick={pickerPick} onApply={pickerApply} onClose={closePicker} />}
                 <input value={hex} placeholder={custom ? s.focusColor : '#rrggbb'} maxLength={7} spellCheck={false}
-                  onChange={e => { setHex(e.target.value.trim()); setBad(false); }} onKeyDown={e => e.key === 'Enter' && applyHex()} />
+                  onChange={e => { setHex(e.target.value.trim()); setTyped({ v: e.target.value.trim() }); setBad(false); }} onKeyDown={e => e.key === 'Enter' && applyHex()} />
                 <button className="btn tonal" disabled={saving} onClick={applyHex}><Icon name="colorize" />Özel rengi uygula</button>
                 {bad && <span className="err">Renk kodu #rrggbb biçiminde olmalı</span>}
               </div>

@@ -585,6 +585,12 @@ const ROWS = [
   ["Konum seçiciyi kapat", "Close location picker", "Standortauswahl schließen", "Fermer le sélecteur d’emplacement", "Cerrar el selector de ubicación", "Chiudi il selettore della posizione", "Fechar o seletor de local", "Закрыть выбор местоположения", "Закрити вибір місця", "Zamknij wybór lokalizacji", "場所の選択を閉じる", "关闭位置选择器", "위치 선택 닫기", "إغلاق منتقي الموقع"],
   ["Klavyeyi gizle", "Hide keyboard", "Tastatur ausblenden", "Masquer le clavier", "Ocultar teclado", "Nascondi tastiera", "Ocultar teclado", "Скрыть клавиатуру", "Сховати клавіатуру", "Ukryj klawiaturę", "キーボードを隠す", "隐藏键盘", "키보드 숨기기", "إخفاء لوحة المفاتيح"],
   ["Hatayı kapat", "Dismiss error", "Fehlermeldung schließen", "Fermer l’erreur", "Descartar error", "Chiudi errore", "Dispensar erro", "Закрыть сообщение об ошибке", "Закрити повідомлення про помилку", "Zamknij komunikat o błędzie", "エラーを閉じる", "关闭错误提示", "오류 닫기", "إغلاق رسالة الخطأ"],
+  // the custom accent's colour picker (settings)
+  ['Renk seç', 'Pick a color', 'Farbe wählen', 'Choisir une couleur', 'Elegir un color', 'Scegli un colore', 'Escolher uma cor', 'Выбрать цвет', 'Вибрати колір', 'Wybierz kolor', '色を選択', '选择颜色', '색 선택', 'اختيار لون'],
+  ['Renk seçiciyi aç', 'Open the color picker', 'Farbauswahl öffnen', 'Ouvrir le sélecteur de couleur', 'Abrir el selector de color', 'Apri il selettore del colore', 'Abrir o seletor de cores', 'Открыть выбор цвета', 'Відкрити вибір кольору', 'Otwórz wybór koloru', 'カラーピッカーを開く', '打开颜色选择器', '색 선택기 열기', 'فتح منتقي الألوان'],
+  ['Ton', 'Hue', 'Farbton', 'Teinte', 'Tono', 'Tonalità', 'Matiz', 'Оттенок', 'Відтінок', 'Odcień', '色相', '色相', '색조', 'تدرج اللون'],
+  ['Doygunluk ve parlaklık', 'Saturation and brightness', 'Sättigung und Helligkeit', 'Saturation et luminosité', 'Saturación y brillo', 'Saturazione e luminosità', 'Saturação e brilho', 'Насыщенность и яркость', 'Насиченість і яскравість', 'Nasycenie i jasność', '彩度と明るさ', '饱和度和亮度', '채도 및 밝기', 'التشبع والسطوع'],
+  ['Bırakınca uygulanır', 'Applied when you let go', 'Wird beim Loslassen übernommen', 'Appliquée au relâchement', 'Se aplica al soltar', 'Applicato al rilascio', 'Aplicada ao soltar', 'Применяется, когда отпустите', 'Застосовується, коли відпустите', 'Stosowany po puszczeniu', '離すと適用されます', '松开后应用', '놓으면 적용됩니다', 'يُطبَّق عند الإفلات'],
 ];
 
 const out = { langs: LANGS, keys: ROWS.map(r => r[0]) };

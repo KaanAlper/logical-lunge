@@ -48,11 +48,11 @@ try {
   const page = await browser.newPage({viewport:{width:1400,height:950}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   const prefs={language:'tr',clock:'24',theme:'dark',focusColor:'#b69df8',animations:false};
-  let fail=false;
+  let fail=false;const posted=[];
   await page.route('http://127.0.0.1:6131/**',async route=>{
     const url=new URL(route.request().url());
     let body=prefs,status=200;
-    if (url.pathname==='/focus-color') { status=fail?500:200; if(!fail)prefs.focusColor=url.searchParams.get('v'); body=fail?{ok:false}:{ok:true,focusColor:prefs.focusColor}; }
+    if (url.pathname==='/focus-color') { status=fail?500:200; if(!fail){prefs.focusColor=url.searchParams.get('v');posted.push(prefs.focusColor);} body=fail?{ok:false}:{ok:true,focusColor:prefs.focusColor}; }
     else if(url.pathname!=='/prefs.json') body=[];
     await route.fulfill({status,headers:{'Access-Control-Allow-Origin':'*'},contentType:'application/json',body:JSON.stringify(body)});
   });
@@ -79,6 +79,61 @@ try {
   await page.waitForFunction(()=>document.documentElement.dataset.theme==='light');
   await page.waitForFunction(()=>document.querySelector('.seg button.sel')?.textContent.includes('Aydınlık'));
   await page.screenshot({path:path.join(out,'settings-light.png')});
+  // the custom colour's picker: the dot opens it, a drag moves the hex field and applies once when it lets go,
+  // arrow keys apply a moment after the last one, the field leads it, Esc and a click outside close only it
+  fail=false;
+  const hexField=page.locator('.hexrow input'), dot=page.getByRole('button',{name:'Renk seçiciyi aç'});
+  await dot.click();
+  const sv=page.getByRole('slider',{name:'Doygunluk ve parlaklık'});
+  await sv.waitFor();
+  assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('aria-label')),'Doygunluk ve parlaklık');
+  const pop=await page.locator('.picker').boundingBox(), body=await page.locator('.body').boundingBox();
+  assert.ok(pop.y>=body.y && pop.y+pop.height<=body.y+body.height+1 && pop.x+pop.width<=body.x+body.width+1, 'picker must stay inside the page');
+  const before=posted.length, box=await sv.boundingBox();
+  await page.mouse.move(box.x+box.width*0.2,box.y+box.height*0.3);
+  await page.mouse.down();
+  await page.mouse.move(box.x+box.width*0.85,box.y+box.height*0.15,{steps:8});
+  const dragged=await hexField.inputValue();
+  assert.match(dragged,/^#[0-9a-f]{6}$/);
+  assert.equal(posted.length,before,'no colour is applied while dragging');
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  assert.equal(await hexField.inputValue(),await page.locator('.picker-head code').innerText(),'the field shows the picked colour');
+  assert.equal(posted.length,before+1,'one colour is applied when the pointer lets go');
+  assert.equal(posted.at(-1),await hexField.inputValue());
+  const hue=page.getByRole('slider',{name:'Ton'}), hueBox=await hue.boundingBox();
+  await page.mouse.click(hueBox.x+hueBox.width*0.5,hueBox.y+hueBox.height/2);
+  await page.waitForTimeout(150);
+  assert.equal(posted.length,before+2);
+  assert.ok(Math.abs(Number(await hue.getAttribute('aria-valuenow'))-180)<=2);
+  await sv.focus();
+  for(let i=0;i<4;i++) await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Shift+ArrowDown');
+  assert.equal(posted.length,before+2,'arrow keys wait for the last one');
+  await page.waitForTimeout(700);
+  assert.equal(posted.length,before+3);
+  assert.equal(posted.at(-1),await hexField.inputValue());
+  await hexField.fill('#123abc');
+  await page.waitForFunction(()=>document.querySelector('.picker-head code')?.textContent==='#123abc');
+  await page.screenshot({path:path.join(out,'settings-picker-light.png')});
+  await page.keyboard.press('Escape');
+  await page.locator('.picker').waitFor({state:'detached'});
+  assert.ok(await page.locator('.win.open').count(),'Esc closes the picker, not the window');
+  await dot.click();
+  await sv.waitFor();
+  await page.getByRole('button',{name:/Koyu/}).click();
+  await page.locator('.picker').waitFor({state:'detached'});
+  await page.waitForFunction(()=>document.documentElement.dataset.theme==='dark');
+  await dot.click();
+  await sv.waitFor();
+  await page.waitForTimeout(400);
+  await page.screenshot({path:path.join(out,'settings-picker-dark.png')});
+  await page.setViewportSize({width:760,height:520});
+  await page.waitForTimeout(100);
+  const small=await page.locator('.picker').boundingBox(), smallBody=await page.locator('.body').boundingBox();
+  assert.ok(small.x>=smallBody.x-1 && small.x+small.width<=smallBody.x+smallBody.width+1, 'picker fits a small window');
+  await page.screenshot({path:path.join(out,'settings-picker-small.png')});
+  await page.setViewportSize({width:1400,height:950});
   if(hasBar) {
     await page.goto(`${base}/bar.html`);
     await page.locator('.battery').hover();
@@ -96,5 +151,5 @@ try {
     await page.waitForFunction(()=>document.querySelector('.battery-pop').textContent.includes('Veri yok'));
   }
   assert.deepEqual(errors,[]);
-  console.log('PASS headless settings: clickable colors, shell palette, failed save, light mode' + (hasBar ? '; battery hover: units, centered charging icon, unavailable data' : ''));
+  console.log('PASS headless settings: clickable colors, shell palette, failed save, light mode, colour picker' + (hasBar ? '; battery hover: units, centered charging icon, unavailable data' : ''));
 } finally {await browser.close(); await new Promise(r=>server.close(r));}
