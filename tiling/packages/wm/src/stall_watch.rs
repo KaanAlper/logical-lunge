@@ -12,7 +12,9 @@
 //!   over a moment), and its call stack (`module+offset`, resolved with the
 //!   build's symbols);
 //! - every step that took longer than `SLOW` once it ends;
-//! - an abnormal rate of window events from the system (a storm), per kind.
+//! - an abnormal rate of window events from the system (a storm), per kind;
+//! - when the thread was busy most of a period, what took its time (per
+//!   kind of step, window events per event kind).
 
 use std::{
   sync::{
@@ -37,6 +39,16 @@ const STORM_RATE: f64 = 1_500.0;
 /// storm reports.
 const RATE_PERIOD: Duration = Duration::from_secs(5);
 const STORM_REPORT_GAP: Duration = Duration::from_secs(30);
+
+/// The share of a rate period the WM thread may be busy before what took
+/// its time is logged.
+const BUSY_SHARE: f64 = 0.5;
+
+/// Time slots: one per `Activity`, then one per window event kind.
+const SLOTS: usize = 9 + WindowEvent::KIND_NAMES.len();
+/// Microseconds and steps the WM thread spent per slot since the start.
+static BUSY_US: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
+static STEPS: [AtomicU64; SLOTS] = [const { AtomicU64::new(0) }; SLOTS];
 
 /// Frames of the stuck thread's stack written to the log.
 const STACK_FRAMES: usize = 32;
@@ -98,6 +110,7 @@ fn now_ms() -> u64 {
 /// One step of the WM thread; ends when dropped.
 pub struct Step {
   started: Instant,
+  slot: usize,
 }
 
 /// Marks the start of a step of the WM thread.
@@ -134,12 +147,75 @@ fn begin_with(activity: Activity, event_kind: u8, window: isize) -> Step {
   STARTED_MS.store(now_ms(), Ordering::Relaxed);
   SEQ.fetch_add(1, Ordering::Relaxed);
   KIND.store(activity as u8, Ordering::Release);
-  Step { started: Instant::now() }
+  let slot = if activity == Activity::WindowEvent {
+    (9 + usize::from(event_kind)).min(SLOTS - 1)
+  } else {
+    activity as usize
+  };
+  Step { started: Instant::now(), slot }
+}
+
+/// A slot's name for the busy summary.
+fn slot_name(slot: usize) -> String {
+  if slot >= 9 {
+    format!("window event {}", WindowEvent::KIND_NAMES.get(slot - 9).unwrap_or(&"?"))
+  } else {
+    describe(Activity::from_u8(u8::try_from(slot).unwrap_or(0)), 0, 0, "")
+      .replace(" \"\"", "")
+  }
+}
+
+/// The busy line for the time the WM thread spent per slot between two
+/// counts over `secs`, or `None` when it was mostly idle.
+#[allow(clippy::cast_precision_loss)]
+fn busy_summary(
+  us_before: &[u64],
+  us_after: &[u64],
+  steps_before: &[u64],
+  steps_after: &[u64],
+  secs: f64,
+) -> Option<String> {
+  let spent: Vec<(usize, u64, u64)> = (0..us_after.len())
+    .map(|i| {
+      (
+        i,
+        us_after[i].saturating_sub(us_before[i]),
+        steps_after[i].saturating_sub(steps_before[i]),
+      )
+    })
+    .filter(|(_, us, _)| *us > 0)
+    .collect();
+  let total_us: u64 = spent.iter().map(|(_, us, _)| us).sum();
+  if secs <= 0.0 || (total_us as f64 / 1e6) < secs * BUSY_SHARE {
+    return None;
+  }
+  let mut spent = spent;
+  spent.sort_by(|a, b| b.1.cmp(&a.1));
+  let parts: Vec<String> = spent
+    .iter()
+    .take(5)
+    .map(|(slot, us, steps)| {
+      format!(
+        "{} {:.1} s in {steps} steps ({:.2} ms each)",
+        slot_name(*slot),
+        *us as f64 / 1e6,
+        *us as f64 / 1e3 / (*steps).max(1) as f64
+      )
+    })
+    .collect();
+  Some(format!(
+    "Window manager thread was busy {:.1} s of the last {secs:.0} s: {}.",
+    total_us as f64 / 1e6,
+    parts.join(", ")
+  ))
 }
 
 impl Drop for Step {
   fn drop(&mut self) {
     let took = self.started.elapsed();
+    #[allow(clippy::cast_possible_truncation)]
+    BUSY_US[self.slot].fetch_add(took.as_micros() as u64, Ordering::Relaxed);
+    STEPS[self.slot].fetch_add(1, Ordering::Relaxed);
     if took >= SLOW {
       tracing::warn!(
         "Slow step of the window manager: {} took {} ms.",
@@ -254,6 +330,12 @@ fn watch(sampler: Option<&ThreadSampler>) {
   let mut handled = HANDLED.load(Ordering::Relaxed);
   let mut counted_at = Instant::now();
   let mut last_storm: Option<Instant> = None;
+  let load = |counters: &[AtomicU64; SLOTS]| -> [u64; SLOTS] {
+    std::array::from_fn(|i| counters[i].load(Ordering::Relaxed))
+  };
+  let mut busy_us = load(&BUSY_US);
+  let mut busy_steps = load(&STEPS);
+  let mut last_busy: Option<Instant> = None;
 
   loop {
     std::thread::sleep(Duration::from_millis(500));
@@ -287,6 +369,16 @@ fn watch(sampler: Option<&ThreadSampler>) {
           tracing::warn!("{line}");
         }
       }
+      let now_us = load(&BUSY_US);
+      let now_steps = load(&STEPS);
+      if let Some(line) = busy_summary(&busy_us, &now_us, &busy_steps, &now_steps, secs) {
+        if last_busy.is_none_or(|at| at.elapsed() >= STORM_REPORT_GAP) {
+          last_busy = Some(Instant::now());
+          tracing::warn!("{line}");
+        }
+      }
+      busy_us = now_us;
+      busy_steps = now_steps;
       counts = now_counts;
       handled = now_handled;
       counted_at = Instant::now();
@@ -361,6 +453,28 @@ mod tests {
     assert!(line.starts_with("Window event storm: 9000/s"), "{line}");
     assert!(line.contains("moved 8000, title 1000"), "{line}");
     assert!(line.contains("200/s handled"), "{line}");
+  }
+
+  #[test]
+  fn a_mostly_idle_thread_has_no_busy_line() {
+    let zero = [0u64; SLOTS];
+    let mut us = [0u64; SLOTS];
+    us[9 + 3] = 1_000_000; // 1 s of moves in 5 s
+    assert_eq!(busy_summary(&zero, &us, &zero, &zero, 5.0), None);
+  }
+
+  #[test]
+  fn a_busy_thread_names_what_took_its_time() {
+    let zero = [0u64; SLOTS];
+    let mut us = [0u64; SLOTS];
+    let mut steps = [0u64; SLOTS];
+    us[9 + 3] = 3_000_000;
+    steps[9 + 3] = 2_000;
+    us[Activity::Ipc as usize] = 200_000;
+    steps[Activity::Ipc as usize] = 10;
+    let line = busy_summary(&zero, &us, &zero, &steps, 5.0).unwrap();
+    assert!(line.starts_with("Window manager thread was busy 3.2 s of the last 5 s"), "{line}");
+    assert!(line.contains("window event moved 3.0 s in 2000 steps (1.50 ms each), IPC message 0.2 s in 10 steps"), "{line}");
   }
 
   #[test]
