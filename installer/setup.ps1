@@ -254,7 +254,7 @@ function Repair-LegacyWindowRules([string]$text) {
 # folder): which programs are ours is decided by where they run from, never by their names, so another program with
 # the same name is left alone, and so is the terminal the user opened from our tools folder. Covers the video screen
 # saver (LogicalLunge.scr) while it is on screen.
-function Stop-Parts {
+function Get-Parts {
     $files = @($OWNED | ForEach-Object { Join-Path $APP $_ })
     $roots = @($OLD_APP.TrimEnd('\') + '\')
     foreach ($p in Get-CimInstance Win32_Process) {
@@ -262,8 +262,29 @@ function Stop-Parts {
         if (-not $exe -or $p.ProcessId -eq $PID) { continue }
         $owned = ($files | Where-Object { $exe -ieq $_ -or $exe.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase) }) -or
             ($roots | Where-Object { $exe.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })
-        if (-not $owned) { continue }
-        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        if ($owned) { $p }
+    }
+}
+# Ended and waited for: the files are moved right after this, and a part ended a moment ago (or one stuck in a driver
+# call, like a hung window manager) holds them until it is really gone. The core goes first (a stopped core restarts
+# nothing); a part started again in between is ended too. Bounded: what still runs after 15 s is logged (the move then
+# fails and the install rolls back).
+function Stop-Parts {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $round = -1
+    while ($true) {
+        $left = @(Get-Parts | Sort-Object @{ Expression = { if ($_.Name -eq 'lunge.exe') { 0 } else { 1 } } })
+        if (-not $left.Count) { return }
+        if ($watch.ElapsedMilliseconds -ge 15000) {
+            Log "    still running: $((@($left) | ForEach-Object { "$($_.Name) ($($_.ProcessId))" }) -join ', ')"
+            return
+        }
+        $now = [int][Math]::Floor($watch.ElapsedMilliseconds / 2000)
+        if ($now -ne $round) {
+            $round = $now
+            foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+        }
+        Start-Sleep -Milliseconds 250
     }
 }
 
