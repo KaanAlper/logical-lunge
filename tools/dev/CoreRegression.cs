@@ -263,6 +263,53 @@ static class CoreRegression
         Check(ShellTakeover.WithoutTheme(other).Count == other.Count - ShellTakeover.ThemeNames.Length && other.Count > reg.Count, "Dropping the theme records touched the others");
     }
 
+    // Super+Ctrl+↑/↓: beşer workspace (Hyprland r-5 / r+5), ←/→ gibi bu monitörde ve kayarak
+    static void WorkspaceStepTests() {
+        Check(Keys2.WsStep("ws-next") == 1 && Keys2.WsStep("ws-prev") == -1 && Keys2.WsStep("ws-next5") == 5 && Keys2.WsStep("ws-prev5") == -5,
+            "Relative workspace actions were parsed wrong");
+        Check(Keys2.WsStep("ws-5") == 0 && Keys2.WsStep("ws-move-next") == 0 && Keys2.WsStep("ws-next0") == 0 && Keys2.WsStep("ws-next5@DISPLAY1") == 0 && Keys2.WsStep(null) == 0,
+            "A non-relative action counted as a relative workspace step");
+        Check(Keys2.WsFocus(1) == "focus --next-workspace" && Keys2.WsFocus(-1) == "focus --prev-workspace"
+            && Keys2.WsFocus(5) == "focus --relative-workspace 5" && Keys2.WsFocus(-5) == "focus --relative-workspace -5", "Relative steps became the wrong window manager command");
+        Check(Slider.RelativeStep("focus --next-workspace") == 1 && Slider.RelativeStep("focus --prev-workspace") == -1
+            && Slider.RelativeStep("focus --relative-workspace -5") == -5 && Slider.RelativeStep("focus --relative-workspace 5") == 5
+            && Slider.RelativeStep("focus --workspace 5") == 0 && Slider.RelativeStep("focus --next-active-workspace") == 0, "Slide steps were read wrong from commands");
+        int sd; string st;
+        Check(Keys2.SwitchesWorkspace(new[] { "focus --relative-workspace -5" }, out sd, out st) && sd == -1 && st == null
+            && Keys2.SwitchesWorkspace(new[] { "focus --relative-workspace 5" }, out sd, out st) && sd == 1, "r-5 / r+5 did not slide like r-1 / r+1");
+        Check(Keys2.Handling("ws-next5") == 1 && Keys2.Handling("ws-prev5@DISPLAY1") == 1, "Five-step workspace keys were not swallowed");
+        // hedef: config sırasında (0 = workspace 1), bu monitördekiler sayılarak
+        Func<int, bool> all = i => true;
+        Check(Slider.StepIndex(10, 1, 5, all) == 6 && Slider.StepIndex(10, 7, -5, all) == 2, "Five steps did not land five workspaces away");
+        Check(Slider.StepIndex(10, 6, 5, all) == 9 && Slider.StepIndex(10, 2, -5, all) == 0, "Five steps past an end did not stop at the last workspace");
+        Check(Slider.StepIndex(10, 9, 5, all) == -1 && Slider.StepIndex(10, 0, -5, all) == -1 && Slider.StepIndex(10, 9, 1, all) == -1, "A step from an end wrapped around or moved");
+        Check(Slider.StepIndex(10, 0, 5, i => i != 2 && i != 3) == 7, "Another monitor's workspaces counted as steps");
+        Check(Slider.StepIndex(6, 3, -1, i => i > 3) == 0 && Slider.StepIndex(6, 3, -5, i => i > 3) == 0, "r-1 / r-5 with nothing below did not go to workspace 1");
+        Check(Slider.StepIndex(6, 2, 1, all) == 3 && Slider.StepIndex(6, -1, 1, all) == -1 && Slider.StepIndex(6, 2, 0, all) == -1, "Single steps changed");
+        // yeni varsayılanlar kullanıcının kendi kısayollarına dokunmaz
+        Func<Dictionary<string, string>> defaults = () => {
+            var d = new Dictionary<string, string>();
+            for (int i = 0; i < Binds.Defaults.GetLength(0); i++) d[Binds.Defaults[i, 0]] = Binds.Defaults[i, 1];
+            return d;
+        };
+        var eff = defaults();
+        Check(eff["ws-prev5"] == "Super+Ctrl+Up" && eff["ws-next5"] == "Super+Ctrl+Down", "Super+Ctrl+Up/Down are not the five-step defaults");
+        var seen = new HashSet<string>();
+        foreach (var kv in eff) Check(kv.Value == "" || seen.Add(Binds.Canonical(kv.Value)), "Two defaults share " + kv.Value);
+        Binds.YieldLater(eff, new HashSet<string>(), new List<string>());
+        Check(eff["ws-prev5"] == "Super+Ctrl+Up" && eff["ws-next5"] == "Super+Ctrl+Down", "The five-step defaults went away without a user binding");
+        eff = defaults(); eff["settings"] = "super+ctrl+up";
+        Binds.YieldLater(eff, new HashSet<string> { "settings" }, new List<string> { "Super+Ctrl+Down" });
+        Check(eff["ws-prev5"] == "" && eff["ws-next5"] == "" && eff["settings"] == "super+ctrl+up", "A user's own Super+Ctrl+Up/Down was taken over");
+        eff = defaults(); eff["ws-prev5"] = "Super+Ctrl+Up";
+        Binds.YieldLater(eff, new HashSet<string> { "ws-prev5" }, new List<string> { "Super+Ctrl+Up" });
+        Check(eff["ws-prev5"] == "Super+Ctrl+Up", "A five-step key the user set was dropped");
+        eff = defaults(); eff["focus-up"] = "Super+Ctrl+Up"; eff["ws-prev"] = "Super+Ctrl+Left";
+        Binds.YieldLater(eff, new HashSet<string> { "ws-prev" }, new List<string>());
+        Check(eff["ws-prev5"] == "Super+Ctrl+Up", "A default (not the user) on the same keys made the new default yield");
+        Console.WriteLine("PASS: Super+Ctrl+Up/Down five-step workspaces, ends and user bindings");
+    }
+
     static void FullscreenLayerTests() {
         // the workspace slide's layer covers the bar when a window covers its monitor (a game, a video)
         Check(Slider.CoversMonitor(new Native.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 }, 0, 0, 1920, 1080), "A monitor-sized window was no fullscreen");
@@ -701,6 +748,7 @@ static class CoreRegression
         FrameSplitTests();
         WmPortTests();
         FullscreenLayerTests();
+        WorkspaceStepTests();
         DialogTests();
         LauncherTests();
         StopFlagTests();

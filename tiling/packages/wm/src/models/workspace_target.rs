@@ -9,6 +9,8 @@ pub enum WorkspaceTarget {
   PreviousActiveInMonitor,
   Next,
   Previous,
+  /// r+N / r-N: Next / Previous taken N steps (signed).
+  Relative(isize),
   #[allow(dead_code)]
   Direction(Direction),
 }

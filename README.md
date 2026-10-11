@@ -139,6 +139,7 @@ Every change is backed up first. If a step fails, or you cancel with Ctrl+C, the
 | `Super + ←↑→↓` | Focus inside the workspace (the mouse follows) |
 | `Super + Shift + ←↑→↓` | Move window / re-split the layout |
 | `Super + Ctrl + ←/→` | Previous / next workspace (slide) |
+| `Super + Ctrl + ↑/↓` | 5 workspaces back / forward (slide) |
 | `Super + Ctrl + Shift + ←/→` | Move window to previous / next workspace |
 | `Super + 1…0` | Workspace 1–10 |
 | `Super + Enter` / `Super + T` | Terminal (WezTerm + fish) |

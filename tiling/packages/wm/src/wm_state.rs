@@ -631,12 +631,19 @@ impl WmState {
           prev_active_workspace_in_monitor.cloned(),
         )
       }
-      // Hyprland's r+1 / r-1: the next workspace in config order that
-      // lives (or would open) on this monitor; workspaces shown on or bound
-      // to another monitor are skipped and the ends do not wrap around.
-      WorkspaceTarget::Next | WorkspaceTarget::Previous => {
-        let step: isize =
-          if matches!(target, WorkspaceTarget::Next) { 1 } else { -1 };
+      // Hyprland's r+1 / r-1 (and r+N / r-N): the next workspace in config
+      // order that lives (or would open) on this monitor; workspaces shown
+      // on or bound to another monitor are skipped and the ends do not wrap
+      // around. N steps past the last one there is stop at that one.
+      WorkspaceTarget::Next
+      | WorkspaceTarget::Previous
+      | WorkspaceTarget::Relative(_) => {
+        let (step, count): (isize, usize) = match target {
+          WorkspaceTarget::Next => (1, 1),
+          WorkspaceTarget::Previous => (-1, 1),
+          WorkspaceTarget::Relative(n) => (n.signum(), n.unsigned_abs()),
+          _ => unreachable!(),
+        };
         let monitor = origin_workspace
           .monitor()
           .context("No monitor in workspace")?;
@@ -648,7 +655,7 @@ impl WmState {
           .collect();
         let origin_name = origin_workspace.config().name.clone();
         let target_name =
-          adjacent_on_monitor(&names, &origin_name, step, |name| {
+          adjacent_on_monitor(&names, &origin_name, step, count, |name| {
             match self.workspace_by_name(name) {
               Some(workspace) => workspace
                 .monitor()
@@ -671,7 +678,7 @@ impl WmState {
         // Hyprland's r-1 with nothing usable below goes to workspace 1
         // (its monitor gets the focus if 1 lives elsewhere); r+1 stops
         let target_name = target_name.or_else(|| {
-          (step < 0)
+          (step < 0 && count > 0)
             .then(|| names.first().cloned())
             .flatten()
             .filter(|first| *first != origin_name)
@@ -890,18 +897,22 @@ pub(crate) fn adjacent_on_monitor(
   names: &[String],
   origin: &str,
   step: isize,
+  count: usize,
   on_monitor: impl Fn(&str) -> bool,
 ) -> Option<String> {
   let start = names.iter().position(|name| name == origin)? as isize;
   let mut index = start + step;
-  while index >= 0 && (index as usize) < names.len() {
+  let mut found = None;
+  let mut taken = 0;
+  while taken < count && index >= 0 && (index as usize) < names.len() {
     let name = &names[index as usize];
     if on_monitor(name) {
-      return Some(name.clone());
+      found = Some(name.clone());
+      taken += 1;
     }
     index += step;
   }
-  None
+  found
 }
 
 #[cfg(test)]
@@ -914,17 +925,33 @@ mod adjacent_tests {
 
   #[test]
   fn stops_at_the_ends() {
-    assert_eq!(adjacent_on_monitor(&names(), "1", -1, |_| true), None);
-    assert_eq!(adjacent_on_monitor(&names(), "6", 1, |_| true), None);
-    assert_eq!(adjacent_on_monitor(&names(), "3", 1, |_| true).as_deref(), Some("4"));
+    assert_eq!(adjacent_on_monitor(&names(), "1", -1, 1, |_| true), None);
+    assert_eq!(adjacent_on_monitor(&names(), "6", 1, 1, |_| true), None);
+    assert_eq!(adjacent_on_monitor(&names(), "3", 1, 1, |_| true).as_deref(), Some("4"));
   }
 
   #[test]
   fn skips_other_monitors() {
     // 2 and 3 live on another monitor
     let here = |n: &str| n != "2" && n != "3";
-    assert_eq!(adjacent_on_monitor(&names(), "1", 1, here).as_deref(), Some("4"));
-    assert_eq!(adjacent_on_monitor(&names(), "4", -1, here).as_deref(), Some("1"));
-    assert_eq!(adjacent_on_monitor(&names(), "1", -1, here), None);
+    assert_eq!(adjacent_on_monitor(&names(), "1", 1, 1, here).as_deref(), Some("4"));
+    assert_eq!(adjacent_on_monitor(&names(), "4", -1, 1, here).as_deref(), Some("1"));
+    assert_eq!(adjacent_on_monitor(&names(), "1", -1, 1, here), None);
+  }
+
+  #[test]
+  fn steps_five_and_stops_at_the_last_one_there_is() {
+    let ten: Vec<String> = (1..=10).map(|n| n.to_string()).collect();
+    let all = |_: &str| true;
+    assert_eq!(adjacent_on_monitor(&ten, "2", 1, 5, all).as_deref(), Some("7"));
+    assert_eq!(adjacent_on_monitor(&ten, "8", -1, 5, all).as_deref(), Some("3"));
+    // fewer than five left: the last one there is, no wrap around
+    assert_eq!(adjacent_on_monitor(&ten, "7", 1, 5, all).as_deref(), Some("10"));
+    assert_eq!(adjacent_on_monitor(&ten, "3", -1, 5, all).as_deref(), Some("1"));
+    assert_eq!(adjacent_on_monitor(&ten, "10", 1, 5, all), None);
+    assert_eq!(adjacent_on_monitor(&ten, "1", -1, 5, all), None);
+    // workspaces of another monitor do not count as steps
+    let here = |n: &str| n != "3" && n != "4";
+    assert_eq!(adjacent_on_monitor(&ten, "1", 1, 5, here).as_deref(), Some("8"));
   }
 }

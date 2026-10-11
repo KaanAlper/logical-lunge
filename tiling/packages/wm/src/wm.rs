@@ -397,6 +397,10 @@ impl WindowManager {
           focus_workspace(WorkspaceTarget::Previous, state, config)?;
         }
 
+        if let Some(step) = args.relative_workspace {
+          focus_workspace(WorkspaceTarget::Relative(step), state, config)?;
+        }
+
         if args.recent_workspace {
           focus_workspace(WorkspaceTarget::Recent, state, config)?;
         }

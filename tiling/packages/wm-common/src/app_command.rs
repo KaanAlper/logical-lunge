@@ -395,6 +395,11 @@ pub struct InvokeFocusCommand {
   #[clap(long)]
   pub prev_workspace: bool,
 
+  /// Hyprland's r+N / r-N: like --next-workspace / --prev-workspace
+  /// taken N steps on this monitor (stops at the last one there is).
+  #[clap(long, allow_hyphen_values = true)]
+  pub relative_workspace: Option<isize>,
+
   #[clap(long)]
   pub next_active_workspace_on_monitor: bool,
 
