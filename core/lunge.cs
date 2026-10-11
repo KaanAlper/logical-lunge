@@ -236,9 +236,9 @@ class TilingClient
     readonly object gate = new object();
 
     // Süre sınırı: pencere yöneticisi takılınca çağıran donmasın. Mesaj döngüsü olan thread'ler (arayüz, klavye kancası)
-    // toplam en fazla ~1,5 sn bekler, arka plan işleri 5 sn (iki deneme de bu sürenin içinde). Önceden bağlanma (3 sn), gönderme (1,5 sn) ve
+    // toplam en fazla ~1 sn bekler, arka plan işleri 5 sn (iki deneme de bu sürenin içinde). Önceden bağlanma (3 sn), gönderme (1,5 sn) ve
     // her ileti için 2 sn'lik okuma iki denemede toplanıyor, kilit sırası da eklenince arayüz 13 sn'ye kadar donuyordu.
-    // Pencere yöneticisi yanıt vermiyorken (çöktü, port başka süreçte) arayüz thread'i her istekte 1,5 sn beklemesin:
+    // Pencere yöneticisi yanıt vermiyorken (çöktü, port başka süreçte) arayüz thread'i her istekte 1 sn beklemesin:
     // son istek başarısızsa mesaj döngüsü olan thread'ler hemen boş döner, arka planda tek bir yoklama bağlantıyı dener
     // ve yanıt gelince kapı yeniden açılır. Önceden art arda gelen istekler arayüzü 8 sn dondurup helper'ı yeniden
     // başlatıyordu.
@@ -258,16 +258,30 @@ class TilingClient
 
     internal static bool SkipsWait(bool interactive, bool wmDown) { return interactive && wmDown; }
 
+    // Pencere yöneticisi son istekte yanıt vermedi (arka plan yoklaması yanıt alınca false olur)
+    public static bool Down { get { return down; } }
+
+    // Mesaj döngüsü olan her thread etkileşimlidir; çekirdeğin arayüz thread'i (Slider.Ui) ayrıca tanınır: kayma
+    // kuyruğu orada boşaltılır ve orada beklemek bütün masaüstünü dondurur
+    static bool Interactive()
+    {
+        if (System.Windows.Forms.Application.MessageLoop) return true;
+        var ui = Slider.Ui;
+        try { return ui != null && ui.IsHandleCreated && !ui.InvokeRequired; } catch { return false; }
+    }
+
     Dictionary<string, object> Send(string message)
     {
-        bool interactive = System.Windows.Forms.Application.MessageLoop;
+        bool interactive = Interactive();
         if (SkipsWait(interactive, down)) { ProbeInBackground(); return null; }
         return SendWaiting(message, interactive);
     }
 
+    // Arayüz thread'i en çok 1 sn bekler (sağlıklı pencere yöneticisi milisaniyelerde yanıtlar; yük altında da yetsin),
+    // arka plan 5 sn. Yanıt gelmezse sonraki arayüz istekleri yoklama yanıt alana kadar hiç beklemez.
     Dictionary<string, object> SendWaiting(string message, bool interactive)
     {
-        int budget = interactive ? 1500 : 5000;
+        int budget = interactive ? 1000 : 5000;
         var sw = Stopwatch.StartNew();
         if (!Monitor.TryEnter(gate, budget)) { LogError("kilit bekleme süresi doldu (" + message + ")"); return null; }
         try
@@ -8182,6 +8196,9 @@ class Keys2
             batch = new List<object[]>(pend);
             pend.Clear();
         }
+        // Pencere yöneticisi yanıt vermiyor (çöktü, nöbetçi yeniden başlatıyor): biriken kaymalar oynatılmaz, atılır;
+        // her biri arayüz thread'inde bekleyip masaüstünü donduruyordu
+        if (TilingClient.Down) { Slider.Log("slide: pencere yöneticisi yanıt vermiyor; " + batch.Count + " kayma atlandı"); return; }
         try
         {
             for (int i = 0; i < batch.Count - 1; i++) slider.Commands((string[])batch[i][0]);
