@@ -115,7 +115,7 @@ jobs:
         shell: pwsh
         working-directory: tiling
         run: |
-          cargo test --release -p wm -- events::handle_window_moved_or_resized commands::general::window_sync_policy wm_state::adjacent_tests commands::container::split_ratio commands::workspace::focus_workspace dwindle_math user_config::tests::window_border commands::window::floating_placement
+          cargo test --release -p wm -- events::handle_window_moved_or_resized commands::general::window_sync_policy wm_state::adjacent_tests commands::container::split_ratio commands::workspace::focus_workspace dwindle_math user_config::tests::window_border commands::window::floating_placement stall_watch event_coalesce correction_budget
           if ($LASTEXITCODE) { throw 'Window manager event tests failed' }
 
       - name: Check theme, media and core regressions
@@ -193,6 +193,13 @@ jobs:
           LL_TRACE_THREADPOOL: ${{ inputs.trace_threadpool && '1' || '' }}
           LL_STRESS_TRACE: ${{ inputs.trace && '1' || '' }}
         run: ./tools/ci/stress-test.ps1 -Package unpacked
+
+      # windows that never accept their place (a minimum size bigger than any tile, one resizing itself back, a
+      # location and a title event storm): the window manager must stay responsive and light (refusing-windows-test.ps1)
+      - name: Run the window manager against windows that refuse their place
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tools/ci/refusing-windows-test.ps1 -Package unpacked
 
       - name: Keep the thread pool trace
         if: inputs.trace_threadpool && always()
