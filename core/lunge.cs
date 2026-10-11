@@ -238,9 +238,35 @@ class TilingClient
     // Süre sınırı: pencere yöneticisi takılınca çağıran donmasın. Mesaj döngüsü olan thread'ler (arayüz, klavye kancası)
     // toplam en fazla ~1,5 sn bekler, arka plan işleri 5 sn (iki deneme de bu sürenin içinde). Önceden bağlanma (3 sn), gönderme (1,5 sn) ve
     // her ileti için 2 sn'lik okuma iki denemede toplanıyor, kilit sırası da eklenince arayüz 13 sn'ye kadar donuyordu.
+    // Pencere yöneticisi yanıt vermiyorken (çöktü, port başka süreçte) arayüz thread'i her istekte 1,5 sn beklemesin:
+    // son istek başarısızsa mesaj döngüsü olan thread'ler hemen boş döner, arka planda tek bir yoklama bağlantıyı dener
+    // ve yanıt gelince kapı yeniden açılır. Önceden art arda gelen istekler arayüzü 8 sn dondurup helper'ı yeniden
+    // başlatıyordu.
+    static volatile bool down;
+    static int probing;
+
+    static void ProbeInBackground()
+    {
+        if (Interlocked.CompareExchange(ref probing, 1, 0) != 0) return;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try { new TilingClient().Send("query monitors"); }
+            catch { }
+            finally { Volatile.Write(ref probing, 0); }
+        });
+    }
+
+    internal static bool SkipsWait(bool interactive, bool wmDown) { return interactive && wmDown; }
+
     Dictionary<string, object> Send(string message)
     {
         bool interactive = System.Windows.Forms.Application.MessageLoop;
+        if (SkipsWait(interactive, down)) { ProbeInBackground(); return null; }
+        return SendWaiting(message, interactive);
+    }
+
+    Dictionary<string, object> SendWaiting(string message, bool interactive)
+    {
         int budget = interactive ? 1500 : 5000;
         var sw = Stopwatch.StartNew();
         if (!Monitor.TryEnter(gate, budget)) { LogError("kilit bekleme süresi doldu (" + message + ")"); return null; }
@@ -258,26 +284,26 @@ class TilingClient
                         ws = new ClientWebSocket();
                         ws.Options.Proxy = null; // yoksa WPAD proxy araması bağlantıyı saniyelerce geciktiriyor
                         if (!ws.ConnectAsync(new Uri("ws://127.0.0.1:6123"), CancellationToken.None).Wait(Math.Min(3000, left)))
-                        { Drop(); LogError("bağlanılamadı"); continue; }
+                        { Drop(); down = true; LogError("bağlanılamadı"); continue; }
                     }
                     var bytes = Encoding.UTF8.GetBytes(message);
                     left = budget - (int)sw.ElapsedMilliseconds;
                     if (left <= 0 || !ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None).Wait(Math.Min(1500, left)))
-                    { Drop(); LogError("gönderilemedi"); continue; }
+                    { Drop(); down = true; LogError("gönderilemedi"); continue; }
                     while (true)
                     {
                         left = budget - (int)sw.ElapsedMilliseconds;
                         string text = left > 0 ? Receive(Math.Min(2000, left)) : null;
-                        if (text == null) break;
+                        if (text == null) { down = true; break; }
                         var obj = json.DeserializeObject(text) as Dictionary<string, object>;
                         if (obj == null) continue;
                         object type, cm;
                         obj.TryGetValue("messageType", out type);
                         obj.TryGetValue("clientMessage", out cm);
-                        if ((type as string) == "client_response" && (cm as string) == message) return obj;
+                        if ((type as string) == "client_response" && (cm as string) == message) { down = false; return obj; }
                     }
                 }
-                catch (Exception ex) { LogError(ex.GetBaseException().Message); Drop(); }
+                catch (Exception ex) { down = true; LogError(ex.GetBaseException().Message); Drop(); }
             }
             return null;
         }
@@ -6447,7 +6473,37 @@ static class TilingWatchdog
         return best;
     }
 
+    // Portu yalnızca dinleyen bir soket tutar (kapanan sürecin TIME_WAIT'teki bağlantıları değil): kimse dinlemiyorsa
+    // boştur; bizim kurulumumuzun eski bir lunge-tiling'i dinliyorsa kapatılır; başka bir uygulama tutuyorsa adı bir kez
+    // söylenir (ona dokunulmaz, o kapanınca masaüstü kendiliğinden toparlanır).
+    static int foreignNoted;
     static bool PortFree()
+    {
+        int pid = PortOwner.ListenerPid(IPC_PORT);
+        if (pid < 0) return ExclusiveBindFree(); // tablo okunamadı: eski yol
+        string path = pid > 0 ? PortOwner.ImagePath(pid) : null;
+        switch (PortOwner.Classify(pid, path, Paths.Tiling, pid > 0 ? PortOwner.AgeSeconds(pid) : 0))
+        {
+            case PortOwner.Holder.Free: return true;
+            case PortOwner.Holder.Starting: return false;
+            case PortOwner.Holder.OwnStale:
+                Slider.Log("tiling nöbetçisi: IPC portunu eski pencere yöneticisi tutuyor (pid " + pid + "); kapatılıyor");
+                try { using (var p = Process.GetProcessById(pid)) { p.Kill(); p.WaitForExit(3000); } }
+                catch (Exception ex) { Slider.Log("tiling nöbetçisi: eski pencere yöneticisi kapatılamadı: " + ex.Message); }
+                return PortOwner.ListenerPid(IPC_PORT) == 0;
+            default:
+                if (Interlocked.Exchange(ref foreignNoted, pid) != pid)
+                {
+                    string name = PortOwner.Name(pid, path);
+                    Slider.Log("tiling nöbetçisi: IPC portunu başka bir uygulama tutuyor: " + name + " (pid " + pid + ")");
+                    Toasts.Send("error", "Pencere yöneticisi başlatılamıyor",
+                        name + " pencere yöneticisinin bağlantı noktasını (" + IPC_PORT + ") tutuyor. O uygulamayı kapatınca masaüstü kendiliğinden toparlanır.", "error");
+                }
+                return false;
+        }
+    }
+
+    static bool ExclusiveBindFree()
     {
         try
         {
