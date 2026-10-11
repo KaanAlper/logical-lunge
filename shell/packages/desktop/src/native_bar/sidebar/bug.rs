@@ -48,7 +48,8 @@ pub(in crate::native_bar) enum BugEv {
   Device(Option<Value>),
   File(usize, Result<(String, usize), String>),
   Progress(u32),
-  Sent(Result<Sent, String>),
+  /// the error and, when keeping it for later failed too, why
+  Sent(Result<Sent, (SendError, Option<String>)>),
   /// reports kept while the server was unreachable went out later
   QueueSent(usize),
 }
@@ -65,25 +66,17 @@ pub(super) type Logs = [(String, Option<String>); 3];
 
 /// Why a report did not go: the server could not be reached at all (no
 /// connection, DNS, timeout), or it answered and refused it.
-pub(super) enum SendError {
+pub(in crate::native_bar) enum SendError {
   Unreachable(String),
   Refused(u32, String),
 }
 
 impl SendError {
-  fn text(&self, english: bool) -> String {
+  /// The error in the user's language (`tr` is `Model::tr`).
+  fn text(&self, tr: impl Fn(&str) -> String) -> String {
     match self {
-      SendError::Unreachable(err) => format!(
-        "{}{}",
-        if english { "The server could not be reached (connection or DNS). " } else { "Sunucuya ulaşılamadı (bağlantı ya da DNS). " },
-        err
-      ),
-      SendError::Refused(status, body) => format!(
-        "{} {}: {}",
-        if english { "The server refused the report, HTTP" } else { "Sunucu raporu kabul etmedi, HTTP" },
-        status,
-        body.chars().take(240).collect::<String>()
-      ),
+      SendError::Unreachable(err) => format!("{} {}", tr("Sunucuya ulaşılamadı (bağlantı ya da DNS)."), err).trim_end().to_string(),
+      SendError::Refused(status, body) => format!("{}: {}", tr(&format!("Sunucu raporu kabul etmedi, HTTP {status}")), body.chars().take(240).collect::<String>()),
     }
   }
 }
@@ -564,12 +557,8 @@ impl Ui {
 
   pub(super) fn sb_bug_event(&mut self, e: BugEv) {
     if let BugEv::QueueSent(count) = e {
-      let english = !self.model.locale().to_lowercase().starts_with("tr");
-      let (title, body) = if english {
-        ("Queued reports sent", format!("{count} issue report(s) kept while the server was unreachable were sent."))
-      } else {
-        ("Bekleyen raporlar gönderildi", format!("Sunucuya ulaşılamazken saklanan {count} hata raporu gönderildi."))
-      };
+      let title = self.model.tr("Bekleyen raporlar gönderildi");
+      let body = self.model.tr(&format!("Sunucuya ulaşılamazken saklanan {count} hata raporu gönderildi."));
       self.toast_add(json!({ "kind": "ok", "title": title, "body": body, "icon": "check_circle" }));
       return;
     }
@@ -595,21 +584,28 @@ impl Ui {
         match r {
           Ok(how) => {
             b.sent = true;
+            let tr = |s: &str| self.model.tr(s);
             let (title, body) = match how {
-              Sent::Now => (b.t("Rapor gönderildi", "Report sent"), b.t("Hata raporu kaydedildi.", "The issue report was saved.")),
+              Sent::Now => (tr("Rapor gönderildi"), tr("Hata raporu kaydedildi.")),
               Sent::Queued => (
-                b.t("Rapor sıraya alındı", "Report queued"),
-                b.t(
-                  "Sunucuya şu an ulaşılamıyor. Rapor bu bilgisayarda saklandı; bağlantı gelince kendiliğinden gönderilecek.",
-                  "The server can't be reached right now. The report is kept on this PC and will be sent by itself once it can.",
-                ),
+                tr("Rapor sıraya alındı"),
+                tr("Sunucuya şu an ulaşılamıyor. Rapor bu bilgisayarda saklandı; bağlantı gelince kendiliğinden gönderilecek."),
               ),
             };
             self.sidebar.store.bug_draft.clear();
             self.sidebar.save_soon();
             self.toast_add(json!({ "kind": "ok", "title": title, "body": body, "icon": "check_circle" }));
           }
-          Err(e) => b.error = format!("{}{}", b.t("Gönderilemedi: ", "Could not send: "), e),
+          Err((err, kept)) => {
+            let tr = |s: &str| self.model.tr(s);
+            let text = match kept {
+              Some(kept) => format!("{} ({kept})", err.text(tr)),
+              None => err.text(tr),
+            };
+            // one line: a translated pattern ("Gönderilemedi: $1") matches a single line only
+            let text: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+            b.error = tr(&format!("Gönderilemedi: {}", text.trim()));
+          }
         }
       }
     }
@@ -690,16 +686,15 @@ impl Ui {
       },
     });
     let logs: Logs = [("core.log".to_string(), included(1)), ("shell.log".to_string(), included(2)), ("tiling.log".to_string(), included(3))];
-    let english = b.english;
     std::thread::spawn(move || {
       let r = match upload(base.clone(), logs.clone(), |p| ev(BugEv::Progress(p))) {
         Ok(()) => Ok(Sent::Now),
         // never lost: kept and sent later
         Err(SendError::Unreachable(err)) => match super::bug_queue::enqueue(&base, &logs) {
           Ok(()) => Ok(Sent::Queued),
-          Err(kept) => Err(format!("{} ({})", SendError::Unreachable(err).text(english), kept)),
+          Err(kept) => Err((SendError::Unreachable(err), Some(kept))),
         },
-        Err(refused) => Err(refused.text(english)),
+        Err(refused) => Err((refused, None)),
       };
       std::thread::sleep(Duration::from_millis(50));
       ev(BugEv::Sent(r));
