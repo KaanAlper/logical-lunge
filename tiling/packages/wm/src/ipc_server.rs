@@ -79,10 +79,22 @@ impl IpcServer {
 
     let server_addr = format!("127.0.0.1:{DEFAULT_IPC_PORT}");
     let server = Self::bind_with_retry(&server_addr).await?;
+    no_inherit(&server);
     info!("IPC server started on: '{}'.", server_addr);
 
     let task = task::spawn(async move {
-      while let Ok((stream, addr)) = server.accept().await {
+      loop {
+        // a failed accept (a client gone before it was taken) is that
+        // client's; the listener stays and takes the next one
+        let (stream, addr) = match server.accept().await {
+          Ok(accepted) => accepted,
+          Err(err) => {
+            warn!("IPC accept failed: {}", err);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+          }
+        };
+        no_inherit(&stream);
         let message_tx = message_tx.clone();
 
         task::spawn(async move {
@@ -105,8 +117,22 @@ impl IpcServer {
       }
     });
 
+    // Logical Lunge: the listener lives in this task. If it panics, the
+    // process must not live on without IPC while holding the port (the
+    // core can neither reach it nor start a new WM): the WM exits and the
+    // core starts a new one from the saved layout.
+    let abort_handle = task.abort_handle();
+    task::spawn(async move {
+      if let Err(err) = task.await {
+        if err.is_panic() {
+          tracing::error!("IPC server task panicked: {err}");
+          std::process::exit(1);
+        }
+      }
+    });
+
     Ok(Self {
-      abort_handle: task.abort_handle(),
+      abort_handle,
       #[allow(clippy::used_underscore_binding)]
       _event_rx,
       event_tx,
@@ -458,3 +484,25 @@ impl Drop for IpcServer {
     self.stop();
   }
 }
+
+/// Keeps the IPC sockets out of the processes the WM launches. An app that
+/// inherited the listener would hold port 6123 after the WM is gone, and
+/// no new WM could start until that app closed (Winsock creates sockets
+/// non-inheritable, but a layered service provider can hand back ones that
+/// are).
+#[cfg(target_os = "windows")]
+fn no_inherit(socket: &impl std::os::windows::io::AsRawSocket) {
+  #[link(name = "kernel32")]
+  extern "system" {
+    fn SetHandleInformation(handle: isize, mask: u32, flags: u32) -> i32;
+  }
+  const HANDLE_FLAG_INHERIT: u32 = 0x1;
+  #[allow(clippy::cast_possible_wrap)]
+  let handle = socket.as_raw_socket() as isize;
+  if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+    debug!("IPC socket could not be made non-inheritable: {}", std::io::Error::last_os_error());
+  }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn no_inherit<T>(_: &T) {}
