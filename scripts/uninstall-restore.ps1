@@ -65,16 +65,22 @@ function Get-LLOwnedProcesses([string]$App) {
     }
 }
 
-# Ends what is still running from the install folder: the core first (a stopped core restarts nothing), then the rest,
-# again and again until none is left or the time is up. A process that ended on its own in between is not an error (the
-# core's helpers leave with it), and a terminated process is waited for: one stuck in a driver call (a hung window
-# manager) stays in the process list for a while after it was ended, and the install folder stays locked until it is
-# really gone. Returns what is still running at the end (nothing when all went).
+# Ends what is still running from the install folder: the core first (a stopped core restarts nothing), then the window
+# manager's watcher (ended after the window manager it starts restoring windows and, after a hung one, got stuck there),
+# then the rest, again and again until none is left or the time is up. A process that ended on its own in between is not
+# an error (the core's helpers leave with it), and a terminated process is waited for: one stuck in a driver call (a hung
+# window manager) stays in the process list for a while after it was ended, and the install folder stays locked until it
+# is really gone. Returns what is still listed at the end (nothing when all went); $script:LLEnded holds the ids whose
+# end Windows accepted (they are going and run no code of theirs any more).
+$script:LLEnded = @{}
+$script:LLStopTimeoutMs = 20000
 function Stop-LLOwnedProcesses([string]$App, [int]$SessionId, [int]$TimeoutMs = 20000) {
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $round = -1
+    $script:LLEnded = @{}
+    $order = @{ 'lunge.exe' = 0; 'lunge-tiling-watcher.exe' = 1 }
     while ($true) {
-        $left = @(Get-LLOwnedProcesses $App | Sort-Object @{ Expression = { if ($_.Name -eq 'lunge.exe') { 0 } else { 1 } } })
+        $left = @(Get-LLOwnedProcesses $App | Sort-Object @{ Expression = { if ($order.ContainsKey($_.Name)) { $order[$_.Name] } else { 2 } } })
         if (-not $left.Count -or $watch.ElapsedMilliseconds -ge $TimeoutMs) { return $left }
         # every 2 s a new round of ends; polled in between (a process ending takes its time)
         $now = [int][Math]::Floor($watch.ElapsedMilliseconds / 2000)
@@ -82,7 +88,12 @@ function Stop-LLOwnedProcesses([string]$App, [int]$SessionId, [int]$TimeoutMs = 
             $round = $now
             foreach ($part in $left) {
                 if ($part.SessionId -ne $SessionId) { continue } # another user's desktop: never ours to end
-                Stop-Process -Id $part.ProcessId -Force -ErrorAction SilentlyContinue
+                $failed = $null
+                Stop-Process -Id $part.ProcessId -Force -ErrorAction SilentlyContinue -ErrorVariable failed
+                if (-not $failed) { $script:LLEnded[[int]$part.ProcessId] = $true }
+                elseif ($round -eq 0 -and $failed[0].FullyQualifiedErrorId -notlike 'NoProcessFoundForGivenId*' -and @(Get-Process -Id $part.ProcessId -ErrorAction SilentlyContinue).Count) {
+                    Write-Warning "Could not end $($part.Name) ($($part.ProcessId)): $($failed[0].Exception.Message)"
+                }
             }
         }
         Start-Sleep -Milliseconds 250
@@ -131,9 +142,13 @@ function Stop-LLDesktop([string]$App, [string]$State, [bool]$SameUser, [int]$Ses
         if (@(Get-LLOwnedProcesses $App).Count) { return }
     }
     else {
-        $left = @(Stop-LLOwnedProcesses $App $SessionId)
+        $left = @(Stop-LLOwnedProcesses $App $SessionId $script:LLStopTimeoutMs)
         if (@($left | Where-Object { $_.SessionId -ne $SessionId }).Count) { throw "Another session started Logical Lunge during uninstall: $(Format-LLProcesses $left)." }
-        if ($left.Count) { throw "Logical Lunge did not close: $(Format-LLProcesses $left) still running. Nothing was removed." }
+        # Still running (Windows refused to end it): nothing is removed. Ended but still listed (stuck in a call to
+        # Windows): it runs nothing of ours any more, the uninstall goes on (its own file stays until it is gone).
+        $running = @($left | Where-Object { -not $script:LLEnded.ContainsKey([int]$_.ProcessId) })
+        if ($running.Count) { throw "Logical Lunge did not close: $(Format-LLProcesses $running) still running. Nothing was removed." }
+        if ($left.Count) { Write-Warning "Ended but still closing: $(Format-LLProcesses $left)" }
     }
     # Also repair cloaked workspaces if the graceful command timed out or the WM had already crashed.
     if ($SameUser) { [void](Invoke-LLBoundedCommand $core @('--uncloak-orphans') 15000) }
