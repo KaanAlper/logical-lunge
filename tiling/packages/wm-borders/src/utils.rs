@@ -894,19 +894,23 @@ pub fn show_border_for_window(hwnd: HWND) {
 }
 
 pub fn hide_border_for_window(hwnd: HWND) {
-    let hwnd_isize = hwnd.0 as isize;
-
-    // Spawn a new thread to guard against re-entrancy in the event hook, though it honestly isn't
-    // that important for our purposes I think
-    let _ = spawn_named("border-hide", move || {
-        let hwnd = HWND(hwnd_isize as _);
-
-        if let Some(border) = get_border_for_window(hwnd) {
-            post_message_w(Some(border), WM_APP_HIDECLOAKED, WPARAM(0), LPARAM(0))
-                .context("hide_border_for_window")
-                .log_if_err();
-        }
+    // Off the event hook (no lock taken in the hook, so no re-entrancy), on one long-lived thread: a thread per
+    // event was started for every hide (hundreds a minute while windows open and close).
+    static HIDE: std::sync::OnceLock<std::sync::mpsc::Sender<isize>> = std::sync::OnceLock::new();
+    let tx = HIDE.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<isize>();
+        let _ = spawn_named("border-hide", move || {
+            for hwnd_isize in rx {
+                if let Some(border) = get_border_for_window(HWND(hwnd_isize as _)) {
+                    post_message_w(Some(border), WM_APP_HIDECLOAKED, WPARAM(0), LPARAM(0))
+                        .context("hide_border_for_window")
+                        .log_if_err();
+                }
+            }
+        });
+        tx
     });
+    let _ = tx.send(hwnd.0 as isize);
 }
 
 /// Spawns a thread that polls to make up for unreliable events (e.g. EVENT_SYSTEM_FOREGROUND).
