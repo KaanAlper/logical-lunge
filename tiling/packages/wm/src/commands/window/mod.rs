@@ -1,5 +1,6 @@
 #[cfg(target_os = "windows")]
 mod fullscreen_spoof;
+mod floating_placement;
 mod ignore_window;
 mod manage_window;
 mod mouse_drag;
@@ -15,6 +16,7 @@ mod update_window_state;
 
 #[cfg(target_os = "windows")]
 pub use fullscreen_spoof::*;
+pub use floating_placement::*;
 pub use ignore_window::*;
 pub use manage_window::*;
 pub use mouse_drag::*;
