@@ -378,7 +378,7 @@ while ($quiet -lt $CHURN_SETTLE_MAX_SEC -and @(Holding).Count) {
 if ($quiet -gt $CHURN_SETTLE_SEC) { foreach ($k in @('core', 'shell', 'tiling')) { if ($quietThreads[$k]) { Note "threads over the quiet pause: $k $($quietThreads[$k] -join ' ')" } } }
 Thread-Diff 'kept after the churn and the quiet pause' $threadsBefore (Thread-Snapshot)
 foreach ($k in @('core', 'shell', 'tiling')) {
-    if ($churnBefore[$k] -and $churnSettled[$k]) { Note "after the churn and $quiet s of quiet: $k threads $($churnBefore[$k].Threads) -> $($churnSettled[$k].Threads), handles $($churnBefore[$k].Handles) -> $($churnSettled[$k].Handles)" }
+    if ($churnBefore[$k] -and $churnSettled[$k]) { Note "after the churn and $quiet s of quiet: $k threads $($churnBefore[$k].Threads) -> $($churnSettled[$k].Threads), handles $($churnBefore[$k].Handles) -> $($churnSettled[$k].Handles), private $($churnBefore[$k].PrivateMB) -> $($churnSettled[$k].PrivateMB) MB" }
 }
 
 # ------------------------------------------------------------------ checks
@@ -506,6 +506,15 @@ $churnRows = foreach ($c in $churn) {
             if ($m -eq 'Threads' -and $churnBefore[$k] -and $churnSettled[$k]) {
                 $kept = $churnSettled[$k].Threads - $churnBefore[$k].Threads
                 if ($kept -le $MAX_CHURN_THREADS_SETTLED) { Note "churn $($c.Kind): $k threads rose $per100 per 100 operations but retired once idle ($kept kept)"; continue }
+            }
+            # Leaked memory is never given back: growing at the limit over this churn leaves at least limit x operations
+            # after the quiet pause. Heaps and in-flight surfaces that rise during a churn and fall after it leave less
+            # (the window manager over the window churn: 61 -> 68 MB, 51 MB at the start of the next churn; the shell over the popup
+            # churn: 49.4 -> 52.6 MB, back to 50.1 by the end of the next churn).
+            if ($m -eq 'PrivateMB' -and $churnSettled[$k]) {
+                $kept = [math]::Round($churnSettled[$k].PrivateMB - $pts[0].Sample[$k].PrivateMB, 1)
+                $atLimit = $churnLimits[$m] * $c.Ops / 100
+                if ($kept -lt $atLimit) { Note "churn $($c.Kind): $k private memory rose $per100 MB per 100 operations but $kept MB of it was left after the quiet pause (growing at the limit leaves $atLimit)"; continue }
             }
             Fail "churn $($c.Kind): $k $m grows $per100 per 100 operations (max $($churnLimits[$m]))"
         }
