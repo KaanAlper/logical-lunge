@@ -6578,6 +6578,10 @@ static class Supervisor
             var sw = Stopwatch.StartNew();
             while (Maint.Running(Names.Tiling) && sw.ElapsedMilliseconds < 6000) Thread.Sleep(100);
         }
+        // Pencere yöneticisinin bekçisi (lunge-tiling-watcher) ondan önce: yönetici zorla kapanınca bekçi pencereleri geri
+        // getirmeye girişiyor, yanıt vermeyen bir yöneticiden sonra orada takılıp sonlandırılamaz kalıyordu (CI: kaldırma
+        // "lunge-tiling-watcher.exe hâlâ çalışıyor" diye durdu). Pencereleri burada Orphans.Uncloak geri getirir.
+        Kill("lunge-tiling-watcher");
         Kill(Names.Tiling);
         Kill(Names.Shell);
         // Bilerek kapatılan kabuk çökmüş sayılmasın: kabuğun çöküş döngüsü kaydı (son açılışları) silinir. Yoksa iki

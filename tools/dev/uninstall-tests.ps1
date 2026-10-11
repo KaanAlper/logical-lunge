@@ -327,11 +327,12 @@ try {
         $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne $Id })
     }
     Inventory; $script:gracefulExit = $false; $script:restarted = $false; $script:linger = @{ 11 = 5 }
-    $script:cim = @(@([pscustomobject]@{ Name = 'lunge.exe'; ExecutablePath = $core; ProcessId = 13; SessionId = 7 }) + $script:cim)
+    $script:cim = @(@([pscustomobject]@{ Name = 'lunge.exe'; ExecutablePath = $core; ProcessId = 13; SessionId = 7 }) + $script:cim +
+        @([pscustomobject]@{ Name = 'lunge-tiling-watcher.exe'; ExecutablePath = (Join-Path $app 'lunge-tiling-watcher.exe'); ProcessId = 14; SessionId = 7 }))
     $script:events.Clear()
     Stop-LLDesktop $app $state $true 7
     $order = $script:events -join ','
-    Assert ($order -match '^--stop-desktop,--restore-banners,--takeover-restore,kill:1[03],kill:11') "The core and its helpers did not go first: $order"
+    Assert ($order -match '^--stop-desktop,--restore-banners,--takeover-restore,kill:1[03],kill:14,kill:11') "The core, then the window manager's watcher did not go first: $order"
     Assert (-not ($order -match 'kill:10' -and $order -match 'kill:13')) "A part that had already ended was ended again: $order"
     Assert ($order -match 'kill:21' -and $order.EndsWith('--uncloak-orphans')) "A restarted part was left running: $order"
     Assert (-not @(Get-LLOwnedProcesses $app).Count) 'Parts were left running'
@@ -342,7 +343,26 @@ try {
     $left = @(Stop-LLOwnedProcesses $app 7 1500)
     Assert ($watch.ElapsedMilliseconds -lt 10000 -and @($left | ForEach-Object ProcessId) -contains 11) 'The stop of a part that does not end was not bounded'
     Assert ((Format-LLProcesses $left) -match 'lunge-tiling\.exe \(11\)') 'A part still running was not named'
+    # Ended but still listed (stuck in a call to Windows; CI 2026-10-12: the WM's watcher after a hung WM): it runs
+    # nothing of ours any more, so the uninstall goes on. One Windows refuses to end stops it before anything is removed.
+    $script:LLStopTimeoutMs = 1500
+    Inventory; $script:events.Clear()
+    Stop-LLDesktop $app $state $true 7
+    Assert ($script:events -contains '--uncloak-orphans') 'An ended part that is still closing stopped the uninstall'
     $script:linger = @{}
+    function Stop-Process { [CmdletBinding()] param([int]$Id, [switch]$Force)
+        if ($Id -eq 11) { Write-Error 'Access is denied.'; return }
+        $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne $Id })
+    }
+    Inventory; $script:LLEnded = @{}; $script:events.Clear(); $message = $null
+    try { Stop-LLDesktop $app $state $true 7 } catch { $message = $_.Exception.Message }
+    Assert ($message -match 'lunge-tiling\.exe \(11\) still running') "A part Windows would not end did not stop the uninstall: $message"
+    Assert ($script:events -notcontains '--uncloak-orphans') 'The uninstall went on after a part would not end'
+    $script:LLStopTimeoutMs = 20000
+    function Stop-Process { [CmdletBinding()] param([int]$Id, [switch]$Force)
+        $script:events.Add("kill:$Id")
+        $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne $Id })
+    }
 
     # Cross-account shutdown must not run any HKCU restore command as the credential administrator.
     function Get-NetTCPConnection { [CmdletBinding()] param($LocalPort, $State); return $null }
