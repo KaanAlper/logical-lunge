@@ -379,7 +379,7 @@ function App() {
       } }, item.checked ? h(Icon, { name: 'check' }) : h('span', { className: 'menu-spacer' }), T(item.label)))),
     popup && popupSpec && h(LocationPicker, { key: popup.id, elementRef: popupElement, spec: popupSpec, load: core, language: locale(), translate: T, editing,
       position: { left: popup.x, top: popup.y }, cancel: closeLocation, save: async patch => { await update({ action: 'patch', id: popupSpec.id, patch }); closeLocation(); } }),
-    error && host && h('div', { className: 'host-error', role: 'alert' }, h('span', null, T('İşlem tamamlanamadı'), ': ', error), h(Button, { icon: 'close', label: 'Kapat', onClick: () => setError(null) })));
+    error && host && h('div', { className: 'host-error', role: 'alert' }, h('span', null, T('İşlem tamamlanamadı'), ': ', error), h(Button, { icon: 'close', label: 'Hatayı kapat', onClick: () => setError(null) })));
 }
 function menuItems(s) {
   const items = [];

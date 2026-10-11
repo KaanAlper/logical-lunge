@@ -160,7 +160,7 @@ try {
   const popup = page.getByRole('dialog', { name: 'Konum' }), country = popup.getByRole('combobox', { name: 'Ülke', exact: true }), city = popup.getByRole('combobox', { name: 'Şehir', exact: true }), district = popup.getByRole('combobox', { name: 'İlçe (isteğe bağlı)', exact: true });
   assert.ok(await city.isDisabled()); assert.ok(await popup.getByRole('button', { name: 'Kaydet', exact: true }).isDisabled());
   assert.equal(await popup.locator('.location-recents').count(), 0, 'empty history does not reserve a large list');
-  assert.equal(await popup.getByRole('button', { name: 'Kapat', exact: true }).count(), 1);
+  assert.equal(await popup.getByRole('button', { name: 'Konum seçiciyi kapat', exact: true }).count(), 1);
   await popup.screenshot({ path: path.join(out, 'location-picker-empty.png') });
   await country.fill('T'); await popup.getByRole('option', { name: 'Türkiye', exact: true }).waitFor();
   await country.press('ArrowUp'); assert.equal(await popup.getByRole('option', { name: 'Amerika Birleşik Devletleri', exact: true }).getAttribute('aria-selected'), 'true');
@@ -233,13 +233,13 @@ try {
   await page.keyboard.press('Escape'); await clock.getByRole('button', { name: 'Ayarlar', exact: true }).click();
   await page.getByRole('menuitem', { name: 'Görünüş', exact: true }).click(); assert.equal(await background.inputValue(), '0'); assert.equal(await content.inputValue(), '0');
   await background.fill('1'); await content.fill('1'); await page.keyboard.press('Escape');
-  await page.getByRole('alert').getByRole('button', { name: 'Kapat', exact: true }).click();
+  await page.getByRole('alert').getByRole('button', { name: 'Hatayı kapat', exact: true }).click();
   // Failed writes surface an error while preserving unsaved text.
   await page.evaluate(() => { window.__failSave = true; });
   await note.fill('unsaved draft'); await page.getByRole('alert').waitFor(); assert.equal(await note.inputValue(), 'unsaved draft');
   await page.evaluate(() => { window.__failSave = false; }); await note.press('Escape');
   await page.waitForFunction(() => window.__bootstrap.store.widgets.find(w => w.kind === 'note').note === 'unsaved draft');
-  await page.getByRole('alert').getByRole('button', { name: 'Kapat', exact: true }).click();
+  await page.getByRole('alert').getByRole('button', { name: 'Hatayı kapat', exact: true }).click();
   // Monitor resize/UI scale updates project into the new DIP area and hit region.
   await page.evaluate(() => window.__emit('ll:desktop-widgets-host', { monitor: 'DISPLAY1', monitors: [{ device: 'DISPLAY1', primary: true, x: 0, y: 40, width: 1280, height: 900, scale: 1.25 }], uiScale: 1.25, active: true }));
   await page.waitForFunction(() => document.getElementById('root').style.zoom === '1.25');

@@ -53,7 +53,7 @@ export function LocationPicker({ spec, load, language, translate: T, editing, sa
     onKeyDown: e => { if (e.key === 'Escape') { e.stopPropagation(); e.preventDefault(); if (!saving) cancel(); } } },
     h('div', { className: 'location-heading' },
       h('div', { className: 'location-heading-text' }, h('strong', null, T('Konumu değiştir')), h('span', { className: 'subtext' }, T('Ülke, şehir ve isteğe bağlı ilçe'))),
-      h('button', { className: 'location-close', type: 'button', disabled: saving, 'aria-label': T('Kapat'), title: T('Kapat'), onClick: cancel }, '×')),
+      h('button', { className: 'location-close', type: 'button', disabled: saving, 'aria-label': T('Konum seçiciyi kapat'), title: T('Konum seçiciyi kapat'), onClick: cancel }, '×')),
     ...Object.keys(labels).map(kind => h('div', { className: 'location-field', key: kind, 'data-location-field': kind },
       h('label', { htmlFor: `location-${spec.id}-${kind}` }, T(labels[kind])),
       h('input', { id: `location-${spec.id}-${kind}`, ref: element => { inputs.current[kind] = element; }, role: 'combobox', autoComplete: 'off', spellCheck: false,
