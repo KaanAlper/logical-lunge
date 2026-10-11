@@ -44,6 +44,20 @@ function Ours {
     @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($appPrefix, [StringComparison]::OrdinalIgnoreCase) })
 }
 function Names($ps) { (@($ps) | ForEach-Object { "$($_.Name) ($($_.ProcessId))" }) -join ', ' }
+# Why a process is still there: its command line, parent and what its threads wait on (a process ended while one of
+# its threads is stuck in a call to Windows stays listed until that call returns)
+function Explain($ps) {
+    foreach ($p in @($ps)) {
+        Note "  $($p.Name) ($($p.ProcessId)) parent $($p.ParentProcessId): $($p.CommandLine)"
+        try {
+            $proc = Get-Process -Id $p.ProcessId -ErrorAction Stop
+            $states = $proc.Threads | Group-Object { "$($_.ThreadState)/$(if ($_.ThreadState -eq 'Wait') { $_.WaitReason } else { '-' })" } | ForEach-Object { "$($_.Name) x$($_.Count)" }
+            Note "    threads: $($states -join ', ')"
+            try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; Note '    ended now (TerminateProcess accepted)' } catch { Note "    end refused: $($_.Exception.Message)" }
+        }
+        catch { Note "    gone: $($_.Exception.Message)" }
+    }
+}
 
 # ------------------------------------------------------------------ install
 $coreFile = Get-ChildItem -Path $Package -Recurse -Filter lunge.exe | Where-Object { $_.Directory.Name -eq 'app' } | Select-Object -First 1
@@ -112,7 +126,7 @@ if ($result -ne 'result done') { Fail "the uninstall reported '$result', not 're
 
 # ------------------------------------------------------------------ nothing left, nothing comes back
 $left = Ours
-if ($left.Count) { Fail "processes still running from the install folder: $(Names $left)" }
+if ($left.Count) { Fail "processes still running from the install folder: $(Names $left)"; Explain $left }
 Start-Sleep $AFTER_SEC
 $back = Ours
 if ($back.Count) { Fail "processes came back after the uninstall: $(Names $back)" }
