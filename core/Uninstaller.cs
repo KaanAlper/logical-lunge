@@ -82,10 +82,20 @@ static class Uninstaller
             card.Leave = () => { if (leaving < 0) leaving = Environment.TickCount; };
             // Örtü (izinden sonra): her ekranda bir tane, kart ana ekrandakinin sahipliğinde (onun üstünde kalır)
             var keepTop = new System.Windows.Forms.Timer { Interval = 250 };
+            Splash.Cover mainCover = null;
             card.Cover = () =>
             {
                 if (covered >= 0) return;
                 covered = Environment.TickCount;
+                // Yeniden denemede örtü zaten var: yalnızca geri gelir
+                if (covers.Count > 0)
+                {
+                    foreach (var f in covers) f.Show();
+                    card.Owner = mainCover;
+                    keepTop.Start();
+                    card.Activate();
+                    return;
+                }
                 Splash.Cover main = null;
                 foreach (var s in Screen.AllScreens)
                 {
@@ -113,9 +123,19 @@ static class Uninstaller
                     }
                     catch { }
                 });
+                mainCover = main;
                 if (main != null) card.Owner = main;
                 keepTop.Start();
                 card.Activate();
+            };
+            // Yeniden denemede izin yine sorulur: izin penceresi örtünün arkasında kalmasın diye örtü o sırada çekilir
+            card.Uncover = () =>
+            {
+                if (covered < 0) return;
+                covered = -1;
+                keepTop.Stop();
+                card.Owner = null;
+                foreach (var f in covers) { f.Opacity = 0; f.Hide(); }
             };
             var clock = new System.Windows.Forms.Timer { Interval = 16 };
             clock.Tick += (o, e) =>
@@ -163,7 +183,7 @@ sealed class UninstallCard : Form
     readonly List<string> extras;
     bool removeData, removeExtras = true;
     public Action Leave = () => { };
-    public Action Cover = () => { };
+    public Action Cover = () => { }, Uncover = () => { };
     // Zaten yönetici değilse izin "Kaldır"da, örtüden önce istenir; izinle başlayan yönetici kopyası (waiter) bekler
     readonly bool admin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
     Process waiter;
@@ -178,7 +198,7 @@ sealed class UninstallCard : Form
     bool repairStarted;
     volatile string repairResult;
     string resultTitle, resultBody, resultDetail;
-    bool resultOk;
+    bool resultOk, resultRetry;
     readonly System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer { Interval = 50 };
     int tick;
 
@@ -326,10 +346,29 @@ sealed class UninstallCard : Form
         Str(g, resultTitle ?? "", F(22, true), Fg, 120, 94, 480, 34);
         float y = StrWrap(g, resultBody ?? "", F(13), Sub, 40, 164, 560, 200) + 12;
         if (!string.IsNullOrEmpty(resultDetail)) StrWrap(g, resultDetail, F(12), Dim, 40, y, 560, 120);
-        Button(g, "close", T("Kapat", "Close"), W - 40 - 140, H - 72, 140, true, () => Leave());
+        if (resultRetry)
+        {
+            Button(g, "close", T("Kapat", "Close"), 40, H - 72, 130, false, () => Leave());
+            Button(g, "retry", T("Yeniden dene", "Try again"), W - 40 - 170, H - 72, 170, true, Retry);
+        }
+        else Button(g, "close", T("Kapat", "Close"), W - 40 - 140, H - 72, 140, true, () => Leave());
     }
 
     // ---------------------------------------------------------------- the uninstall
+
+    // Masaüstünün bir parçası kapanmadıysa (hiçbir şey silinmeden durulur): baştan, izin yeniden sorulur
+    void Retry()
+    {
+        if (page != Page.Result || !resultRetry) return;
+        foreach (var p in new[] { waiter, proc }) if (p != null) try { p.Dispose(); } catch { }
+        waiter = null; proc = null; userArgs = null; failure = null;
+        shown.Clear();
+        repairStarted = false; repairResult = null;
+        resultRetry = false;
+        page = Page.Confirm;
+        if (!admin) Uncover();
+        Start();
+    }
 
     void Start()
     {
@@ -464,6 +503,13 @@ sealed class UninstallCard : Form
                     T("Windows eski hâline döndü. Kayıtlar saklandı:", "Windows is back to how it was. The logs are kept:") + "\n" +
                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"LogicalLunge\logs"), message);
             }
+            else if (result == "busy")
+            {
+                Finish(false, T("Logical Lunge kapatılamadı", "Logical Lunge did not close"),
+                    T("Bazı parçaları kapanmadı; hiçbir şey silinmedi ve masaüstün geri geliyor. Yeniden deneyebilirsin; yine olmazsa bilgisayarı yeniden başlattıktan sonra kaldır.",
+                      "Some of its parts did not close; nothing was deleted and your desktop comes back. You can try again; if it still fails, uninstall after restarting the computer."), message);
+                resultRetry = true;
+            }
             else if (result == "cancelled")
                 Finish(false, T("Kaldırma yapılmadı", "Nothing was uninstalled"),
                     T("Yönetici izni verilmedi; hiçbir şey silinmedi. Masaüstün geri geliyor.", "Permission was not given; nothing was deleted. Your desktop comes back."), message);
@@ -593,6 +639,7 @@ sealed class UninstallCard : Form
         if (keyData == Keys.Enter)
         {
             if (page == Page.Confirm) Start();
+            else if (page == Page.Result && resultRetry) Retry();
             else if (page == Page.Result) Leave();
             return true;
         }
@@ -615,6 +662,12 @@ sealed class UninstallCard : Form
             c.shown["icons"] = "run";
         });
         Shot(dir, "5-done", all, c => c.Finish(true, "Logical Lunge kaldırıldı", "Windows eski hâline döndü. Kayıtlar saklandı:\nC:\\Users\\me\\AppData\\Local\\LogicalLunge\\logs", null));
+        Shot(dir, "6-busy", all, c =>
+        {
+            c.Finish(false, "Logical Lunge kapatılamadı", "Bazı parçaları kapanmadı; hiçbir şey silinmedi ve masaüstün geri geliyor. Yeniden deneyebilirsin; yine olmazsa bilgisayarı yeniden başlattıktan sonra kaldır.",
+                "Logical Lunge did not close: lunge-tiling.exe (4120) still running. Nothing was removed.");
+            c.resultRetry = true;
+        });
     }
 
     static void Shot(string dir, string name, List<string> extras, Action<UninstallCard> setup)

@@ -50,14 +50,48 @@ function Invoke-LLBoundedCommand([string]$File, [string[]]$Arguments, [int]$Time
     finally { if ($process) { $process.Dispose() } }
 }
 
+# Every process running a program from the install folder: which ones are ours is decided by where they run from, never
+# by their names (a new helper, a second lunge.exe or a WebView host of ours cannot be missed; another program with the
+# same name is left alone). The extras that have their own step stay out: the terminal the user opened (its windows are
+# the user's work; its files go after it closes) and Everything (its service runs in session 0 and is stopped with it).
 function Get-LLOwnedProcesses([string]$App) {
     $prefix = [IO.Path]::GetFullPath($App).TrimEnd('\') + '\'
-    $names = @('lunge.exe', 'lunge-tiling.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'lunge-wallpaper.exe',
-        'LogicalLunge.exe', 'LogicalLunge.scr', 'lunge-temps.exe', 'lunge-songrec.exe', 'lunge-termcolors.exe')
+    $theirs = @('tools\wezterm\', 'tools\bin\', 'tools\everything\') | ForEach-Object { $prefix + $_ }
     Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
-        $_.Name -in $names -and $_.ExecutablePath -and
-        ([IO.Path]::GetFullPath($_.ExecutablePath)).StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+        if (-not $_.ExecutablePath -or $_.ProcessId -eq $PID) { return $false }
+        $exe = [IO.Path]::GetFullPath($_.ExecutablePath)
+        $exe.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and
+            -not @($theirs | Where-Object { $exe.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count
     }
+}
+
+# Ends what is still running from the install folder: the core first (a stopped core restarts nothing), then the rest,
+# again and again until none is left or the time is up. A process that ended on its own in between is not an error (the
+# core's helpers leave with it), and a terminated process is waited for: one stuck in a driver call (a hung window
+# manager) stays in the process list for a while after it was ended, and the install folder stays locked until it is
+# really gone. Returns what is still running at the end (nothing when all went).
+function Stop-LLOwnedProcesses([string]$App, [int]$SessionId, [int]$TimeoutMs = 20000) {
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $round = -1
+    while ($true) {
+        $left = @(Get-LLOwnedProcesses $App | Sort-Object @{ Expression = { if ($_.Name -eq 'lunge.exe') { 0 } else { 1 } } })
+        if (-not $left.Count -or $watch.ElapsedMilliseconds -ge $TimeoutMs) { return $left }
+        # every 2 s a new round of ends; polled in between (a process ending takes its time)
+        $now = [int][Math]::Floor($watch.ElapsedMilliseconds / 2000)
+        if ($now -ne $round) {
+            $round = $now
+            foreach ($part in $left) {
+                if ($part.SessionId -ne $SessionId) { continue } # another user's desktop: never ours to end
+                Stop-Process -Id $part.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+# What is left, for the message: "lunge-tiling.exe (4120), lunge.exe (812)"
+function Format-LLProcesses($Processes) {
+    (@($Processes) | ForEach-Object { "$($_.Name) ($($_.ProcessId))" }) -join ', '
 }
 
 function Stop-LLDesktop([string]$App, [string]$State, [bool]$SameUser, [int]$SessionId, [bool]$AllowForce = $true) {
@@ -91,15 +125,16 @@ function Stop-LLDesktop([string]$App, [string]$State, [bool]$SameUser, [int]$Ses
         [void](Invoke-LLBoundedCommand $core @('--restore-banners') 10000)
         [void](Invoke-LLBoundedCommand $core @('--takeover-restore') 10000)
     }
-    # Graceful stop and restoration have had their chance. Kill only surviving installed parts, core first.
-    $survivors = @(Get-LLOwnedProcesses $App | Sort-Object @{ Expression = { if ($_.Name -eq 'lunge.exe') { 0 } else { 1 } } })
-    # Medium integrity cannot terminate the elevated WM/core if graceful shutdown failed. The elevated copy retries.
-    if (-not $AllowForce -and $survivors.Count) { return }
-    foreach ($part in $survivors) {
-        if ($part.SessionId -ne $SessionId) { throw 'Another session started Logical Lunge during uninstall.' }
-        Stop-Process -Id $part.ProcessId -Force -ErrorAction Stop
+    # Graceful stop and restoration have had their chance. Medium integrity cannot terminate the elevated WM/core if
+    # graceful shutdown failed: the elevated copy ends them.
+    if (-not $AllowForce) {
+        if (@(Get-LLOwnedProcesses $App).Count) { return }
     }
-    if (@(Get-LLOwnedProcesses $App).Count) { throw 'Some Logical Lunge processes could not be stopped; files and recovery records are kept.' }
+    else {
+        $left = @(Stop-LLOwnedProcesses $App $SessionId)
+        if (@($left | Where-Object { $_.SessionId -ne $SessionId }).Count) { throw "Another session started Logical Lunge during uninstall: $(Format-LLProcesses $left)." }
+        if ($left.Count) { throw "Logical Lunge did not close: $(Format-LLProcesses $left) still running. Nothing was removed." }
+    }
     # Also repair cloaked workspaces if the graceful command timed out or the WM had already crashed.
     if ($SameUser) { [void](Invoke-LLBoundedCommand $core @('--uncloak-orphans') 15000) }
 }
