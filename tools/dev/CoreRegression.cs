@@ -301,6 +301,10 @@ static class CoreRegression
         Check(FlushPoint.DwmMs(new FlushPoint(), composedLate, 485) == 485, "Without DWM timing the whole flush is DWM's");
         var overshoot = new FlushPoint { Dwm = true, Qpc = 1020 * ms, Frame = 11, Compose = 1030 * ms };
         Check(Math.Abs(FlushPoint.DwmMs(start, overshoot, 20) - 20) < 0.01, "DWM's share is never more than the flush");
+        // the on-time share counts vsync slots: a 760 ms slide of 6 frames (one of 480 ms) is late, not "too short"
+        Check(PerfGuard.OnTimeShare(2, 3, 762, 15.6) < 0.1, "A slide stalled by one 480 ms frame must count as late");
+        Check(PerfGuard.OnTimeShare(21, 1, 350, 15.6) > 0.9, "A smooth 350 ms slide must count as on time");
+        Check(PerfGuard.OnTimeShare(2, 0, 40, 15.6) < 0, "A 40 ms (cut) animation is too short to judge");
     }
 
     static void WmWatchdogTests() {
