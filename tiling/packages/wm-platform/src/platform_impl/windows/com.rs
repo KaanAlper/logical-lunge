@@ -29,6 +29,9 @@ pub(crate) struct ComInit {
   service_provider: Option<IServiceProvider>,
   application_view_collection: Option<IApplicationViewCollection>,
   taskbar_list: Option<ITaskbarList2>,
+  /// Logical Lunge: when the interfaces were last re-created (see
+  /// `with_retry`).
+  last_refresh: Option<std::time::Instant>,
 }
 
 impl ComInit {
@@ -62,6 +65,7 @@ impl ComInit {
       service_provider,
       application_view_collection,
       taskbar_list,
+      last_refresh: None,
     }
   }
 
@@ -113,17 +117,56 @@ impl ComInit {
   /// Executes a COM operation, refreshing interfaces on failure and
   /// retrying once. Use this for operations that may fail due to stale
   /// COM interfaces.
+  ///
+  /// Logical Lunge: only an interface that is missing (it could not be
+  /// created) or an error that says its server is gone (Explorer restarted)
+  /// re-creates them, at most once per `REFRESH_INTERVAL`. A window that has no
+  /// application view (a new one, or one that just closed: "Element not
+  /// found") failed every cloak and re-created all three interfaces each
+  /// time, a cross-process activation in Explorer per window that left
+  /// Windows' thread pool with more and more workers.
   pub fn with_retry<T, F>(&mut self, op: F) -> crate::Result<T>
   where
     F: Fn(&Self) -> crate::Result<T>,
   {
-    if let Ok(result) = op(self) {
-      Ok(result)
-    } else {
-      self.refresh();
-      op(self)
+    match op(self) {
+      Ok(result) => Ok(result),
+      Err(err)
+        if (self.application_view_collection.is_none()
+          || self.taskbar_list.is_none()
+          || is_stale_interface_error(&err))
+          && self.last_refresh.is_none_or(|at| at.elapsed() >= REFRESH_INTERVAL) =>
+      {
+        self.refresh();
+        self.last_refresh = Some(std::time::Instant::now());
+        op(self)
+      }
+      Err(err) => Err(err),
     }
   }
+}
+
+/// Logical Lunge: the shortest time between two re-creations of the COM
+/// interfaces on one thread.
+const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Logical Lunge: whether an error means the cached interfaces' server went
+/// away, as opposed to an error about the window the call was for.
+fn is_stale_interface_error(err: &crate::Error) -> bool {
+  matches!(err, crate::Error::Windows(err) if is_stale_hresult(err.code().0))
+}
+
+#[allow(clippy::cast_possible_wrap)]
+fn is_stale_hresult(code: i32) -> bool {
+  [
+    0x8001_0108_u32, // RPC_E_DISCONNECTED
+    0x8001_0007,     // RPC_E_SERVER_DIED
+    0x8001_0012,     // RPC_E_SERVER_DIED_DNE
+    0x8007_06BA,     // RPC_S_SERVER_UNAVAILABLE
+    0x8007_06BE,     // RPC_S_CALL_FAILED
+    0x8004_01FD,     // CO_E_OBJNOTCONNECTED
+  ]
+  .contains(&(code as u32))
 }
 
 impl Default for ComInit {
@@ -177,4 +220,21 @@ pub unsafe trait IApplicationView: IUnknown {
     cloak_type: u32,
     cloak_flag: i32,
   ) -> HRESULT;
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_stale_hresult;
+
+  #[test]
+  fn only_a_gone_server_re_creates_the_interfaces() {
+    // RPC_E_DISCONNECTED, RPC_S_SERVER_UNAVAILABLE
+    assert!(is_stale_hresult(0x8001_0108_u32 as i32));
+    assert!(is_stale_hresult(0x8007_06BA_u32 as i32));
+    // a window without an application view: ERROR_NOT_FOUND, E_INVALIDARG,
+    // an invalid window handle
+    assert!(!is_stale_hresult(0x8007_0490_u32 as i32));
+    assert!(!is_stale_hresult(0x8007_0057_u32 as i32));
+    assert!(!is_stale_hresult(0x8007_0578_u32 as i32));
+  }
 }
