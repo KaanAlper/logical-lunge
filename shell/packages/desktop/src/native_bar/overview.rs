@@ -2394,6 +2394,19 @@ impl Ui {
       "restart" => spawn("shutdown", &["/r", "/t", "0"]),
       "shutdown" => spawn("shutdown", &["/s", "/t", "0"]),
       "reload" => self.wm_command("command wm-reload-config".into()),
+      // the screen tools pick from the screen: the menu is gone first (as Lens)
+      "ocr" | "color" => {
+        self.overview_hide();
+        let arg = if name == "ocr" { "--ocr" } else { "--pick-color" };
+        std::thread::spawn(move || {
+          std::thread::sleep(Duration::from_millis(280));
+          core_api::run_core(&[arg]);
+        });
+      }
+      "keys" => {
+        self.overview_hide();
+        self.cheatsheet_open();
+      }
       "apps" => {
         std::thread::spawn(move || {
           let toast = |v: Value| crate::bus::publish(crate::bus::Event::Toast(v));

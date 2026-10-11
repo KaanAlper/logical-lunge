@@ -125,7 +125,7 @@ const GROUPS: [(&str, &str, &str); 5] = [("win", "Pencereler", "select_window"),
 const SHAKE: Duration = Duration::from_millis(420);
 const FOOTER_H: f32 = 56.0;
 
-fn ll_label(id: &str) -> String {
+pub(in crate::native_bar) fn ll_label(id: &str) -> String {
   let fixed = match id {
     "focus-left" => "Sola odaklan",
     "focus-right" => "Sağa odaklan",
@@ -162,6 +162,9 @@ fn ll_label(id: &str) -> String {
     "notifications" => "Bildirimler",
     "task-manager" => "Görev Yöneticisi",
     "focus-urgent-or-last" => "Dikkat isteyen pencereye git",
+    "cheatsheet" => "Kısayol listesi",
+    "ocr" => "Ekrandan metin (OCR)",
+    "color-picker" => "Renk seçici (ekrandan)",
     _ => "",
   };
   if !fixed.is_empty() {
@@ -187,7 +190,7 @@ fn ll_group(id: &str, app: bool) -> &'static str {
   }
 }
 
-fn tiling_label(cmds: &[String]) -> String {
+pub(in crate::native_bar) fn tiling_label(cmds: &[String]) -> String {
   let c = cmds.join(" ; ");
   if let Some(n) = c.strip_prefix("move --workspace ").filter(|n| n.chars().all(|ch| ch.is_ascii_digit()) && !n.is_empty()) {
     return format!("Pencereyi workspace {n}'e gönder");
@@ -253,7 +256,7 @@ fn tiling_group(cmds: &[String]) -> &'static str {
   }
 }
 
-fn glyph(k: &str) -> &str {
+pub(in crate::native_bar) fn glyph(k: &str) -> &str {
   match k {
     "Left" => "←",
     "Right" => "→",

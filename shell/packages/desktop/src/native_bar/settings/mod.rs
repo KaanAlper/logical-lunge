@@ -424,6 +424,7 @@ impl Ui {
 
   fn settings_open(&mut self) {
     self.settings_destroy();
+    self.cheatsheet_close();
     let (hwnd, scale, target, root, layer) = match make_window(&self.gfx) {
       Ok(w) => w,
       Err(err) => {

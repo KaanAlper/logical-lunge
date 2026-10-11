@@ -699,6 +699,9 @@ pub const ACTIONS: &[(&str, &str)] = &[
   ("shutdown", "Kapat"),
   ("reload", "Pencere yöneticisi ayarlarını yenile"),
   ("apps", "Uygulama listesini yenile"),
+  ("ocr", "Ekrandan metin kopyala (OCR)"),
+  ("color", "Ekrandan renk seç"),
+  ("keys", "Klavye kısayolları"),
 ];
 
 /// A clipboard history entry (`lunge.exe --clip-list`).
@@ -1084,6 +1087,12 @@ mod tests {
     let r = results("/da", none, &[], &t);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].act, Act::Action("dark"));
+    // the screen tools and the shortcut list
+    for (q, name) in [("/oc", "ocr"), ("/col", "color"), ("/ke", "keys")] {
+      let r = results(q, none, &[], &t);
+      assert_eq!(r.len(), 1, "{q}");
+      assert_eq!(r[0].act, Act::Action(name));
+    }
     let r = results("$ dir", none, &[], &t);
     assert_eq!(r[0].act, Act::Script("term", "dir".into()));
     let r = results("?a b", none, &[], &t);

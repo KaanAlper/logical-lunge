@@ -7,6 +7,7 @@
 
 mod anim;
 mod brightness;
+mod cheatsheet;
 mod core_api;
 mod corners;
 mod desktop_menu;
@@ -188,6 +189,8 @@ numbered! { Timer: usize = 0;
   TIMER_WIDGETS_TICK,
   TIMER_WIDGETS_SAVE,
   TIMER_WIDGETS_WEATHER,
+  /// the shortcut list faded out: its window goes
+  TIMER_CHEATSHEET_CLOSE,
 }
 
 /// how long the workspace dots and numbers take to swap
@@ -235,6 +238,8 @@ enum Msg {
   Sidebar(sidebar::Ev),
   /// the desktop widgets' workers (weather, temperatures)
   Widgets(widgets::Ev),
+  /// the shortcut list's model from the core (None: it could not be read)
+  Cheatsheet(Option<serde_json::Value>),
   /// the wallpaper's source colour, read on another thread (wallcolors)
   WallSeed(Option<[u8; 3]>),
 }
@@ -246,6 +251,8 @@ static FAILED: AtomicBool = AtomicBool::new(false);
 static OVERVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
 /// the session screen's window on the primary monitor: it takes the keyboard
 static SESSION_PRIMARY: AtomicIsize = AtomicIsize::new(0);
+/// the shortcut list (cheatsheet.rs): it takes the keyboard
+static CHEATSHEET_HWND: AtomicIsize = AtomicIsize::new(0);
 /// the settings window: it takes the keyboard
 static SETTINGS_HWND: AtomicIsize = AtomicIsize::new(0);
 /// the open dialog (dialog.rs): it takes the keyboard
@@ -654,6 +661,8 @@ struct Ui {
   overview: Option<overview::Overview>,
   /// the session screen while it is open
   session: Option<session::Session>,
+  /// the shortcut list (Super+/) while it is open, and its last model
+  cheatsheet: cheatsheet::CheatState,
   /// the settings window while it is open, and the page it was last on
   settings: Option<settings::Settings>,
   settings_page: usize,
@@ -777,6 +786,7 @@ fn ui_thread(
         wall_border: None,
         overview: None,
         session: None,
+        cheatsheet: Default::default(),
         settings: None,
         settings_page: 0,
         menu: None,
@@ -868,6 +878,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
     // clicking the bar never takes the keyboard from the app; the Super menu does
     let menu = hwnd.0 as isize == OVERVIEW_HWND.load(Ordering::Acquire)
       || hwnd.0 as isize == SESSION_PRIMARY.load(Ordering::Acquire)
+      || hwnd.0 as isize == CHEATSHEET_HWND.load(Ordering::Acquire)
       || hwnd.0 as isize == SETTINGS_HWND.load(Ordering::Acquire)
       || hwnd.0 as isize == DIALOG_HWND.load(Ordering::Acquire)
       || hwnd.0 as isize == SIDEBAR_HWND.load(Ordering::Acquire);
@@ -913,6 +924,9 @@ impl Ui {
     if let Some(r) = self.session_msg(hwnd, msg, wp, lp) {
       return r;
     }
+    if let Some(r) = self.cheatsheet_msg(hwnd, msg, wp, lp) {
+      return r;
+    }
     if let Some(r) = self.settings_msg(hwnd, msg, wp, lp) {
       return r;
     }
@@ -933,6 +947,7 @@ impl Ui {
       if msg == WM_SHOWWINDOW && wp.0 != 0 {
         self.settings_close();
         self.sidebar_close();
+        self.cheatsheet_close();
       }
       return self.overview_msg(msg, wp, lp);
     }
@@ -956,6 +971,7 @@ impl Ui {
           if forced || !same {
             // the session screen is made for the old monitors
             self.session_destroy();
+            self.cheatsheet_destroy();
             self.dialog_destroy_all();
             self.settings_destroy();
             self.osk_destroy();
@@ -1021,6 +1037,7 @@ impl Ui {
         WM_TIMER if wp.0 == TIMER_UPDATE => self.update_timer(),
         WM_TIMER if wp.0 == TIMER_UPDATE_TICK => self.update_tick(),
         WM_TIMER if wp.0 == TIMER_SESSION_CLOSE => self.session_destroy(),
+        WM_TIMER if wp.0 == TIMER_CHEATSHEET_CLOSE => self.cheatsheet_destroy(),
         WM_TIMER if wp.0 == TIMER_DIALOG_CLOSE => self.dialog_closed(),
         WM_TIMER if wp.0 == TIMER_DIALOG_WAIT => self.dialog_waited(),
         WM_TIMER if matches!(wp.0, TIMER_SETTINGS_CLOSE | TIMER_SETTINGS_COMMIT | TIMER_SETTINGS_HEALTH | TIMER_SETTINGS_SAVED) => {
@@ -1334,6 +1351,7 @@ impl Ui {
         }
         Msg::Sidebar(e) => self.sidebar_event(e),
         Msg::Widgets(e) => self.widgets_event(e),
+        Msg::Cheatsheet(model) => self.cheatsheet_loaded(model),
         Msg::Toast(card) => self.toast_add(card),
         Msg::Dialog(d) => self.core_dialog(d),
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
@@ -1898,6 +1916,9 @@ impl Ui {
     // toggle would bring it back through the shell's listener a second time)
     match evt.as_deref() {
       Some("ll:sidebar-right-toggle") => return self.sidebar_event(sidebar::Ev::Toggle),
+      // Super+I and Super+/ (the core's shortcuts)
+      Some("ll:settings-toggle") => return self.settings_toggle(),
+      Some("ll:cheatsheet-toggle") => return self.cheatsheet_toggle(),
       Some("ll:outside-click") => self.sidebar_close(),
       Some("ll:notifications") => self.sidebar_event(sidebar::Ev::NotifsChanged),
       Some(e) if e.starts_with("ll:sidebar-page-") => {
@@ -1999,6 +2020,7 @@ impl Ui {
     let settings_open = self.settings_is_open();
     self.menu_close();
     self.session_destroy();
+    self.cheatsheet_destroy();
     self.dialog_destroy_all();
     self.settings_destroy();
     self.osk_destroy();

@@ -18,7 +18,7 @@ mod bug_queue;
 pub(super) mod images;
 mod input;
 mod panel;
-mod keys;
+pub(in crate::native_bar) mod keys;
 mod kit;
 mod notifs;
 mod quick;

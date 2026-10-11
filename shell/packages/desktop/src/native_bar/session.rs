@@ -57,7 +57,7 @@ const ROW_H: f32 = BTN + 2.0 * PAD;
 /// room around the row for its shadow
 const SHADOW: f32 = 48.0;
 /// the scrim's surface (stretched over the monitor)
-const SCRIM_PX: u32 = 32;
+pub(super) const SCRIM_PX: u32 = 32;
 const HINT_W: f32 = 480.0;
 const HINT_H: f32 = 22.0;
 /// `#hint { bottom: 34px }`
@@ -235,7 +235,7 @@ fn make_win(gfx: &Gfx, rect: RECT, dpi: u32, primary: bool) -> anyhow::Result<Wi
 
 /// `radial-gradient(ellipse at center, rgba(8 6 12 / 62%), rgba(4 3 8 / 82%))`:
 /// the ellipse reaches the corners, so it stretches with the surface.
-fn paint_scrim(surface: &IDCompositionSurface) -> windows::core::Result<()> {
+pub(super) fn paint_scrim(surface: &IDCompositionSurface) -> windows::core::Result<()> {
   gfx::draw_surface(surface, 1.0, |dc| unsafe {
     let stops = [
       D2D1_GRADIENT_STOP { position: 0.0, color: Rgba(8, 6, 12, 0.62).into() },
@@ -273,6 +273,7 @@ impl Ui {
 
   fn session_open(&mut self) {
     self.session_destroy();
+    self.cheatsheet_close();
     let mut wins = Vec::new();
     for (left, top, right, bottom, dpi) in super::monitor_layout() {
       let rect = RECT { left, top, right, bottom };

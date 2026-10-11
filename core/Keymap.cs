@@ -47,7 +47,7 @@ static class WmBinds
     static readonly Dictionary<string, string> toUi = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) {
         { "lwin", "Super" }, { "rwin", "Super" }, { "ctrl", "Ctrl" }, { "control", "Ctrl" }, { "shift", "Shift" }, { "alt", "Alt" }, { "menu", "Alt" },
         { "page_up", "PageUp" }, { "page_down", "PageDown" }, { "oem_1", ";" }, { "oem_7", "'" }, { "oem_comma", "Comma" }, { "oem_period", "Period" },
-        { "oem_minus", "Minus" }, { "oem_plus", "Plus" },
+        { "oem_minus", "Minus" }, { "oem_plus", "Plus" }, { "oem_2", "/" },
     };
 
     public static string ToUi(string binding)

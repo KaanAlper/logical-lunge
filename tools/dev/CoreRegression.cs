@@ -184,6 +184,58 @@ static class CoreRegression
         Console.WriteLine("PASS: Super+Ctrl+Up/Down five-step workspaces, ends and user bindings");
     }
 
+    // illogical-impulse: Super+/ kısayol listesi, Super+Shift+T ekrandan metin (OCR), Super+Shift+C renk seçici
+    internal static void ScreenToolTests() {
+        // "/" tuşu (VK_OEM_2): çekirdeğin adı "/", config.yaml'daki adı oem_2
+        int m, vk;
+        Check(Binds.Parse("Super+/", out m, out vk) && m == Binds.SUPER && vk == 0xBF && Binds.Canonical("super+shift+slash") == "Super+Shift+/", "The slash key was not read");
+        Check(Binds.KeyName(0xBF) == "/" && WmBinds.ToUi("lwin+oem_2") == "Super+/" && WmBinds.ToWm("Super+/") == "lwin+oem_2", "The slash key was named wrong");
+        var eff = new Dictionary<string, string>();
+        for (int i = 0; i < Binds.Defaults.GetLength(0); i++) eff[Binds.Defaults[i, 0]] = Binds.Defaults[i, 1];
+        Check(eff["cheatsheet"] == "Super+/" && eff["ocr"] == "Super+Shift+T" && eff["color-picker"] == "Super+Shift+C", "The ii keys are not the defaults");
+        Check(Keys2.Handling("cheatsheet") == 1 && Keys2.Handling("ocr") == 1 && Keys2.Handling("color-picker") == 1, "The ii keys were not swallowed");
+        // güncellemeyle gelen varsayılan, kullanıcının aynı tuşlara bağladığı şeye yer bırakır
+        Binds.YieldLater(eff, new HashSet<string>(), new List<string> { "super+shift+t" });
+        Check(eff["ocr"] == "" && eff["cheatsheet"] == "Super+/" && eff["color-picker"] == "Super+Shift+C", "A user's own Super+Shift+T was taken over by OCR");
+        eff["code"] = "Super+Shift+C";
+        Binds.YieldLater(eff, new HashSet<string> { "code" }, new List<string>());
+        Check(eff["color-picker"] == "", "A user's core shortcut on Super+Shift+C was taken over by the colour picker");
+        // OCR: satırlar ve kelimeler
+        Check(OcrText.Join(new[] { new[] { "Merhaba", "dünya" }, new[] { " ", "" }, new[] { "ikinci", "satır" } }) == "Merhaba dünya\r\nikinci satır", "OCR lines were joined wrong");
+        Check(OcrText.Join(new[] { new[] { "日", "本", "語" } }) == "日本語" && OcrText.Join(new[] { new[] { "日本", "OCR", "テスト", "。" } }) == "日本 OCR テスト。", "Chinese/Japanese words got spaces");
+        Check(OcrText.Join(new[] { new[] { "안녕", "하세요" } }) == "안녕 하세요" && OcrText.Join(new string[0][]) == "" && OcrText.Join(null) == "", "Korean words lost their spaces or an empty result was not empty");
+        Check(OcrText.PickLanguage(new[] { "tr", "tr-TR" }, new[] { "en-US", "tr" }) == "tr" && OcrText.PickLanguage(new[] { "de" }, new[] { "en-US", "de-DE" }) == "de-DE"
+            && OcrText.PickLanguage(new[] { "zh" }, new[] { "en-US", "zh-Hans-CN" }) == "zh-Hans-CN" && OcrText.PickLanguage(new[] { "en-GB" }, new[] { "en-US", "en-GB" }) == "en-GB"
+            && OcrText.PickLanguage(new[] { "fr", "fr-FR" }, new[] { "en-US" }) == null && OcrText.PickLanguage(new[] { "tr" }, new string[0]) == null, "The OCR language was picked wrong");
+        double sc = OcrText.ScaleFor(300, 40);
+        Check(sc == 2.0 && OcrText.ScaleFor(5000, 100) * 5000 + 2 * OcrText.Margin <= OcrText.MaxSide && OcrText.ScaleFor(0, 0) == 1.0, "The OCR image scale was wrong");
+        int cw, ch, ox, oy;
+        OcrText.Canvas(20, 16, out cw, out ch, out ox, out oy);
+        Check(cw == OcrText.MinSide && ch == OcrText.MinSide && ox == 22 && oy == 24, "A tiny OCR area was not padded to the middle");
+        OcrText.Canvas(600, 100, out cw, out ch, out ox, out oy);
+        Check(cw == 632 && ch == 132 && ox == 16 && oy == 16, "The OCR margin was wrong");
+        Check(OcrText.Preview("a\nb\nc\nd\ne", 4, 100) == "a\nb\nc\nd…" && OcrText.Preview(new string('x', 10), 4, 4) == "xxxx…" && OcrText.Preview("kısa", 4, 100) == "kısa", "The OCR preview was cut wrong");
+        string lang, error; List<List<string>> lines;
+        string json = OcrText.ToolJson("tr-TR", new[] { new[] { "\"tırnak\"", "a\\b" }, new[] { "yeni\nsatır", "ü" } });
+        Check(TextFromScreen.Parse(json, out lang, out lines, out error) && lang == "tr-TR" && lines.Count == 2 && lines[0][0] == "\"tırnak\"" && lines[0][1] == "a\\b" && lines[1][0] == "yeni\nsatır", "The OCR tool's answer did not round-trip: " + json);
+        Check(!TextFromScreen.Parse(OcrText.ToolError("nolang", null), out lang, out lines, out error) && error == "nolang", "A missing OCR language was not reported");
+        Check(!TextFromScreen.Parse(OcrText.ToolError("failed", "boom"), out lang, out lines, out error) && error == "failed: boom" && !TextFromScreen.Parse("", out lang, out lines, out error) && !TextFromScreen.Parse("{}", out lang, out lines, out error), "A failed OCR answer was taken as text");
+        // renk seçici
+        Check(ColorPick.Hex(System.Drawing.Color.FromArgb(255, 10, 171, 255)) == "#0aabff" && ColorPick.Hex(System.Drawing.Color.Black) == "#000000", "The picked colour's hex was wrong");
+        var mon = new System.Drawing.Rectangle(0, 0, 1920, 1080);
+        var size = new System.Drawing.Size(150, 180);
+        Check(ColorPick.Place(new System.Drawing.Point(100, 100), size, mon, 20) == new System.Drawing.Rectangle(120, 120, 150, 180), "The loupe was not right below the cursor");
+        Check(ColorPick.Place(new System.Drawing.Point(1900, 1070), size, mon, 20) == new System.Drawing.Rectangle(1730, 870, 150, 180), "The loupe did not flip at the monitor's edge");
+        var mon2 = new System.Drawing.Rectangle(1920, 0, 1280, 720);
+        Check(ColorPick.Place(new System.Drawing.Point(1925, 5), size, mon2, 20).Left >= 1920, "The loupe left its monitor");
+        // ayrı süreçlerin kartı: simge, renk örneği, eş aralıklı gövde
+        string err;
+        var n = Dialogs.ParseNotice("kind=ok&title=Renk&body=%23aabbcc&icon=colorize&mono=1&image=" + Uri.EscapeDataString("data:image/png;base64,iVBORw0KGgo="), out err);
+        Check(n != null && n.Kind == "ok" && n.Icon == "colorize" && n.Mono && n.Image == "data:image/png;base64,iVBORw0KGgo=", "A notice's icon / swatch was not read: " + err);
+        Check(Dialogs.ParseNotice("kind=ok&title=x&icon=Bad%20Icon", out err) == null && Dialogs.ParseNotice("kind=ok&title=x&image=" + Uri.EscapeDataString("https://example.invalid/a.png"), out err) == null, "A bad notice icon or image was accepted");
+        Console.WriteLine("PASS: ii keys (Super+/, Super+Shift+T, Super+Shift+C), OCR text, colour picker");
+    }
+
     static void FullscreenLayerTests() {
         // the workspace slide's layer covers the bar when a window covers its monitor (a game, a video)
         Check(Slider.CoversMonitor(new Native.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1080 }, 0, 0, 1920, 1080), "A monitor-sized window was no fullscreen");
@@ -634,6 +686,7 @@ static class CoreRegression
         WmPortTests();
         FullscreenLayerTests();
         WorkspaceStepTests();
+        ScreenToolTests();
         DialogTests();
         LauncherTests();
         StopFlagTests();
