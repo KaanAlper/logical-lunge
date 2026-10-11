@@ -150,9 +150,74 @@ pub(super) fn border(seed: [u8; 3], light: bool, ii: bool) -> (String, String) {
   }
 }
 
+/// The web panels' colours (ui/lib/theme.mjs) from the wallpaper's scheme:
+/// the CSS variables of ui/theme-tokens.json and the text colours, for the
+/// dark and the light theme, in the roles of illogical-impulse's
+/// Appearance.qml (layer 0 the surface, layer 1 the low container, ...).
+pub(super) fn web_palette(seed: [u8; 3]) -> serde_json::Value {
+  let hex = |c: Rgb| format!("#{:02x}{:02x}{:02x}", c.red, c.green, c.blue);
+  // ii's ColorUtils.mix: `a` by `amount`, the rest `b`
+  let mix = |a: Rgb, b: Rgb, amount: f64| {
+    let m = |x: u8, y: u8| (x as f64 * amount + y as f64 * (1.0 - amount)).round() as u8;
+    Rgb::new(m(a.red, b.red), m(a.green, b.green), m(a.blue, b.blue))
+  };
+  let mode = |light: bool| {
+    let s = scheme(seed, light);
+    let layer1 = if light { s.surface_container } else { s.surface_container_low };
+    let layer1_hover = if light { s.surface_container_highest } else { s.surface_container_high };
+    serde_json::json!({
+      "m3primary": hex(s.primary),
+      "m3onPrimary": hex(s.on_primary),
+      "m3primaryContainer": hex(s.primary_container),
+      "m3onPrimaryContainer": hex(s.on_primary_container),
+      "m3secondaryContainer": hex(s.secondary_container),
+      "m3onSecondaryContainer": hex(s.on_secondary_container),
+      "m3onSurface": hex(s.on_surface),
+      "m3onSurfaceVariant": hex(s.on_surface_variant),
+      "m3outline": hex(s.outline),
+      "m3outlineVariant": hex(s.outline_variant),
+      "colLayer0": hex(s.surface),
+      "colLayer0Border": hex(mix(s.outline_variant, s.surface, 0.45)),
+      "colLayer1": hex(layer1),
+      "colLayer1Hover": hex(layer1_hover),
+      "barLayer1Hover": hex(s.surface_container_highest),
+      "colLayer2": hex(s.surface_container_high),
+      "colLayer2Hover": hex(mix(s.on_surface, s.surface_container_high, 0.06)),
+      "colLayer3": hex(s.surface_container_highest),
+      "colBackgroundSurfaceContainer": hex(s.surface_container),
+      "colSurfaceContainerHigh": hex(s.surface_container_high),
+      "colOnLayer0": hex(s.on_surface),
+      "colOnLayer1": hex(s.on_surface),
+      "colSubtext": hex(s.outline),
+    })
+  };
+  serde_json::json!({ "dark": mode(false), "light": mode(true) })
+}
+
+/// The web panels' wallpaper colours in use (web_palette), with the source
+/// colour they came from; None while the accent colour is in use.
+static WEB: std::sync::Mutex<Option<([u8; 3], serde_json::Value)>> = std::sync::Mutex::new(None);
+
+/// The web panels' colours for the source colour in use (None: the accent
+/// colour). True when they changed: the panels are told (`ll:wall-palette`).
+pub(super) fn web_publish(seed: Option<[u8; 3]>) -> bool {
+  let mut web = WEB.lock().unwrap_or_else(|e| e.into_inner());
+  if web.as_ref().map(|(s, _)| *s) == seed {
+    return false;
+  }
+  *web = seed.map(|s| (s, web_palette(s)));
+  true
+}
+
+/// The web panels' wallpaper colours (`wall_palette` command); None while
+/// the accent colour is in use.
+pub(crate) fn web_current() -> Option<serde_json::Value> {
+  WEB.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|(_, p)| p.clone())
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{border, scheme, theme};
+  use super::{border, scheme, theme, web_palette};
 
   #[test]
   fn a_grey_wallpaper_makes_a_neutral_scheme() {
@@ -169,5 +234,20 @@ mod tests {
     assert!(t.layer0.0 < 0x30 && t.layer0.1 < 0x30 && t.layer0.2 < 0x30);
     let (active, inactive) = border([0xb6, 0x9d, 0xf8], false, true);
     assert!(active.ends_with("77") && inactive.ends_with("33") && active.len() == 9);
+  }
+
+  #[test]
+  fn the_web_panels_get_every_theme_token_in_both_modes() {
+    let tokens: serde_json::Value = serde_json::from_str(include_str!("../../../../../ui/theme-tokens.json")).unwrap();
+    let p = web_palette([0xb6, 0x9d, 0xf8]);
+    for mode in ["dark", "light"] {
+      for key in tokens[mode].as_object().unwrap().keys() {
+        let v = p[mode][key].as_str().unwrap_or_default();
+        assert!(v.len() == 7 && v.starts_with('#') && v[1..].chars().all(|c| c.is_ascii_hexdigit()), "{mode} {key}: {v:?}");
+      }
+    }
+    // the purple reference: ii's near-black and near-white backgrounds
+    assert!(p["dark"]["colLayer0"].as_str().unwrap() < "#303030");
+    assert!(p["light"]["colLayer0"].as_str().unwrap() > "#f0f0f0");
   }
 }

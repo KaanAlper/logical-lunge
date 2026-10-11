@@ -1,12 +1,29 @@
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { palette, validColor } from './theme-palette.mjs';
 
 let color = validColor(window.LL_PREFS?.focusColor) ? window.LL_PREFS.focusColor : '#b69df8';
 let pending;
 let revision = 0, refreshAgain = false;
+// Colours from the wallpaper (prefs.json "wallpaperColors"): the shell reads the wallpaper and builds the same
+// Material scheme as the native bar and the window borders, both modes ({ dark: {...}, light: {...} }); null while
+// the accent colour is in use. Cached for the first paint of the next panel, read again on ll:wall-palette.
+const validWall = p => !!p && typeof p === 'object' && ['dark', 'light'].every(m => p[m] && typeof p[m] === 'object'
+  && Object.keys(p[m]).length > 0 && Object.values(p[m]).every(validColor));
+let wall = null, wallAsked = 0;
+try {
+  const cached = JSON.parse(localStorage.getItem('ll.wallColors') || 'null');
+  if (window.LL_PREFS?.wallpaperColors === true && validWall(cached)) wall = cached;
+} catch {}
+// Variables set by the last apply: the wallpaper's scheme sets more of them than the accent palette, and those
+// return to the stylesheet's own values when the accent colour comes back.
+let applied = [];
 function apply() {
   const light = document.documentElement.dataset.theme === 'light';
-  for (const [key, value] of Object.entries(palette(color, light))) document.documentElement.style.setProperty('--' + key, value);
+  const next = wall ? wall[light ? 'light' : 'dark'] : palette(color, light), style = document.documentElement.style;
+  for (const key of applied) if (!(key in next)) style.removeProperty('--' + key);
+  for (const [key, value] of Object.entries(next)) style.setProperty('--' + key, value);
+  applied = Object.keys(next);
 }
 export function applyAccent(value) {
   if (!validColor(value)) return;
@@ -27,9 +44,23 @@ export function reloadTheme() {
       if (refreshAgain) { refreshAgain = false; reloadTheme(); }
     });
 }
+export function reloadWallColors() {
+  // The last answer wins: a slow one must not bring back colours that were switched off since.
+  const asked = ++wallAsked;
+  return invoke('wall_palette')
+    .then(p => {
+      if (asked !== wallAsked) return;
+      wall = validWall(p) ? p : null;
+      try { if (wall) localStorage.setItem('ll.wallColors', JSON.stringify(wall)); else localStorage.removeItem('ll.wallColors'); } catch {}
+      apply();
+    })
+    .catch(() => {});
+}
 apply();
 new MutationObserver(apply).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 window.addEventListener('storage', e => { if (e.key === 'll.accent' && validColor(e.newValue)) { revision++; color = e.newValue; apply(); } });
 // Register once for the widget lifetime. Never register inside the callback.
 for (const event of ['ll:theme-color', 'll:prefs']) listen(event, reloadTheme).catch(() => {});
+listen('ll:wall-palette', reloadWallColors).catch(() => {});
 reloadTheme();
+reloadWallColors();

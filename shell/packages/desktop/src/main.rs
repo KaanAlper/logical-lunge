@@ -128,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
       commands::screensaver_state,
       commands::screensaver_set,
       commands::screensaver_run,
+      commands::wall_palette,
       web_menu::desktop_menu_current,
       web_menu::desktop_menu_action,
       web_menu::app_properties,

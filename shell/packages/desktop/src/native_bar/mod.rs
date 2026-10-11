@@ -186,6 +186,12 @@ fn send(msg: Msg) {
   }
 }
 
+/// The web panels' colours from the wallpaper while they are on and read
+/// (`wall_palette` command, ui/lib/theme.mjs); None: the accent colour.
+pub fn wall_palette() -> Option<serde_json::Value> {
+  wallcolors::web_current()
+}
+
 /// Every provider emission passes through here (main.rs); ours go to the bar.
 pub fn forward(emission: &ProviderEmission) {
   if emission.config_hash.starts_with(HASH_PREFIX) {
@@ -1046,6 +1052,11 @@ impl Ui {
       None => palette::theme(prefs["focusColor"].as_str().unwrap_or("#b69df8"), self.model.light),
     });
     self.wall_borders(wall, prefs["borderStyle"].as_str() == Some("ii"));
+    // the web panels (sidebars, overview, menus, settings) take the same
+    // scheme: they read it again (`wall_palette`) when it changes
+    if wallcolors::web_publish(self.wall_seed.filter(|_| wall)) {
+      (self.emit)("ll:wall-palette");
+    }
     if wall && self.wall_seed.is_none() {
       self.wall_read();
     }

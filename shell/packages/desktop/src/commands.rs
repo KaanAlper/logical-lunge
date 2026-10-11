@@ -15,6 +15,17 @@ pub async fn everything_search_page(query: String, max_results: Option<u32>, off
     .await.map_err(|err| err.to_string())?
 }
 
+/// The web panels' colours from the wallpaper (ui/lib/theme.mjs), for the
+/// dark and the light theme; null while the accent colour is in use or the
+/// native bar, which reads the wallpaper, is not running.
+#[tauri::command]
+pub fn wall_palette() -> Option<serde_json::Value> {
+  #[cfg(target_os = "windows")]
+  return crate::native_bar::wall_palette();
+  #[cfg(not(target_os = "windows"))]
+  None
+}
+
 #[tauri::command]
 pub async fn screensaver_state() -> Result<crate::screensaver::State, String> {
   tokio::task::spawn_blocking(crate::screensaver::state).await.map_err(|err| err.to_string())?
