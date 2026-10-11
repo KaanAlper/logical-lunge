@@ -136,6 +136,8 @@ jobs:
             if ($LASTEXITCODE) { throw 'Untranslated shell texts' }
           }
           ./tools/dev/core-tests.ps1
+          # the uninstall's process stop, restore and deletion guards, with every system boundary faked
+          if (Test-Path ./tools/dev/uninstall-tests.ps1) { ./tools/dev/uninstall-tests.ps1 }
 
       - name: Keep the package
         uses: actions/upload-artifact@v4
@@ -233,5 +235,50 @@ jobs:
         with:
           name: stress-logs-${{ inputs.edition }}
           path: ~/AppData/Local/LogicalLunge/logs
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Installs the package, runs its desktop, hangs the window manager (the core's watchdog then restarts it) and
+  # uninstalls right then: the uninstall must finish ("done"), leave no process of the install folder (none may come
+  # back either) and remove the folder (tools/ci/uninstall-test.ps1 on main).
+  uninstall:
+    name: Uninstall ${{ inputs.edition }}
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the uninstall test from main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: tools/ci
+          sparse-checkout-cone-mode: false
+
+      - name: Fetch the package
+        uses: actions/download-artifact@v4
+        with:
+          pattern: LogicalLunge-${{ inputs.edition }}-*-build
+          path: pkg
+          merge-multiple: true
+
+      - name: Unpack it
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem pkg -Filter *.zip | Select-Object -First 1
+          if (-not $zip) { throw 'No package artifact' }
+          Expand-Archive $zip.FullName -DestinationPath unpacked -Force
+
+      - name: Install, hang the window manager and uninstall
+        shell: powershell
+        run: ./tools/ci/uninstall-test.ps1 -Package unpacked
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uninstall-logs-${{ inputs.edition }}
+          path: |
+            ~/AppData/Local/LogicalLunge/logs
+            ~/AppData/Local/Temp/logical-lunge-install.log
           if-no-files-found: warn
           retention-days: 7
