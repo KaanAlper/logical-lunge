@@ -26,6 +26,10 @@ $MEMORY_PRESSURE     = 0.75  # the load phase takes this share of the free memor
 # catch a frame that waits on a stuck call (hundreds of ms).
 $MAX_FRAME_IDLE_MS   = 150   # longest slide/animation frame while idle
 $MAX_FRAME_LOAD_MS   = 500   # longest frame with every core busy
+# the core's own share of a frame (update + gap + waking after DWM composed), apart from DWM's composing: a long frame
+# under load on the runner was DWM not composing at all (its refresh counter stood still) while the core waited idle
+$MAX_OURS_IDLE_MS    = 60
+$MAX_OURS_LOAD_MS    = 120
 $MAX_HOOK_SLOW_IDLE  = 0     # "klavye kancası yavaş" (>100 ms in the keyboard hook) lines while idle
 $MAX_HOOK_SLOW_LOAD  = 3     # ... under load (Windows drops a hook after repeated ~300 ms timeouts)
 # growth from the end of warm-up to the end of the run, per part (core, shell, window manager). A one-time
@@ -421,6 +425,18 @@ if ($interactive) {
     if ($frameIdle -gt $MAX_FRAME_IDLE_MS) { Fail "longest frame while idle $frameIdle ms (max $MAX_FRAME_IDLE_MS)" }
     if ($frameLoad -gt $MAX_FRAME_LOAD_MS) { Fail "longest frame under load $frameLoad ms (max $MAX_FRAME_LOAD_MS)" }
 }
+# "bizim payımız en çok 12.5 ms, DWM'in en uzun kompozisyon beklemesi 480.2 ms" (cores that print the split)
+function Share($entries, [string]$what) {
+    $m = -1
+    foreach ($e in $entries) { if ($e.Text -match "$what (\d+)[.,]?(\d*) ms") { $m = [math]::Max($m, [double]("$($Matches[1]).$(if ($Matches[2]) { $Matches[2] } else { '0' })")) } }
+    $m
+}
+$oursIdle = Share $slidesIdle 'bizim payımız en çok'; $oursLoad = Share $slidesLoad 'bizim payımız en çok'
+$dwmIdle = Share $slidesIdle "DWM'in en uzun kompozisyon beklemesi"; $dwmLoad = Share $slidesLoad "DWM'in en uzun kompozisyon beklemesi"
+if ($interactive -and $oursIdle -ge 0) {
+    if ($oursIdle -gt $MAX_OURS_IDLE_MS) { Fail "the core's share of a frame while idle $oursIdle ms (max $MAX_OURS_IDLE_MS)" }
+    if ($oursLoad -gt $MAX_OURS_LOAD_MS) { Fail "the core's share of a frame under load $oursLoad ms (max $MAX_OURS_LOAD_MS)" }
+}
 
 # growth
 function Median([double[]]$v) { if (-not $v -or $v.Count -eq 0) { return 0 }; $o = $v | Sort-Object; $n = $o.Count; if ($n % 2) { $o[[int](($n - 1) / 2)] } else { ($o[$n / 2 - 1] + $o[$n / 2]) / 2 } }
@@ -501,6 +517,8 @@ $lines = @(
     "| Check | Idle | Load | Limit |",
     "|---|---|---|---|",
     "| Longest frame (ms) | $frameIdle ($($slidesIdle.Count) slides) | $frameLoad ($($slidesLoad.Count) slides) | $MAX_FRAME_IDLE_MS / $MAX_FRAME_LOAD_MS |",
+    "| Core's share of a frame (ms) | $oursIdle | $oursLoad | $MAX_OURS_IDLE_MS / $MAX_OURS_LOAD_MS |",
+    "| DWM composing, longest wait (ms) | $dwmIdle | $dwmLoad |  |",
     "| Keyboard hook slow | $hookIdle | $hookLoad | $MAX_HOOK_SLOW_IDLE / $MAX_HOOK_SLOW_LOAD |",
     "| Bar heartbeat reports | $($beats.Count) |  |  |",
     "",
