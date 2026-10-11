@@ -149,6 +149,7 @@
       import { invoke } from '@tauri-apps/api/core';
       import { expandedToggle, importedSaver, checkSwitch, startReportQueue } from '../parity-sidebar.mjs';
       import { IssueReport, GalleryMenu } from '../parity-sidebar-components.jsx';
+      import { llLabel, llGroup, tilingLabel, tilingGroup, KEY_GLYPH } from '../keymap-labels.mjs';
 
       const win = lunge.currentWidget().tauriWindow;
       // issue reports kept while the server was unreachable go out later; our card says when they did
@@ -283,58 +284,8 @@
       const low = s => String(s || '').toLocaleLowerCase(window.LL_LOCALE);
 
       // ---- Kısayollar ----
-      const LL_LABELS = {
-        'focus-left': 'Sola odaklan', 'focus-right': 'Sağa odaklan', 'focus-up': 'Yukarı odaklan', 'focus-down': 'Aşağı odaklan',
-        'move-left': 'Pencereyi sola taşı', 'move-right': 'Pencereyi sağa taşı', 'move-up': 'Pencereyi yukarı taşı', 'move-down': 'Pencereyi aşağı taşı',
-        'ws-prev': 'Önceki workspace', 'ws-next': 'Sonraki workspace', 'ws-prev5': '5 workspace geri', 'ws-next5': '5 workspace ileri',
-        'ws-move-prev': "Pencereyi önceki workspace'e taşı", 'ws-move-next': "Pencereyi sonraki workspace'e taşı",
-        terminal: 'Terminal', 'terminal-alt': 'Terminal (ikinci kısayol)', browser: 'Tarayıcı', files: 'Dosya yöneticisi',
-        code: 'Kod editörü', editor: 'Metin editörü', close: 'Pencereyi kapat', screenshot: 'Ekran alıntısı', 'screenshot-screen': 'Monitörün tamamı (panoya)', clipboard: 'Pano geçmişi',
-        'file-search': 'Dosya araması', 'screenshot-alt': 'Ekran alıntısı (ikinci kısayol)', 'overview-alt': 'Super menüsü',
-        run: 'Çalıştır', search: 'Ara (Super menüsü)', workspaces: "Workspace'ler (Super menüsü)", settings: 'Ayarlar',
-        sidebar: 'Sağ panel', notifications: 'Bildirimler', 'task-manager': 'Görev Yöneticisi', 'focus-urgent-or-last': 'Dikkat isteyen pencereye git',
-      };
-      const llLabel = id => LL_LABELS[id]
-        || (/^ws-move-\d+$/.test(id) ? `Pencereyi workspace ${id.slice(8)}'e taşı` : null)
-        || (id.startsWith('ws-') ? `Workspace ${id.slice(3)}` : id);
-      const llGroup = id => id.startsWith('focus-') || id.startsWith('move-') || id === 'close' ? 'win'
-        : (id.startsWith('ws-') || id === 'workspaces') ? 'ws' : 'sys';
-      function tilingLabel(cmds) {
-        const c = cmds.join(' ; ');
-        let m;
-        if ((m = c.match(/^move --workspace (\d+)$/))) return `Pencereyi workspace ${m[1]}'e gönder`;
-        const map = {
-          'focus --prev-workspace': 'Önceki workspace (PageUp)', 'focus --next-workspace': 'Sonraki workspace (PageDown)',
-          'focus --prev-active-workspace': 'Önceki dolu workspace', 'focus --next-active-workspace': 'Sonraki dolu workspace',
-          'move --prev-workspace ; focus --prev-workspace': "Pencereyi önceki workspace'e taşı (PageUp)",
-          'move --next-workspace ; focus --next-workspace': "Pencereyi sonraki workspace'e taşı (PageDown)",
-          'toggle-special-workspace': 'Gizli workspace’i aç / kapat', 'move-to-special-workspace': 'Pencereyi gizli workspace’e gönder',
-          'toggle-pin': 'Pencereyi sabitle (her workspace’te)',
-          'toggle-fullscreen': 'Tam ekran', 'toggle-fullscreen-spoof': 'Yuvasında tam ekran (spoof)', 'toggle-floating --centered': 'Yüzen pencere', 'toggle-tiling-direction': 'Bölme yönünü değiştir',
-          'toggle-minimized': 'Simge durumuna küçült', 'wm-cycle-focus': 'Yüzen / döşeli pencereler arasında geç',
-          'resize --width -10%': 'Pencereyi daralt', 'resize --width +10%': 'Pencereyi genişlet', 'wm-enable-binding-mode --name resize': 'Boyutlandırma modu',
-          'split-ratio -0.1': 'Bölme oranını azalt', 'split-ratio 0.1': 'Bölme oranını artır',
-          'focus --prev-active-workspace-on-monitor': 'Bu monitörde önceki dolu workspace', 'focus --next-active-workspace-on-monitor': 'Bu monitörde sonraki dolu workspace',
-          'focus --workspace-in-direction left': 'Soldaki monitöre geç', 'focus --workspace-in-direction right': 'Sağdaki monitöre geç',
-          'move --workspace-in-direction left ; focus --workspace-in-direction left': 'Pencereyi soldaki monitöre gönder',
-          'move --workspace-in-direction right ; focus --workspace-in-direction right': 'Pencereyi sağdaki monitöre gönder',
-          'move-workspace --direction left': "Workspace'i soldaki monitöre taşı", 'move-workspace --direction right': "Workspace'i sağdaki monitöre taşı",
-          'shell-exec ms-settings:': 'Windows ayarları', 'shell-exec sndvol': 'Ses karıştırıcı',
-          'wm-reload-config': 'Pencere yöneticisi ayarlarını yenile', 'wm-redraw': 'Pencereleri yeniden çiz', 'wm-toggle-pause': 'Döşemeyi duraklat', 'wm-exit': "Logical Lunge'dan çık",
-        };
-        if (map[c]) return map[c];
-        if (/wezterm/i.test(c)) return 'Terminal (yedek)';
-        return c;
-      }
-      const tilingGroup = cmds => {
-        const c = cmds.join(' ');
-        if (/workspace/.test(c)) return 'ws';
-        if (/shell-exec/.test(c)) return 'app';
-        if (/^wm-(reload|redraw|toggle-pause|exit)/.test(c)) return 'sys';
-        return 'win';
-      };
+      // Kısayolların adları ve grupları (kısayol listesiyle ortak): ../keymap-labels.mjs
       const GROUPS = [['win', 'Pencereler', 'select_window'], ['ws', 'Workspace', 'view_carousel'], ['app', 'Uygulamalar', 'apps'], ['sys', 'Sistem', 'settings']];
-      const KEY_GLYPH = { Left: '←', Right: '→', Up: '↑', Down: '↓', Enter: '↵', PageUp: 'PgUp', PageDown: 'PgDn', Escape: 'Esc' };
 
       function Keycaps({ combo }) {
         if (!combo) return <span className="kc-none">—</span>;

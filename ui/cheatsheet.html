@@ -1,0 +1,340 @@
+﻿<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <script>
+// Logical Lunge dil katmanı: arayüz Türkçe yazılır; sistem dili Türkçe değilse ekrandaki metinler,
+// title ve placeholder'lar i18n.json'dan çevrilir (13 dil; olmayan dil İngilizceye düşer, Arapça sağdan sola).
+// Tarih/ay/gün adları window.LL_LOCALE ile (Intl) aynı dilde. Yeni dil / metin: i18n.src.js.
+// Kurulumda seçilen dil ve saat prefs.json'da ({"language": "system" | "tr" | "en" ..., "clock": "24" | "12"}):
+// dil "system" değilse sistem dilinin yerine geçer; window.LL_HOUR12 saatlerin 12 saatlik (AM/PM) çizilmesi içindir.
+(function () {
+  var prefs = {};
+  try {
+    var px = new XMLHttpRequest(); px.open('GET', './prefs.json', false); px.send();
+    if (px.status === 200) prefs = JSON.parse(px.responseText) || {};
+  } catch (e) {}
+  window.LL_PREFS = prefs;
+  window.LL_HOUR12 = prefs.clock === '12';
+  var lang = prefs.language && prefs.language !== 'system' ? prefs.language
+    : (navigator.languages && navigator.languages[0]) || navigator.language || 'en';
+  window.LL_LOCALE = lang;
+  var code = lang.slice(0, 2).toLowerCase();
+  window.LL_T = function (s) { return s; };
+  if (code === 'tr') return;
+  var data = null;
+  try {
+    // Sayfa çizilmeden önce hazır olsun diye eşzamanlı (yerel kabuk sunucusundan, ~1 ms)
+    var x = new XMLHttpRequest(); x.open('GET', './i18n.json', false); x.send();
+    if (x.status === 200) data = JSON.parse(x.responseText);
+  } catch (e) {}
+  if (!data) return;
+  if (data.langs.indexOf(code) < 0) code = 'en';
+  if (code === 'ar') document.documentElement.dir = 'rtl';
+  document.documentElement.lang = code;
+  var vals = data[code], dict = {}, pats = [];
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  data.keys.forEach(function (k, i) {
+    if (/\$\d/.test(k)) {
+      // "$1 zaten "$2" için..." -> (.+?) grupları; hangi grubun $kaç olduğunu sırayla tut
+      var order = (k.match(/\$\d/g) || []).map(function (x) { return +x.charAt(1); });
+      pats.push([new RegExp('^' + esc(k).replace(/\\\$\d/g, '(.+?)') + '$'), vals[i], order]);
+    }
+    else dict[k] = vals[i];
+  });
+  // Başı sabit metinle başlayan desenler önce: "Açık · 20:00 sonrası" -> Açık · (20:00 sonrası)
+  pats.sort(function (a, b) { return (a[0].source.indexOf('^(') === 0) - (b[0].source.indexOf('^(') === 0); });
+  function T(s) {
+    if (!s) return s;
+    var k = s.trim();
+    if (!k || !/[A-Za-zÇĞİÖŞÜçğıöşü]/.test(k)) return s;
+    var v = dict[k];
+    if (v === undefined) {
+      for (var i = 0; i < pats.length; i++) {
+        var m = k.match(pats[i][0]);
+        if (m) {
+          v = pats[i][1];
+          for (var j = 0; j < pats[i][2].length; j++) v = v.replace('$' + pats[i][2][j], T(m[j + 1])); // iç içe: "Açık · 20:00 sonrası"
+          break;
+        }
+      }
+    }
+    return v === undefined ? s : s.replace(k, v);
+  }
+  window.LL_T = T;
+  function fixNode(n) {
+    if (n.nodeType === 3) { var t = T(n.nodeValue); if (t !== n.nodeValue) n.nodeValue = t; return; }
+    if (n.nodeType !== 1) return;
+    if (n.classList && n.classList.contains('icon')) return; // ikon adları (Material Symbols ligatürleri)
+    ['title', 'placeholder', 'aria-label'].forEach(function (a) {
+      var v = n.getAttribute && n.getAttribute(a);
+      if (v) { var t = T(v); if (t !== v) n.setAttribute(a, t); }
+    });
+    for (var c = n.firstChild; c; c = c.nextSibling) fixNode(c);
+  }
+  new MutationObserver(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'characterData') {
+        var p = m.target.parentNode;
+        if (!(p && p.classList && p.classList.contains('icon'))) fixNode(m.target);
+      } else if (m.type === 'attributes') fixNode(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) {
+        var a = m.addedNodes[j], par = a.parentNode;
+        if (a.nodeType === 3 && par && par.classList && par.classList.contains('icon')) continue;
+        fixNode(a);
+      }
+    }
+  }).observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['title', 'placeholder', 'aria-label'] });
+})();
+    </script>
+    <script>
+// Logical Lunge kabuk teması (ii'deki karanlık/aydınlık düğmesi). Windows temasına dokunmaz.
+// Tek kaynak çekirdekteki prefs.json "theme" anahtarı (native bar da onu okur). localStorage 'll.theme' onun sayfa
+// çizilmeden okunabilen kopyası: bir widget değiştirince diğerleri 'storage' olayıyla anında güncellenir; başka yerden
+// gelen değişikliği (native bar, ayarlar) bildirim widget'ı çekirdeğin olay akışından alıp llTheme.set ile buraya yazar.
+(function () {
+  function read() {
+    try { return localStorage.getItem('ll.theme') === 'light' ? 'light' : 'dark'; } catch (e) { return 'dark'; }
+  }
+  function write(t) { try { localStorage.setItem('ll.theme', t); } catch (e) {} }
+  function apply() { document.documentElement.dataset.theme = read(); }
+  function save(t) {
+    try { var x = new XMLHttpRequest(); x.open('POST', 'http://127.0.0.1:6131/pref?k=theme&v=' + t); x.send(); } catch (e) {}
+  }
+  var P = window.LL_PREFS || {};
+  if (P.theme === 'light' || P.theme === 'dark') write(P.theme);
+  else if (read() === 'light') save('light'); // eski sürümden: tercih yalnızca bu tarayıcı deposundaydı
+  apply();
+  window.addEventListener('storage', function (e) { if (e.key === 'll.theme') apply(); });
+  window.llTheme = {
+    get: read,
+    // Başka yerden gelen değişiklik (kaydedilmez, zaten kayıtlı)
+    set: function (t) { if (t === 'light' || t === 'dark') { write(t); apply(); } return read(); },
+    toggle: function () {
+      var next = read() === 'light' ? 'dark' : 'light';
+      write(next);
+      apply();
+      save(next);
+      return next;
+    }
+  };
+})();
+    </script>
+    <!-- ii cheatsheet (Super+/): şu an çalışan bütün kısayollar, gruplu ve aranabilir. native-ui'daki karşılığı
+         native_bar/cheatsheet.rs. Model çekirdeğin --keybinds-model çıktısı (düzenleyicininkiyle aynı): kullanıcının
+         değişiklikleri, eklediği uygulamalar ve config.yaml'daki pencere yöneticisi kısayolları anında görünür. -->
+    <style>
+      @import url('./fonts.css');
+      @import url('./base.css');
+      :root {
+        --m3primary: #d0bcff; --m3onPrimary: #381e72;
+        --m3primaryContainer: #4f378b; --m3onPrimaryContainer: #eaddff;
+        --m3secondaryContainer: #4a4458; --m3onSecondaryContainer: #e8def8;
+        --m3onSurface: #e6e0e9; --m3onSurfaceVariant: #cac4d0; --m3outline: #938f99; --m3outlineVariant: #49454f;
+        --colLayer0: #141218; --colLayer0Border: #2c2a31; --colLayer1: #1d1b20; --colLayer2: #2b2930; --colLayer3: #36343b;
+        --emphDecel: cubic-bezier(0.05, 0.7, 0.1, 1);
+        --emphAccel: cubic-bezier(0.3, 0, 0.8, 0.15);
+      }
+      :root[data-theme="light"] {
+        --m3primary: #6750a4; --m3onPrimary: #ffffff;
+        --m3primaryContainer: #eaddff; --m3onPrimaryContainer: #21005d;
+        --m3secondaryContainer: #e8def8; --m3onSecondaryContainer: #1d192b;
+        --m3onSurface: #1d1b20; --m3onSurfaceVariant: #49454f; --m3outline: #79747e; --m3outlineVariant: #cac4d0;
+        --colLayer0: #fef7ff; --colLayer0Border: #e6e0e9; --colLayer1: #f3edf7; --colLayer2: #ece6f0; --colLayer3: #e6e0e9;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; user-select: none; }
+      body {
+        font-family: 'Google Sans Flex', 'Rubik', 'Segoe UI Variable Text', sans-serif;
+        font-variation-settings: 'wght' 450; color: var(--m3onSurface);
+        -webkit-font-smoothing: antialiased;
+      }
+      .icon { font-family: 'Material Symbols Rounded'; line-height: 1; font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24; }
+      /* oturum ekranının karartması */
+      #scrim {
+        position: fixed; inset: 0;
+        background: radial-gradient(ellipse at center, rgba(8 6 12 / 62%) 0%, rgba(4 3 8 / 82%) 100%);
+        opacity: 0; transition: opacity 240ms var(--emphDecel);
+      }
+      #scrim.on { opacity: 1; }
+      #stage { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; pointer-events: none; }
+      #card {
+        display: flex; flex-direction: column; pointer-events: auto;
+        width: min(1180px, 100%); height: min(86vh, 980px, 100%); min-height: 240px;
+        border-radius: 28px; background: var(--colLayer0); border: 1px solid var(--colLayer0Border);
+        box-shadow: 0 30px 90px rgba(0 0 0 / 65%), 0 6px 18px rgba(0 0 0 / 45%);
+        transform: translateY(24px) scale(0.96); opacity: 0;
+        transition: transform 380ms var(--emphDecel), opacity 240ms var(--emphDecel);
+      }
+      #card.on { transform: none; opacity: 1; }
+      #head { display: flex; align-items: center; gap: 12px; padding: 18px 28px 14px; flex: none; }
+      #head > .icon { font-size: 28px; color: var(--m3primary); }
+      #title { font-size: 22px; font-variation-settings: 'wght' 550; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #field {
+        display: flex; align-items: center; gap: 8px; width: min(360px, 45%); height: 40px; padding: 0 14px;
+        border-radius: 20px; background: var(--colLayer2); color: var(--m3onSurfaceVariant);
+      }
+      #field .icon { font-size: 20px; }
+      #q { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--m3onSurface); font: inherit; font-size: 14px; }
+      #q::placeholder { color: var(--m3onSurfaceVariant); opacity: 0.8; }
+      #body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px 28px 8px; scrollbar-width: thin; scrollbar-color: var(--m3outline) transparent; }
+      #cols { display: flex; gap: 16px; align-items: flex-start; }
+      .col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+      .group { background: var(--colLayer1); border-radius: 18px; padding: 4px 6px 10px; }
+      .ghead { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 10px; color: var(--m3primary); font-size: 14px; font-variation-settings: 'wght' 600; }
+      .ghead .icon { font-size: 20px; }
+      .row { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 2px 10px; border-radius: 10px; }
+      .row:hover { background: var(--colLayer2); }
+      .label { flex: 1; min-width: 0; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .kcs { display: flex; align-items: center; gap: 3px; flex: none; }
+      .or { color: var(--m3outline); font-size: 12px; margin: 0 3px; }
+      .kc {
+        display: inline-flex; align-items: center; justify-content: center; gap: 3px; height: 22px; min-width: 22px; padding: 0 7px;
+        border-radius: 7px; font-size: 12px; font-variation-settings: 'wght' 550;
+        background: var(--colLayer3); color: var(--m3onSurface); box-shadow: inset 0 -2px 0 rgba(0 0 0 / 30%);
+      }
+      .kc.super { background: var(--m3secondaryContainer); color: var(--m3onSecondaryContainer); }
+      #msg { padding: 40px 0; text-align: center; color: var(--m3onSurfaceVariant); font-size: 14px; }
+      #foot { flex: none; height: 40px; display: flex; align-items: center; justify-content: center; color: var(--m3onSurfaceVariant); font-size: 12.5px; border-top: 1px solid var(--colLayer0Border); }
+    </style>
+  </head>
+  <body>
+    <div id="scrim"></div>
+    <div id="stage">
+      <div id="card">
+        <div id="head">
+          <span class="icon">keyboard</span>
+          <span id="title">Klavye kısayolları</span>
+          <label id="field"><span class="icon">search</span><input id="q" type="text" spellcheck="false" autocomplete="off" placeholder="Kısayollarda ara" aria-label="Kısayollarda ara" /></label>
+        </div>
+        <div id="body"><div id="msg">Yükleniyor…</div><div id="cols"></div></div>
+        <div id="foot">Esc: kapat  ·  Super+/: aç / kapat</div>
+      </div>
+    </div>
+    <script type="module">
+      import * as lunge from 'lunge/shell';
+      import { listen } from '@tauri-apps/api/event';
+      import 'lunge/theme';
+      import { CATS, cheatEntries, matches, masonry, columnsFor } from '../keymap-labels.mjs';
+
+      const win = lunge.currentWidget().tauriWindow;
+      win.setTitle('lunge-cheatsheet').catch(() => {});
+      lunge.hideWindow(win).catch(() => {});
+      lunge.reviveOnFocus(win);
+      const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
+      const $ = id => document.getElementById(id);
+      const scrim = $('scrim'), card = $('card'), body = $('body'), cols = $('cols'), msg = $('msg'), q = $('q');
+      const log = m => fetch('http://127.0.0.1:6131/log?m=' + encodeURIComponent('cheatsheet: ' + m), { method: 'POST' }).catch(() => {});
+      const tr = s => (window.LL_T ? window.LL_T(s) : s);
+
+      // son okunan model: yeniden açılınca hemen görünür, yenisi okunurken
+      let model = null, failed = false, open = false, focusedAt = 0, seq = 0;
+
+      function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text != null) e.textContent = text;
+        return e;
+      }
+      function caps(combo) {
+        const box = el('span', 'kcs');
+        combo.forEach(k => box.appendChild(el('span', k === 'Super' ? 'kc super' : 'kc', k)));
+        return box;
+      }
+
+      function render() {
+        cols.textContent = '';
+        const query = q.value;
+        if (!model) { msg.textContent = failed ? 'Kısayollar okunamadı' : 'Yükleniyor…'; msg.hidden = false; return; }
+        const list = cheatEntries(model, tr).filter(e => matches(e, query));
+        const groups = CATS.map(([id, name, icon]) => ({ name, icon, rows: list.filter(e => e.cat === id) })).filter(g => g.rows.length);
+        msg.hidden = groups.length > 0;
+        if (!groups.length) { msg.textContent = 'Eşleşen kısayol yok'; return; }
+        const n = columnsFor(card.clientWidth || window.innerWidth);
+        const colEls = Array.from({ length: n }, () => cols.appendChild(el('div', 'col')));
+        masonry(groups.map(g => g.rows.length + 1.5), n).forEach((c, i) => {
+          const g = groups[i], box = el('div', 'group');
+          const head = el('div', 'ghead');
+          head.appendChild(el('span', 'icon', g.icon));
+          head.appendChild(el('span', null, g.name));
+          box.appendChild(head);
+          for (const e of g.rows) {
+            const row = el('div', 'row');
+            const label = el('span', 'label', e.label);
+            label.title = e.label;
+            row.appendChild(label);
+            const keys = el('span', 'kcs');
+            e.combos.slice(0, 2).forEach((combo, j) => { if (j) keys.appendChild(el('span', 'or', '/')); keys.appendChild(caps(combo)); });
+            row.appendChild(keys);
+            box.appendChild(row);
+          }
+          colEls[c].appendChild(box);
+        });
+      }
+
+      function load() {
+        const mine = ++seq;
+        lunge.shellExec(HELPER, ['--keybinds-model']).then(r => {
+          if (mine !== seq) return;
+          let m = null;
+          try { m = JSON.parse(String(r?.stdout || '').trim()); } catch {}
+          if (m && Array.isArray(m.core)) { model = m; failed = false; } else { failed = !model; log('model okunamadı'); }
+          render();
+        }).catch(e => { if (mine === seq) { failed = !model; log('model: ' + e); render(); } });
+      }
+
+      // Karartma ve kart: requestAnimationFrame az önce gizli olan pencerede bekletilebiliyor; zamanlayıcı yedek
+      const reveal = () => { if (open) { scrim.classList.add('on'); card.classList.add('on'); } };
+      async function show() {
+        if (open) return;
+        open = true; focusedAt = 0;
+        q.value = ''; body.scrollTop = 0;
+        render();
+        load();
+        try { await lunge.showWindow(win); await win.setFocus(); } catch (e) { log('show hata ' + e); }
+        q.focus();
+        requestAnimationFrame(reveal);
+        setTimeout(reveal, 40);
+      }
+      function hide() {
+        if (!open) return;
+        open = false;
+        scrim.classList.remove('on'); card.classList.remove('on');
+        setTimeout(() => { if (!open) lunge.hideWindow(win).catch(() => {}); }, 260);
+      }
+      // Kabuk pencereyi betik çalıştıktan sonra da gösterebiliyor: gizli kalana dek tekrarla (tam ekran saydam pencere
+      // fare tıklamalarını yutmasın)
+      [800, 2000, 4500, 9000, 16000].forEach(ms => setTimeout(() => { if (!open) lunge.hideWindow(win).catch(() => {}); }, ms));
+      listen('ll:cheatsheet-toggle', () => (open ? hide() : show()));
+      // Super menüsü, oturum ekranı ya da ayarlar açılınca kapanır
+      listen('ll:overview-toggle', () => hide());
+      listen('ll:session-toggle', () => hide());
+      listen('ll:settings-toggle', () => hide());
+      // Odak kaybı, liste odağı gerçekten aldıktan 300 ms sonra sayılır (açılırken Windows odağı bir an başka yere verebiliyor)
+      window.addEventListener('focus', () => { if (open) focusedAt = Date.now(); });
+      window.addEventListener('blur', () => { if (open && focusedAt && Date.now() - focusedAt > 300) { log('odak kaybı: kapandı'); hide(); } });
+      scrim.addEventListener('mousedown', hide);
+      $('stage').addEventListener('mousedown', e => { if (e.target.id === 'stage') hide(); });
+      q.addEventListener('input', () => { body.scrollTop = 0; render(); });
+      let lastW = 0;
+      new ResizeObserver(() => { const w = card.clientWidth; if (open && w && columnsFor(w) !== columnsFor(lastW)) render(); lastW = w; }).observe(card);
+      window.addEventListener('keydown', e => {
+        if (!open) return;
+        const page = Math.max(56, body.clientHeight * 0.9);
+        const scroll = d => { e.preventDefault(); body.scrollBy({ top: d }); };
+        if (e.key === 'Escape') { e.preventDefault(); if (q.value) { q.value = ''; render(); } else hide(); }
+        else if (e.key === 'ArrowDown') scroll(56);
+        else if (e.key === 'ArrowUp') scroll(-56);
+        else if (e.key === 'PageDown') scroll(page);
+        else if (e.key === 'PageUp') scroll(-page);
+        // alanda yazı varken Home / End imleci taşır; boşken ya da Ctrl ile listeyi
+        else if ((e.key === 'Home' || e.key === 'End') && (e.ctrlKey || !q.value)) { e.preventDefault(); body.scrollTop = e.key === 'Home' ? 0 : body.scrollHeight; }
+        else if (e.ctrlKey && e.key.toLowerCase() === 'f') { e.preventDefault(); q.focus(); q.select(); }
+        else if (document.activeElement !== q && e.key.length === 1 && !e.ctrlKey && !e.altKey) q.focus();
+      });
+      // test için
+      window.__llCheatsheet = { show, hide, render, get open() { return open; } };
+    </script>
+  </body>
+</html>

@@ -309,6 +309,10 @@
         { name: 'restart', desc: 'Yeniden başlat', run: () => spawn('shutdown', ['/r', '/t', '0']) },
         { name: 'shutdown', desc: 'Kapat', run: () => spawn('shutdown', ['/s', '/t', '0']) },
         { name: 'reload', desc: 'Pencere yöneticisi ayarlarını yenile', run: tiling => tiling?.runCommand('wm-reload-config') },
+        // ii: ekrandan metin (OCR) ve renk seçici çekirdeğin kendi süreçlerinde; menü kapanırken görüntüye girmesin diye beklenir
+        { name: 'ocr', desc: 'Ekrandan metin kopyala (OCR)', run: () => setTimeout(() => spawn(HELPER, ['--ocr']), 280) },
+        { name: 'color', desc: 'Ekrandan renk seç', run: () => setTimeout(() => spawn(HELPER, ['--pick-color']), 280) },
+        { name: 'keys', desc: 'Klavye kısayolları', run: () => emit('ll:cheatsheet-toggle').catch(() => {}) },
         { name: 'apps', desc: 'Uygulama listesini yenile', run: async () => {
           try {
             const run = await lunge.shellExec(HELPER, ['--build-apps']);

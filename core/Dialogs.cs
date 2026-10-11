@@ -99,8 +99,12 @@ static class Dialogs
         return s;
     }
 
-    // Uyarı / hata bildirimi (cevap beklemez): /notify?kind=info|warning|error&title=..&body=..
-    public sealed class Notice { public string Kind = "info", Title = "", Body = ""; }
+    // Uyarı / hata bildirimi (cevap beklemez): /notify?kind=ok|info|warning|error&title=..&body=..
+    // İsteğe bağlı: icon (Material Symbols adı), image (küçük bir data:image/png, ör. renk örneği), mono=1 (gövde eş aralıklı)
+    public sealed class Notice { public string Kind = "info", Title = "", Body = "", Icon = null, Image = null; public bool Mono; }
+
+    static readonly System.Text.RegularExpressions.Regex iconName = new System.Text.RegularExpressions.Regex("^[a-z0-9_]{1,40}$");
+    static readonly System.Text.RegularExpressions.Regex pngData = new System.Text.RegularExpressions.Regex("^data:image/png;base64,[A-Za-z0-9+/]+={0,2}$");
 
     public static Notice ParseNotice(string query, out string error)
     {
@@ -109,10 +113,21 @@ static class Dialogs
         var n = new Notice();
         string v;
         if (q.TryGetValue("kind", out v) && v.Length > 0) n.Kind = v;
-        if (n.Kind != "info" && n.Kind != "warning" && n.Kind != "error") { error = "kind"; return null; }
+        if (n.Kind != "ok" && n.Kind != "info" && n.Kind != "warning" && n.Kind != "error") { error = "kind"; return null; }
         if (q.TryGetValue("title", out v)) n.Title = v.Trim();
         if (q.TryGetValue("body", out v)) n.Body = v.Trim();
         if (n.Title.Length == 0 || n.Title.Length > 200 || n.Body.Length > 4000) { error = "text"; return null; }
+        if (q.TryGetValue("icon", out v) && v.Length > 0)
+        {
+            if (!iconName.IsMatch(v)) { error = "icon"; return null; }
+            n.Icon = v;
+        }
+        if (q.TryGetValue("image", out v) && v.Length > 0)
+        {
+            if (v.Length > 16000 || !pngData.IsMatch(v)) { error = "image"; return null; }
+            n.Image = v;
+        }
+        n.Mono = q.TryGetValue("mono", out v) && (v == "1" || v == "true");
         return n;
     }
 

@@ -5367,14 +5367,21 @@ static class I18n
         return table.TryGetValue(tr, out v) ? v : tr;
     }
 
+    // Arayüzün dili (prefs.json "language"; "system": Windows'unki), iki harf
+    public static string Code()
+    {
+        string code = null;
+        try { object lang; code = Prefs.Read().TryGetValue("language", out lang) ? lang as string : null; } catch { }
+        if (string.IsNullOrEmpty(code) || code == "system") code = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+        return code;
+    }
+
     static Dictionary<string, string> Load()
     {
         var d = new Dictionary<string, string>();
         try
         {
-            object lang;
-            string code = Prefs.Read().TryGetValue("language", out lang) ? lang as string : null;
-            if (string.IsNullOrEmpty(code) || code == "system") code = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+            string code = Code();
             if (code == "tr") return d;
             var j = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(System.IO.File.ReadAllText(Paths.UiPack("i18n.json"))) as Dictionary<string, object>;
             if (j == null) return d;
@@ -7350,8 +7357,11 @@ static class Toasts
                 if (n == null) status = "400 Bad Request";
                 else
                 {
-                    Slider.Log("bildirim (" + n.Kind + "): " + n.Title + (n.Body.Length > 0 ? " - " + n.Body : ""));
-                    Toasts.Send(n.Kind == "warning" ? "warn" : n.Kind, n.Title, n.Body, n.Kind);
+                    Slider.Log("bildirim (" + n.Kind + "): " + n.Title + (n.Body.Length == 0 ? "" : n.Kind == "ok" ? " - " + n.Body.Length + " karakter" : " - " + n.Body)); // ok: kopyalanan metin günlüğe yazılmaz
+                    var card = new Dictionary<string, object> { { "kind", n.Kind == "warning" ? "warn" : n.Kind }, { "title", n.Title }, { "body", n.Body }, { "icon", n.Icon ?? n.Kind } };
+                    if (n.Image != null) card["image"] = n.Image;
+                    if (n.Mono) card["mono"] = true;
+                    Toasts.Card(card);
                     status = "204 No Content";
                 }
             }
@@ -8104,6 +8114,8 @@ static class Binds
         { "settings", "Super+I" }, { "sidebar", "Super+A" }, { "notifications", "Super+N" },
         { "screenshot-alt", "Super+Shift+S" }, { "task-manager", "Ctrl+Shift+Escape" },
         { "focus-urgent-or-last", "Super+U" },
+        // illogical-impulse: kısayol listesi (Super+/), ekrandan metin (OCR) ve renk seçici
+        { "cheatsheet", "Super+/" }, { "ocr", "Super+Shift+T" }, { "color-picker", "Super+Shift+C" },
     };
 
     // Uygulama açan kısayollar (düzenleyicide "Uygulamalar": kaldırılabilir, kullanıcı yenilerini ekleyebilir)
@@ -8252,6 +8264,7 @@ static class Binds
             case "pageup": return 0x21; case "pagedown": return 0x22; case "print": case "printscreen": return 0x2C;
             case "minus": return 0xBD; case "plus": case "equal": return 0xBB; case "comma": return 0xBC; case "period": return 0xBE;
             case ";": case "semicolon": return 0xBA; case "'": case "quote": return 0xDE;
+            case "/": case "slash": return 0xBF;
         }
         if (p.Length == 1 && ((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= '0' && p[0] <= '9'))) return char.ToUpperInvariant(p[0]);
         int f;
@@ -8287,10 +8300,10 @@ static class Binds
         return d;
     }
 
-    // Güncellemeyle sonradan gelen varsayılanlar (Super+Ctrl+↑/↓): kullanıcı aynı tuşları kendisi bir şeye bağladıysa
+    // Güncellemeyle sonradan gelen varsayılanlar (Super+Ctrl+↑/↓, Super+/, Super+Shift+T/C): kullanıcı aynı tuşları kendisi bir şeye bağladıysa
     // (başka bir çekirdek kısayolu, kendi uygulaması ya da config.yaml'daki bir pencere yöneticisi kısayolu) onunki kalır,
     // bu varsayılan boş olur (kaydederken çakışma da çıkmaz). Kullanıcı o tuşları bırakınca varsayılan kendiliğinden gelir.
-    static readonly string[] later = { "ws-prev5", "ws-next5" };
+    static readonly string[] later = { "ws-prev5", "ws-next5", "cheatsheet", "ocr", "color-picker" };
 
     internal static void YieldLater(Dictionary<string, string> eff, ICollection<string> userSet, IEnumerable<string> userCombos)
     {
@@ -8382,7 +8395,7 @@ static class Binds
             case 0x08: return "Backspace"; case 0x2E: return "Delete"; case 0x2D: return "Insert"; case 0x24: return "Home";
             case 0x23: return "End"; case 0x21: return "PageUp"; case 0x22: return "PageDown"; case 0x2C: return "Print";
             case 0xBD: return "Minus"; case 0xBB: return "Plus"; case 0xBC: return "Comma"; case 0xBE: return "Period";
-            case 0xBA: return ";"; case 0xDE: return "'";
+            case 0xBA: return ";"; case 0xDE: return "'"; case 0xBF: return "/";
         }
         if ((vk >= 0x41 && vk <= 0x5A) || (vk >= 0x30 && vk <= 0x39)) return ((char)vk).ToString();
         if (vk >= 0x70 && vk <= 0x87) return "F" + (vk - 0x70 + 1);
@@ -8911,6 +8924,7 @@ class Keys2
         {
             case "settings": case "lock": case "task-manager": case "run": case "clipboard": case "file-search": case "overview":
             case "sidebar": case "focus-urgent-or-last": case "terminal": case "terminal-alt": case "screenshot": case "screenshot-screen":
+            case "cheatsheet": case "ocr": case "color-picker":
                 return 1;
             case "close": return 2;
         }
@@ -9066,6 +9080,14 @@ class Keys2
         {
             // Kanca thread'inde süreç başlatma (ShellExecute 50-200 ms): o sırada tüm klavye beklerdi
             ThreadPool.QueueUserWorkItem(_ => { try { Process.Start(new ProcessStartInfo(Application.ExecutablePath, "--snip") { UseShellExecute = true }); } catch { } });
+            return true;
+        }
+        // illogical-impulse: kısayol listesi kabukta; OCR ve renk seçici kendi süreçlerinde (ScreenTools.cs)
+        if (act == "cheatsheet") { ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:cheatsheet-toggle")); return true; }
+        if (act == "ocr" || act == "color-picker")
+        {
+            string flag = act == "ocr" ? "--ocr" : "--pick-color";
+            ThreadPool.QueueUserWorkItem(_ => { try { Process.Start(new ProcessStartInfo(Application.ExecutablePath, flag) { UseShellExecute = true }); } catch { } });
             return true;
         }
         if (act == "screenshot-screen")
@@ -10258,16 +10280,19 @@ static class NightLight
 // dosyayı doğrudan lens.google.com'a POST eder.
 static class RegionSearch
 {
-    class Picker : Form
+    // Alan seçici: Google Lens ve ekrandan metin (OCR, TextFromScreen) kullanır; hint = seçim yokken ortadaki yazı
+    internal class Picker : Form
     {
         readonly Bitmap shot;
+        readonly string hint;
         Point? a; Point b;
         public Rectangle Result = Rectangle.Empty;
         static readonly Color Accent = Color.FromArgb(208, 188, 255);
 
-        public Picker(Bitmap shot, Rectangle bounds)
+        public Picker(Bitmap shot, Rectangle bounds, string hint = null)
         {
             this.shot = shot;
+            this.hint = hint;
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; KeyPreview = true;
             StartPosition = FormStartPosition.Manual; Bounds = bounds;
             DoubleBuffered = true; Cursor = Cursors.Cross;
@@ -10308,9 +10333,9 @@ static class RegionSearch
             }
             else
             {
-                string hint = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr"
+                string hint = this.hint ?? (System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "tr"
                     ? "Google Lens: aramak istediğin alanı seç  •  Esc: iptal"
-                    : "Google Lens: select the area to search  •  Esc: cancel";
+                    : "Google Lens: select the area to search  •  Esc: cancel");
                 using (var f = new Font("Segoe UI", 12f))
                 {
                     var sz = g.MeasureString(hint, f);
@@ -10362,11 +10387,19 @@ static class RegionSearch
         return null;
     }
 
+    // Tüm monitörlerin donmuş görüntüsü (sanal ekran, fiziksel piksel: süreç monitör başına DPI farkında olmalı)
+    internal static Bitmap CaptureAll(out Rectangle vs)
+    {
+        vs = SystemInformation.VirtualScreen;
+        var shot = new Bitmap(vs.Width, vs.Height);
+        using (var g = Graphics.FromImage(shot)) g.CopyFromScreen(vs.Left, vs.Top, 0, 0, vs.Size);
+        return shot;
+    }
+
     public static void Lens()
     {
-        var vs = SystemInformation.VirtualScreen;
-        Bitmap shot = new Bitmap(vs.Width, vs.Height);
-        using (var g = Graphics.FromImage(shot)) g.CopyFromScreen(vs.Left, vs.Top, 0, 0, vs.Size);
+        Rectangle vs;
+        Bitmap shot = CaptureAll(out vs);
         var pk = new Picker(shot, vs);
         Application.Run(pk);
         var r = pk.Result;
@@ -15353,6 +15386,16 @@ static class Program
         {
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             RegionSearch.Lens();
+            return;
+        }
+        // lunge.exe --ocr [ms]: alan seç, Windows OCR'ıyla oku, metni panoya koy (Super+Shift+T)
+        // lunge.exe --pick-color [ms]: büyüteçle ekrandan renk, #rrggbb panoya (Super+Shift+C)
+        if (args.Length >= 1 && args.Length <= 2 && (args[0] == "--ocr" || args[0] == "--pick-color"))
+        {
+            try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
+            if (!ScreenTools.Claim()) return;
+            ScreenTools.Wait(args);
+            if (args[0] == "--ocr") TextFromScreen.Run(); else ColorPick.Run();
             return;
         }
         // lunge.exe --toast-stream: çalışan helper'ın bildirim kanalına bağlanıp her bildirimi

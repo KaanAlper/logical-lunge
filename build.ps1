@@ -5,7 +5,7 @@
 # Package layout (app\ is copied as is to %ProgramFiles%\LogicalLunge):
 #   app\lunge.exe, lunge-tiling.exe, lunge-tiling-cli.exe, lunge-tiling-watcher.exe, lunge-shell.exe,
 #       lunge-wallpaper.exe (live wallpaper), LogicalLunge.scr (its copy: the video screen saver), VERSION,
-#       uninstall.ps1, ui\logical-lunge\*, scripts\*.ps1, tools\{lunge-media.exe, temps\, termcolors\, songrec\}
+#       uninstall.ps1, ui\logical-lunge\*, scripts\*.ps1, tools\{lunge-media.exe, lunge-ocr.exe, temps\, termcolors\, songrec\}
 #   config\   templates for ~\.config\logical-lunge and the terminal
 #   installer\setup.ps1
 param([switch]$SkipPython, [switch]$SkipRust, [switch]$NoZip, [ValidateSet('native-ui', 'web-ui')][string]$Edition)
@@ -62,6 +62,11 @@ $winmd = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" 
 if (-not $winmd) { throw 'Windows 10 SDK (UnionMetadata\Windows.winmd) not found' }
 & $csc /nologo /target:winexe /optimize+ "/out:$app\tools\lunge-media.exe" "/r:$($winmd.FullName)" /r:System.Runtime.WindowsRuntime.dll "/r:$fx\Facades\System.Runtime.dll" /nowarn:1701 "$root\tools\lunge-media.cs"
 if ($LASTEXITCODE) { throw 'lunge-media build failed' }
+
+Step 'lunge-ocr.exe (text from screen: Windows.Media.Ocr, on the device)'
+# core\OcrText.cs: the JSON and the language choice it shares with the core (BCL only)
+& $csc /nologo /target:winexe /optimize+ "/out:$app\tools\lunge-ocr.exe" "/r:$($winmd.FullName)" /r:System.Runtime.WindowsRuntime.dll "/r:$fx\Facades\System.Runtime.dll" /nowarn:1701 "$root\tools\lunge-ocr.cs" "$root\core\OcrText.cs"
+if ($LASTEXITCODE) { throw 'lunge-ocr build failed' }
 
 Step 'lunge-temps.exe (CPU/GPU temperature, LibreHardwareMonitorLib)'
 $lz = Join-Path $cache 'LibreHardwareMonitor.zip'
