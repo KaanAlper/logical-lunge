@@ -37,13 +37,16 @@ use crate::{
 };
 
 mod commands;
+mod correction_budget;
 mod dwindle_math;
+mod event_coalesce;
 mod events;
 mod ipc_server;
 mod layout_memory;
 mod models;
 mod pending_sync;
 mod sized_log;
+mod stall_watch;
 mod traits;
 mod user_config;
 mod wm;
@@ -202,6 +205,10 @@ async fn start_wm(
     dispatcher.report_error(false, &err.to_string());
   }
 
+  // Logical Lunge: a watch on this thread writes where it is stuck (see
+  // `stall_watch`).
+  stall_watch::start();
+
   // Create an interval for periodically cleaning up invalid windows.
   let mut cleanup_interval = tokio::time::interval(Duration::from_secs(5));
 
@@ -230,23 +237,38 @@ async fn start_wm(
 
       Some(event) = mouse_listener.next_event() => {
         tracing::debug!("Received mouse event: {:?}", event);
+        let _step = stall_watch::begin(stall_watch::Activity::MouseEvent);
         wm.process_event(PlatformEvent::Mouse(event), &mut config)
       },
       Some(event) = window_listener.next_event() => {
-        tracing::debug!("Received window event: {:?}", event);
-        wm.process_event(PlatformEvent::Window(event), &mut config)
+        // Logical Lunge: the events already waiting are taken with it and
+        // a window's repeated moves / renames handled once (see
+        // `event_coalesce`).
+        let burst = event_coalesce::take_burst(event, || window_listener.try_next_event());
+        for event in burst {
+          tracing::debug!("Received window event: {:?}", event);
+          let _step = stall_watch::begin_window_event(&event);
+          if let Err(err) = wm.process_event(PlatformEvent::Window(event), &mut config) {
+            dispatcher.report_error(false, &err.to_string());
+          }
+        }
+        Ok(())
       },
       Some(()) = display_listener.next_event() => {
         tracing::debug!("Received display settings changed event.");
+        let _step = stall_watch::begin(stall_watch::Activity::DisplayChange);
         wm.process_event(PlatformEvent::DisplaySettingsChanged, &mut config)
       },
       _ = mouse_drag_interval.tick(), if wm.state.mouse_drag.is_some() => {
+        let _step = stall_watch::begin(stall_watch::Activity::MouseDrag);
         wm.process_mouse_drag(&mut config)
       },
       _ = activation_interval.tick(), if wm.state.pending_activation.is_some() => {
+        let _step = stall_watch::begin(stall_watch::Activity::Activation);
         wm.process_pending_activation(&mut config)
       },
       _ = cleanup_interval.tick() => {
+        let _step = stall_watch::begin(stall_watch::Activity::Cleanup);
         if wm.state.is_paused || wm.state.game_mode {
           Ok(())
         } else {
@@ -259,6 +281,7 @@ async fn start_wm(
         disconnection_tx
       )) = ipc_server.message_rx.recv() => {
         tracing::info!("Received IPC message: {:?}", message);
+        let _step = stall_watch::begin_ipc(&message);
 
         if let Err(err) = ipc_server.process_message(
           message,
@@ -274,6 +297,7 @@ async fn start_wm(
       },
       Some(wm_event) = wm.event_rx.recv() => {
         tracing::debug!("Received WM event: {:?}", wm_event);
+        let _step = stall_watch::begin(stall_watch::Activity::WmEvent);
 
         // Disable mouse listener when the WM is paused.
         if let WmEvent::PauseChanged { is_paused } = wm_event {

@@ -10,6 +10,7 @@ use wm_platform::{LengthValue, MouseButton, RectDelta};
 use wm_platform::{NativeWindow, Rect};
 
 use crate::{
+  correction_budget::Verdict,
   commands::{
     container::{flatten_split_container, move_container_within_tree},
     window::update_window_state,
@@ -133,6 +134,9 @@ pub fn handle_window_moved_or_resized(
     // window covering the monitor.
     #[cfg(target_os = "windows")]
     if keeps_tile_on_self_maximize(&window.state(), is_maximized) {
+      if !may_correct(&window, state) {
+        return Ok(());
+      }
       tracing::info!("Suppressing maximize of tiling window: {window}");
       // restored straight into its tile (not to the app's last normal
       // position, which then had to be corrected again)
@@ -155,7 +159,9 @@ pub fn handle_window_moved_or_resized(
         if fullscreen.maximized {
           use crate::commands::general::window_sync_policy::{maximized_move, MaximizedMove};
           if is_maximized {
-            state.pending_sync.queue_container_to_redraw(window.clone());
+            if may_correct(&window, state) {
+              state.pending_sync.queue_container_to_redraw(window.clone());
+            }
             return Ok(());
           }
           let target = window
@@ -289,6 +295,9 @@ pub fn handle_window_moved_or_resized(
       {
         if let Ok(frame) = window.native().frame_with_shadows() {
           if is_background_fullscreen_frame(&frame, &nearest_monitor.native_properties().bounds) {
+            if !may_correct(&window, state) {
+              return Ok(());
+            }
             state.background_fullscreen_frames.insert(handle, frame);
             state.fake_fullscreen.insert(handle);
             state.pending_sync.queue_container_to_redraw(window.clone());
@@ -389,7 +398,9 @@ pub fn handle_window_moved_or_resized(
           // Keep the marker through the resize acknowledgements so the
           // app's restore rectangle on exit cannot overwrite the tile.
           state.fake_fullscreen.insert(handle);
-          state.pending_sync.queue_container_to_redraw(window.clone());
+          if may_correct(&window, state) {
+            state.pending_sync.queue_container_to_redraw(window.clone());
+          }
           return Ok(());
         }
         SelfFullscreen::ReturnToTile => {
@@ -423,7 +434,7 @@ pub fn handle_window_moved_or_resized(
           );
 
       // Ignore if there's no state change.
-      if is_same_state {
+      if is_same_state || !may_correct(&window, state) {
         return Ok(());
       }
 
@@ -480,7 +491,7 @@ pub fn handle_window_moved_or_resized(
     }
 
     match window.state() {
-      WindowState::Fullscreen(_) => {
+      WindowState::Fullscreen(_) if may_correct(&window, state) => {
         // Window is no longer maximized/fullscreen and should be restored.
         tracing::info!("Restoring window from fullscreen: {window}");
 
@@ -502,7 +513,9 @@ pub fn handle_window_moved_or_resized(
       WindowState::Tiling if state.fake_fullscreen.contains(&window.native().hwnd().0) && !state.is_paused => {
         // Only restore after a real native geometry change; duplicate
         // acknowledgements returned above. The layout tree stays intact.
-        state.pending_sync.queue_container_to_redraw(window.clone());
+        if may_correct(&window, state) {
+          state.pending_sync.queue_container_to_redraw(window.clone());
+        }
         // Out of its own fullscreen once its frame is back (a frameless
         // app's normal window has its sizing border but no caption)
         if window.native().has_window_style(wm_platform::WS_CAPTION)
@@ -574,6 +587,26 @@ pub fn handle_window_moved_or_resized(
   }
 
   Ok(())
+}
+
+/// Logical Lunge: whether this window's own move may be answered with a
+/// correction now (see `CorrectionBudget`): a window that refuses the place
+/// it is given is left where it put itself for a while instead of being
+/// corrected on every one of its moves. The first refusal is logged.
+fn may_correct(window: &WindowContainer, state: &mut WmState) -> bool {
+  #[allow(clippy::cast_possible_wrap, clippy::unnecessary_cast)]
+  let handle = window.native().id().0 as isize;
+  match state.correction_budget.ask(handle, std::time::Instant::now()) {
+    Verdict::Allow => true,
+    Verdict::Refuse { first } => {
+      if first {
+        tracing::warn!(
+          "Window keeps moving itself against the layout; left where it is for a moment: {window}"
+        );
+      }
+      false
+    }
+  }
 }
 
 /// A tiling window that maximizes itself stays in its tile (fullscreen is
