@@ -169,6 +169,36 @@ pub(crate) fn maximized_move(frame: &Rect, target: &Rect, monitor: &Rect, framed
   }
 }
 
+/// Logical Lunge: what a tile may be short of a window before the window
+/// counts as not fitting. A terminal snapping to its character grid or a
+/// frame a few pixels off still fits; the slack grows with the tile.
+fn fit_slack(length: i32) -> i32 {
+  const MIN_SLACK: i32 = 16;
+  MIN_SLACK.max(length / 50)
+}
+
+/// Logical Lunge: whether a window of `size` (outer frame, width x height)
+/// is bigger than a `tile` beyond the slack, in either direction.
+pub(crate) fn exceeds_tile(tile: &Rect, size: (i32, i32)) -> bool {
+  size.0 > tile.width() + fit_slack(tile.width())
+    || size.1 > tile.height() + fit_slack(tile.height())
+}
+
+/// Logical Lunge: whether a tiled window can't take its tile and floats
+/// instead (as Hyprland floats a window it can't fit), so it's never cut in
+/// half: its minimum size is bigger than the tile, or it kept a bigger size
+/// after the layout put it back into its tile a few times (`insisted`).
+/// A window smaller than its tile stays tiled.
+pub(crate) fn cannot_fit_tile(
+  tile: &Rect,
+  frame: &Rect,
+  min_track: Option<(i32, i32)>,
+  insisted: bool,
+) -> bool {
+  min_track.is_some_and(|size| exceeds_tile(tile, size))
+    || insisted && exceeds_tile(tile, (frame.width(), frame.height()))
+}
+
 pub(super) fn fullscreen_mark(
   previous: Option<&WindowState>,
   current: &WindowState,
@@ -190,6 +220,43 @@ pub(super) fn fullscreen_mark(
 mod tests {
   use super::*;
   use wm_common::{FloatingStateConfig, FullscreenStateConfig};
+
+  #[test]
+  fn a_minimum_size_bigger_than_the_tile_floats_the_window() {
+    // half of a 1920x1040 workspace, and a client that needs 1024x576
+    let tile = Rect::from_xy(0, 40, 960, 1040);
+    let frame = Rect::from_xy(0, 40, 1024, 576);
+    assert!(cannot_fit_tile(&tile, &frame, Some((1024, 576)), false));
+    // the same client in a full-width tile fits
+    let wide = Rect::from_xy(0, 40, 1920, 1040);
+    assert!(!cannot_fit_tile(&wide, &frame, Some((1024, 576)), false));
+  }
+
+  #[test]
+  fn a_few_pixels_over_the_tile_still_fit() {
+    let tile = Rect::from_xy(0, 0, 960, 1040);
+    // a terminal on its character grid, a frame a pixel off
+    assert!(!cannot_fit_tile(&tile, &Rect::from_xy(0, 0, 972, 1040), Some((972, 300)), true));
+    assert!(!cannot_fit_tile(&tile, &Rect::from_xy(0, 0, 961, 1041), None, true));
+    // a window smaller than its tile is never floated
+    assert!(!cannot_fit_tile(&tile, &Rect::from_xy(0, 0, 640, 480), None, true));
+  }
+
+  #[test]
+  fn a_window_that_keeps_a_bigger_size_floats_only_after_insisting() {
+    let tile = Rect::from_xy(0, 0, 960, 1040);
+    let frame = Rect::from_xy(0, 0, 1280, 720);
+    // no minimum size known: the first resize back to its own size is
+    // corrected; only a window that keeps doing it floats
+    assert!(!cannot_fit_tile(&tile, &frame, None, false));
+    assert!(cannot_fit_tile(&tile, &frame, None, true));
+  }
+
+  #[test]
+  fn the_slack_grows_with_the_tile() {
+    assert_eq!(fit_slack(400), 16);
+    assert_eq!(fit_slack(3840), 76);
+  }
 
   #[test]
   fn a_fullscreen_window_at_its_monitor_is_left_alone() {

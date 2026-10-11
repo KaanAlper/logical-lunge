@@ -346,6 +346,16 @@ pub trait NativeWindowWindowsExt {
   /// This method is only available on Windows.
   fn is_controllable(&self) -> bool;
 
+  /// Logical Lunge: the smallest size the window accepts (its
+  /// `WM_GETMINMAXINFO` minimum tracking size, outer frame), or `None`
+  /// when it does not answer within a short time or sets none. A tile
+  /// smaller than this cuts the window, so it floats instead.
+  ///
+  /// # Platform-specific
+  ///
+  /// This method is only available on Windows.
+  fn min_track_size(&self) -> Option<(i32, i32)>;
+
   /// Logical Lunge: publishes the window's slot in the layout (its visible
   /// frame, screen coordinates) as window properties. The core cuts a window
   /// that stays bigger than its slot (a minimum size) to it, and the border
@@ -514,6 +524,10 @@ impl NativeWindowWindowsExt for NativeWindow {
 
   fn is_controllable(&self) -> bool {
     self.inner.is_controllable()
+  }
+
+  fn min_track_size(&self) -> Option<(i32, i32)> {
+    self.inner.min_track_size()
   }
 
   fn set_slot(&self, slot: Option<&Rect>) -> crate::Result<()> {
