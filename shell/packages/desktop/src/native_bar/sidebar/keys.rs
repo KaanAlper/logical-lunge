@@ -137,6 +137,8 @@ fn ll_label(id: &str) -> String {
     "move-down" => "Pencereyi aşağı taşı",
     "ws-prev" => "Önceki workspace",
     "ws-next" => "Sonraki workspace",
+    "ws-prev5" => "5 workspace geri",
+    "ws-next5" => "5 workspace ileri",
     "ws-move-prev" => "Pencereyi önceki workspace'e taşı",
     "ws-move-next" => "Pencereyi sonraki workspace'e taşı",
     "terminal" => "Terminal",
@@ -1033,6 +1035,8 @@ mod tests {
   fn core_shortcuts_get_names_and_groups() {
     assert_eq!(ll_label("ws-4"), "Workspace 4");
     assert_eq!(ll_label("ws-move-3"), "Pencereyi workspace 3'e taşı");
+    assert_eq!(ll_label("ws-next5"), "5 workspace ileri");
+    assert_eq!(ll_group("ws-prev5", false), "ws");
     assert_eq!(ll_group("ws-4", false), "ws");
     assert_eq!(ll_group("clipboard", false), "sys");
     assert_eq!(ll_group("browser", true), "app");

@@ -8,6 +8,7 @@
 //
 // Kısayollar (tiling config'den buraya taşındı, animasyonlu olsunlar diye):
 //   Super+Ctrl+←/→          workspace sol/sağ
+//   Super+Ctrl+↑/↓          5 workspace geri/ileri (Hyprland r-5 / r+5)
 //   Super+Ctrl+Shift+←/→    pencereyi taşı + takip et
 //   Super+1..0              workspace'e git
 //   Super+←/↑/→/↓           odak yalnızca mevcut workspace içinde (asla başka workspace/monitöre atlamaz)
@@ -952,23 +953,40 @@ class Slider
     // Hyprland r+1 / r-1 (pencere yöneticisinin --next/--prev-workspace'iyle aynı kural): config sırasında bu monitörde
     // yaşayan ya da açılacak bir sonraki workspace; başka monitörde gösterilen ya da başka monitöre bağlı olanlar atlanır,
     // uçta başa sarılmaz (1'de sola basınca 30'a gidiyordu). r+1 sonda durur (null); r-1 altında yoksa 1'e gider.
-    static string AdjacentWorkspace(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string current, int direction)
+    // r+5 / r-5 (--relative-workspace, Super+Ctrl+↑/↓) aynı kuralla 5 adım; o kadar yoksa bu monitördeki son workspace'te durur.
+    static string AdjacentWorkspace(List<Dictionary<string, object>> mons, Dictionary<string, object> mon, string current, int step)
     {
         try {
             List<WorkspaceConfigText.Entry> entries;
             string error;
             if (!WorkspaceConfigText.TryRead(System.IO.File.ReadAllText(Paths.ConfigFile), out entries, out error)) return null;
             int index = entries.FindIndex(entry => entry.Number.ToString() == current);
-            if (index < 0) return null;
-            for (int i = index + direction; i >= 0 && i < entries.Count; i += direction)
-            {
-                string name = entries[i].Number.ToString();
-                if (OnMonitor(mons, mon, name, entries[i].Monitor)) return name;
-            }
-            // r-1 with nothing usable below: workspace 1 (on its own monitor), as Hyprland
-            if (direction < 0 && index > 0) return entries[0].Number.ToString();
+            int target = StepIndex(entries.Count, index, step, i => OnMonitor(mons, mon, entries[i].Number.ToString(), entries[i].Monitor));
+            return target < 0 ? null : entries[target].Number.ToString();
         } catch { }
         return null;
+    }
+
+    // Config sırasındaki hedefin sırası (yoksa -1): step yönünde, bu monitördeki workspace'leri sayarak |step| adım, ötesi
+    // yoksa varılan son workspace. Geriye gidip hiçbiri yoksa ilk workspace (r-1 altında 1, Hyprland gibi).
+    internal static int StepIndex(int count, int index, int step, Func<int, bool> onMonitor)
+    {
+        if (index < 0 || index >= count || step == 0) return -1;
+        int direction = Math.Sign(step), left = Math.Abs(step), found = -1;
+        for (int i = index + direction; left > 0 && i >= 0 && i < count; i += direction)
+            if (onMonitor(i)) { found = i; left--; }
+        if (found >= 0) return found;
+        return direction < 0 && index > 0 ? 0 : -1;
+    }
+
+    // Workspace geçiş komutunun bu monitördeki adımı: --next/--prev-workspace ±1, --relative-workspace N; değilse 0
+    internal static int RelativeStep(string command)
+    {
+        if (command == "focus --next-workspace") return 1;
+        if (command == "focus --prev-workspace") return -1;
+        const string rel = "focus --relative-workspace ";
+        int n;
+        return command != null && command.StartsWith(rel) && int.TryParse(command.Substring(rel.Length).Trim(), out n) ? n : 0;
     }
 
     // Workspace bu monitörde mi (ya da açılınca burada mı açılır): açıksa bulunduğu monitör, kapalıysa bağlı olduğu
@@ -2891,8 +2909,8 @@ class Slider
             int cur0;
             if (int.TryParse(oldName, out cur0))
             {
-                if (lastCmd == "focus --next-workspace") otherTarget = AdjacentWorkspace(mons, mon, oldName, 1);
-                else if (lastCmd == "focus --prev-workspace") otherTarget = AdjacentWorkspace(mons, mon, oldName, -1);
+                int step0 = RelativeStep(lastCmd);
+                if (step0 != 0) otherTarget = AdjacentWorkspace(mons, mon, oldName, step0);
             }
         }
         Dictionary<string, object> otherMon = null, otherWs = null, warpMon = null, warpWs = null;
@@ -2988,14 +3006,14 @@ class Slider
             int cur;
             if (int.TryParse(oldName, out cur))
             {
-                if (focusCmd == "focus --next-workspace") predicted = AdjacentWorkspace(mons, mon, oldName, 1);
-                else if (focusCmd == "focus --prev-workspace") predicted = AdjacentWorkspace(mons, mon, oldName, -1);
+                int step = RelativeStep(focusCmd);
+                if (step != 0) predicted = AdjacentWorkspace(mons, mon, oldName, step);
             }
         }
         // Uçtaki workspace (bu monitörde ötesi yok): pencere yöneticisi de bir şey yapmaz; animasyon da başlamasın
-        if (predicted == null && (commands.Length == 1 || moveFollow) && (focusCmd == "focus --next-workspace" || focusCmd == "focus --prev-workspace"))
+        if (predicted == null && (commands.Length == 1 || moveFollow) && RelativeStep(focusCmd) != 0)
         {
-            Log("slide: bu monitörde " + (focusCmd.EndsWith("next-workspace") ? "sonraki" : "önceki") + " workspace yok");
+            Log("slide: bu monitörde " + (RelativeStep(focusCmd) > 0 ? "sonraki" : "önceki") + " workspace yok");
             return;
         }
         if (predicted != null && (commands.Length == 1 || moveFollow))
@@ -7495,7 +7513,7 @@ static class Toasts
             {
                 int q = target.IndexOf("a=");
                 string act = q < 0 ? "" : Uri.UnescapeDataString(target.Substring(q + 2).Split('&')[0]);
-                if (System.Text.RegularExpressions.Regex.IsMatch(act, @"^ws-(\d{1,2}|next|prev)(@[\w\\.\-]{1,64})?$") && Keys2.Instance != null)
+                if (System.Text.RegularExpressions.Regex.IsMatch(act, @"^ws-(\d{1,2}|(?:next|prev)(?:[1-9]\d?)?)(@[\w\\.\-]{1,64})?$") && Keys2.Instance != null)
                 {
                     Keys2.Instance.Dispatch(act);
                     status = "204 No Content";
@@ -8027,6 +8045,8 @@ static class Binds
         { "focus-left", "Super+Left" }, { "focus-right", "Super+Right" }, { "focus-up", "Super+Up" }, { "focus-down", "Super+Down" },
         { "move-left", "Super+Shift+Left" }, { "move-right", "Super+Shift+Right" }, { "move-up", "Super+Shift+Up" }, { "move-down", "Super+Shift+Down" },
         { "ws-prev", "Super+Ctrl+Left" }, { "ws-next", "Super+Ctrl+Right" },
+        // Hyprland (ii) r-5 / r+5: beşer workspace, ←/→ gibi kayarak
+        { "ws-prev5", "Super+Ctrl+Up" }, { "ws-next5", "Super+Ctrl+Down" },
         { "ws-move-prev", "Super+Ctrl+Shift+Left" }, { "ws-move-next", "Super+Ctrl+Shift+Right" },
         { "ws-1", "Super+1" }, { "ws-2", "Super+2" }, { "ws-3", "Super+3" }, { "ws-4", "Super+4" }, { "ws-5", "Super+5" },
         { "ws-6", "Super+6" }, { "ws-7", "Super+7" }, { "ws-8", "Super+8" }, { "ws-9", "Super+9" }, { "ws-10", "Super+0" },
@@ -8204,16 +8224,50 @@ static class Binds
     {
         var d = new Dictionary<string, string>();
         for (int i = 0; i < Defaults.GetLength(0); i++) d[Defaults[i, 0]] = Defaults[i, 1];
+        var userSet = new HashSet<string>();
+        var userCombos = new List<string>();
         try
         {
             if (System.IO.File.Exists(FilePath))
             {
                 var user = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(System.IO.File.ReadAllText(FilePath));
-                if (user != null) foreach (var kv in user) if (d.ContainsKey(kv.Key) && !(kv.Value is System.Collections.ArrayList)) d[kv.Key] = kv.Value == null ? "" : kv.Value.ToString();
+                if (user != null) foreach (var kv in user) if (d.ContainsKey(kv.Key) && !(kv.Value is System.Collections.ArrayList)) { d[kv.Key] = kv.Value == null ? "" : kv.Value.ToString(); userSet.Add(kv.Key); }
+                object apps;
+                if (user != null && user.TryGetValue("$apps", out apps) && apps is System.Collections.ArrayList)
+                    foreach (var o in (System.Collections.ArrayList)apps)
+                    {
+                        var a = o as Dictionary<string, object>;
+                        object c;
+                        if (a != null && a.TryGetValue("combo", out c) && c is string) userCombos.Add((string)c);
+                    }
             }
+            foreach (var e in WmBinds.List()) userCombos.AddRange((List<string>)e["bindings"]);
         }
         catch (Exception ex) { Slider.Log("keybinds: " + ex.Message); }
+        YieldLater(d, userSet, userCombos);
         return d;
+    }
+
+    // Güncellemeyle sonradan gelen varsayılanlar (Super+Ctrl+↑/↓): kullanıcı aynı tuşları kendisi bir şeye bağladıysa
+    // (başka bir çekirdek kısayolu, kendi uygulaması ya da config.yaml'daki bir pencere yöneticisi kısayolu) onunki kalır,
+    // bu varsayılan boş olur (kaydederken çakışma da çıkmaz). Kullanıcı o tuşları bırakınca varsayılan kendiliğinden gelir.
+    static readonly string[] later = { "ws-prev5", "ws-next5" };
+
+    internal static void YieldLater(Dictionary<string, string> eff, ICollection<string> userSet, IEnumerable<string> userCombos)
+    {
+        var taken = new HashSet<string>();
+        foreach (var id in userSet)
+        {
+            string c;
+            if (eff.TryGetValue(id, out c) && Canonical(c) != null) taken.Add(Canonical(c));
+        }
+        foreach (var c in userCombos) if (Canonical(c) != null) taken.Add(Canonical(c));
+        foreach (var id in later)
+        {
+            string c;
+            if (userSet.Contains(id) || !eff.TryGetValue(id, out c) || Canonical(c) == null) continue;
+            if (taken.Contains(Canonical(c))) eff[id] = "";
+        }
     }
 
     public static void Load()
@@ -8255,9 +8309,10 @@ static class Binds
         try
         {
             var wm = new System.IO.FileSystemWatcher(System.IO.Path.GetDirectoryName(Paths.ConfigFile), System.IO.Path.GetFileName(Paths.ConfigFile));
-            System.IO.FileSystemEventHandler wmReload = (s, e) => { Thread.Sleep(80); WmBinds.Load(); };
+            // çekirdeğin tablosu da: sonradan gelen varsayılanlar config.yaml'daki kullanıcı kısayollarına yer bırakır (YieldLater)
+            System.IO.FileSystemEventHandler wmReload = (s, e) => { Thread.Sleep(80); WmBinds.Load(); Load(); };
             wm.Changed += wmReload; wm.Created += wmReload;
-            wm.Renamed += (s, e) => { Thread.Sleep(80); WmBinds.Load(); };
+            wm.Renamed += (s, e) => { Thread.Sleep(80); WmBinds.Load(); Load(); };
             wm.EnableRaisingEvents = true;
             wmWatcher = wm;
             watcher = new System.IO.FileSystemWatcher(System.IO.Path.GetDirectoryName(FilePath), "keybinds.json");
@@ -8472,8 +8527,10 @@ class Keys2
         if (cmds == null || cmds.Length == 0 || cmds.Length > 2) return false;
         string last = cmds[cmds.Length - 1];
         if (cmds.Length == 2 && !(cmds[0].StartsWith("move --") && last.StartsWith("focus --"))) return false;
-        if (last == "focus --next-workspace" || last == "focus --next-active-workspace") { dir = 1; return true; }
-        if (last == "focus --prev-workspace" || last == "focus --prev-active-workspace") { dir = -1; return true; }
+        if (last == "focus --next-active-workspace") { dir = 1; return true; }
+        if (last == "focus --prev-active-workspace") { dir = -1; return true; }
+        int step = Slider.RelativeStep(last);
+        if (step != 0) { dir = Math.Sign(step); return true; }
         if (last == "focus --recent-workspace") return true;
         if (last.StartsWith("focus --workspace ")) { target = last.Substring("focus --workspace ".Length).Trim(); return target.Length > 0; }
         return false;
@@ -8668,7 +8725,7 @@ class Keys2
                 {
                     held.Add(vk);
                     // Ctrl+Super (+Shift) ile gezinme: bar noktaların yerine numaraları kısa süre gösterir (kanca beklemesin)
-                    if (winDown && (act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-")))
+                    if (winDown && (WsStep(act) != 0 || act.StartsWith("ws-move-")))
                         ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:ws-numbers"));
                     return (IntPtr)1;
                 }
@@ -8757,7 +8814,7 @@ class Keys2
             case NativeInput.BIND:
                 {
                     string act = NativeInput.Action(e.Id);
-                    if (act != null && RunAction(act) && e.Flag != 0 && (act == "ws-prev" || act == "ws-next" || act.StartsWith("ws-move-")))
+                    if (act != null && RunAction(act) && e.Flag != 0 && (WsStep(act) != 0 || act.StartsWith("ws-move-")))
                         ThreadPool.QueueUserWorkItem(_ => Toasts.Emit("ll:ws-numbers"));
                     break;
                 }
@@ -8822,11 +8879,30 @@ class Keys2
         return Apps.ContainsKey(act) ? 1 : 0;
     }
 
-    // Bir barın kendi monitöründe çalışan workspace adımları: r±1 ya da numara
+    // Bir barın kendi monitöründe çalışan workspace adımları: r±1, r±5 ya da numara
     static bool BarStep(string step)
     {
         int n;
-        return step == "ws-prev" || step == "ws-next" || (step.StartsWith("ws-") && int.TryParse(step.Substring(3), out n) && n > 0);
+        return WsStep(step) != 0 || (step.StartsWith("ws-") && int.TryParse(step.Substring(3), out n) && n > 0);
+    }
+
+    static readonly System.Text.RegularExpressions.Regex wsStep = new System.Text.RegularExpressions.Regex(@"^ws-(next|prev)([1-9]\d?)?$");
+
+    // ws-next / ws-prev (r±1), ws-next5 / ws-prev5 (r±5): bu monitörde kaç workspace ileri (+) ya da geri (-); değilse 0
+    internal static int WsStep(string act)
+    {
+        var m = act == null ? null : wsStep.Match(act);
+        if (m == null || !m.Success) return 0;
+        int n = m.Groups[2].Success ? int.Parse(m.Groups[2].Value) : 1;
+        return m.Groups[1].Value == "next" ? n : -n;
+    }
+
+    // Pencere yöneticisinin komutu: ±1 eski --next/--prev-workspace, gerisi --relative-workspace N
+    internal static string WsFocus(int step)
+    {
+        if (step == 1) return "focus --next-workspace";
+        if (step == -1) return "focus --prev-workspace";
+        return "focus --relative-workspace " + step;
     }
 
     bool RunAction(string act)
@@ -8900,12 +8976,13 @@ class Keys2
             });
             return true;
         }
-        if (act == "ws-prev" || act == "ws-next" || act == "ws-move-prev" || act == "ws-move-next")
+        int wsSteps = WsStep(act);
+        if (wsSteps != 0) { Post(new[] { WsFocus(wsSteps) }, Math.Sign(wsSteps), null); return true; }
+        if (act == "ws-move-prev" || act == "ws-move-next")
         {
             int dir = act.EndsWith("next") ? 1 : -1;
             string d = dir > 0 ? "next" : "prev";
-            if (act.StartsWith("ws-move-")) Post(new[] { "move --" + d + "-workspace", "focus --" + d + "-workspace" }, dir, null);
-            else Post(new[] { "focus --" + d + "-workspace" }, dir, null);
+            Post(new[] { "move --" + d + "-workspace", "focus --" + d + "-workspace" }, dir, null);
             return true;
         }
         int moveTo;
@@ -15234,7 +15311,7 @@ static class Program
             return;
         }
 
-        // Tek seferlik: lunge.exe --slide next|prev|<workspace>  (bar tıklamaları ve test için)
+        // Tek seferlik: lunge.exe --slide next|prev|next5|prev5|<workspace>  (bar tıklamaları ve test için)
         if (args.Length == 2 && args[0] == "--slide")
         {
             // Çalışan helper varsa işi ona devret (katman ve kenarlıkları hazır, animasyon hemen başlar)
@@ -15244,8 +15321,8 @@ static class Program
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             var g = new TilingClient();
             var sl = new Slider(g);
-            if (plain == "next") sl.Run(new[] { "focus --next-workspace" }, 1, null);
-            else if (plain == "prev") sl.Run(new[] { "focus --prev-workspace" }, -1, null);
+            int steps = Keys2.WsStep("ws-" + plain);
+            if (steps != 0) sl.Run(new[] { Keys2.WsFocus(steps) }, Math.Sign(steps), null);
             else sl.Run(new[] { "focus --workspace " + plain }, 0, plain);
             return;
         }
