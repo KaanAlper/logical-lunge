@@ -98,6 +98,43 @@ public static class LLStress {
         EnumWindows((h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == (uint)pid) n++; return true; }, IntPtr.Zero);
         return n;
     }
+    // a process's threads grouped by what they are: the thread's name (SetThreadDescription; Rust's named threads), else
+    // the module and offset its start routine is in (a pool's workers share one), so the group that grows names the leak
+    [DllImport("kernel32.dll")] static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+    [DllImport("kernel32.dll")] static extern int GetThreadDescription(IntPtr thread, out IntPtr desc);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+    [DllImport("ntdll.dll")] static extern int NtQueryInformationThread(IntPtr thread, int cls, out IntPtr info, int len, IntPtr ret);
+    public static System.Collections.Generic.Dictionary<string, int> ThreadGroups(int pid) {
+        var groups = new System.Collections.Generic.Dictionary<string, int>();
+        System.Diagnostics.Process p;
+        try { p = System.Diagnostics.Process.GetProcessById(pid); } catch { return groups; }
+        var mods = new System.Collections.Generic.List<System.Diagnostics.ProcessModule>();
+        try { foreach (System.Diagnostics.ProcessModule m in p.Modules) mods.Add(m); } catch { }
+        foreach (System.Diagnostics.ProcessThread t in p.Threads) {
+            string label = null;
+            IntPtr h = OpenThread(0x0040 | 0x0800, false, (uint)t.Id); // THREAD_QUERY_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION
+            if (h != IntPtr.Zero) {
+                IntPtr d;
+                if (GetThreadDescription(h, out d) >= 0 && d != IntPtr.Zero) { string s = Marshal.PtrToStringUni(d); LocalFree(d); if (!string.IsNullOrEmpty(s)) label = "name:" + s; }
+                if (label == null) {
+                    IntPtr start;
+                    if (NtQueryInformationThread(h, 9, out start, IntPtr.Size, IntPtr.Zero) == 0) { // ThreadQuerySetWin32StartAddress
+                        long a = start.ToInt64();
+                        foreach (var m in mods) {
+                            long b = m.BaseAddress.ToInt64();
+                            if (a >= b && a < b + m.ModuleMemorySize) { label = m.ModuleName.ToLowerInvariant() + "+0x" + (a - b).ToString("x"); break; }
+                        }
+                        if (label == null) label = "start:0x" + a.ToString("x");
+                    }
+                }
+                CloseHandle(h);
+            }
+            if (label == null) label = "unknown";
+            int n; groups.TryGetValue(label, out n); groups[label] = n + 1;
+        }
+        return groups;
+    }
     public static int VisibleWindowsTitled(string title) {
         int n = 0; IntPtr h = IntPtr.Zero;
         while ((h = FindWindowEx(IntPtr.Zero, h, null, title)) != IntPtr.Zero) if (IsWindowVisible(h)) n++;
@@ -233,15 +270,28 @@ function Churn([string]$kind, [int]$ops, [scriptblock]$op, [int]$warm = 4) {
     }
     [pscustomobject]@{ Kind = $kind; Ops = $ops; From = $from; To = $to; Series = $s }
 }
+# which threads a churn leaves: the groups (name or start module) whose count changed between two snapshots
+function Thread-Snapshot { $r = @{}; foreach ($k in $pids.Keys) { $r[$k] = [LLStress]::ThreadGroups($pids[$k]) }; $r }
+function Thread-Diff([string]$what, $a, $b) {
+    foreach ($k in @('core', 'shell', 'tiling')) {
+        if (-not $a[$k] -or -not $b[$k]) { continue }
+        $keys = @($a[$k].Keys) + @($b[$k].Keys) | Sort-Object -Unique
+        $d = foreach ($g in $keys) { $x = if ($a[$k].ContainsKey($g)) { $a[$k][$g] } else { 0 }; $y = if ($b[$k].ContainsKey($g)) { $b[$k][$g] } else { 0 }; if ($x -ne $y) { "$g $x->$y" } }
+        if ($d) { Note "threads ${what}: $k $($d -join ', ')" }
+    }
+}
+$threadsBefore = Thread-Snapshot
 $churn = @()
 $churn += Churn 'switch' $CHURN_SWITCHES { param($i) Send-Test "ws-$((($i - 1) % 4) + 1)"; Start-Sleep -Milliseconds 850 }
 Send-Test 'ws-1'; Start-Sleep 1
+$threadsBeforeWindows = Thread-Snapshot
 $churn += Churn 'window' $CHURN_WINDOW_CYCLES {
     $w = @(1..2 | ForEach-Object { Start-Process notepad -PassThru })
     Start-Sleep -Milliseconds 700
     $w | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 500
 }
+Thread-Diff 'over the window churn' $threadsBeforeWindows (Thread-Snapshot)
 # overview and sidebar opened and closed in turn
 $churn += Churn 'popup' 60 { param($i)
     $a = if ($i % 2) { 'overview' } else { 'sidebar' }
@@ -250,6 +300,7 @@ $churn += Churn 'popup' 60 { param($i)
 # Super+F on the focused window: the freeze/snapshot animation (an even count leaves it as it was)
 $churn += Churn 'state' 60 { Send-Test 'wm toggle-fullscreen'; Start-Sleep -Milliseconds 800 }
 Start-Sleep $CHURN_SETTLE_SEC
+Thread-Diff 'kept after the churn and the quiet pause' $threadsBefore (Thread-Snapshot)
 $churnBefore = $churn[0].Series[0].Sample
 $churnSettled = Sample
 foreach ($k in @('core', 'shell', 'tiling')) {
