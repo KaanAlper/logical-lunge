@@ -781,6 +781,7 @@ class FrameStats
 {
     readonly Stopwatch sw = Stopwatch.StartNew();
     double t0, t1, lastEnd = -1, sumUpd, sumFlush, sumGap, maxTotal;
+    FlushPoint flushAt;
     string worst = "";
     public int Frames;
     // Kare aralığı dağılımı (yenileme periyoduna göre): zamanında / 1 vsync kaçırdı / 2+ kaçırdı. Ortalama aynı olsa da
@@ -805,14 +806,20 @@ class FrameStats
         gc0 = GC.CollectionCount(0); gc1 = GC.CollectionCount(1); gc2 = GC.CollectionCount(2);
     }
     public void Begin() { t0 = sw.Elapsed.TotalMilliseconds; }
-    public void Updated() { t1 = sw.Elapsed.TotalMilliseconds; }
+    public void Updated() { t1 = sw.Elapsed.TotalMilliseconds; flushAt = FlushPoint.Now(); }
     public void Flushed()
     {
         double t2 = sw.Elapsed.TotalMilliseconds;
         double gap = lastEnd < 0 ? 0 : t0 - lastEnd, upd = t1 - t0, fl = t2 - t1;
         double total = lastEnd < 0 ? t2 - t0 : t2 - lastEnd;
         sumUpd += upd; sumFlush += fl; sumGap += gap;
-        if (total > maxTotal) { maxTotal = total; worst = string.Format("güncelleme {0:0.0} + flush {1:0.0} + boşluk {2:0.0}", upd, fl, gap); }
+        if (total > maxTotal)
+        {
+            maxTotal = total;
+            worst = string.Format("güncelleme {0:0.0} + flush {1:0.0} + boşluk {2:0.0}", upd, fl, gap);
+            // uzun flush: DWM mi geç kaldı (kareyi geç topladı) yoksa biz mi geç uyandık (kare çoktan toplanmıştı)
+            if (fl >= period * 2) worst += " (" + FlushPoint.Explain(flushAt, FlushPoint.Now()) + ")";
+        }
         if (lastEnd >= 0) { if (total < period * 1.5) onTime++; else if (total < period * 2.5) miss1++; else miss2++; }
         lastEnd = t2; Frames++;
     }
@@ -825,6 +832,54 @@ class FrameStats
         sb.AppendFormat("; aralık {0:0.0} ms: zamanında {1} / 1 kaçık {2} / 2+ kaçık {3}", period, onTime, miss1, miss2);
         sb.Append("]");
         PerfGuard.Record(onTime, miss1 + miss2);
+        return sb.ToString();
+    }
+}
+
+// Bir DwmFlush'ın iki ucu: DWM'in kare sayacı ve son kompozisyon anı, bu thread'in işlemci süresi, sürecin sayfa hataları.
+// Uzun bir flush'ta beklemenin nereye gittiğini ayırır: DWM kareyi geç mi topladı (DWM tıkandı), kare zamanında toplandı
+// da biz mi geç uyandık (thread sırada bekledi), yoksa bekleme sayfa hatasıyla diskte mi geçti.
+struct FlushPoint
+{
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+    [DllImport("kernel32.dll")] static extern bool GetThreadTimes(IntPtr thread, out long creation, out long exit, out long kernel, out long user);
+    [DllImport("kernel32.dll")] static extern int GetThreadPriority(IntPtr thread);
+    static readonly double ToMs = 1000.0 / Stopwatch.Frequency;
+    public long Qpc, Compose, Cpu;
+    public ulong Frame, Refresh;
+    public uint Faults;
+    public bool Dwm;
+
+    public static FlushPoint Now()
+    {
+        var p = new FlushPoint { Qpc = Stopwatch.GetTimestamp() };
+        try
+        {
+            var t = new Native.DWM_TIMING_INFO(); t.cbSize = (uint)Marshal.SizeOf(typeof(Native.DWM_TIMING_INFO));
+            if (Native.DwmGetCompositionTimingInfo(IntPtr.Zero, ref t) == 0) { p.Dwm = true; p.Frame = t.cFrame; p.Refresh = t.cRefresh; p.Compose = (long)t.qpcCompose; }
+            long c, e, k, u;
+            if (GetThreadTimes(GetCurrentThread(), out c, out e, out k, out u)) p.Cpu = k + u;
+            p.Faults = InputLatency.Faults();
+        }
+        catch { }
+        return p;
+    }
+
+    // "DWM kareyi 480 ms'de topladı, biz 2 ms sonra uyandık; 1 kare / 29 vsync; thread işlemcisi 0,1 ms, öncelik 2; sayfa hatası +0"
+    public static string Explain(FlushPoint a, FlushPoint b)
+    {
+        var sb = new StringBuilder();
+        if (a.Dwm && b.Dwm)
+        {
+            ulong frames = b.Frame - a.Frame, vsyncs = b.Refresh - a.Refresh;
+            if (frames > 0 && b.Compose > a.Qpc)
+                sb.AppendFormat("DWM kareyi {0:0.0} ms'de topladı, biz {1:0.0} ms sonra uyandık; ", (b.Compose - a.Qpc) * ToMs, (b.Qpc - b.Compose) * ToMs);
+            else sb.Append("DWM bu sürede kare toplamadı; ");
+            sb.AppendFormat("{0} kare / {1} vsync; ", frames, vsyncs);
+        }
+        int prio = 0;
+        try { prio = GetThreadPriority(GetCurrentThread()); } catch { }
+        sb.AppendFormat("thread işlemcisi {0:0.0} ms, öncelik {1}; sayfa hatası +{2}", (b.Cpu - a.Cpu) / 10000.0, prio, b.Faults - a.Faults);
         return sb.ToString();
     }
 }
@@ -1780,9 +1835,11 @@ class Slider
         }
         step("kayıt");
         RingsAttach(f.Win.Values, FocusedTop()); // kenarlıklar pencerelerin üstünde; katman gizliyken kaydı ucuz
+        step("halka");
         foreach (var t in f.Win.Values) RingPlace(t, t.Dest, (byte)(t.Src.ToInt64() == hidden ? 0 : 255));
-        PinsAttach(new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy, f.All); // the bar drawn in the scene is no pin
         step("kenar");
+        PinsAttach(new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy, f.All); // the bar drawn in the scene is no pin
+        step("sabit");
         Animating = true;
         overlay.Reveal();
         RaisePinned();
@@ -13226,7 +13283,7 @@ static class InputLatency
     // Kanca iş parçacığının saniyelik bekçisinden: yavaş bir kancada aradaki sayfa hataları bununla karşılaştırılır
     public static void Sample() { faultsAtSample = Faults(); }
 
-    static uint Faults()
+    internal static uint Faults()
     {
         try
         {
