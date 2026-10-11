@@ -14,6 +14,7 @@
 
 mod bottom;
 mod bug;
+mod bug_queue;
 pub(super) mod images;
 mod input;
 mod panel;
@@ -72,6 +73,12 @@ use super::{
   view::Painter,
   Layer, Ui, CLASS, SIDEBAR_HWND, TIMER_SB_CLOSE, TIMER_SB_FRAME, TIMER_SB_PAGE, TIMER_SB_TICK, TIMER_SB_WHEEL,
 };
+
+/// Starts sending issue reports kept while the server was unreachable
+/// (once per process; see `bug_queue`).
+pub(super) fn start_bug_queue() {
+  bug_queue::start(|count| super::send(super::Msg::Sidebar(Ev::Bug(BugEv::QueueSent(count)))));
+}
 
 /// The core finds the panel by this title (above workspace slides, `--raise`).
 pub(super) const TITLE: &str = "Logical Lunge · sidebar-right";

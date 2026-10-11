@@ -48,7 +48,44 @@ pub(in crate::native_bar) enum BugEv {
   Device(Option<Value>),
   File(usize, Result<(String, usize), String>),
   Progress(u32),
-  Sent(Result<(), String>),
+  Sent(Result<Sent, String>),
+  /// reports kept while the server was unreachable went out later
+  QueueSent(usize),
+}
+
+/// How a report left.
+pub(in crate::native_bar) enum Sent {
+  Now,
+  /// the server was unreachable: kept and sent later (`bug_queue`)
+  Queued,
+}
+
+/// The attached logs: (file name, text when attached).
+pub(super) type Logs = [(String, Option<String>); 3];
+
+/// Why a report did not go: the server could not be reached at all (no
+/// connection, DNS, timeout), or it answered and refused it.
+pub(super) enum SendError {
+  Unreachable(String),
+  Refused(u32, String),
+}
+
+impl SendError {
+  fn text(&self, english: bool) -> String {
+    match self {
+      SendError::Unreachable(err) => format!(
+        "{}{}",
+        if english { "The server could not be reached (connection or DNS). " } else { "Sunucuya ulaşılamadı (bağlantı ya da DNS). " },
+        err
+      ),
+      SendError::Refused(status, body) => format!(
+        "{} {}: {}",
+        if english { "The server refused the report, HTTP" } else { "Sunucu raporu kabul etmedi, HTTP" },
+        status,
+        body.chars().take(240).collect::<String>()
+      ),
+    }
+  }
 }
 
 #[derive(Clone)]
@@ -375,8 +412,9 @@ fn collect(i: usize, english: bool) {
   });
 }
 
-/// HTTPS POST with the upload progress (WinHTTP); the status and body.
-fn post(url_path: &str, headers: &str, body: &[u8], progress: impl Fn(u32)) -> Result<(u32, String), String> {
+/// HTTPS POST with the upload progress (WinHTTP); the status and body. An
+/// error is the server not being reached (no answer at all).
+fn post(url_path: &str, headers: &str, body: &[u8], progress: &impl Fn(u32)) -> Result<(u32, String), String> {
   use windows::{
     core::{w, HSTRING, PCWSTR},
     Win32::Networking::WinHttp::*,
@@ -447,16 +485,16 @@ fn post(url_path: &str, headers: &str, body: &[u8], progress: impl Fn(u32)) -> R
 
 /// Sends the report; the old two-column table refuses the separate log
 /// columns without inserting anything: then once more with its combined one.
-fn upload(base: Value, logs: [(String, Option<String>); 3], english: bool) -> Result<(), String> {
+/// Also used by `bug_queue` for reports kept while the server was away.
+pub(super) fn upload(base: Value, logs: Logs, progress: impl Fn(u32)) -> Result<(), SendError> {
   let headers = format!("apikey: {SUPABASE_KEY}\r\nContent-Type: application/json\r\nPrefer: return=minimal\r\n");
-  let progress = |p: u32| ev(BugEv::Progress(p));
   let mut first = base.clone();
   first["core_log"] = json!(logs[0].1);
   first["shell_log"] = json!(logs[1].1);
   first["tiling_log"] = json!(logs[2].1);
   first["system_log"] = Value::Null;
-  let net = |e: String| format!("{}{}", if english { "Network connection failed. " } else { "Ağ bağlantısı kurulamadı. " }, e);
-  let (status, body) = post("/rest/v1/bug_reports", &headers, first.to_string().as_bytes(), progress).map_err(net)?;
+  let net = SendError::Unreachable;
+  let (status, body) = post("/rest/v1/bug_reports", &headers, first.to_string().as_bytes(), &progress).map_err(net)?;
   if (200..300).contains(&status) {
     return Ok(());
   }
@@ -465,16 +503,16 @@ fn upload(base: Value, logs: [(String, Option<String>); 3], english: bool) -> Re
     && detail["code"].as_str() == Some("PGRST204")
     && ["core_log", "shell_log", "tiling_log"].iter().any(|c| detail["message"].as_str().unwrap_or("").contains(c));
   if !legacy {
-    return Err(format!("{}: {}", status, body.chars().take(240).collect::<String>()));
+    return Err(SendError::Refused(status, body));
   }
   let sections: Vec<String> = logs.iter().filter_map(|(name, text)| text.as_ref().map(|t| format!("===== {name} =====\n{t}"))).collect();
   let mut second = base;
   second["system_log"] = if sections.is_empty() { Value::Null } else { json!(sections.join("\n\n")) };
-  let (status, body) = post("/rest/v1/bug_reports", &headers, second.to_string().as_bytes(), |p| ev(BugEv::Progress(p))).map_err(net)?;
+  let (status, body) = post("/rest/v1/bug_reports", &headers, second.to_string().as_bytes(), &progress).map_err(net)?;
   if (200..300).contains(&status) {
     Ok(())
   } else {
-    Err(format!("{}: {}", status, body.chars().take(240).collect::<String>()))
+    Err(SendError::Refused(status, body))
   }
 }
 
@@ -525,6 +563,16 @@ impl Ui {
   }
 
   pub(super) fn sb_bug_event(&mut self, e: BugEv) {
+    if let BugEv::QueueSent(count) = e {
+      let english = !self.model.locale().to_lowercase().starts_with("tr");
+      let (title, body) = if english {
+        ("Queued reports sent", format!("{count} issue report(s) kept while the server was unreachable were sent."))
+      } else {
+        ("Bekleyen raporlar gönderildi", format!("Sunucuya ulaşılamazken saklanan {count} hata raporu gönderildi."))
+      };
+      self.toast_add(json!({ "kind": "ok", "title": title, "body": body, "icon": "check_circle" }));
+      return;
+    }
     let Some(b) = self.sidebar.bug.as_mut() else { return };
     match e {
       BugEv::Device(d) => {
@@ -540,13 +588,23 @@ impl Ui {
         }
       }
       BugEv::Progress(p) => b.progress = Some(p),
+      BugEv::QueueSent(_) => {}
       BugEv::Sent(r) => {
         b.sending = false;
         b.progress = None;
         match r {
-          Ok(()) => {
+          Ok(how) => {
             b.sent = true;
-            let (title, body) = (b.t("Rapor gönderildi", "Report sent"), b.t("Hata raporu kaydedildi.", "The issue report was saved."));
+            let (title, body) = match how {
+              Sent::Now => (b.t("Rapor gönderildi", "Report sent"), b.t("Hata raporu kaydedildi.", "The issue report was saved.")),
+              Sent::Queued => (
+                b.t("Rapor sıraya alındı", "Report queued"),
+                b.t(
+                  "Sunucuya şu an ulaşılamıyor. Rapor bu bilgisayarda saklandı; bağlantı gelince kendiliğinden gönderilecek.",
+                  "The server can't be reached right now. The report is kept on this PC and will be sent by itself once it can.",
+                ),
+              ),
+            };
             self.sidebar.store.bug_draft.clear();
             self.sidebar.save_soon();
             self.toast_add(json!({ "kind": "ok", "title": title, "body": body, "icon": "check_circle" }));
@@ -631,10 +689,18 @@ impl Ui {
         "missingLogs": missing,
       },
     });
-    let logs = [("core.log".to_string(), included(1)), ("shell.log".to_string(), included(2)), ("tiling.log".to_string(), included(3))];
+    let logs: Logs = [("core.log".to_string(), included(1)), ("shell.log".to_string(), included(2)), ("tiling.log".to_string(), included(3))];
     let english = b.english;
     std::thread::spawn(move || {
-      let r = upload(base, logs, english);
+      let r = match upload(base.clone(), logs.clone(), |p| ev(BugEv::Progress(p))) {
+        Ok(()) => Ok(Sent::Now),
+        // never lost: kept and sent later
+        Err(SendError::Unreachable(err)) => match super::bug_queue::enqueue(&base, &logs) {
+          Ok(()) => Ok(Sent::Queued),
+          Err(kept) => Err(format!("{} ({})", SendError::Unreachable(err).text(english), kept)),
+        },
+        Err(refused) => Err(refused.text(english)),
+      };
       std::thread::sleep(Duration::from_millis(50));
       ev(BugEv::Sent(r));
     });

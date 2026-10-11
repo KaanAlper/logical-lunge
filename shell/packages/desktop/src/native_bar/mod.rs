@@ -459,6 +459,9 @@ pub fn start(manager: Arc<ProviderManager>, opts: Options) -> anyhow::Result<()>
     }
   });
 
+  // issue reports kept while the server was unreachable go out later
+  sidebar::start_bug_queue();
+
   // core -> shell events (the theme changed in a web widget or the settings)
   core_api::events(|evt| match evt {
     core_api::CoreEvent::Connected => send(Msg::Core(None)),
