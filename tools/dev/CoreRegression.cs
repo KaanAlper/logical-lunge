@@ -185,7 +185,9 @@ static class CoreRegression
         Check(TilingWatchdog.WmBusy(TimeSpan.FromMilliseconds(1000), TimeSpan.FromMilliseconds(1200)), "A window manager using the CPU must count as busy, not hung");
         Check(!TilingWatchdog.WmBusy(TimeSpan.FromMilliseconds(1000), TimeSpan.FromMilliseconds(1010)), "A window manager without CPU time must count as hung");
         Check(!TilingWatchdog.WmBusy(TimeSpan.Zero, TimeSpan.FromMilliseconds(500)), "An unknown start time must not count as busy");
-        Check(TilingWatchdog.HungLimit(false) == 3 && TilingWatchdog.HungLimit(true) == 6, "The hung limit must double while a game runs");
+        Check(TilingWatchdog.HungLimitMs(false) == 15000 && TilingWatchdog.HungLimitMs(true) == 30000, "A window manager without answers must be restarted after 15 s (30 s while a game runs), busy or not");
+        var dumps = WmDump.Oldest(new[] { "wm-hang-20261011-235556.dmp", "wm-hang-20261012-101500.dmp", "wm-hang-20261009-080000.dmp", "wm-hang-20261012-090000.dmp" }, 3);
+        Check(dumps.Count == 1 && dumps[0] == "wm-hang-20261009-080000.dmp", "Only the 3 newest window manager dumps must be kept");
     }
 
     // A core asked to stop (uninstall, setup) silences its watchdogs at once and brings nothing back up

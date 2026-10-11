@@ -5640,6 +5640,12 @@ static class BugReports
                     default: throw new ArgumentException("Bilinmeyen günlük türü.");
                 }
                 text = ReadFrom(System.IO.Path.Combine(Paths.LogsDir, filename), -1, MaxLogBytes);
+                // Takılıp kapatılan pencere yöneticisinin dökümleri (ikili dosya, rapora sığmaz): yolları ve boyutları
+                if (kind == "tiling")
+                {
+                    string dumps = WmDump.ReportLines();
+                    if (dumps != null) text += "\n===== pencere yöneticisi dökümleri (yanıt vermediği için kapatılırken alındı) =====\n" + dumps + "\n";
+                }
             }
             if (string.IsNullOrWhiteSpace(text)) throw new System.IO.IOException("Günlük boş veya erişilemiyor.");
             result["ok"] = true;
@@ -6855,7 +6861,8 @@ static class TilingWatchdog
         var ipc = new TilingClient();
         Process wm = null;
         bool wanted = false;  // tiling çalışmalı mı: çalışırken görüldü ve kasıtlı kapanmadı
-        int missing = 0, hung = 0, tick = 0, starts = 0, nextStartAt = 0, spin = 0;
+        int missing = 0, tick = 0, starts = 0, nextStartAt = 0, unansweredSince = 0;
+        bool unanswered = false;
         bool portNoted = false;
         while (true)
         {
@@ -6880,7 +6887,7 @@ static class TilingWatchdog
                                 Toasts.Send("info", "Masaüstü toparlandı", "Pencere yöneticisi beklenmedik biçimde kapanmıştı; yeniden başlatıldı.", "restart_alt");
                             }) { IsBackground = true }.Start();
                         }
-                        wanted = true; hung = 0; missing = 0; starts = 0; portNoted = false;
+                        wanted = true; unanswered = false; missing = 0; starts = 0; portNoted = false;
                         continue;
                     }
                     if (Maint.Quiet() || Maint.Running(Names.Tiling)) { missing = 0; continue; } // bakım / açılıyor
@@ -6928,26 +6935,36 @@ static class TilingWatchdog
                     continue;
                 }
 
-                // Donma: 5 sn'de bir yokla; üst üste 3 başarısız yoklama (en az 15 sn) donmuş demektir. Ardışık sayım
-                // uykudan dönüşte yanlış alarm vermez.
-                if (++tick % 3 != 0) continue;
-                if ((DateTime.Now - wm.StartTime).TotalSeconds < 30) { hung = 0; continue; }
+                // Donma: 6 sn'de bir yokla; yanıt gelmeyince her turda (2 sn) yeniden. İlk yanıtsız yoklamadan beri
+                // HungLimitMs geçtiyse (oyun önde iken iki katı) kapatılır. Süreç işlemci kullanıyor ("meşgul") diye artık
+                // beklenmez: bir v1.5.2 raporunda tam işlemciyle takılan pencere yöneticisi 3 dakikadan uzun "meşgul;
+                // beklendi" sayıldı (işlemci zamanı sürecin hepsi: kenarlık thread'leri tek başına yetiyordu), o arada
+                // workspace'ler değişmedi. Kapatmadan önce döküm alınır (WmDump): nerede takıldığı sonra okunur.
+                if (!unanswered && ++tick % 3 != 0) continue;
+                if ((DateTime.Now - wm.StartTime).TotalSeconds < 30) { unanswered = false; continue; }
                 TimeSpan cpuBefore = TimeSpan.Zero;
                 try { wm.Refresh(); cpuBefore = wm.TotalProcessorTime; } catch { }
-                if (PingWithTimeout(ipc, 8000)) { hung = 0; spin = 0; continue; }
-                // Yanıt yok ama işlemci zamanı ilerliyor: meşgul (yük altındaki makinede yavaş), donmuş değil. Oyun önde
-                // iken (sistem dolu) sınır iki katı. Ağır yük altında sağlıklı bir pencere yöneticisi öldürülüp masaüstü
-                // oyunun ortasında yeniden başlatılmasın.
+                int pingAt = Environment.TickCount;
+                if (PingWithTimeout(ipc, PingTimeoutMs))
+                {
+                    if (unanswered) Slider.Log("tiling nöbetçisi: tiling yeniden yanıt veriyor (" + (Environment.TickCount - unansweredSince) / 1000 + " sn sonra)");
+                    unanswered = false;
+                    continue;
+                }
+                if (!unanswered) { unanswered = true; unansweredSince = pingAt; }
                 bool busy = false;
                 try { wm.Refresh(); busy = WmBusy(cpuBefore, wm.TotalProcessorTime); } catch { }
-                // (sonsuz döngüde dönen bir pencere yöneticisi de meşgul görünür: ~5 dakika sürerse donmuş sayılır)
-                if (busy && ++spin < 20) { Slider.Log("tiling nöbetçisi: tiling yanıt vermedi ama çalışıyor (meşgul); beklendi"); continue; }
-                if (busy) { spin = 0; hung = HungLimit(true); }
-                int limit = HungLimit(WidgetWindows.Busy());
-                if (++hung < limit) { Slider.Log("tiling nöbetçisi: tiling yanıt vermedi (" + hung + "/" + limit + ")"); continue; }
-                hung = 0;
+                int waited = Environment.TickCount - unansweredSince, limit = HungLimitMs(WidgetWindows.Busy());
+                if (waited < limit)
+                {
+                    Slider.Log("tiling nöbetçisi: tiling " + waited / 1000 + " sn'dir yanıt vermiyor (" + (busy ? "işlemci kullanıyor" : "işlemci kullanmıyor") + "); sınır " + limit / 1000 + " sn");
+                    continue;
+                }
+                unanswered = false;
                 if (Maint.Quiet()) continue;
-                Slider.Log("tiling nöbetçisi: tiling 15 sn'den uzun yanıt vermedi; kapatılıyor");
+                Slider.Log("tiling nöbetçisi: tiling " + waited / 1000 + " sn yanıt vermedi (" + (busy ? "işlemci kullanıyor" : "işlemci kullanmıyor") + "); döküm alınıp kapatılıyor");
+                string dump = WmDump.Write(wm);
+                if (dump != null) Slider.Log("tiling nöbetçisi: döküm: " + dump);
                 try { wm.Kill(); wm.WaitForExit(5000); } catch { }
                 // Bir sonraki turda çıkış kodu 0 olmadığı için masaüstü yeniden başlatılır
             }
@@ -6961,8 +6978,11 @@ static class TilingWatchdog
         return before > TimeSpan.Zero && (after - before).TotalMilliseconds >= 50;
     }
 
-    // Üst üste kaç yanıtsız yoklama donma sayılır: oyun / tam ekran sunum sürerken iki katı
-    internal static int HungLimit(bool gameRunning) { return gameRunning ? 6 : 3; }
+    // Yanıtsız geçen ne kadar süre donma sayılır (meşgul olsun olmasın): oyun / tam ekran sunum sürerken iki katı
+    internal static int HungLimitMs(bool gameRunning) { return gameRunning ? 30000 : 15000; }
+
+    // Tek yoklamanın bekleme süresi: sağlıklı pencere yöneticisi milisaniyelerde yanıtlar
+    const int PingTimeoutMs = 4000;
 
     // Monitor ile bekler: çekirdek nesnesi yok (her çağrıda bir olay nesnesi çöp toplayıcıya kalıyordu; kapatmak da olmazdı,
     // geç cevap veren iş parçacığı kapanmış nesneye yazar)
