@@ -33,7 +33,8 @@ const FILES: [(&str, &str, &str); 4] = [
   ("shell", "shell.log", "description"),
   ("tiling", "tiling.log", "view_quilt"),
 ];
-const KINDS: [(&str, &str, &str); 5] = [("hata", "Hata", "Bug"), ("cokme", "Çökme", "Crash"), ("performans", "Performans", "Performance"), ("istek", "İstek", "Request"), ("oneri", "Öneri", "Suggestion")];
+/// (kind, label: Turkish source text, translated when drawn)
+const KINDS: [(&str, &str); 5] = [("hata", "Hata"), ("cokme", "Çökme"), ("performans", "Performans"), ("istek", "İstek"), ("oneri", "Öneri")];
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum BugHit {
@@ -89,7 +90,6 @@ enum Phase {
 }
 
 pub(super) struct Bug {
-  english: bool,
   kind: &'static str,
   files: Vec<Phase>,
   selected: Vec<bool>,
@@ -102,14 +102,6 @@ pub(super) struct Bug {
 }
 
 impl Bug {
-  fn t(&self, tr: &'static str, en: &'static str) -> &'static str {
-    if self.english {
-      en
-    } else {
-      tr
-    }
-  }
-
   fn loading(&self) -> bool {
     self.files.iter().zip(&self.selected).any(|(f, s)| *s && matches!(f, Phase::Loading))
   }
@@ -155,13 +147,12 @@ fn to_iso(s: &str) -> Option<String> {
   Some(format!("{:04}-{:02}-{:02}T{:02}:{:02}:00.000Z", utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute))
 }
 
-pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> anyhow::Result<()> {
+pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, m: &Model, panel: Rect) -> anyhow::Result<()> {
   // `.bug-overlay`: the panel dimmed, the dialog over it
   cx.round(panel, 19.0, Rgba(7, 6, 10, 0.76))?;
   cx.hit(panel, Hit::Bug(BugHit::Close));
   let Some(b) = sb.bug.as_ref() else { return Ok(()) };
-  let english = b.english;
-  let t = |tr: &'static str, en: &'static str| if english { en } else { tr };
+  let tr = |s: &str| m.tr(s);
   let d = Rect::new(panel.x + 12.0, panel.y + 12.0, panel.w - 24.0, panel.h - 24.0);
   cx.shadow(d, 24.0, 1.2)?;
   cx.round(d, 24.0, cx.t.layer0)?;
@@ -172,9 +163,9 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   let hi = Rect::new(d.x + 16.0, d.y + 16.0, 40.0, 40.0);
   cx.round(hi, 14.0, cx.t.primary_container)?;
   cx.icon("bug_report", hi.x + 20.0, hi.y + 20.0, 22.0, false, cx.t.on_primary_container)?;
-  cx.text(t("Hata bildirimi", "Issue report"), Rect::new(hi.right() + 12.0, d.y + 16.0, d.w - 130.0, 22.0), stw(17.0, 650.0), cx.t.on_layer1)?;
+  cx.text(&tr("Hata bildirimi"), Rect::new(hi.right() + 12.0, d.y + 16.0, d.w - 130.0, 22.0), stw(17.0, 650.0), cx.t.on_layer1)?;
   cx.text(
-    t("Ne oldu? İlgili günlükleri ekleyerek anlat.", "Describe what happened and attach the relevant logs."),
+    &tr("Ne oldu? İlgili günlükleri ekleyerek anlat."),
     Rect::new(hi.right() + 12.0, d.y + 38.0, d.w - 130.0, 16.0),
     st(11.0),
     cx.t.on_surface_variant,
@@ -187,15 +178,16 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   if b.sent {
     let cy = head_b + 35.0;
     cx.icon("check_circle", d.x + d.w / 2.0, cy + 21.0, 42.0, false, Rgba::hex(0x81d69e))?;
-    cx.text_center(t("Rapor gönderildi", "Report sent"), Rect::new(d.x, cy + 50.0, d.w, 24.0), stw(17.0, 600.0), cx.t.on_layer1)?;
+    cx.text_center(&tr("Rapor gönderildi"), Rect::new(d.x, cy + 50.0, d.w, 24.0), stw(17.0, 600.0), cx.t.on_layer1)?;
     cx.text_center(
-      t("Seçtiğin ekler rapora eklendi.", "The selected attachments were included."),
+      &tr("Seçtiğin ekler rapora eklendi."),
       Rect::new(d.x, cy + 78.0, d.w, 18.0),
       st(12.0),
       cx.t.on_surface_variant,
     )?;
     let btn = Rect::new(d.x + d.w / 2.0 - 70.0, cy + 110.0, 140.0, 42.0);
-    submit_button(cx, btn, t("Kapat", "Close"), None, false, true, Hit::Bug(BugHit::Close))?;
+    // "Tamam": the "Kapat" row is the power menu's "Shut down"
+    submit_button(cx, btn, &tr("Tamam"), None, false, true, Hit::Bug(BugHit::Close))?;
     cx.pop_clip();
     return Ok(());
   }
@@ -206,9 +198,9 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   let w = d.w - 32.0;
   // kinds
   let mut cx_ = x;
-  for (k, tr_, en) in KINDS {
-    let label = if english { en } else { tr_ };
-    let lw = cx.measure(label, st(12.0))?.ceil() + 24.0;
+  for (k, source) in KINDS {
+    let label = tr(source);
+    let lw = cx.measure(&label, st(12.0))?.ceil() + 24.0;
     if cx_ + lw > x + w {
       cx_ = x;
       y += 32.0 + 6.0;
@@ -225,7 +217,7 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
       }
       cx.p.stroke_round(r.inset(0.5, 0.5), 16.0, cx.t.outline_variant, 1.0)?;
     }
-    cx.text_center(label, r, st(12.0), if on { cx.t.on_primary_container } else { cx.t.on_surface_variant })?;
+    cx.text_center(&label, r, st(12.0), if on { cx.t.on_primary_container } else { cx.t.on_surface_variant })?;
     if !b.sending {
       cx.hit(r, hit);
     }
@@ -234,24 +226,24 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   y += 32.0 + 16.0;
   // when
   let half = (w - 10.0) / 2.0;
-  for (i, (id, label)) in [(FieldId::BugStart, t("Başlangıç", "Started")), (FieldId::BugEnd, t("Bitiş", "Ended"))].into_iter().enumerate() {
+  for (i, (id, label)) in [(FieldId::BugStart, tr("Başlangıç")), (FieldId::BugEnd, tr("Bitiş"))].into_iter().enumerate() {
     let fx = x + i as f32 * (half + 10.0);
-    cx.text(label, Rect::new(fx, y, half, 16.0), stw(12.0, 550.0), cx.t.on_surface_variant)?;
+    cx.text(&label, Rect::new(fx, y, half, 16.0), stw(12.0, 550.0), cx.t.on_surface_variant)?;
     let mut f = sb.fields.remove(&id).unwrap_or_else(|| TextField::new(false));
     cx.field_box(Rect::new(fx, y + 22.0, half, 38.0), 12.0, &mut f, id, "2026-01-31 18:30", st(12.0), 11.0, Some(cx.t.layer1))?;
     sb.fields.insert(id, f);
   }
   y += 22.0 + 38.0 + 16.0;
-  cx.text(t("Hatayı açıkla", "Describe the issue"), Rect::new(x, y, w, 16.0), stw(12.0, 550.0), cx.t.on_surface_variant)?;
+  cx.text(&tr("Hatayı açıkla"), Rect::new(x, y, w, 16.0), stw(12.0, 550.0), cx.t.on_surface_variant)?;
   let mut f = sb.fields.remove(&FieldId::BugText).unwrap_or_else(|| TextField::new(true));
-  let ph = t("Ne yapıyordun, ne bekliyordun, ne oldu?", "What were you doing, what did you expect, and what happened?");
+  let ph = tr("Ne yapıyordun, ne bekliyordun, ne oldu?");
   let text_h = ((foot_y - (y + 22.0)) - 16.0 - 24.0 - 4.0 * 48.0 - 20.0 - 60.0).clamp(92.0, 220.0);
-  cx.field_box(Rect::new(x, y + 22.0, w, text_h), 12.0, &mut f, FieldId::BugText, ph, st(12.0), 11.0, Some(cx.t.layer1))?;
+  cx.field_box(Rect::new(x, y + 22.0, w, text_h), 12.0, &mut f, FieldId::BugText, &ph, st(12.0), 11.0, Some(cx.t.layer1))?;
   sb.fields.insert(FieldId::BugText, f);
   y += 22.0 + text_h + 16.0;
   let b = sb.bug.as_ref().unwrap();
-  cx.text(t("Tanı ekleri", "Diagnostic attachments"), Rect::new(x, y, w, 18.0), stw(13.0, 600.0), cx.t.on_layer1)?;
-  cx.text(t("Son günlük kesitleri gönderilir.", "Recent log excerpts are sent."), Rect::new(x, y + 18.0, w, 14.0), st(11.0), cx.t.on_surface_variant)?;
+  cx.text(&tr("Tanı ekleri"), Rect::new(x, y, w, 18.0), stw(13.0, 600.0), cx.t.on_layer1)?;
+  cx.text(&tr("Son günlük kesitleri gönderilir."), Rect::new(x, y + 18.0, w, 14.0), st(11.0), cx.t.on_surface_variant)?;
   y += 38.0;
   for (i, (_, name, icon)) in FILES.iter().enumerate() {
     let r = Rect::new(x, y, w, 44.0);
@@ -267,15 +259,15 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
     let tx = r.x + 34.0 + 19.0 + 8.0;
     cx.text(name, Rect::new(tx, r.y + 6.0, r.w - (tx - r.x) - 90.0, 16.0), stw(12.0, 550.0), cx.t.on_layer1.alpha(a))?;
     let status = match &b.files[i] {
-      Phase::Loading => t("Toplanıyor…", "Collecting…").to_string(),
-      Phase::Error => t("Bulunamadı veya okunamadı", "Missing or unreadable").to_string(),
+      Phase::Loading => tr("Toplanıyor…"),
+      Phase::Error => tr("Bulunamadı veya okunamadı"),
       Phase::Ready(_, bytes) => {
         let state = if b.sent {
-          t("Gönderildi", "Sent").to_string()
+          tr("Gönderildi")
         } else if b.sending && included {
-          format!("{}{}", t("Gönderiliyor", "Uploading"), b.progress.map_or("…".to_string(), |p| format!(" {p}%")))
+          b.progress.map_or_else(|| tr("Gönderiliyor…"), |p| tr(&format!("Gönderiliyor {p}%")))
         } else {
-          t("Hazır", "Ready").to_string()
+          tr("Hazır")
         };
         format!("{} KB · {}", bytes.div_ceil(1024), state)
       }
@@ -285,14 +277,14 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
     match &b.files[i] {
       Phase::Loading if included => cx.spinner(right - 9.0, r.y + 22.0, 18.0, cx.t.primary)?,
       Phase::Error => {
-        let rl = t("Tekrar dene", "Retry");
-        let rw = cx.measure(rl, st(11.0))?.ceil() + 14.0;
+        let rl = tr("Tekrar dene");
+        let rw = cx.measure(&rl, st(11.0))?.ceil() + 14.0;
         let rb = Rect::new(right - rw, r.y + 9.0, rw, 26.0);
         let hit = Hit::Bug(BugHit::Retry(i));
         if cx.hot(&hit) {
           cx.round(rb, 8.0, Rgba(242, 170, 162, 0.12))?;
         }
-        cx.text_center(rl, rb, st(11.0), Rgba::hex(0xf2aaa2))?;
+        cx.text_center(&rl, rb, st(11.0), Rgba::hex(0xf2aaa2))?;
         if !b.sending {
           cx.hit(rb, hit);
         }
@@ -311,7 +303,7 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   }
   // device
   let dev = &b.device;
-  let line1 = dev.as_ref().and_then(|d| d["os"].as_str().map(str::to_string)).unwrap_or_else(|| t("Alınıyor…", "Loading…").to_string());
+  let line1 = dev.as_ref().and_then(|d| d["os"].as_str().map(str::to_string)).unwrap_or_else(|| tr("Alınıyor…"));
   let line2 = dev
     .as_ref()
     .map(|d| ["cpu", "gpu", "ram"].iter().filter_map(|k| d[*k].as_str().filter(|s| !s.is_empty()).map(str::to_string)).collect::<Vec<_>>().join(" · "))
@@ -321,11 +313,11 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   if dr.bottom() < foot_y {
     cx.round(dr, 12.0, cx.t.layer1)?;
     let mut ly = dr.y + 10.0;
-    cx.text(t("Cihaz", "Device"), Rect::new(dr.x + 12.0, ly, dr.w - 24.0, 16.0), stw(12.0, 600.0), cx.t.on_layer1)?;
+    cx.text(&tr("Cihaz"), Rect::new(dr.x + 12.0, ly, dr.w - 24.0, 16.0), stw(12.0, 600.0), cx.t.on_layer1)?;
     ly += 16.0;
     if b.device_error {
       cx.text(
-        t("Cihaz bilgisi okunamadı; rapor yine gönderilebilir.", "Device details unavailable; the report can still be sent."),
+        &tr("Cihaz bilgisi okunamadı; rapor yine gönderilebilir."),
         Rect::new(dr.x + 12.0, ly, dr.w - 24.0, 16.0),
         st(11.0),
         cx.t.on_surface_variant,
@@ -349,7 +341,7 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   // footer
   cx.round(Rect::new(d.x, foot_y, d.w, 1.0), 0.0, cx.c.border0)?;
   cx.p.text_wrapped(
-    t("Seçtiğin günlüklerde pencere adları ve dosya yolları bulunabilir.", "Selected logs may contain window titles and file paths."),
+    &tr("Seçtiğin günlüklerde pencere adları ve dosya yolları bulunabilir."),
     Rect::new(x, foot_y + 12.0, w, 30.0),
     st(10.0),
     cx.t.on_surface_variant,
@@ -357,8 +349,8 @@ pub(super) fn paint(cx: &mut Cx, sb: &mut Sidebar, _m: &Model, panel: Rect) -> a
   )?;
   let btn = Rect::new(x, d.bottom() - 16.0 - 42.0, w, 42.0);
   let enabled = !b.sending && !b.loading();
-  let (label, icon) = if b.sending { (t("Gönderiliyor…", "Sending…"), None) } else { (t("Raporu gönder", "Send report"), Some("send")) };
-  submit_button(cx, btn, label, icon, b.sending, enabled, Hit::Bug(BugHit::Send))?;
+  let (label, icon) = if b.sending { (tr("Gönderiliyor…"), None) } else { (tr("Raporu gönder"), Some("send")) };
+  submit_button(cx, btn, &label, icon, b.sending, enabled, Hit::Bug(BugHit::Send))?;
   cx.pop_clip();
   Ok(())
 }
@@ -388,7 +380,7 @@ fn ev(e: BugEv) {
   send(Msg::Sidebar(Ev::Bug(e)));
 }
 
-fn collect(i: usize, english: bool) {
+fn collect(i: usize) {
   let kind = FILES[i].0;
   std::thread::spawn(move || {
     let out = core_api::run_core_output(&["--bug-report-file", kind]).and_then(|s| serde_json::from_str::<Value>(&s).ok());
@@ -398,7 +390,7 @@ fn collect(i: usize, english: bool) {
         let bytes = v["bytes"].as_u64().map_or(text.len(), |b| b as usize);
         Ok((text, bytes))
       }
-      Some(v) => Err(v["error"].as_str().map(str::to_string).unwrap_or_else(|| if english { "Log could not be read." } else { "Günlük okunamadı." }.to_string())),
+      Some(v) => Err(v["error"].as_str().map(str::to_string).unwrap_or_else(|| "log could not be read".to_string())),
       None => Err(String::new()),
     };
     ev(BugEv::File(i, r));
@@ -516,9 +508,7 @@ impl Ui {
       self.sidebar.focus = Some(FieldId::BugText);
       return;
     }
-    let english = !self.model.locale().to_lowercase().starts_with("tr");
     self.sidebar.bug = Some(Bug {
-      english,
       kind: "hata",
       files: vec![Phase::Loading; FILES.len()],
       selected: vec![true; FILES.len()],
@@ -550,7 +540,7 @@ impl Ui {
       };
       ev(BugEv::File(0, r));
       for i in 1..FILES.len() {
-        collect(i, english);
+        collect(i);
       }
     });
   }
@@ -621,15 +611,15 @@ impl Ui {
       return;
     }
     if text.trim().is_empty() {
-      b.error = b.t("Hatayı kısaca açıklayın.", "Please describe the issue.").into();
+      b.error = self.model.tr("Hatayı kısaca açıklayın.");
       return;
     }
     let (Some(start_iso), end_iso) = (to_iso(&start), to_iso(&end)) else {
-      b.error = b.t("Geçerli bir zaman aralığı seçin.", "Choose a valid time range.").into();
+      b.error = self.model.tr("Geçerli bir zaman aralığı seçin.");
       return;
     };
     if !end.trim().is_empty() && end_iso.as_ref().map_or(true, |e| e < &start_iso) {
-      b.error = b.t("Geçerli bir zaman aralığı seçin.", "Choose a valid time range.").into();
+      b.error = self.model.tr("Geçerli bir zaman aralığı seçin.");
       return;
     }
     if b.loading() {
@@ -637,13 +627,12 @@ impl Ui {
     }
     let missing: Vec<&str> = FILES.iter().enumerate().filter(|(i, _)| b.selected[*i] && matches!(b.files[*i], Phase::Error)).map(|(_, f)| f.1).collect();
     if !missing.is_empty() && !allow_missing {
-      let english = b.english;
-      let t = |tr: &'static str, en: &'static str| if english { en } else { tr };
+      let tr = |s: &str| self.model.tr(s);
       let spec = Spec::new(
         Kind::Warning,
-        t("Bazı günlükler eklenemedi", "Some logs could not be attached"),
-        t("Kırmızı işaretli ekleri yeniden deneyebilir veya raporu onlar olmadan gönderebilirsin.", "Retry the marked attachments or send the report without them."),
-        vec![t("Eksik günlüklerle gönder", "Send without missing logs").to_string(), t("Geri dön", "Go back").to_string()],
+        tr("Bazı günlükler eklenemedi"),
+        tr("Kırmızı işaretli ekleri yeniden deneyebilir veya raporu onlar olmadan gönderebilirsin."),
+        vec![tr("Eksik günlüklerle gönder"), tr("Geri dön")],
       )
       .cancel(1)
       .default_button(1);
@@ -721,7 +710,7 @@ impl Ui {
       BugHit::Retry(i) => {
         if let Some(b) = self.sidebar.bug.as_mut() {
           b.files[i] = Phase::Loading;
-          collect(i, b.english);
+          collect(i);
         }
       }
       BugHit::Send => self.sb_bug_send(false),
