@@ -30,6 +30,12 @@ $MAX_FRAME_LOAD_MS   = 200   # longest frame with every core busy
 # 300-500 ms frames were the core re-raising its layer every fourth frame (fixed: only when something rose over it)
 $MAX_OURS_IDLE_MS    = 40
 $MAX_OURS_LOAD_MS    = 80
+# Super+F (a window's state) freezes the screen on the core's UI thread before the command goes to the window manager:
+# key to command ("donma+komut"). A user's 508 ms was the freeze's border step stuck in DWM (now on its own thread, waited
+# at most 30 ms). Toggled on and off every $STATE_EVERY_SEC s while idle and under load, and over the state churn.
+$STATE_EVERY_SEC     = 12
+$MAX_STATE_IDLE_MS   = 150
+$MAX_STATE_LOAD_MS   = 300
 $MAX_HOOK_SLOW_IDLE  = 0     # "klavye kancası yavaş" (>100 ms in the keyboard hook) lines while idle
 $MAX_HOOK_SLOW_LOAD  = 3     # ... under load (Windows drops a hook after repeated ~300 ms timeouts)
 # growth from the end of warm-up to the end of the run, per part (core, shell, window manager). A one-time
@@ -229,6 +235,7 @@ function Run-Phase([int]$seconds) {
         $script:tick++
         if ($interactive) { [LLStress]::TapShift(); [LLStress]::Nudge($(if ($script:tick % 2) { 3 } else { -3 })) }
         if ($script:tick % $SWITCH_EVERY_SEC -eq 0) { Send-Test 'ws-2'; Start-Sleep -Milliseconds 700; Send-Test 'ws-1' }
+        if ($script:tick % $STATE_EVERY_SEC -eq 3) { Send-Test 'wm toggle-fullscreen'; Start-Sleep -Milliseconds 800; Send-Test 'wm toggle-fullscreen' }
         foreach ($k in @($pids.Keys)) {
             if (-not (Get-Process -Id $pids[$k] -ErrorAction SilentlyContinue)) {
                 Fail "$k (pid $($pids[$k])) ended at $(Get-Date -Format HH:mm:ss)"
@@ -449,6 +456,30 @@ function Share($entries, [string]$what) {
     $m
 }
 $oursIdle = Share $slidesIdle 'bizim payımız en çok'; $oursLoad = Share $slidesLoad 'bizim payımız en çok'
+# Super+F: key to command ("durum değişti: toggle-fullscreen, donma+komut 21 ms"), and the longest freeze with its steps
+# ("donma adımları (ms, birikimli): boyut 0.0 duvar 0.0 kayıt 3.6 kenar 4.8 göster 7.0 flush 16.8 | ...")
+function StateMs($entries) { $m = -1; foreach ($e in $entries) { if ($e.Text -match '^durum değişti: .*donma\+komut (\d+) ms') { $m = [math]::Max($m, [int]$Matches[1]) } }; $m }
+function FreezeWorst($entries) {
+    $worst = '-'; $wt = -1.0
+    foreach ($e in $entries) {
+        if ($e.Text -notmatch '^donma adımları') { continue }
+        $prev = 0.0; $parts = @()
+        foreach ($m in [regex]::Matches(($e.Text -split '\|')[0], '(\p{L}+) (\d+)[.,](\d+)')) {
+            $v = [double]"$($m.Groups[2].Value).$($m.Groups[3].Value)"
+            $parts += "$($m.Groups[1].Value) $([math]::Round($v - $prev, 1))"; $prev = $v
+        }
+        if ($prev -gt $wt) { $wt = $prev; $worst = "$([math]::Round($prev)) ($($parts -join ', '))" }
+    }
+    $worst
+}
+$stateIdle = StateMs (In-Phase $tIdle $tLoad); $stateLoad = StateMs (In-Phase $tLoad $tEnd)
+$freezeIdle = FreezeWorst (In-Phase $tIdle $tLoad); $freezeLoad = FreezeWorst (In-Phase $tLoad $tEnd)
+$stc = $churn | Where-Object { $_.Kind -eq 'state' } | Select-Object -First 1
+$stateChurn = if ($stc) { "Super+F over the state churn: key to command at most $(StateMs (In-Phase $stc.From $stc.To)) ms, longest freeze $(FreezeWorst (In-Phase $stc.From $stc.To)) ms." } else { '' }
+if ($interactive -and $stateIdle -ge 0) {
+    if ($stateIdle -gt $MAX_STATE_IDLE_MS) { Fail "Super+F key to command while idle $stateIdle ms (max $MAX_STATE_IDLE_MS)" }
+    if ($stateLoad -gt $MAX_STATE_LOAD_MS) { Fail "Super+F key to command under load $stateLoad ms (max $MAX_STATE_LOAD_MS)" }
+}
 $dwmIdle = Share $slidesIdle "DWM'in en uzun kompozisyon beklemesi"; $dwmLoad = Share $slidesLoad "DWM'in en uzun kompozisyon beklemesi"
 if ($interactive -and $oursIdle -ge 0) {
     if ($oursIdle -gt $MAX_OURS_IDLE_MS) { Fail "the core's share of a frame while idle $oursIdle ms (max $MAX_OURS_IDLE_MS)" }
@@ -552,6 +583,8 @@ $lines = @(
     "| Core's share of a frame (ms) | $oursIdle | $oursLoad | $MAX_OURS_IDLE_MS / $MAX_OURS_LOAD_MS |",
     "| DWM composing, longest wait (ms) | $dwmIdle | $dwmLoad |  |",
     "| Keyboard hook slow | $hookIdle | $hookLoad | $MAX_HOOK_SLOW_IDLE / $MAX_HOOK_SLOW_LOAD |",
+    "| Super+F key to command (ms) | $stateIdle | $stateLoad | $MAX_STATE_IDLE_MS / $MAX_STATE_LOAD_MS |",
+    "| Longest freeze (ms, steps) | $freezeIdle | $freezeLoad |  |",
     "| Bar heartbeat reports | $($beats.Count) |  |  |",
     "",
     "| Part | Handles | GDI | USER | Private MB | Handles/min (steady) | MB/min (steady) |",
@@ -567,6 +600,8 @@ $lines = @(
 ) + @($churnRows | ForEach-Object { "| $($_.Kind) | $($_.Part) | $($_.Handles) | $($_.PrivateMB) | $($_.Gdi) | $($_.User) | $($_.Threads) | $($_.Windows) |" }) + @(
     "",
     "Limits per 100: $MAX_CHURN_HANDLES_PER_100 handles, $MAX_CHURN_MB_PER_100 MB, $MAX_CHURN_GDI_PER_100 GDI, $MAX_CHURN_USER_PER_100 USER, $MAX_CHURN_THREADS_PER_100 threads, $MAX_CHURN_WINDOWS_PER_100 windows. $churnFrames",
+    "",
+    $stateChurn,
     "",
     "Interactive desktop: $([bool]$interactive)"
 ) + @($skipped | ForEach-Object { "- skipped: $_" }) + @($failures | ForEach-Object { "- **failed:** $_" })
