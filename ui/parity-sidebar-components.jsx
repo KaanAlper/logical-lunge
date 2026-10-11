@@ -128,7 +128,8 @@ export function IssueReport({ helper, load, save, host, onSending }) {
       }
       if (JSON.stringify(load('ll.bug.draft', draft)) === submitted) save('ll.bug.draft', null);
       if (alive.current) { setSent(true); setProgress(queued ? 'Sunucuya şu an ulaşılamıyor. Rapor bu bilgisayarda saklandı; bağlantı gelince kendiliğinden gönderilecek.' : 'Rapor gönderildi'); }
-    } catch (e) { if (alive.current) { setError(`Gönderilemedi: ${e.message}`); setProgress(''); } }
+    // one line: the translated pattern ("Gönderilemedi: $1", i18n.src.js) matches a single line only
+    } catch (e) { if (alive.current) { setError(`Gönderilemedi: ${String(e.message).replace(/\s+/g, ' ').trim()}`); setProgress(''); } }
     finally { onSending?.(false); if (alive.current) setSending(false); }
   };
   const select = (kind, checked) => stage({ selected: { ...draft.selected, [kind]: checked } });
