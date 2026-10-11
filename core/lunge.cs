@@ -476,10 +476,11 @@ class RingLayer : Form
     {
         bool own = Thread.CurrentThread.ManagedThreadId == ownerThread;
         Native.SetWindowPos(Hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0400 | (own ? 0u : 0x4000u)); // animasyon katmanının üstüne
-        Cloak(false);
+        if (!shown) Cloak(false); // a call into DWM: only when it is cloaked
     }
     public void Conceal() { Cloak(true); }
-    void Cloak(bool on) { int v = on ? 1 : 0; DwmSetWindowAttribute(Hwnd, 13, ref v, 4); }
+    bool shown;
+    void Cloak(bool on) { int v = on ? 1 : 0; DwmSetWindowAttribute(Hwnd, 13, ref v, 4); shown = !on; }
 }
 
 class Overlay : Form
@@ -521,12 +522,19 @@ class Overlay : Form
         // Sonradan açılan en üstteki pencerelerin (kenarlık motoru, shell) üstüne çık. Sahibi olmayan thread'den eşzamansız:
         // UI thread'i başka bir animasyondaysa beklemesin.
         bool own = Thread.CurrentThread.ManagedThreadId == ownerThread;
+        var t = Stopwatch.StartNew();
         Native.SetWindowPos(Hwnd, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0400 | (own ? 0u : 0x4000u)); // TOPMOST, NOSIZE|NOMOVE|NOACTIVATE|NOOWNERZORDER
-        Cloak(false);
+        RaiseMs = t.Elapsed.TotalMilliseconds;
+        if (!shown) Cloak(false); // a call into DWM: only when it is cloaked
         Rings.Reveal(); // kenarlık katmanı en üstte
+        RevealMs = t.Elapsed.TotalMilliseconds;
     }
+    // the last Reveal: its own raise, and all of it (both layers raised, uncloaked when they were cloaked)
+    public double RaiseMs, RevealMs;
+    public bool Shown { get { return shown; } }
     public void Conceal() { Rings.Conceal(); Cloak(true); }
-    void Cloak(bool on) { int v = on ? 1 : 0; DwmSetWindowAttribute(Hwnd, 13, ref v, 4); } // DWMWA_CLOAK
+    bool shown;
+    void Cloak(bool on) { int v = on ? 1 : 0; DwmSetWindowAttribute(Hwnd, 13, ref v, 4); shown = !on; } // DWMWA_CLOAK
     protected override bool ShowWithoutActivation { get { return true; } }
     protected override CreateParams CreateParams
     {
@@ -1402,6 +1410,33 @@ class Slider
     // Ekran klavyesi, sağ panel, bildirimler monitöre "yapışık": workspace kayarken animasyon
     // katmanının altında kalmasınlar, en üstte sabit dursunlar.
     static readonly string[] Pinned = { Names.Osk, Names.Sidebar, Names.Toast, Names.Update, Names.Settings };
+    static readonly uint SelfPid = (uint)Process.GetCurrentProcess().Id;
+
+    // A window of another process above the showing layer, over its area (an app's own fullscreen that the window manager
+    // raised as its workspace's focused window). Only then is the layer raised again during a slide: raising and
+    // uncloaking it every fourth frame anyway took up to 0,5 s a call under load (the slide log's update share).
+    static bool ForeignAbove(Overlay o)
+    {
+        if (!o.Shown) return true;
+        Native.RECT lr;
+        if (!Native.GetWindowRect(o.Hwnd, out lr)) return true;
+        var area = Rectangle.FromLTRB(lr.Left, lr.Top, lr.Right, lr.Bottom);
+        var title = new StringBuilder(64);
+        for (IntPtr h = Native.GetWindow(o.Hwnd, 3); h != IntPtr.Zero; h = Native.GetWindow(h, 3)) // GW_HWNDPREV: the one above
+        {
+            if (h == o.Rings.Hwnd || !Native.IsWindowVisible(h)) continue;
+            uint pid; Native.GetWindowThreadProcessId(h, out pid);
+            if (pid == SelfPid) continue;
+            int cloaked;
+            if (Native.DwmGetWindowAttribute(h, Native.DWMWA_CLOAKED, out cloaked, 4) == 0 && cloaked != 0) continue;
+            title.Length = 0; Native.GetWindowText(h, title, 64);
+            if (Array.IndexOf(Pinned, title.ToString()) >= 0) continue; // the shell's cards and panels belong above the layer
+            Native.RECT r;
+            if (!Native.GetWindowRect(h, out r) || r.Right - r.Left < 40 || r.Bottom - r.Top < 40) continue;
+            if (area.IntersectsWith(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom))) return true;
+        }
+        return false;
+    }
     // PiP gibi her workspace'te sabit duran, en üstte tutulan ve tiling'in yönetmediği pencereler animasyon katmanının
     // altında kalıp geçiş boyunca kayboluyor, sonra "yapıştırılmış resim" gibi geri geliyordu. Canlı önizlemeleri kenarlık
     // katmanının en üstüne, kendi yerlerine konur: katman açıldığı karede görünürler, geçiş boyunca sabit kalırlar.
@@ -2857,6 +2892,7 @@ class Slider
             var fs = new FrameStats();
             int stripShift = 0;
             var noThumbs = new List<Thumb>();
+            int raises = 0; double raiseMax = 0;
             culledCount = 0;
             while (!Interrupt)
             {
@@ -2903,9 +2939,13 @@ class Slider
                 }
                 // An app's own fullscreen on the target workspace is raised to the top by the window manager as
                 // the slide runs (it is its workspace's focused window): it covered the layer and the workspace
-                // appeared without a slide. The layer goes back on top every few frames (counted in the update, so
-                // that the flush time is DwmFlush alone).
-                if (mfFrames % 4 == 1) { overlay.Reveal(); RaisePinned(); }
+                // appeared without a slide. Every few frames the layer goes back on top if something rose over it
+                // (counted in the update, so that the flush time is DwmFlush alone).
+                if (mfFrames % 4 == 1 && ForeignAbove(overlay))
+                {
+                    overlay.Reveal(); RaisePinned();
+                    raises++; raiseMax = Math.Max(raiseMax, overlay.RevealMs);
+                }
                 fs.Updated();
                 Native.DwmFlush();
                 fs.Flushed();
@@ -2913,7 +2953,8 @@ class Slider
                 if (p >= 1.0 && swR == null && sw0.ElapsedMilliseconds > dur0 + 1500) break; // komut takıldı
             }
             long animEnd = clock.ElapsedMilliseconds;
-            Log("slide" + (moveFollow ? "+taşı" : "") + ": " + mfFrames + " kare, en uzun kare " + mfMax + " ms, komut bitti " + cmdDoneAt + " ms, pencere yer değiştirdi " + movedAt + " ms " + fs.Report() + " önizleme=" + Native.LiveThumbs + " gizlenen=" + culledCount);
+            Log("slide" + (moveFollow ? "+taşı" : "") + ": " + mfFrames + " kare, en uzun kare " + mfMax + " ms, komut bitti " + cmdDoneAt + " ms, pencere yer değiştirdi " + movedAt + " ms " + fs.Report() + " önizleme=" + Native.LiveThumbs + " gizlenen=" + culledCount
+                + (raises > 0 ? " öne alma " + raises + " kez, en uzun " + raiseMax.ToString("0.0") + " ms" : ""));
             if (Interrupt && RetargetNext && !moveFollow)
             {
                 // Another switch cut this one short: the picture stays as it is, the next slide starts from it and then
