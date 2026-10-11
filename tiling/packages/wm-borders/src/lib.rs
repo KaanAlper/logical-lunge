@@ -57,7 +57,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EVENT_MAX, EVENT_MIN, EnumWindows, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, RegisterClassExW, WINEVENT_OUTOFCONTEXT,
+    EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_REORDER,
+    EVENT_OBJECT_UNCLOAKED, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, EnumWindows, GetWindowThreadProcessId, IDC_ARROW, LoadCursorW, RegisterClassExW, WINEVENT_OUTOFCONTEXT,
     WINEVENT_SKIPOWNPROCESS, WM_NCDESTROY, WNDCLASSEXW,
 };
 use windows::core::{BOOL, Interface, w};
@@ -447,18 +448,42 @@ pub fn register_border_window_class() -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn set_event_hook() -> HWINEVENTHOOK {
-    unsafe {
-        SetWinEventHook(
-            EVENT_MIN,
-            EVENT_MAX,
-            None,
-            Some(event_hook::process_win_event),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
-        )
-    }
+/// Logical Lunge: the event ranges `event_hook` handles. One hook over every event (`EVENT_MIN..EVENT_MAX`) had
+/// Windows bring each accessibility event of every app (value, state, selection, text changes: Chromium and Electron
+/// apps send thousands a second) into this process, only to be dropped here; under such a storm the borders' thread
+/// kept a core busy.
+const HOOKED_EVENTS: [(u32, u32); 5] = [
+    (EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND),
+    (EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZEEND),
+    // destroy, show, hide, reorder
+    (EVENT_OBJECT_DESTROY, EVENT_OBJECT_REORDER),
+    (EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE),
+    (EVENT_OBJECT_CLOAKED, EVENT_OBJECT_UNCLOAKED),
+];
+
+pub fn set_event_hook() -> Vec<HWINEVENTHOOK> {
+    HOOKED_EVENTS
+        .iter()
+        .filter_map(|&(min, max)| {
+            let hook = unsafe {
+                SetWinEventHook(
+                    min,
+                    max,
+                    None,
+                    Some(event_hook::process_win_event),
+                    0,
+                    0,
+                    WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                )
+            };
+            if hook.is_invalid() {
+                error!("could not set the window event hook {min:#x}..{max:#x}");
+                None
+            } else {
+                Some(hook)
+            }
+        })
+        .collect()
 }
 
 pub fn create_borders_for_existing_windows() -> WindowsCompatibleResult<()> {
@@ -816,7 +841,7 @@ fn start_impl(config_yaml: String) {
                 .context("could not disable ime")
                 .log_if_err();
 
-            let hook = set_event_hook();
+            let hooks = set_event_hook();
             register_border_window_class().log_if_err();
             ENGINE_READY.store(true, Ordering::Release);
             create_borders_for_existing_windows().log_if_err();
@@ -831,7 +856,9 @@ fn start_impl(config_yaml: String) {
                     let _ = TranslateMessage(&message);
                     DispatchMessageW(&message);
                 }
-                let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook);
+                for hook in hooks {
+                    let _ = windows::Win32::UI::Accessibility::UnhookWinEvent(hook);
+                }
             }
 
             ENGINE_READY.store(false, Ordering::Release);
