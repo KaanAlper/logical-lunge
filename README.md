@@ -82,6 +82,8 @@ A Windows desktop environment with tiling window management, a bar, side panels,
 - **Dock** (Super + Alt): pinned and running apps with magnification; **on-screen keyboard** that never takes focus; **session screen** with lock / sleep / reload desktop / sign out / restart / UEFI-BIOS / shut down.
 - **Screenshot tool** (Print): select a region, then annotate — pen, circle, rectangle, colors — copy or save as. **Ctrl+Print**: the whole monitor under the mouse to the clipboard and `Pictures\Screenshots`.
 - **Clipboard history** (Super+V): text and images, searchable.
+- **Text from screen** (Super+Shift+T): select an area, Windows' own OCR reads it on the device (your interface language first) and the text goes to the clipboard. **Color picker** (Super+Shift+C): a magnifier over a frozen screen on every monitor, arrows move one pixel, a click copies `#rrggbb`. Both are also `/ocr` and `/color` in the Super menu.
+- **Keybind cheatsheet** (Super+/): every shortcut — yours, the window manager's and the defaults — grouped and searchable.
 - **Alt+Tab switcher**: live window previews across all workspaces, most recently used first, drawn natively by the core.
 - **It heals itself**: if the window manager, the bar or the core crashes or hangs, the part is restarted automatically (windows hidden on other workspaces come back first). *Reload desktop* (session screen, right panel, or *Restart Logical Lunge* in the Start menu) restarts everything cleanly.
 - **Updates**: the update card checks GitHub releases, shows download progress, then *Install now* / *Later*. Installing asks for administrator permission first, in front of the desktop, then restarts it.
@@ -160,6 +162,9 @@ Every change is backed up first. If a step fails, or you cancel with Ctrl+C, the
 | `Super + A` / `Super + N` | Right panel |
 | `Print` · `Super + Shift + S` | Screenshot + annotate |
 | `Ctrl + Print` | Whole monitor to clipboard + `Pictures\Screenshots` |
+| `Super + Shift + T` | Copy text from a screen area (Windows' own OCR, on the device) |
+| `Super + Shift + C` | Pick a color from the screen (`#rrggbb` to the clipboard) |
+| `Super + /` | Keybind cheatsheet: every shortcut, searchable |
 | `Ctrl + Shift + Esc` | Task Manager |
 | `Alt + Tab` | Window switcher |
 | `Alt + F4` | Close window |
@@ -265,7 +270,7 @@ Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve
 - **Klavye**: Logical Lunge çalışırken bütün Win tuşu kombinasyonları onundur — Başlat, Arama, bildirim merkezi ve Win+X açılmaz. **Kısayol düzenleyicisi** (sağ panel) değişiklikleri *Kaydet*'e kadar bekletir, çakışan satırları kırmızı gösterir (Kaydet titrer, kart çakışmaları sayar), istediğin uygulamaya kısayol eklemeni (listeden ya da dosyadan) ve her uygulama satırını silmeni sağlar; *Sıfırla* kendi eklediğin uygulamaların da kaldırılıp kaldırılmayacağını sorar.
 - **Çalışırken Windows kabuğunun yerini alır**: görev çubuğu (her monitörde, ekranda yer kaplamadan), bildirim balonları, Snap düzenleri ve sallayınca küçültme, dokunmatik klavye, Pencere Öğeleri / Görev Görünümü / Copilot düğmeleri kaynağında kapatılır; önceki her değer kaydedilir ve masaüstü durunca, çökünce ya da kaldırılınca birebir geri yüklenir. Bar 20 saniye görünmezse, dönene kadar Windows görev çubuğu geri gelir.
 - **Dock** (Super + Alt): sabitlenmiş ve çalışan uygulamalar, büyüme efektiyle; odağı hiç almayan **ekran klavyesi**; kilitle / uyku / masaüstünü yenile / oturumu kapat / yeniden başlat / UEFI-BIOS / kapat içeren **oturum ekranı**.
-- **Ekran alıntısı** (Print), **Ctrl+Print** ile tüm monitör; **pano geçmişi** (Super+V); canlı önizlemeli **Alt+Tab**.
+- **Ekran alıntısı** (Print), **Ctrl+Print** ile tüm monitör; **pano geçmişi** (Super+V); **ekrandan metin** (Super+Shift+T, Windows OCR) ve **renk seçici** (Super+Shift+C); **kısayol listesi** (Super+/); canlı önizlemeli **Alt+Tab**.
 - **Kendini toparlar**: pencere yöneticisi, bar ya da çekirdek çöker veya donarsa o parça kendiliğinden yeniden başlar. **Masaüstünü yenile** her şeyi temiz baştan başlatır.
 - **Güncellemeler**: güncelleme kartı GitHub sürümlerine bakar, indirme ilerlemesini gösterir; kurarken yönetici iznini en başta, masaüstünün önünde ister.
 - **Animasyonlar**, **dokunmatik yüzey hareketleri**, **terminal** (WezTerm + fish + starship) ve **doğrudan masaüstüne açılış**.
