@@ -4,7 +4,7 @@
 # Everything), waits for its desktop (core, window manager, shell), then makes the window manager hang: it is suspended,
 # so it answers nothing and the core's watchdog sees a hung window manager and restarts it, as on a user's PC on
 # 2026-10-12, where the uninstall then failed at "Closing the core". The uninstall runs right then (uninstall.ps1 with
-# -KeepConfig, as the uninstall window runs it, its steps in a work folder). It must report "done", leave no process
+# -KeepConfig, as the uninstall window runs it, its steps in a work folder). It must report "done" (or "partial": only Explorer's live refresh unconfirmed), leave no process
 # running from the install folder (nothing may come back afterwards either) and remove the folder.
 #
 #   powershell tools/ci/uninstall-test.ps1 -Package <folder with app\lunge.exe and installer\setup.ps1>
@@ -122,7 +122,10 @@ $text = [IO.File]::ReadAllText($steps)
 Note "uninstall exit $($proc.ExitCode) after $seconds s; steps:"
 $text -split "`r?`n" | Where-Object { $_ } | ForEach-Object { Note "  | $_" }
 $result = ($text -split "`r?`n" | Where-Object { $_ -like 'result *' } | Select-Object -Last 1)
-if ($result -ne 'result done') { Fail "the uninstall reported '$result', not 'result done'" }
+# "partial": everything was removed but Explorer's live refresh (desktop icons, taskbar) did not confirm; a runner's
+# desktop has no folder view for it (seen 2026-10-12). This test is about stopping the desktop, so that is only noted.
+if ($result -eq 'result partial') { Note "NOTE: the uninstall reported 'partial' (Explorer's live refresh did not confirm on this runner)" }
+elseif ($result -ne 'result done') { Fail "the uninstall reported '$result', not 'result done'" }
 
 # ------------------------------------------------------------------ nothing left, nothing comes back
 $left = Ours
