@@ -664,6 +664,7 @@ static class CoreRegression
         FocusDirectionTests();
         BorderLookTests();
         WmWatchdogTests();
+        WmPortTests();
         FullscreenLayerTests();
         DialogTests();
         LauncherTests();
@@ -961,6 +962,34 @@ static class CoreRegression
         a = new object[] { -0.3, 1 };
         Check((double)locked.Invoke(null, a) == 0, "A locked swipe crossed to the other side");
         Console.WriteLine("PASS: touchpad swipe release decision and direction lock");
+    }
+
+    // Pencere yöneticisinin portunu tutan: dinleyen satır bulunur (TIME_WAIT satırları tabloda yok), yalnızca kendi
+    // kurulumumuzun eski lunge-tiling'i kapatılır; yanıt vermeyen pencere yöneticisi arayüz thread'ini bekletmez.
+    static void WmPortTests() {
+        Func<int, int, int, byte[]> row = (state, port, pid) => {
+            var r = new byte[24];
+            BitConverter.GetBytes(state).CopyTo(r, 0);
+            BitConverter.GetBytes(0x0100007F).CopyTo(r, 4);
+            r[8] = (byte)(port >> 8); r[9] = (byte)(port & 0xFF);
+            BitConverter.GetBytes(pid).CopyTo(r, 20);
+            return r;
+        };
+        var table = new List<byte>(BitConverter.GetBytes(2));
+        table.AddRange(row(2, 6124, 111));
+        table.AddRange(row(2, 6123, 4242));
+        Check(PortOwner.FindListener(table.ToArray(), 6123) == 4242, "The IPC port's listener was not found in the TCP table");
+        Check(PortOwner.FindListener(table.ToArray(), 6125) == 0, "A port nobody listens on was reported as held");
+        Check(PortOwner.FindListener(new byte[] { 5, 0, 0, 0 }, 6123) == 0, "A truncated TCP table was read past its end");
+        string own = @"C:\Users\u\AppData\Local\LogicalLunge\lunge-tiling.exe";
+        Check(PortOwner.Classify(0, null, own, 0) == PortOwner.Holder.Free, "No listener must mean a free port");
+        Check(PortOwner.Classify(7, own.ToUpperInvariant(), own, 120) == PortOwner.Holder.OwnStale, "Our old window manager holding the port was not recognized");
+        Check(PortOwner.Classify(7, own, own, 3) == PortOwner.Holder.Starting, "A window manager that just started was treated as stale");
+        Check(PortOwner.Classify(7, @"C:\Games\lunge-tiling.exe", own, 120) == PortOwner.Holder.Foreign, "A same-named exe outside our install was treated as ours");
+        Check(PortOwner.Classify(7, null, own, 120) == PortOwner.Holder.Foreign, "An unknown owner was treated as ours");
+        Check(TilingClient.SkipsWait(true, true) && !TilingClient.SkipsWait(false, true) && !TilingClient.SkipsWait(true, false),
+            "Only the UI thread may skip the wait while the window manager is down");
+        Console.WriteLine("PASS: window manager port owner and UI thread fast-fail");
     }
 
     static void SlideRetargetTests() {
