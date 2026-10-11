@@ -53,6 +53,7 @@ static class Program
 
         var acts = sched.Result.ThreadActivity;
         var slices = sched.Result.CpuTimeSlices;
+        int cores = slices.Count == 0 ? 1 : slices.Max(x => x.Processor) + 1;
         var ours = new List<ICpuThreadActivity>();
         foreach (var a in acts)
         {
@@ -64,8 +65,8 @@ static class Program
             string stack = Frames(a.SwitchIn.Stack, 60);
             // waits inside dwmapi (DwmFlush, thumbnail calls) or in win32u calls that DWM answers; a timer wait readied from a DPC
             // that happened to interrupt dwm.exe is not one of them
-            bool dwmWait = stack.IndexOf("dwmapi", StringComparison.OrdinalIgnoreCase) >= 0
-                || stack.IndexOf("NtDwm", StringComparison.OrdinalIgnoreCase) >= 0 || stack.IndexOf("dcomp", StringComparison.OrdinalIgnoreCase) >= 0;
+            // a frame's wait: DwmFlush (or another dwmapi call) on the stack; "dcomp" alone also matched GetQueuedCompletionStatus
+            bool dwmWait = stack.IndexOf("dwmapi.dll", StringComparison.OrdinalIgnoreCase) >= 0 || stack.IndexOf("DwmFlush", StringComparison.Ordinal) >= 0;
             if (dwmWait) ours.Add(a);
         }
         Console.WriteLine("lunge.exe: DWM'i bekleyen " + ours.Count + " uzun bekleme (>= " + minWait + " ms)");
@@ -95,9 +96,23 @@ static class Program
                 cpu[key] = (cpu.TryGetValue(key, out var v) ? v : 0) + o;
             }
             sb.AppendLine("   aralıkta işlemci (ms): " + string.Join(" · ", cpu.OrderByDescending(kv => kv.Value).Take(8).Select(kv => kv.Key + " " + kv.Value.ToString("0"))));
+            // did the machine run at all? capacity = processors x interval; a whole-VM stall (vCPU steal) leaves it mostly unused
+            double busy = cpu.Where(kv => kv.Key != "Idle").Sum(kv => kv.Value);
+            sb.AppendFormat("   işlemci kullanımı: {0:0} / {1:0} ms ({2} işlemci); boşta {3:0} ms", busy, cores * (end - start), cores, cores * (end - start) - busy);
+            sb.AppendLine();
             // dwm.exe threads: their own waits and ready (starved) time inside the interval
             var dwm = acts.Where(x => string.Equals(x.SwitchIn.Process?.ImageName, "dwm.exe", StringComparison.OrdinalIgnoreCase)
                 && T(x.SwitchIn.ContextSwitch.Timestamp) > start && T(x.SwitchIn.ContextSwitch.Timestamp) <= end + 50).ToList();
+            var dwmCpu = new Dictionary<int, double>();
+            foreach (var s2 in slices)
+            {
+                if (!string.Equals(s2.Process?.ImageName, "dwm.exe", StringComparison.OrdinalIgnoreCase)) continue;
+                double a0 = T(s2.StartTime), a1 = T(s2.StopTime);
+                if (a1 <= start || a0 >= end) continue;
+                int tid = s2.Thread?.Id ?? 0;
+                dwmCpu[tid] = (dwmCpu.TryGetValue(tid, out var dv) ? dv : 0) + Math.Min(a1, end) - Math.Max(a0, start);
+            }
+            sb.AppendLine("   dwm.exe thread işlemcisi (ms): " + string.Join(" · ", dwmCpu.OrderByDescending(kv => kv.Value).Take(6).Select(kv => kv.Key + " " + kv.Value.ToString("0.0"))));
             double readySum = 0, readyMax = 0;
             foreach (var x in dwm) { double r = D(x.ReadyDuration); readySum += r; readyMax = Math.Max(readyMax, r); }
             sb.AppendFormat("   dwm.exe: {0} çalışmaya geçiş, hazır-bekleme toplam {1:0.0} ms, en uzun {2:0.0} ms", dwm.Count, readySum, readyMax);
