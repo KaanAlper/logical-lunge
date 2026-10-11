@@ -243,7 +243,7 @@ function Log-Since([string]$path, [long]$start) {
 # the window manager's own notes on the storm (stall watch, correction budget)
 foreach ($l in (Log-Since $tilingLogPath $tilingLogStart)) {
     if ($l -match 'panicked') { Fail "window manager: $l" }
-    elseif ($l -match 'busy for|Slow step|event storm|keeps moving itself|can''t take its tile|bigger than its tile') { Note "tiling.log: $l" }
+    elseif ($l -match 'busy for|was busy|Slow step|event storm|keeps moving itself|can''t take its tile|bigger than its tile') { Note "tiling.log: $l" }
 }
 foreach ($l in (Log-Since $coreLogPath $coreLogStart)) {
     if ($l -match 'tiling nöbetçisi: .*(yanıt vermi|yanıt vermedi|beklenmedik)') { Fail "core watchdog: $l" }
