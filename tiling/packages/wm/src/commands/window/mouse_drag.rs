@@ -296,7 +296,11 @@ pub fn end_mouse_drag(
     return Ok(());
   }
 
-  if let Ok(frame) = window.native().frame() {
+  // `native()` borrows the window: read the frame in its own statement so
+  // the borrow ends before `update_native_properties` borrows it mutably
+  // (an `if let` keeps it for the whole block: "RefCell already borrowed")
+  let frame = window.native().frame();
+  if let Ok(frame) = frame {
     window.update_native_properties(|properties| {
       properties.frame = frame;
     });
