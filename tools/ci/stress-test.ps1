@@ -247,7 +247,23 @@ $load = @(1..[Environment]::ProcessorCount | ForEach-Object {
     Start-Process pwsh -ArgumentList '-NoProfile', '-Command', 'while ($true) { }' -WindowStyle Hidden -PassThru })
 $hogScript = "`$l = New-Object System.Collections.Generic.List[byte[]]; for (`$i = 0; `$i -lt [int]($hogMB / 64); `$i++) { `$b = New-Object byte[] (64MB); for (`$j = 0; `$j -lt `$b.Length; `$j += 4096) { `$b[`$j] = 1 }; `$l.Add(`$b) }; Start-Sleep 100000"
 $load += Start-Process pwsh -ArgumentList '-NoProfile', '-Command', $hogScript -WindowStyle Hidden -PassThru
-try { Run-Phase $LOAD_SEC }
+# LL_STRESS_TRACE=1 (workflow input "trace"): an ETW trace of the first part of the load phase (CPU samples, context
+# switches and ready-thread events with stacks) for tools/ci/trace-analysis, which tells where a long slide frame went
+$TRACE_SEC = 60
+$traceOn = $env:LL_STRESS_TRACE -eq '1'
+$traceEtl = Join-Path ([IO.Path]::GetTempPath()) 'stress-load.etl'
+if ($traceOn) { & wpr -start CPU -filemode | Out-Null; if ($LASTEXITCODE -ne 0) { Note "trace: wpr -start failed ($LASTEXITCODE)"; $traceOn = $false } }
+try
+{
+    if ($traceOn)
+    {
+        Run-Phase $TRACE_SEC
+        & wpr -stop $traceEtl | Out-Null
+        Note "trace: $traceEtl ($([math]::Round((Get-Item $traceEtl).Length / 1MB)) MB), first $TRACE_SEC s of the load phase"
+        Run-Phase ($LOAD_SEC - $TRACE_SEC)
+    }
+    else { Run-Phase $LOAD_SEC }
+}
 finally { $load | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } }
 $tEnd = Get-Date
 Run-Phase 20   # back to calm: anything that broke under load shows up here

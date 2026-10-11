@@ -20,6 +20,10 @@ on:
         description: "Diagnostics instead of the stress checks: trace who makes the window manager's thread pool grow over the window churn"
         type: boolean
         default: false
+      trace:
+        description: "Record an ETW trace of the stress test's load phase and analyse long slide frames (not with trace_threadpool)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -185,6 +189,7 @@ jobs:
         shell: pwsh
         env:
           LL_TRACE_THREADPOOL: ${{ inputs.trace_threadpool && '1' || '' }}
+          LL_STRESS_TRACE: ${{ inputs.trace && '1' || '' }}
         run: ./tools/ci/stress-test.ps1 -Package unpacked
 
       - name: Keep the thread pool trace
@@ -195,6 +200,32 @@ jobs:
           path: threadpool-trace-out
           if-no-files-found: warn
           retention-days: 3
+
+      # trace input only: where the long frames of the load phase went (tools/ci/trace-analysis)
+      - name: Analyse the load trace
+        if: always() && inputs.trace
+        shell: pwsh
+        env:
+          _NT_SYMBOL_PATH: srv*${{ runner.temp }}\symbols*https://msdl.microsoft.com/download/symbols
+        run: |
+          $etl = Join-Path ([IO.Path]::GetTempPath()) 'stress-load.etl'
+          if (-not (Test-Path $etl)) { Write-Host 'no trace'; exit 0 }
+          New-Item -ItemType Directory -Force trace-out | Out-Null
+          Copy-Item $etl trace-out/
+          dotnet run --project tools/ci/trace-analysis -c Release -- $etl 100 8 | Tee-Object trace-out/analysis.txt
+          "### Load trace: long waits of the core on DWM" >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+          Get-Content trace-out/analysis.txt -TotalCount 120 >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Keep the load trace
+        if: always() && inputs.trace
+        uses: actions/upload-artifact@v4
+        with:
+          name: stress-trace-${{ inputs.edition }}
+          path: trace-out
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Keep the logs
         if: failure()
