@@ -12,7 +12,10 @@ use crate::{
       attach_container, detach_container, normalize_split_containers,
       set_focused_descendant,
     },
-    window::{dwindle_split, run_window_rules, DwindlePlacement},
+    window::{
+      center_on_owner, dwindle_split, free_floating_placement,
+      run_window_rules, DwindlePlacement,
+    },
   },
   models::{
     Container, Monitor, NativeWindowProperties, NonTilingWindow,
@@ -204,9 +207,11 @@ fn float_if_unfit_on_manage(
 }
 
 /// Logical Lunge: makes a tiled window that can't take its tile (a minimum
-/// size bigger than it, or an app that keeps its own size) floating, centred
-/// on its workspace at its own size, as Hyprland floats a window it can't
-/// fit. Its neighbours close the gap; the window is never cut in half.
+/// size bigger than it, or an app that keeps its own size) floating at its
+/// own size, as Hyprland floats a window it can't fit: centred on its
+/// workspace when that spot is free, otherwise beside the other floating
+/// windows (see `free_floating_placement`). Its neighbours close the gap;
+/// the window is never cut in half.
 pub fn float_unfit_window(
   window: WindowContainer,
   state: &mut WmState,
@@ -214,14 +219,12 @@ pub fn float_unfit_window(
 ) -> anyhow::Result<WindowContainer> {
   let workspace = window.workspace().context("No workspace.")?;
   let max_workspace_rect = workspace.max_workspace_rect()?;
-  let placement = window
-    .native_properties()
-    .frame
-    .translate_to_center(&workspace.to_rect()?)
-    .clamp_size(
-      max_workspace_rect.width() - 10,
-      max_workspace_rect.height() - 10,
-    );
+  let frame = window.native_properties().frame.clamp_size(
+    max_workspace_rect.width() - 10,
+    max_workspace_rect.height() - 10,
+  );
+  let placement =
+    free_floating_placement(&frame, &workspace, Some(window.id()))?;
   window.set_floating_placement(placement);
 
   let floating = FloatingStateConfig {
@@ -374,6 +377,11 @@ fn create_window(
     WindowState::Floating(floating) if has_rule_state => floating.centered,
     _ => floating_defaults.centered,
   };
+  // a rule that asks for the middle (`set-floating --centered`) gets it
+  let rule_centered = matches!(
+    &rule_state,
+    Some(InvokeCommand::SetFloating { centered: Some(true), .. })
+  );
 
   // Calculate where window should be placed when floating is enabled. Use
   // the original width/height of the window and optionally position it in
@@ -397,20 +405,27 @@ fn create_window(
       _ => native_properties.frame.clone(),
     };
 
-    // a window we may not move is floating where it already is
-    let placement = if controllable && (!is_same_workspace || prefers_centered) {
-      frame.translate_to_center(&workspace_rect)
-    } else {
-      frame
-    };
-
     // Clamp the window size to be within the workspace's outer gaps. 10px
     // is arbitrary - helps differentiate from tiling windows.
     let max_workspace_rect = target_workspace.max_workspace_rect()?;
-    placement.clamp_size(
+    let frame = frame.clamp_size(
       max_workspace_rect.width() - 10,
       max_workspace_rect.height() - 10,
-    )
+    );
+
+    // a window we may not move is floating where it already is
+    if !controllable || (is_same_workspace && !prefers_centered) {
+      frame
+    } else if !matches!(window_state, WindowState::Floating(_)) || rule_centered {
+      frame.translate_to_center(&workspace_rect)
+    } else if let Some(owner) = owner_frame(&native_window, &workspace_rect) {
+      // Logical Lunge: a dialog opens over the window that owns it.
+      center_on_owner(&frame, &owner, &workspace_rect)
+    } else {
+      // Logical Lunge: other floating windows open in the middle only
+      // when that spot is free, so they don't open on top of each other.
+      free_floating_placement(&frame, &target_workspace, None)?
+    }
   };
 
   // Window has no border delta unless it's later changed via the
@@ -462,6 +477,25 @@ fn create_window(
   }
 
   Ok(window_container)
+}
+
+/// Logical Lunge: the frame of the shown window that owns `native_window`
+/// (a dialog's app window), when it is on `workspace_rect`'s screen.
+#[cfg(target_os = "windows")]
+fn owner_frame(native_window: &NativeWindow, workspace_rect: &Rect) -> Option<Rect> {
+  use wm_platform::NativeWindowWindowsExt;
+
+  let owner = native_window.owner_window()?;
+  if !owner.is_visible().unwrap_or(false) {
+    return None;
+  }
+  let frame = owner.frame().ok()?;
+  workspace_rect.contains_point(&frame.center_point()).then_some(frame)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn owner_frame(_: &NativeWindow, _: &Rect) -> Option<Rect> {
+  None
 }
 
 /// Gets the initial state for a window based on its native state.

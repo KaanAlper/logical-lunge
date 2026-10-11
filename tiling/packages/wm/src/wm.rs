@@ -591,6 +591,7 @@ impl WindowManager {
         Ok(window) => {
           let floating_defaults =
             &config.value.window_behavior.state_defaults.floating;
+          let explicitly_centered = *centered == Some(true);
           let centered = centered.unwrap_or(floating_defaults.centered);
 
           let window = update_window_state(
@@ -616,12 +617,15 @@ impl WindowManager {
               )?;
             }
 
+            // Logical Lunge: only `--centered` asks for the middle; the
+            // default keeps it clear of the other floating windows.
             if centered {
-              set_window_position(
-                window,
-                &WindowPositionTarget::Centered,
-                state,
-              )?;
+              let target = if explicitly_centered {
+                WindowPositionTarget::Centered
+              } else {
+                WindowPositionTarget::Free
+              };
+              set_window_position(window, &target, state)?;
             } else if x_pos.is_some() || y_pos.is_some() {
               set_window_position(
                 window,
@@ -745,6 +749,7 @@ impl WindowManager {
           let floating_defaults =
             &config.value.window_behavior.state_defaults.floating;
 
+          let explicitly_centered = *centered == Some(true);
           let centered = centered.unwrap_or(floating_defaults.centered);
           let target_state = WindowState::Floating(FloatingStateConfig {
             centered,
@@ -763,11 +768,14 @@ impl WindowManager {
           let window = update_window_state(window.clone(), next, state, config)?;
 
           if !window.has_custom_floating_placement() && centered {
-            set_window_position(
-              window,
-              &WindowPositionTarget::Centered,
-              state,
-            )?;
+            // Logical Lunge: only `--centered` asks for the middle; the
+            // default keeps it clear of the other floating windows.
+            let target = if explicitly_centered {
+              WindowPositionTarget::Centered
+            } else {
+              WindowPositionTarget::Free
+            };
+            set_window_position(window, &target, state)?;
           }
 
           Ok(())
