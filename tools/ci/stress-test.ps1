@@ -62,6 +62,13 @@ $MAX_CHURN_THREADS_SETTLED = 6    # web-ui's core kept 4 after the quiet pause i
 $MAX_CHURN_FRAME_SLOWDOWN_MS = 40
 $MAX_CHURN_THUMB_GROWTH = 8        # registered DWM thumbnails, last third vs first third of the churn
 
+# Diagnostics instead of the checks (LL_TRACE_THREADPOOL=1, the Build workflow's trace_threadpool input): no idle or
+# load phase, the window churn recorded with Windows Performance Recorder (threadpool-trace\ll-threadpool.wprp), then
+# threadpool-trace\Program.cs names who queued work to the window manager's thread pool and who created its threads.
+# Writes threadpool-trace-out\ (the .etl, summary.txt, details.txt) and exits without judging anything.
+$TRACE_THREADPOOL = $env:LL_TRACE_THREADPOOL -eq '1'
+if ($TRACE_THREADPOOL) { $IDLE_SEC = 0; $LOAD_SEC = 0 }
+
 $failures = New-Object System.Collections.Generic.List[string]
 $skipped = New-Object System.Collections.Generic.List[string]
 function Fail([string]$m) { $failures.Add($m); Write-Host "FAIL: $m" -ForegroundColor Red }
@@ -280,17 +287,47 @@ function Thread-Diff([string]$what, $a, $b) {
         if ($d) { Note "threads ${what}: $k $($d -join ', ')" }
     }
 }
-$threadsBefore = Thread-Snapshot
-$churn = @()
-$churn += Churn 'switch' $CHURN_SWITCHES { param($i) Send-Test "ws-$((($i - 1) % 4) + 1)"; Start-Sleep -Milliseconds 850 }
-Send-Test 'ws-1'; Start-Sleep 1
-$threadsBeforeWindows = Thread-Snapshot
-$churn += Churn 'window' $CHURN_WINDOW_CYCLES {
+# open two windows, close them
+$windowCycle = {
     $w = @(1..2 | ForEach-Object { Start-Process notepad -PassThru })
     Start-Sleep -Milliseconds 700
     $w | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 500
 }
+if ($TRACE_THREADPOOL) {
+    $out = Join-Path (Get-Location) 'threadpool-trace-out'
+    New-Item -ItemType Directory -Force $out | Out-Null
+    $etl = Join-Path $out 'window-churn.etl'
+    $wprp = Join-Path $PSScriptRoot 'threadpool-trace\ll-threadpool.wprp'
+    Send-Test 'ws-1'; Start-Sleep 2
+    $before = Thread-Snapshot
+    & wpr -cancel 2>$null | Out-Null
+    & wpr -start "$wprp!LLThreadPool" -filemode
+    if ($LASTEXITCODE) { throw "wpr -start failed ($LASTEXITCODE)" }
+    $traced = Churn 'window' $CHURN_WINDOW_CYCLES $windowCycle
+    & wpr -stop $etl 'Logical Lunge window churn'
+    if ($LASTEXITCODE) { throw "wpr -stop failed ($LASTEXITCODE)" }
+    Thread-Diff 'over the window churn' $before (Thread-Snapshot)
+    $peak = ($traced.Series | ForEach-Object { $_.Sample['tiling'].Threads } | Measure-Object -Maximum).Maximum
+    Start-Sleep $CHURN_SETTLE_SEC
+    Thread-Diff 'kept after the window churn and the quiet pause' $before (Thread-Snapshot)
+    $settled = Sample
+    Note "window churn: tiling threads $($traced.Series[0].Sample['tiling'].Threads) before, peak $peak, $($settled['tiling'].Threads) after $CHURN_SETTLE_SEC s of quiet"
+    Note "trace: $([math]::Round((Get-Item $etl).Length / 1MB, 1)) MB"
+    try { & $core.FullName --shutdown } catch { }
+    $notepads | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+    $symbols = Join-Path (Get-Location) 'tiling-pdb'
+    dotnet run --project (Join-Path $PSScriptRoot 'threadpool-trace') -c Release -- $etl lunge-tiling $symbols $out
+    if ($LASTEXITCODE) { throw "thread pool trace analysis failed ($LASTEXITCODE)" }
+    if ($Report) { @('## Thread pool trace (window churn)', '', '```') + (Get-Content (Join-Path $out 'summary.txt')) + @('```') | Add-Content -Path $Report -Encoding UTF8 }
+    exit 0
+}
+$threadsBefore = Thread-Snapshot
+$churn = @()
+$churn += Churn 'switch' $CHURN_SWITCHES { param($i) Send-Test "ws-$((($i - 1) % 4) + 1)"; Start-Sleep -Milliseconds 850 }
+Send-Test 'ws-1'; Start-Sleep 1
+$threadsBeforeWindows = Thread-Snapshot
+$churn += Churn 'window' $CHURN_WINDOW_CYCLES $windowCycle
 Thread-Diff 'over the window churn' $threadsBeforeWindows (Thread-Snapshot)
 # overview and sidebar opened and closed in turn
 $churn += Churn 'popup' 60 { param($i)

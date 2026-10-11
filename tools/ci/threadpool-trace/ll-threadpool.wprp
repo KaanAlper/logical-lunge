@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Logical Lunge CI: who makes a process's Windows thread pool grow. Thread and image events (the kernel) with the
+     creating thread's stack on every new thread, and the thread pool's own events (Microsoft-Windows-ThreadPool:
+     a callback queued / started / stopped, a pool created) with the stack of whoever queued the work. -->
+<WindowsPerformanceRecorder Version="1.0" Author="Logical Lunge">
+  <Profiles>
+    <SystemCollector Id="LL.Kernel" Name="NT Kernel Logger">
+      <BufferSize Value="1024" />
+      <Buffers Value="128" />
+    </SystemCollector>
+    <EventCollector Id="LL.Events" Name="LL ThreadPool Events">
+      <BufferSize Value="1024" />
+      <Buffers Value="128" />
+    </EventCollector>
+    <SystemProvider Id="LL.Kernel.Provider">
+      <Keywords>
+        <Keyword Value="ProcessThread" />
+        <Keyword Value="Loader" />
+      </Keywords>
+      <Stacks>
+        <Stack Value="ThreadCreate" />
+      </Stacks>
+    </SystemProvider>
+    <EventProvider Id="LL.ThreadPool" Name="c861d0e2-a2c1-4d36-9f9c-970bab943a12" Level="5" Stack="true" />
+    <Profile Id="LLThreadPool.Verbose.File" Name="LLThreadPool" Description="Logical Lunge thread pool growth" LoggingMode="File" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="LL.Kernel">
+          <SystemProviderId Value="LL.Kernel.Provider" />
+        </SystemCollectorId>
+        <EventCollectorId Value="LL.Events">
+          <EventProviders>
+            <EventProviderId Value="LL.ThreadPool" />
+          </EventProviders>
+        </EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

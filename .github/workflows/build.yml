@@ -16,6 +16,10 @@ on:
         description: "Branch or commit to build (empty: the edition branch)"
         type: string
         default: ""
+      trace_threadpool:
+        description: "Diagnostics instead of the stress checks: trace who makes the window manager's thread pool grow over the window churn"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -86,6 +90,15 @@ jobs:
         env:
           EDITION: ${{ inputs.edition }}
         run: ./build.ps1 -Edition $env:EDITION
+
+      - name: Keep the window manager's symbols (thread pool trace)
+        if: inputs.trace_threadpool
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiling-pdb-${{ inputs.edition }}
+          path: tiling/target/release/*.pdb
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Run the shell's unit tests
         shell: pwsh
@@ -161,9 +174,27 @@ jobs:
           if (-not $zip) { throw 'No package artifact' }
           Expand-Archive $zip.FullName -DestinationPath unpacked -Force
 
+      - name: Fetch the window manager's symbols (thread pool trace)
+        if: inputs.trace_threadpool
+        uses: actions/download-artifact@v4
+        with:
+          name: tiling-pdb-${{ inputs.edition }}
+          path: tiling-pdb
+
       - name: Run the desktop under load
         shell: pwsh
+        env:
+          LL_TRACE_THREADPOOL: ${{ inputs.trace_threadpool && '1' || '' }}
         run: ./tools/ci/stress-test.ps1 -Package unpacked
+
+      - name: Keep the thread pool trace
+        if: inputs.trace_threadpool && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: threadpool-trace-${{ inputs.edition }}
+          path: threadpool-trace-out
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Keep the logs
         if: failure()
