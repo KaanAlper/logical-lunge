@@ -126,6 +126,9 @@ try {
     Assert ($uninstallText.Contains('(Join-Path $Driver ''ready'')') -and $uninstallText.Contains('(Join-Path $Driver ''cancel'')') -and $uninstallText.Contains('Get-Process -Id $Owner')) 'The elevated copy cannot be released or given up'
     $stopAt = $uninstallText.IndexOf('Stop-LLDesktop $APP $STATE $sameUser $sessionId $false'); $goAt = $uninstallText.IndexOf("Join-Path `$Driver 'go'), 'go'")
     Assert ($stopAt -gt 0 -and $goAt -gt $stopAt) 'The user part lets the elevated copy go before the desktop stops'
+    # A part that does not close ends the run before anything is removed, with a result the window offers to retry
+    $busyAt = $uninstallText.IndexOf("Step 'result' 'busy'"); $taskbarAt = $uninstallText.IndexOf("Step 'taskbar' 'run'")
+    Assert ($busyAt -gt 0 -and $busyAt -lt $taskbarAt) 'A failed stop does not end the uninstall before anything is removed'
 
     $nativeRefresh = ${function:Invoke-LLShellRefresh}
 
@@ -295,6 +298,49 @@ try {
     try { Stop-LLDesktop $app $state $true 7 } catch { $refused = $true }
     Assert $refused 'Uninstall was allowed while another session was using this install'
     Assert ($script:events.Count -eq 0) 'Other-session detection happened after desktop changes'
+
+    # Ours by where it runs from, not by name: a new part of ours counts; the terminal, its tools and Everything (own step,
+    # service in session 0) do not
+    Inventory
+    $script:cim += [pscustomobject]@{ Name = 'new-part.exe'; ExecutablePath = (Join-Path $app 'ui\new-part.exe'); ProcessId = 12; SessionId = 7 }
+    $script:cim += [pscustomobject]@{ Name = 'starship.exe'; ExecutablePath = (Join-Path $app 'tools\bin\starship.exe'); ProcessId = 97; SessionId = 7 }
+    $script:cim += [pscustomobject]@{ Name = 'Everything.exe'; ExecutablePath = (Join-Path $app 'tools\everything\Everything.exe'); ProcessId = 96; SessionId = 0 }
+    Assert ((@(Get-LLOwnedProcesses $app | ForEach-Object ProcessId | Sort-Object) -join ',') -eq '10,11,12') 'Owned processes were not decided by their folder'
+
+    # 2026-10-12 (v1.5.2, after the watchdog restarted a hung window manager): the stop failed when a part ended on its
+    # own between the list and its end, and when an ended part was still listed a moment later. Neither is a failure now;
+    # a part a watchdog starts again in between is ended too.
+    $script:linger = @{}
+    function Get-CimInstance { [CmdletBinding()] param($ClassName)
+        if ($ClassName -ne 'Win32_Process') { throw 'Unexpected CIM query' }
+        foreach ($k in @($script:linger.Keys)) { if (--$script:linger[$k] -le 0) { $script:linger.Remove($k); $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne $k }) } }
+        $script:cim
+    }
+    function Stop-Process { [CmdletBinding()] param([int]$Id, [switch]$Force)
+        if (-not @($script:cim | Where-Object { $_.ProcessId -eq $Id }).Count) { Write-Error "Cannot find a process with the process identifier $Id."; return }
+        $script:events.Add("kill:$Id")
+        if ($Id -eq 13) { $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne 10 }) } # the core leaves with its helper
+        if ($Id -eq 11 -and -not $script:restarted) { $script:restarted = $true; $script:cim += [pscustomobject]@{ Name = 'lunge-tiling.exe'; ExecutablePath = (Join-Path $app 'lunge-tiling.exe'); ProcessId = 21; SessionId = 7 } }
+        if ($script:linger.ContainsKey($Id)) { return }
+        $script:cim = @($script:cim | Where-Object { $_.ProcessId -ne $Id })
+    }
+    Inventory; $script:gracefulExit = $false; $script:restarted = $false; $script:linger = @{ 11 = 5 }
+    $script:cim = @(@([pscustomobject]@{ Name = 'lunge.exe'; ExecutablePath = $core; ProcessId = 13; SessionId = 7 }) + $script:cim)
+    $script:events.Clear()
+    Stop-LLDesktop $app $state $true 7
+    $order = $script:events -join ','
+    Assert ($order -match '^--stop-desktop,--restore-banners,--takeover-restore,kill:13,kill:11') "The core and its helpers did not go first: $order"
+    Assert ($order -notmatch 'kill:10') 'A part that had already ended was ended again'
+    Assert ($order -match 'kill:21' -and $order.EndsWith('--uncloak-orphans')) "A restarted part was left running: $order"
+    Assert (-not @(Get-LLOwnedProcesses $app).Count) 'Parts were left running'
+    # A part that does not end: the wait is bounded and the error names it; nothing after the stop runs
+    $script:linger = @{ 11 = 100000 }
+    Inventory; $script:restarted = $true; $script:events.Clear()
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $left = @(Stop-LLOwnedProcesses $app 7 1500)
+    Assert ($watch.ElapsedMilliseconds -lt 10000 -and @($left | ForEach-Object ProcessId) -contains 11) 'The stop of a part that does not end was not bounded'
+    Assert ((Format-LLProcesses $left) -match 'lunge-tiling\.exe \(11\)') 'A part still running was not named'
+    $script:linger = @{}
 
     # Cross-account shutdown must not run any HKCU restore command as the credential administrator.
     function Get-NetTCPConnection { [CmdletBinding()] param($LocalPort, $State); return $null }

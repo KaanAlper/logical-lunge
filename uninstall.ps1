@@ -70,6 +70,16 @@ if (-not $Elevated -and -not $Driver -and -not $KeepConfig -and -not $RemoveConf
     }
 }
 
+# What this run did, for a failed uninstall (the window runs this script hidden): logs\uninstall.log (the elevated part)
+# and logs\uninstall-user.log (the part with the user's rights). The logs folder stays in every case.
+try {
+    $logDir = Join-Path $DATA 'logs'
+    New-Item -ItemType Directory -Path $logDir -Force -ErrorAction Stop | Out-Null
+    $logName = if ($isAdmin) { 'uninstall.log' } else { 'uninstall-user.log' }
+    Start-Transcript -LiteralPath (Join-Path $logDir $logName) -Append -ErrorAction Stop | Out-Null
+}
+catch {}
+
 if (-not $KeepConfig -and -not $RemoveConfig) {
     $tr = (Get-UICulture).Name -like 'tr*'
     # Asked in Logical Lunge's own dialog while its desktop is up; Windows' box only when it is not running
@@ -156,7 +166,18 @@ $installed = if ($backup) { @($backup.installed) } else { @() }
 $keepExtras = $Extras -eq 'keep'
 
 Log '==> Stopping Logical Lunge'
-Stop-LLDesktop $APP $STATE $sameUser $sessionId
+try { Stop-LLDesktop $APP $STATE $sameUser $sessionId }
+catch {
+    # Nothing is removed before every part has closed. The desktop comes back (its watchdogs listen again and the
+    # sign-in task starts whatever is gone) and the window offers to try again.
+    $why = $_.Exception.Message -replace '[\r\n]+', ' '
+    Write-Warning $why
+    Step 'message' $why
+    Remove-Item -LiteralPath (Join-Path $STATE 'maintenance') -Force -ErrorAction SilentlyContinue
+    if ($sameUser) { Start-ScheduledTask -TaskPath '\LogicalLunge\' -TaskName 'Start' -ErrorAction SilentlyContinue }
+    Step 'result' 'busy'
+    exit 3
+}
 Step 'taskbar' 'run'
 # Our video screen saver goes with the app: Windows must not keep pointing at a removed LogicalLunge.scr
 $desk = "$HKU\Control Panel\Desktop"
@@ -261,9 +282,11 @@ Log $(if ($RemoveConfig) { '==> Removing program files and Logical Lunge setting
 Step 'files' 'run'
 # The terminal's configs as they were before the install; kept extras keep the configs they run with
 if (-not $keepExtras) { Restore-LLUserConfigs $UserProfile ([bool]$RemoveConfig) }
-if (Test-Path -LiteralPath $APP) {
-    # The running script's own install directory is checked just like every other target.
-    try { Remove-LLTree $APP $env:ProgramFiles } catch { Write-Warning $_.Exception.Message }
+for ($try = 1; $try -le 3 -and (Test-Path -LiteralPath $APP); $try++) {
+    # The running script's own install directory is checked just like every other target. A part that was ended a moment
+    # ago can hold its files a little longer (or something started from the folder since): ended again, then retried.
+    if ($try -gt 1) { [void](Stop-LLOwnedProcesses $APP $sessionId 5000); Start-Sleep -Seconds 1 }
+    try { Remove-LLTree $APP $env:ProgramFiles } catch { Write-Warning "files (try $try): $($_.Exception.Message)" }
 }
 if (Test-Path $APP) {
     Log "    some files are in use (an open terminal?) and stay in $APP; delete it after signing out"
