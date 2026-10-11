@@ -84,6 +84,10 @@ pub struct WmState {
   /// burst of corrections started and how many it made.
   pub self_resizes: std::collections::HashMap<isize, (Instant, u8)>,
 
+  /// Logical Lunge: how many corrections each window's own moves may still
+  /// get (see `CorrectionBudget`).
+  pub correction_budget: crate::correction_budget::CorrectionBudget,
+
   /// Passive visual windows awaiting their asynchronous move into a managed tile.
   pub transition_moves: std::collections::HashMap<isize, Rect>,
 
@@ -156,6 +160,7 @@ impl WmState {
       fullscreen_marks: std::collections::HashMap::new(),
       hidden_companions: std::collections::HashMap::new(),
       self_resizes: std::collections::HashMap::new(),
+      correction_budget: crate::correction_budget::CorrectionBudget::default(),
       transition_moves: std::collections::HashMap::new(),
       layout_memory: crate::layout_memory::LayoutMemory::default(),
       mouse_drag: None,

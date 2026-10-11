@@ -84,6 +84,57 @@ pub enum WindowEvent {
 }
 
 impl WindowEvent {
+  /// Logical Lunge: the event kinds' names, in [`Self::kind_index`] order
+  /// (for the window manager's event rate log).
+  pub const KIND_NAMES: [&'static str; 9] = [
+    "created",
+    "focused",
+    "hidden",
+    "moved",
+    "minimized",
+    "minimize_ended",
+    "shown",
+    "title",
+    "destroyed",
+  ];
+
+  /// Logical Lunge: the event's kind as an index into [`Self::KIND_NAMES`].
+  #[must_use]
+  pub fn kind_index(&self) -> usize {
+    match self {
+      Self::Created { .. } => 0,
+      Self::Focused { .. } => 1,
+      Self::Hidden { .. } => 2,
+      Self::MovedOrResized { .. } => 3,
+      Self::Minimized { .. } => 4,
+      Self::MinimizeEnded { .. } => 5,
+      Self::Shown { .. } => 6,
+      Self::TitleChanged { .. } => 7,
+      Self::Destroyed { .. } => 8,
+    }
+  }
+
+  /// Logical Lunge: events that only say "this window's position (or
+  /// title) changed, look again" share a key per window and kind: the
+  /// handlers read the window's live state, so of several queued at once
+  /// the last one is enough. The start and end of a drag are events of
+  /// their own and have none.
+  #[must_use]
+  pub fn coalesce_key(&self) -> Option<(usize, WindowId)> {
+    match self {
+      Self::MovedOrResized {
+        window,
+        is_interactive_start: false,
+        is_interactive_end: false,
+        ..
+      }
+      | Self::TitleChanged { window, .. } => {
+        Some((self.kind_index(), window.id()))
+      }
+      _ => None,
+    }
+  }
+
   /// Get the window handle if available (not available for
   /// `WindowEvent::Destroyed`).
   #[must_use]

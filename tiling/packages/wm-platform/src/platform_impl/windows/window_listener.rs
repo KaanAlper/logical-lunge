@@ -183,6 +183,8 @@ impl WindowListener {
       _ => return,
     };
 
+    crate::window_listener::note_received(&event);
+
     // Fails only once the window manager stopped listening (shutting down).
     if let Err(err) = event_tx.send(event) {
       tracing::debug!("Failed to send window event: {}.", err);
