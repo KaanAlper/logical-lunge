@@ -28,7 +28,8 @@ static class Program
         if (args.Length < 4) { Console.Error.WriteLine("usage: ThreadPoolTrace <trace.etl> <process name> <symbol dirs> <out dir>"); return 2; }
         string etl = args[0], name = args[1], outDir = args[3];
         Directory.CreateDirectory(outDir);
-        var etlx = TraceLog.CreateFromEventTraceLogFile(etl, Path.Combine(outDir, "trace.etlx"),
+        // the converted trace is twice the .etl: next to it in the temp folder, not in the uploaded folder
+        var etlx = TraceLog.CreateFromEventTraceLogFile(etl, Path.Combine(Path.GetTempPath(), Path.GetFileNameWithoutExtension(etl) + ".etlx"),
             new TraceLogOptions { ContinueOnError = true, ConversionLog = TextWriter.Null });
         using var log = new TraceLog(etlx);
 
@@ -122,14 +123,16 @@ static class Program
         summary.AppendLine($"thread pool workers: {workers.Count(w => w.AtStart)} at the start, {workers.Count(w => !w.AtStart)} created, {workers.Count(w => !double.IsNaN(w.End))} retired, peak {peak} at {peakAt / 1000:0.0} s, {alive} alive at the end");
 
         var created = threads.Values.Where(t => !t.AtStart).ToList();
-        summary.AppendLine($"new threads: {created.Count}, by start routine:");
+        var lived = created.Where(t => !double.IsNaN(t.End)).Select(t => t.End - t.Start).OrderBy(x => x).ToList();
+        summary.AppendLine($"new threads: {created.Count} ({created.Count / Math.Max(end / 1000, 1):0.0}/s), {lived.Count} ended in the trace" +
+            (lived.Count > 0 ? $" after a median {lived[lived.Count / 2]:0} ms" : "") + "; by start routine:");
         foreach (var g in created.GroupBy(t => At(t.Pid, t.Addr)).OrderByDescending(g => g.Count()))
             summary.AppendLine($"  {g.Count(),5}  {g.Key}");
         Group(details, "new threads by creating stack", created.Select(t => (Key: At(t.Pid, t.Addr), Stack: Frames(t.Stack))), summary, 4);
 
         summary.AppendLine("thread pool events: " + string.Join(", ", pool.GroupBy(p => p.Name).OrderByDescending(g => g.Count()).Select(g => $"{g.Key} {g.Count()}")));
         foreach (var kv in payloadNames) details.AppendLine($"payload of {kv.Key}: {kv.Value}");
-        var queued = pool.Where(p => p.Name.Contains("Enqueue", StringComparison.OrdinalIgnoreCase)).ToList();
+        var queued = pool.Where(p => IsAny(p.Name, "CBEnqueue", "CallbackEnqueue")).ToList();
         Group(details, "callbacks queued, by callback and queuing stack", queued.Select(p => (Key: At(p.Pid, p.Callback), Stack: Frames(p.Stack))), summary, 8);
 
         // how long each callback ran on its worker (start .. stop on the same thread)
@@ -137,8 +140,9 @@ static class Program
         var ran = new Dictionary<string, (int N, double Ms, double Max)>();
         foreach (var p in pool.OrderBy(p => p.At))
         {
-            if (p.Name.Contains("CallbackStart", StringComparison.OrdinalIgnoreCase)) open[(p.Pid, p.Tid)] = p;
-            else if (p.Name.Contains("CallbackStop", StringComparison.OrdinalIgnoreCase) && open.Remove((p.Pid, p.Tid), out var st))
+            // ThreadPool/CBStart and CBStop (CallbackStart/Stop on some builds)
+            if (IsAny(p.Name, "CBStart", "CallbackStart")) open[(p.Pid, p.Tid)] = p;
+            else if (IsAny(p.Name, "CBStop", "CallbackStop") && open.Remove((p.Pid, p.Tid), out var st))
             {
                 string k = At(st.Pid, st.Callback); double ms = p.At - st.At;
                 ran.TryGetValue(k, out var v); ran[k] = (v.N + 1, v.Ms + ms, Math.Max(v.Max, ms));
@@ -189,6 +193,8 @@ static class Program
             i++;
         return fs.Skip(i).ToList();
     }
+
+    static bool IsAny(string name, params string[] parts) => parts.Any(x => name.Contains(x, StringComparison.OrdinalIgnoreCase));
 
     static ulong Field(TraceEvent e, params string[] names)
     {

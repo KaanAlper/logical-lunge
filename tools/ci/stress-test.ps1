@@ -336,6 +336,8 @@ if ($TRACE_THREADPOOL) {
     dotnet run --project (Join-Path $PSScriptRoot 'threadpool-trace') -c Release -- $etl lunge-tiling $symbols $out
     if ($LASTEXITCODE) { throw "thread pool trace analysis failed ($LASTEXITCODE)" }
     if ($Report) { @('## Thread pool trace (window churn)', '', '```') + (Get-Content (Join-Path $out 'summary.txt')) + @('```') | Add-Content -Path $Report -Encoding UTF8 }
+    # the .etl is kept with the summary unless it is too big for a handy artifact
+    if ((Get-Item $etl).Length -gt 400MB) { Remove-Item $etl; Note 'trace: not kept (over 400 MB); summary.txt and details.txt are' }
     exit 0
 }
 $threadsBefore = Thread-Snapshot
