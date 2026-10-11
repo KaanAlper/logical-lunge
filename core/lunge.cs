@@ -1185,6 +1185,7 @@ class Slider
     }
     void RingAdd(Thumb t, bool active)
     {
+        DecorSettle();
         if (t == null || !t.IsWin || ringed.Contains(t) || ringSrc == null) return;
         t.Layer = overlay.Rings;
         // Pasif takım herkese, etkin takım yalnızca odaklıya (odak değişirse RingsFocus o an havuzdan alır)
@@ -1195,7 +1196,7 @@ class Slider
     }
     void RingsAttach(IEnumerable<Thumb> ts, IntPtr focused)
     {
-        RingsClear();
+        RingsClear(); // settles a freeze's ring job first
         if (TestNoRings()) return;
         var windows = new List<Thumb>();
         foreach (var t in ts) if (t != null && t.IsWin) windows.Add(t);
@@ -1215,6 +1216,7 @@ class Slider
     // Odak değişti: etkin/pasif takımı değiştir (eskisi gizlenir, yenisi bir sonraki RingPlace'te yerleşir)
     void RingsFocus(IntPtr focused)
     {
+        DecorSettle();
         // Release old focus sets first, so a gesture never allocates a new set on the visible layer.
         foreach (var t in ringed)
             if (t.Src != focused && t.RingA != null) { ReturnRingSet(t.Layer, t.RingA, true); t.RingA = null; }
@@ -1237,10 +1239,12 @@ class Slider
     static void RingPlace(Thumb t, Native.RECT winRect, byte opacity)
     {
         if (t == null) return;
-        var ids = t.RingActive ? t.RingA : t.RingI;
-        var src = t.RingActive ? ringSrc : ringSrcInactive;
+        RingPlaceSet(t.RingActive ? t.RingA : t.RingI, t.RingActive ? ringSrc : ringSrcInactive, t.FrameIns, winRect, opacity);
+    }
+    static void RingPlaceSet(IntPtr[] ids, RingTemplate src, Native.RECT frameIns, Native.RECT winRect, byte opacity)
+    {
         if (ids == null || src == null) return;
-        var fr = Deflate(winRect, t.FrameIns);
+        var fr = Deflate(winRect, frameIns);
         int bl = src.Bw / 2, br = src.Bw - bl, c = src.C;
         int x0 = fr.Left - bl, y0 = fr.Top - bl, x1 = fr.Right + br, y1 = fr.Bottom + br;
         bool vis = opacity > 0 && x1 - x0 > 2 * c + 1 && y1 - y0 > 2 * c + 1;
@@ -1264,6 +1268,7 @@ class Slider
     }
     void RingsClear()
     {
+        DecorSettle();
         foreach (var t in ringed)
         {
             ReturnRingSet(t.Layer, t.RingA, true);
@@ -1273,6 +1278,171 @@ class Slider
         ringed.Clear();
         TrimRingPools(overlay.Rings);
         FillRingPools(overlay.Rings); // sonraki animasyon için (katman gizliyken)
+    }
+
+    // ---- Dondurmanın kenarlıkları ve sabit pencereleri kendi thread'inde
+    // Kenarlık takımlarını almak, yerleştirmek ve sabit pencerelerin önizlemelerini kaydetmek hep DWM çağrısı. Super+F'te
+    // bunlar UI thread'inde bir kez 497 ms sürdü (kullanıcı günlüğü: "kayıt 1,4 kenar 497,8 göster 499,2"): komut pencere
+    // yöneticisine dondurma bitince gittiği için tuş yarım saniye geç tepki verdi. Artık "slide-decor" thread'inde
+    // yapılıyor: UI thread'i işi en çok DECOR_WAIT_MS bekler (her zamanki 1-5 ms'de biter, kenarlıklar ilk karede olur);
+    // bitmediyse katman onlarsız açılır. Bitmiş iş UI thread'inde devralınır (DecorSettle); geç kalanı bırakılır, thread
+    // bitirince kendi takımlarını havuza döndürür. Animasyon sonundaki geri verme de orada (DecorRelease).
+    const int DECOR_WAIT_MS = 30;
+    internal struct RingSet { public Thumb T; public RingLayer Layer; public IntPtr[] A, I; public bool Active; }
+    internal sealed class Decor
+    {
+        public readonly ManualResetEventSlim Done = new ManualResetEventSlim(false);
+        public readonly object Gate = new object();
+        public bool Finished, Dropped, Taken; // Gate altında
+        public readonly List<RingSet> Rings = new List<RingSet>();
+        public readonly List<IntPtr> Pins = new List<IntPtr>();
+        public string Steps = "";
+        public double Ms;
+        public bool IsDropped { get { lock (Gate) return Dropped; } }
+    }
+    Decor decor; // UI thread: the freeze's job not yet taken over or let go
+    static readonly System.Collections.Concurrent.BlockingCollection<Action> decorQueue = new System.Collections.Concurrent.BlockingCollection<Action>();
+    static Thread decorThread;
+    static void DecorRun(Action a)
+    {
+        if (decorThread == null)
+        {
+            // as urgent as the UI thread it serves (its priority, raised or not)
+            decorThread = new Thread(() =>
+            {
+                foreach (var job in decorQueue.GetConsumingEnumerable())
+                {
+                    try { job(); } catch (Exception ex) { Log("kenarlık işi: " + ex.Message); }
+                }
+            }) { IsBackground = true, Name = "slide-decor", Priority = Thread.CurrentThread.Priority };
+            decorThread.Start();
+        }
+        decorQueue.Add(a);
+    }
+
+    // The previous animation's ring sets and pinned previews, the UI thread letting go of them (they are hidden and
+    // returned on the decor thread)
+    List<RingSet> TakeRinged(out List<IntPtr> pins)
+    {
+        var old = new List<RingSet>();
+        foreach (var t in ringed)
+        {
+            old.Add(new RingSet { T = t, Layer = t.Layer, A = t.RingA, I = t.RingI });
+            t.RingA = t.RingI = null;
+        }
+        ringed.Clear();
+        pins = new List<IntPtr>(pinIds);
+        pinIds.Clear();
+        return old;
+    }
+    static void ReleaseSets(List<RingSet> old, List<IntPtr> pins)
+    {
+        foreach (var rs in old) { ReturnRingSet(rs.Layer, rs.A, true); ReturnRingSet(rs.Layer, rs.I, false); }
+        foreach (var id in pins) Native.DwmUnregisterThumbnail(id);
+    }
+
+    // An animation over: its rings and pinned previews go back on the decor thread (UI thread)
+    void DecorRelease()
+    {
+        DecorSettle();
+        List<IntPtr> pins;
+        var old = TakeRinged(out pins);
+        var layer = overlay.Rings;
+        DecorRun(() =>
+        {
+            ReleaseSets(old, pins);
+            TrimRingPools(layer);
+            FillRingPools(layer); // sonraki animasyon için (katman gizliyken)
+        });
+    }
+
+    // A freeze's rings and pinned windows, started on the decor thread (UI thread). dests: each window's picture on the
+    // layer; hidden: the arriving window (its ring placed invisible, it pops in at Finish).
+    Decor DecorStart(List<KeyValuePair<Thumb, Native.RECT>> dests, IntPtr focused, long hidden, Rectangle monArea, int ox, int oy, IEnumerable<Thumb> animated)
+    {
+        DecorSettle();
+        List<IntPtr> oldPins;
+        var old = TakeRinged(out oldPins);
+        var d = new Decor();
+        var layer = overlay.Rings;
+        var skip = new HashSet<IntPtr>();
+        foreach (var t in animated) if (t != null) skip.Add(t.Src);
+        decor = d;
+        DecorRun(() =>
+        {
+            var sw = Stopwatch.StartNew();
+            double t0 = 0, t1 = 0, t2 = 0, t3 = 0, t4 = 0;
+            try
+            {
+                ReleaseSets(old, oldPins);
+                t0 = sw.Elapsed.TotalMilliseconds;
+                if (!TestNoRings() && ringSrc != null)
+                {
+                    var windows = dests.FindAll(kv => kv.Key != null && kv.Key.IsWin);
+                    layer.RetainI = RingPoolTarget(false, windows.Count);
+                    layer.RetainA = RingPoolTarget(true, 1);
+                    TrimRingPools(layer);
+                    FillRingPools(layer, windows.Count + 1); // includes an arriving window before Reveal; retained pool stays capped
+                    t1 = sw.Elapsed.TotalMilliseconds;
+                    // Pasif takım herkese, etkin takım yalnızca odaklıya (odak değişirse RingsFocus o an havuzdan alır)
+                    foreach (var kv in windows)
+                    {
+                        bool a = kv.Key.Src == focused;
+                        var rs = new RingSet { T = kv.Key, Layer = layer, Active = a, A = a ? TakeRingSet(layer, true) : null, I = ringSrcInactive != null ? TakeRingSet(layer, false) : null };
+                        d.Rings.Add(rs);
+                    }
+                    t2 = sw.Elapsed.TotalMilliseconds;
+                    // let go meanwhile: placing them now would show them a moment on the playing animation
+                    if (!d.IsDropped) foreach (var kv in windows)
+                    {
+                        RingSet rs = d.Rings.Find(x => x.T == kv.Key);
+                        RingPlaceSet(rs.Active ? rs.A : rs.I, rs.Active ? ringSrc : ringSrcInactive, kv.Key.FrameIns, kv.Value, (byte)(kv.Key.Src.ToInt64() == hidden ? 0 : 255));
+                    }
+                }
+                else t1 = t2 = sw.Elapsed.TotalMilliseconds;
+                t3 = sw.Elapsed.TotalMilliseconds;
+                if (!d.IsDropped) PinsRegister(layer.Hwnd, PinsFind(monArea, skip), ox, oy, d.Pins);
+                t4 = sw.Elapsed.TotalMilliseconds;
+            }
+            finally
+            {
+                d.Ms = sw.Elapsed.TotalMilliseconds;
+                d.Steps = string.Format("bırakma {0:0.0} havuz {1:0.0} halka {2:0.0} yerleştirme {3:0.0} sabit {4:0.0} ({5})",
+                    t0, t1 - t0, t2 - t1, t3 - t2, t4 - t3, d.Pins.Count);
+                bool dropped;
+                lock (d.Gate) { d.Finished = true; dropped = d.Dropped; }
+                d.Done.Set();
+                if (dropped)
+                {
+                    // the UI thread went on without them: ours to give back
+                    var mine = new List<RingSet>(d.Rings); var pins = new List<IntPtr>(d.Pins);
+                    d.Rings.Clear(); d.Pins.Clear();
+                    ReleaseSets(mine, pins);
+                    Log("kenarlık işi geç bitti (" + d.Ms.ToString("0.0") + " ms: " + d.Steps + "); o animasyon kenarlıksız oynadı");
+                }
+            }
+        });
+        return d;
+    }
+
+    // The freeze's job: taken over when it is done (its rings and pins become the animation's), let go when it is not
+    // (UI thread; never waits)
+    void DecorSettle()
+    {
+        var d = decor;
+        if (d == null) return;
+        decor = null;
+        lock (d.Gate)
+        {
+            if (!d.Finished) { d.Dropped = true; return; }
+            d.Taken = true;
+        }
+        foreach (var rs in d.Rings)
+        {
+            rs.T.Layer = rs.Layer; rs.T.RingA = rs.A; rs.T.RingI = rs.I; rs.T.RingActive = rs.Active;
+            ringed.Add(rs.T);
+        }
+        pinIds.AddRange(d.Pins);
     }
 
     // Kalabalık bir workspace'te havuz o an kaydedilen takımlarla büyür (pencere başına 8 önizleme) ve geri dönen
@@ -1450,6 +1620,11 @@ class Slider
         var skip = new HashSet<IntPtr>();
         if (animated != null) foreach (var t in animated) if (t != null) skip.Add(t.Src);
         if (hidden != null) foreach (var h in hidden) skip.Add(h);
+        PinsRegister(overlay.Rings.Hwnd, PinsFind(monArea, skip), ox, oy, pinIds);
+    }
+    // The pinned windows over monArea, top first (any thread)
+    static List<KeyValuePair<IntPtr, Native.RECT>> PinsFind(Rectangle monArea, HashSet<IntPtr> skip)
+    {
         var found = new List<KeyValuePair<IntPtr, Native.RECT>>();
         var title = new StringBuilder(64);
         Native.EnumWindows(delegate (IntPtr h, IntPtr l)
@@ -1486,11 +1661,16 @@ class Slider
             found.Add(new KeyValuePair<IntPtr, Native.RECT>(h, r));
             return true;
         }, IntPtr.Zero);
+        return found;
+    }
+    // Their live previews on the border layer dest, in place (any thread)
+    static void PinsRegister(IntPtr dest, List<KeyValuePair<IntPtr, Native.RECT>> found, int ox, int oy, List<IntPtr> into)
+    {
         // EnumWindows üstten alta sıralar: alttakini önce kaydet ki üstteki en üstte kalsın
         for (int i = found.Count - 1; i >= 0; i--)
         {
             IntPtr id;
-            if (Native.DwmRegisterThumbnail(overlay.Rings.Hwnd, found[i].Key, out id) != 0) continue;
+            if (Native.DwmRegisterThumbnail(dest, found[i].Key, out id) != 0) continue;
             var r = found[i].Value;
             var pr = new Native.DWM_THUMBNAIL_PROPERTIES
             {
@@ -1499,11 +1679,12 @@ class Slider
                 fVisible = true, opacity = 255, fSourceClientAreaOnly = false
             };
             Native.DwmUpdateThumbnailProperties(id, ref pr);
-            pinIds.Add(id);
+            into.Add(id);
         }
     }
     void PinsClear()
     {
+        DecorSettle();
         foreach (var id in pinIds) Native.DwmUnregisterThumbnail(id);
         pinIds.Clear();
     }
@@ -1699,6 +1880,8 @@ class Slider
         public int Ox, Oy; public Rectangle Mon; public readonly List<Thumb> All = new List<Thumb>(); public readonly Dictionary<long, Thumb> Win = new Dictionary<long, Thumb>(); public Overlay Ov;
         // the closed window's last picture (CloseShots), shrinking and fading on the border layer above the others
         public IntPtr CloseThumb; public Native.RECT CloseRect; public CloseShots.Shot Close;
+        // the rings and pinned windows, placed on the decor thread
+        public Decor Decor;
     }
 
     // A closed window's picture over a frozen layout (UI thread): it plays in Finish with the windows filling its place
@@ -1839,6 +2022,7 @@ class Slider
         }
     }
 
+    const double SLOW_FREEZE_MS = 50;
     Frozen FreezeCore(Rectangle mon, IEnumerable<long> handles, Dictionary<long, Native.RECT> startScreen, long hidden, bool wholeMonitor)
     {
         DropShown(false);
@@ -1846,6 +2030,8 @@ class Slider
         Interrupt = false;
         Interlocked.Increment(ref Gen);
         var fz = Stopwatch.StartNew();
+        var fzAt = FlushPoint.Now();
+        int fzGc0 = GC.CollectionCount(0), fzGc1 = GC.CollectionCount(1), fzGc2 = GC.CollectionCount(2);
         var fzs = new StringBuilder();
         Action<string> step = n => { fzs.Append(n + " " + fz.Elapsed.TotalMilliseconds.ToString("0.0") + " "); };
         int barH = wholeMonitor ? 0 : BarPx(mon.X + mon.Width / 2, mon.Y + mon.Height / 2);
@@ -1883,19 +2069,27 @@ class Slider
             f.All.Add(t); f.Win[h] = t;
         }
         step("kayıt");
-        RingsAttach(f.Win.Values, FocusedTop()); // kenarlıklar pencerelerin üstünde; katman gizliyken kaydı ucuz
-        step("halka");
-        foreach (var t in f.Win.Values) RingPlace(t, t.Dest, (byte)(t.Src.ToInt64() == hidden ? 0 : 255));
+        // kenarlıklar pencerelerin üstünde (katman gizliyken kaydı ucuz) ve sabit pencereler: kenarlık thread'inde, UI
+        // thread'i en çok DECOR_WAIT_MS bekler (the bar drawn in the scene is no pin)
+        var dests = new List<KeyValuePair<Thumb, Native.RECT>>();
+        foreach (var t in f.Win.Values) dests.Add(new KeyValuePair<Thumb, Native.RECT>(t, t.Dest));
+        f.Decor = DecorStart(dests, FocusedTop(), hidden, new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy, f.All);
+        bool decorDone = f.Decor.Done.Wait(DECOR_WAIT_MS);
+        if (decorDone) DecorSettle();
         step("kenar");
-        PinsAttach(new Rectangle(mon.X, oy, mon.Width, mon.Height - barH), ox, oy, f.All); // the bar drawn in the scene is no pin
-        step("sabit");
         Animating = true;
         overlay.Reveal();
         RaisePinned();
         step("göster");
         Native.DwmFlush();
         step("flush");
-        Log("donma adımları (ms, birikimli): " + fzs);
+        var fzEnd = FlushPoint.Now();
+        string decorNote = decorDone ? "| kenarlık işi " + f.Decor.Ms.ToString("0.0") + " ms: " + f.Decor.Steps
+            : "| kenarlık işi " + DECOR_WAIT_MS + " ms'de bitmedi, katman onsuz açıldı";
+        // a long freeze: whether the UI thread worked (CPU, page faults, a collection) or waited on someone else
+        string why = fz.Elapsed.TotalMilliseconds >= SLOW_FREEZE_MS ? string.Format(" [uzun: {0}; GC {1}/{2}/{3}]", FlushPoint.Explain(fzAt, fzEnd),
+            GC.CollectionCount(0) - fzGc0, GC.CollectionCount(1) - fzGc1, GC.CollectionCount(2) - fzGc2) : "";
+        Log("donma adımları (ms, birikimli): " + fzs + decorNote + why);
         return f;
     }
 
@@ -1936,6 +2130,10 @@ class Slider
     {
         if (f.Ov != null) overlay = f.Ov;
         lock (ShownLock) Shown.Clear(); // the freeze that led here already read them
+        // the freeze's rings: taken over if their job is done by now; if it is still stuck in DWM, this animation plays
+        // without rings (the job gives its sets back when it ends)
+        DecorSettle();
+        bool rings = f.Decor == null || f.Decor.Taken;
         // Yer değiştiren pencereler windows_move eğrisiyle (durationMs), yeni pencere windows_in süresi ve eğrisiyle
         var inSpec = Anims.WindowsIn; var moveCurve = Anims.WindowsMove.Curve;
         var items = new List<Anim>();
@@ -1978,8 +2176,11 @@ class Slider
 
         // Kenarlıklar: yalnızca burada ilk kez görülen pencerelere kayıt (katman açıkken kayıt pahalı); odak değiştiyse renk
         IntPtr focusedNow = FocusedTop();
-        foreach (var a in items) RingAdd(a.T, a.T.Src == focusedNow);
-        RingsFocus(focusedNow);
+        if (rings)
+        {
+            foreach (var a in items) RingAdd(a.T, a.T.Src == focusedNow);
+            RingsFocus(focusedNow);
+        }
 
         var sw = Stopwatch.StartNew();
         var pc = new PresentClock();
@@ -2075,8 +2276,7 @@ class Slider
         foreach (var a in items) if (a.Resizes && a.T != pop) sb.Append(" | içerik " + a.Cx0 + "x" + a.Cy0 + "->" + a.T.Cx + "x" + a.T.Cy + (a.SrcAt >= 0 ? " @" + a.SrcAt + "ms" : " (değişmedi)"));
         Log("anim: " + frames + " kare / " + sw.ElapsedMilliseconds + " ms, en uzun kare " + maxGap + " ms, " + items.Count + " pencere" + sb + (paintWait > 0 ? ", ilk çizim beklendi " + paintWait + " ms" : "") + " " + fs.Report() + " önizleme=" + Native.LiveThumbs);
         overlay.Conceal();
-        RingsClear();
-        PinsClear();
+        DecorRelease(); // rings and pins go back on the decor thread
         foreach (var t in f.All) Unregister(t.Id);
         Animating = false;
     }
