@@ -42,8 +42,9 @@ $MAX_HOOK_SLOW_LOAD  = 3     # ... under load (Windows drops a hook after repeat
 # initialisation after warm-up (e.g. the first WMI query loads its COM plumbing: ~250 handles, ~12 MB once) fits
 # under these; a leak is caught by the steady-growth rate below instead.
 $MAX_HANDLE_GROWTH   = 400
-# steady growth: the median of the 30 s steps between samples, per minute. A single jump moves one step only; a
-# leak moves them all (0.7 handles/s is ~42/min).
+# steady growth over the idle and load phases, per minute, from samples every 30 s by the two estimates the churn uses
+# (the median step and the median pairwise slope; see Rate). A single jump moves one step only; a leak moves them all
+# (0.7 handles/s is ~42/min).
 $SAMPLE_EVERY_SEC    = 30
 $MAX_HANDLE_RATE     = 8     # handles per minute
 $MAX_PRIVATE_MB_RATE = 2     # MB per minute
@@ -225,6 +226,8 @@ function Sample {
 
 # samples every $SAMPLE_EVERY_SEC s from the end of warm-up (steady-growth check)
 $script:series = New-Object System.Collections.Generic.List[object]
+$script:seriesAt = New-Object System.Collections.Generic.List[datetime]
+function Add-Sample($s) { $script:series.Add($s); $script:seriesAt.Add((Get-Date)) }
 $script:sampling = $false
 
 # one second of the run: input through the hooks, a workspace switch now and then, the parts still the same processes
@@ -242,7 +245,7 @@ function Run-Phase([int]$seconds) {
                 $pids.Remove($k)
             }
         }
-        if ($script:sampling -and $script:tick % $SAMPLE_EVERY_SEC -eq 0) { $script:series.Add((Sample)) }
+        if ($script:sampling -and $script:tick % $SAMPLE_EVERY_SEC -eq 0) { Add-Sample (Sample) }
         Start-Sleep -Milliseconds 1000
     }
 }
@@ -250,7 +253,7 @@ function Run-Phase([int]$seconds) {
 $t0 = Get-Date
 Run-Phase $WARMUP_SEC
 $base = Sample
-$script:series.Add($base); $script:sampling = $true
+Add-Sample $base; $script:sampling = $true
 $tIdle = Get-Date
 Run-Phase $IDLE_SEC
 $tLoad = Get-Date
@@ -282,7 +285,7 @@ finally
 $tEnd = Get-Date
 Run-Phase 20   # back to calm: anything that broke under load shows up here
 $final = Sample
-$script:series.Add($final); $script:sampling = $false
+Add-Sample $final; $script:sampling = $false
 
 # ------------------------------------------------------------------ churn
 # Each kind of operation on its own, sampled every $CHURN_SAMPLE_EVERY operations: what a kind leaves behind shows as a
@@ -456,6 +459,11 @@ function Share($entries, [string]$what) {
     $m
 }
 $oursIdle = Share $slidesIdle 'bizim payımız en çok'; $oursLoad = Share $slidesLoad 'bizim payımız en çok'
+# the same split by kind: Super+F's own animations reached 23.6 ms while slides stayed at 8.2 or less
+$kindShare = foreach ($kind in @('slide', 'anim')) {
+    "$kind $(Share @($slidesIdle | Where-Object { $_.Text -match "^$kind" }) 'bizim payımız en çok') / $(Share @($slidesLoad | Where-Object { $_.Text -match "^$kind" }) 'bizim payımız en çok')"
+}
+Note "the core's share of a frame by kind (idle / load ms): $($kindShare -join ', ')"
 # Super+F: key to command ("durum değişti: toggle-fullscreen, donma+komut 21 ms"), and the longest freeze with its steps
 # ("donma adımları (ms, birikimli): boyut 0.0 duvar 0.0 kayıt 3.6 kenar 4.8 göster 7.0 flush 16.8 | ...")
 function StateMs($entries) { $m = -1; foreach ($e in $entries) { if ($e.Text -match '^durum değişti: .*donma\+komut (\d+) ms') { $m = [math]::Max($m, [int]$Matches[1]) } }; $m }
@@ -488,28 +496,6 @@ if ($interactive -and $oursIdle -ge 0) {
 
 # growth
 function Median([double[]]$v) { if (-not $v -or $v.Count -eq 0) { return 0 }; $o = $v | Sort-Object; $n = $o.Count; if ($n % 2) { $o[[int](($n - 1) / 2)] } else { ($o[$n / 2 - 1] + $o[$n / 2]) / 2 } }
-$growth = foreach ($k in @('core', 'shell', 'tiling')) {
-    $a = $base[$k]; $b = $final[$k]
-    if (-not $a -or -not $b) { continue }
-    $g = [pscustomobject]@{ Part = $k; Handles = $b.Handles - $a.Handles; Gdi = $b.Gdi - $a.Gdi; User = $b.User - $a.User; PrivateMB = [math]::Round($b.PrivateMB - $a.PrivateMB, 1) }
-    if ($g.Handles -gt $MAX_HANDLE_GROWTH) { Fail "$k handles grew by $($g.Handles) (max $MAX_HANDLE_GROWTH)" }
-    if ($g.Gdi -gt $MAX_GDI_GROWTH) { Fail "$k GDI objects grew by $($g.Gdi) (max $MAX_GDI_GROWTH)" }
-    if ($g.User -gt $MAX_USER_GROWTH) { Fail "$k USER objects grew by $($g.User) (max $MAX_USER_GROWTH)" }
-    if ($g.PrivateMB -gt $MAX_PRIVATE_MB_GROWTH) { Fail "$k private memory grew by $($g.PrivateMB) MB (max $MAX_PRIVATE_MB_GROWTH)" }
-    # steady growth: median step between consecutive samples, scaled to a minute
-    $steps = @(); $mbSteps = @()
-    for ($i = 1; $i -lt $script:series.Count; $i++) {
-        $p = $script:series[$i - 1][$k]; $q = $script:series[$i][$k]
-        if ($p -and $q) { $steps += ($q.Handles - $p.Handles); $mbSteps += ($q.PrivateMB - $p.PrivateMB) }
-    }
-    $perMin = 60.0 / $SAMPLE_EVERY_SEC
-    $g | Add-Member HandleRate ([math]::Round((Median $steps) * $perMin, 1))
-    $g | Add-Member MBRate ([math]::Round((Median $mbSteps) * $perMin, 2))
-    if ($steps.Count -ge 4 -and $g.HandleRate -gt $MAX_HANDLE_RATE) { Fail "$k handles grow steadily: $($g.HandleRate)/min (max $MAX_HANDLE_RATE)" }
-    if ($mbSteps.Count -ge 4 -and $g.MBRate -gt $MAX_PRIVATE_MB_RATE) { Fail "$k private memory grows steadily: $($g.MBRate) MB/min (max $MAX_PRIVATE_MB_RATE)" }
-    $g
-}
-
 # churn: growth per 100 operations, by two estimates that must both see it: the median step between consecutive
 # samples (a one-time jump moves one step only) and the median slope between all pairs of samples (Theil-Sen; noise
 # from what is in flight when a sample is taken cancels out). A leak grows every step and both see the same slope. A
@@ -522,6 +508,30 @@ function Rate($xs, $ys) {
     $p = @(); for ($i = 0; $i -lt $xs.Count; $i++) { for ($j = $i + 1; $j -lt $xs.Count; $j++) { if ($xs[$j] -gt $xs[$i]) { $p += ($ys[$j] - $ys[$i]) / ($xs[$j] - $xs[$i]) } } }
     [math]::Min((Median $r), (Median $p))
 }
+$growth = foreach ($k in @('core', 'shell', 'tiling')) {
+    $a = $base[$k]; $b = $final[$k]
+    if (-not $a -or -not $b) { continue }
+    $g = [pscustomobject]@{ Part = $k; Handles = $b.Handles - $a.Handles; Gdi = $b.Gdi - $a.Gdi; User = $b.User - $a.User; PrivateMB = [math]::Round($b.PrivateMB - $a.PrivateMB, 1) }
+    if ($g.Handles -gt $MAX_HANDLE_GROWTH) { Fail "$k handles grew by $($g.Handles) (max $MAX_HANDLE_GROWTH)" }
+    if ($g.Gdi -gt $MAX_GDI_GROWTH) { Fail "$k GDI objects grew by $($g.Gdi) (max $MAX_GDI_GROWTH)" }
+    if ($g.User -gt $MAX_USER_GROWTH) { Fail "$k USER objects grew by $($g.User) (max $MAX_USER_GROWTH)" }
+    if ($g.PrivateMB -gt $MAX_PRIVATE_MB_GROWTH) { Fail "$k private memory grew by $($g.PrivateMB) MB (max $MAX_PRIVATE_MB_GROWTH)" }
+    # steady growth per minute over the idle and load phases, by the same two estimates as the churn. The median step
+    # alone followed the sawtooth of the window manager's heap: -4.1, -3.6, -3.4 and +2.2 MB/min in runs whose memory
+    # changed by -3.3, -4.1, -3.1 and +4.2 MB over the whole ~7 minutes, while 320 switches right after added under 3 MB.
+    $at = @(); $hs = @(); $mbs = @()
+    for ($i = 0; $i -lt $script:series.Count; $i++) {
+        $q = $script:series[$i][$k]
+        if ($q) { $at += ($script:seriesAt[$i] - $script:seriesAt[0]).TotalMinutes; $hs += [double]$q.Handles; $mbs += [double]$q.PrivateMB }
+    }
+    Note "samples (min: handles/MB) ${k}: $((0..($at.Count - 1) | ForEach-Object { '{0:0.0}:h{1}/{2}' -f $at[$_], $hs[$_], $mbs[$_] }) -join ' ')"
+    $g | Add-Member HandleRate ([math]::Round((Rate $at $hs), 1))
+    $g | Add-Member MBRate ([math]::Round((Rate $at $mbs), 2))
+    if ($at.Count -ge 5 -and $g.HandleRate -gt $MAX_HANDLE_RATE) { Fail "$k handles grow steadily: $($g.HandleRate)/min (max $MAX_HANDLE_RATE)" }
+    if ($at.Count -ge 5 -and $g.MBRate -gt $MAX_PRIVATE_MB_RATE) { Fail "$k private memory grows steadily: $($g.MBRate) MB/min (max $MAX_PRIVATE_MB_RATE)" }
+    $g
+}
+
 $churnLimits = [ordered]@{ Handles = $MAX_CHURN_HANDLES_PER_100; PrivateMB = $MAX_CHURN_MB_PER_100; Gdi = $MAX_CHURN_GDI_PER_100
     User = $MAX_CHURN_USER_PER_100; Threads = $MAX_CHURN_THREADS_PER_100; Windows = $MAX_CHURN_WINDOWS_PER_100 }
 $churnRows = foreach ($c in $churn) {
