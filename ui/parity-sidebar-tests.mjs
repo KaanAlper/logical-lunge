@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildReport, submitReport, removeLibraryItem, saveUiScale, expandedToggle } from './parity-sidebar.mjs';
+import { buildReport, submitReport, removeLibraryItem, saveUiScale, expandedToggle, ReportUnreachable, ReportRefused, queueAdd, queueApply, queueBackoffMs, flushQueue, startReportQueue, QUEUE_MAX, QUEUE_MAX_BYTES } from './parity-sidebar.mjs';
 
 const draft = { kind: 'performans', start: '2026-10-03T12:30', end: '', message: '  slow  ', selected: { blackbox: true, core: true, shell: false, tiling: true, device: false } };
 const files = { blackbox: { text: 'snapshot' }, core: { text: 'core tail' }, shell: { text: 'private' }, tiling: { error: 'missing' } };
@@ -86,4 +86,48 @@ test('a switch is read again until its source agrees, and fails when it never do
   assert.deepEqual([silent.ok, silent.answered, silent.shown.length], [false, false, 0]);
   const neither = await run([{}]);
   assert.equal(neither.ok, true, 'neither on nor off is not a failure');
+});
+
+test('an unreachable server and a refusal are told apart', async () => {
+  const report = buildReport(draft, files);
+  await assert.rejects(submitReport(report, async () => { throw new TypeError('Failed to fetch'); }), e => e instanceof ReportUnreachable && /ulaşılamadı/.test(e.message));
+  await assert.rejects(submitReport(report, async () => new Response('denied', { status: 403 })), e => e instanceof ReportRefused && e.status === 403 && /HTTP 403/.test(e.message));
+});
+test('the report queue keeps the newest reports within its bounds', () => {
+  let list = [];
+  for (let i = 0; i < QUEUE_MAX + 3; i++) list = queueAdd(list, { description: `r${i}` }, i);
+  assert.equal(list.length, QUEUE_MAX);
+  assert.equal(list[0].id, 3);
+  const big = { description: 'x'.repeat(QUEUE_MAX_BYTES / 2) };
+  list = queueAdd(queueAdd(queueAdd([], big, 1), big, 2), big, 3);
+  assert.deepEqual(list.map(e => e.id), [3]);
+  assert.equal(queueBackoffMs(1), 600000);
+  assert.equal(queueBackoffMs(2), 1200000);
+  assert.equal(queueBackoffMs(9), 3600000);
+});
+test('a flush stops while the server is away and keeps reports queued meanwhile', async () => {
+  const report = buildReport(draft, files);
+  const list = [1, 2, 3].map(id => ({ id, report, size: 1, refused: false }));
+  let calls = 0;
+  const away = await flushQueue(list, async () => { calls++; if (calls === 2) throw new TypeError('offline'); return new Response(null, { status: 201 }); });
+  assert.deepEqual(away, { sent: [1], refused: [], reachable: false });
+  const later = [...list, { id: 4, report, size: 1, refused: false }];
+  assert.deepEqual(queueApply(later, away).map(e => e.id), [2, 3, 4]);
+  const back = await flushQueue(queueApply(later, away), async (url, init) => JSON.parse(init.body).description === 'slow' && calls++ === 2 ? new Response('bad', { status: 400 }) : new Response(null, { status: 201 }));
+  assert.equal(back.reachable, true);
+  assert.equal(back.sent.length + back.refused.length, 3);
+  assert.ok(queueApply(queueApply(later, away), back).every(e => e.refused));
+});
+test('the queue sender starts once and reports what went out', async () => {
+  const report = buildReport(draft, files);
+  let stored = [{ id: 1, report, size: 1, refused: false }];
+  const store = { load: async () => stored, save: async list => { stored = list; } };
+  const timers = [], notified = [];
+  startReportQueue({ store, transport: async () => new Response(null, { status: 201 }), notify: n => notified.push(n), timer: (fn, ms) => timers.push([fn, ms]) });
+  startReportQueue({ store, timer: () => assert.fail('started twice') });
+  assert.equal(timers[0][1], 30000);
+  await timers[0][0]();
+  assert.deepEqual(stored, []);
+  assert.deepEqual(notified, [1]);
+  assert.equal(timers[1][1], 600000);
 });

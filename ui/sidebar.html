@@ -147,10 +147,17 @@
       import * as lunge from 'lunge/shell';
       import { listen, emit } from '@tauri-apps/api/event';
       import { invoke } from '@tauri-apps/api/core';
-      import { expandedToggle, importedSaver, checkSwitch } from '../parity-sidebar.mjs';
+      import { expandedToggle, importedSaver, checkSwitch, startReportQueue } from '../parity-sidebar.mjs';
       import { IssueReport, GalleryMenu } from '../parity-sidebar-components.jsx';
 
       const win = lunge.currentWidget().tauriWindow;
+      // issue reports kept while the server was unreachable go out later; our card says when they did
+      startReportQueue({
+        notify: count => {
+          const q = new URLSearchParams({ kind: 'info', title: 'Bekleyen raporlar gönderildi', body: `Sunucuya ulaşılamazken saklanan ${count} hata raporu gönderildi.` });
+          fetch(`http://127.0.0.1:6131/notify?${q}`, { method: 'POST', cache: 'no-store' }).catch(() => {});
+        },
+      });
       const HELPER = '{{INSTALL_ESC}}\\lunge.exe';
       const LL = '{{INSTALL_ESC}}\\scripts';
       const providers = lunge.createProviderGroup({

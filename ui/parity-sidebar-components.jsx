@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { ContextMenu } from './lib/context-menu.jsx';
-import { REPORT_FILES, REPORT_KINDS, newReportDraft, buildReport, submitReport, removeLibraryItem } from './parity-sidebar.mjs';
+import { REPORT_FILES, REPORT_KINDS, newReportDraft, buildReport, submitReport, removeLibraryItem, ReportUnreachable, queueReport, startReportQueue } from './parity-sidebar.mjs';
 
 const Icon = ({ name }) => <span className="icon">{name}</span>;
 
@@ -118,9 +118,16 @@ export function IssueReport({ helper, load, save, host, onSending }) {
     setMissing(false); setError(''); setSending(true); onSending?.(true);
     const submitted = JSON.stringify(draft);
     try {
-      await submitReport(report, undefined, p => alive.current && setProgress(p));
+      let queued = false;
+      try { await submitReport(report, undefined, p => alive.current && setProgress(p)); }
+      catch (e) {
+        // never lost: an unreachable server keeps the report here, sent later by itself
+        if (!(e instanceof ReportUnreachable)) throw e;
+        try { await queueReport(report); } catch (kept) { throw new Error(`${e.message} (${kept?.message || kept})`); }
+        queued = true;
+      }
       if (JSON.stringify(load('ll.bug.draft', draft)) === submitted) save('ll.bug.draft', null);
-      if (alive.current) { setSent(true); setProgress('Rapor gönderildi'); }
+      if (alive.current) { setSent(true); setProgress(queued ? 'Sunucuya şu an ulaşılamıyor. Rapor bu bilgisayarda saklandı; bağlantı gelince kendiliğinden gönderilecek.' : 'Rapor gönderildi'); }
     } catch (e) { if (alive.current) { setError(`Gönderilemedi: ${e.message}`); setProgress(''); } }
     finally { onSending?.(false); if (alive.current) setSending(false); }
   };
