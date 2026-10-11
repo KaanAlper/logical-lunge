@@ -252,7 +252,7 @@ $load += Start-Process pwsh -ArgumentList '-NoProfile', '-Command', $hogScript -
 $TRACE_SEC = 60
 $traceOn = $env:LL_STRESS_TRACE -eq '1'
 $traceEtl = Join-Path ([IO.Path]::GetTempPath()) 'stress-load.etl'
-if ($traceOn) { & wpr -start CPU -filemode | Out-Null; if ($LASTEXITCODE -ne 0) { Note "trace: wpr -start failed ($LASTEXITCODE)"; $traceOn = $false } }
+if ($traceOn) { & wpr -start CPU -start GeneralProfile -filemode | Out-Null; if ($LASTEXITCODE -ne 0) { Note "trace: wpr -start failed ($LASTEXITCODE)"; $traceOn = $false } }
 try
 {
     if ($traceOn)

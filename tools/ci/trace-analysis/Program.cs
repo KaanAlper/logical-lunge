@@ -109,6 +109,13 @@ static class Program
                     x.SwitchIn.ThreadId, w2, r2, x.SwitchIn.Priority, Name(x.ReadyingProcess), Frames(x.SwitchIn.Stack, 10));
                 sb.AppendLine();
             }
+            // anything that sat runnable without a CPU across the wait (a starved kernel worker can hold a page-in or a
+            // DWM lock): the longest ready delays of all threads inside the interval
+            var starved = acts.Where(x => x.ReadyDuration.HasValue && D(x.ReadyDuration) > 20 && x.SwitchIn.Process != null
+                    && T(x.SwitchIn.ContextSwitch.Timestamp) > start && T(x.SwitchIn.ContextSwitch.Timestamp) - D(x.ReadyDuration) < end)
+                .OrderByDescending(x => D(x.ReadyDuration)).Take(6)
+                .Select(x => Name(x.SwitchIn.Process) + "/" + x.SwitchIn.ThreadId + " p" + x.SwitchIn.Priority + " " + D(x.ReadyDuration).ToString("0"));
+            sb.AppendLine("   aralıkta işlemcisiz hazır bekleyenler (ms): " + string.Join(" · ", starved));
             Console.Write(sb.ToString());
         }
         // whole trace: the longest ready (runnable but not running) delays per process, the starvation picture
