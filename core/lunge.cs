@@ -2863,7 +2863,7 @@ class Slider
             RaisePinned();
             Native.DwmFlush();
             DropShown(true); // the cut slide's pictures: this frame shows the same places
-            Log("fast shown " + clock.ElapsedMilliseconds + "ms (kayıt " + regMs + "ms) new=" + newThumbs.Count + (shown != null ? " (sürenin yerinden: " + oldStart + " -> " + newStart + (third != null ? ", " + third + " " + thirdStart : "") + ")" : ""));
+            Log("fast shown " + clock.ElapsedMilliseconds + "ms (kayıt " + regMs + "ms, göster " + overlay.RevealMs.ToString("0.0") + "ms) new=" + newThumbs.Count + (shown != null ? " (sürenin yerinden: " + oldStart + " -> " + newStart + (third != null ? ", " + third + " " + thirdStart : "") + ")" : ""));
 
             var cmdsAll = (string[])commands.Clone();
             var task = Task.Factory.StartNew(() => { foreach (var cm in cmdsAll) tiling.Command(cm); });
