@@ -780,7 +780,7 @@ class RingTemplate : Form
 class FrameStats
 {
     readonly Stopwatch sw = Stopwatch.StartNew();
-    double t0, t1, lastEnd = -1, sumUpd, sumFlush, sumGap, maxTotal;
+    double t0, t1, lastEnd = -1, sumUpd, sumFlush, sumGap, maxTotal, maxOurs, maxDwm;
     FlushPoint flushAt;
     string worst = "";
     public int Frames;
@@ -813,12 +813,17 @@ class FrameStats
         double gap = lastEnd < 0 ? 0 : t0 - lastEnd, upd = t1 - t0, fl = t2 - t1;
         double total = lastEnd < 0 ? t2 - t0 : t2 - lastEnd;
         sumUpd += upd; sumFlush += fl; sumGap += gap;
+        var flushEnd = FlushPoint.Now();
+        // the frame split between the core (update, the gap before it, waking after DWM composed) and DWM (composing)
+        double dwm = FlushPoint.DwmMs(flushAt, flushEnd, fl);
+        maxOurs = Math.Max(maxOurs, upd + gap + (fl - dwm));
+        maxDwm = Math.Max(maxDwm, dwm);
         if (total > maxTotal)
         {
             maxTotal = total;
             worst = string.Format("güncelleme {0:0.0} + flush {1:0.0} + boşluk {2:0.0}", upd, fl, gap);
             // uzun flush: DWM mi geç kaldı (kareyi geç topladı) yoksa biz mi geç uyandık (kare çoktan toplanmıştı)
-            if (fl >= period * 2) worst += " (" + FlushPoint.Explain(flushAt, FlushPoint.Now()) + ")";
+            if (fl >= period * 2) worst += " (" + FlushPoint.Explain(flushAt, flushEnd) + ")";
         }
         if (lastEnd >= 0) { if (total < period * 1.5) onTime++; else if (total < period * 2.5) miss1++; else miss2++; }
         lastEnd = t2; Frames++;
@@ -830,6 +835,7 @@ class FrameStats
             Frames, sw.Elapsed.TotalMilliseconds, maxTotal, worst, sumUpd, sumFlush, sumGap,
             GC.CollectionCount(0) - gc0, GC.CollectionCount(1) - gc1, GC.CollectionCount(2) - gc2);
         sb.AppendFormat("; aralık {0:0.0} ms: zamanında {1} / 1 kaçık {2} / 2+ kaçık {3}", period, onTime, miss1, miss2);
+        sb.AppendFormat("; bizim payımız en çok {0:0.0} ms, DWM'in en uzun kompozisyon beklemesi {1:0.0} ms", maxOurs, maxDwm);
         sb.Append("]");
         PerfGuard.Record(onTime, miss1 + miss2);
         return sb.ToString();
@@ -863,6 +869,14 @@ struct FlushPoint
         }
         catch { }
         return p;
+    }
+
+    // How much of a flush DWM took to compose (from the flush's start to the composition that ended it); the rest of the
+    // flush is the core waking up. Without DWM timing the whole flush counts as DWM's.
+    public static double DwmMs(FlushPoint a, FlushPoint b, double flushMs)
+    {
+        if (!a.Dwm || !b.Dwm || b.Frame == a.Frame || b.Compose <= a.Qpc) return flushMs;
+        return Math.Max(0, Math.Min(flushMs, (b.Compose - a.Qpc) * ToMs));
     }
 
     // "DWM kareyi 480 ms'de topladı, biz 2 ms sonra uyandık; 1 kare / 29 vsync; thread işlemcisi 0,1 ms, öncelik 2; sayfa hatası +0"

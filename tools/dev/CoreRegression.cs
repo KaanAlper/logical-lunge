@@ -288,6 +288,21 @@ static class CoreRegression
             "Close, lock, aliases or unknown actions got the wrong native hook handling");
     }
 
+    // A long frame is split between DWM composing and the core waking up afterwards (FlushPoint.DwmMs)
+    static void FrameSplitTests() {
+        long ms = System.Diagnostics.Stopwatch.Frequency / 1000;
+        var start = new FlushPoint { Dwm = true, Qpc = 1000 * ms, Frame = 10 };
+        var composedLate = new FlushPoint { Dwm = true, Qpc = 1485 * ms, Frame = 11, Compose = 1480 * ms };
+        Check(Math.Abs(FlushPoint.DwmMs(start, composedLate, 485) - 480) < 0.01, "DWM composing 480 ms into a 485 ms flush must count 480 ms as DWM's");
+        var noFrame = new FlushPoint { Dwm = true, Qpc = 1300 * ms, Frame = 10, Compose = 990 * ms };
+        Check(FlushPoint.DwmMs(start, noFrame, 300) == 300, "A flush without a new DWM frame is all DWM's");
+        var oldCompose = new FlushPoint { Dwm = true, Qpc = 1050 * ms, Frame = 11, Compose = 900 * ms };
+        Check(FlushPoint.DwmMs(start, oldCompose, 50) == 50, "A composition before the flush began cannot be the one that ended it");
+        Check(FlushPoint.DwmMs(new FlushPoint(), composedLate, 485) == 485, "Without DWM timing the whole flush is DWM's");
+        var overshoot = new FlushPoint { Dwm = true, Qpc = 1020 * ms, Frame = 11, Compose = 1030 * ms };
+        Check(Math.Abs(FlushPoint.DwmMs(start, overshoot, 20) - 20) < 0.01, "DWM's share is never more than the flush");
+    }
+
     static void WmWatchdogTests() {
         Check(TilingWatchdog.WmBusy(TimeSpan.FromMilliseconds(1000), TimeSpan.FromMilliseconds(1200)), "A window manager using the CPU must count as busy, not hung");
         Check(!TilingWatchdog.WmBusy(TimeSpan.FromMilliseconds(1000), TimeSpan.FromMilliseconds(1010)), "A window manager without CPU time must count as hung");
@@ -664,6 +679,7 @@ static class CoreRegression
         FocusDirectionTests();
         BorderLookTests();
         WmWatchdogTests();
+        FrameSplitTests();
         WmPortTests();
         FullscreenLayerTests();
         DialogTests();
