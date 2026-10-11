@@ -51,7 +51,7 @@ $DL = Join-Path $env:TEMP 'll-downloads'
 $UTF8 = New-Object Text.UTF8Encoding $false
 # Files that come from the package (app\): moved aside before the copy, moved back on rollback
 $OWNED = 'lunge.exe', 'lunge-tiling.exe', 'lunge-tiling-cli.exe', 'lunge-tiling-watcher.exe', 'lunge-shell.exe', 'lunge-wallpaper.exe', 'LogicalLunge.scr', 'VERSION', 'EDITION',
-'uninstall.ps1', 'ui', 'scripts', 'tools\lunge-media.exe', 'tools\temps\lunge-temps.exe', 'tools\termcolors', 'tools\songrec'
+'uninstall.ps1', 'ui', 'scripts', 'tools\lunge-media.exe', 'tools\lunge-ocr.exe', 'tools\temps\lunge-temps.exe', 'tools\termcolors', 'tools\songrec'
 $TOTAL_STEPS = 12
 
 $appExisted = Test-Path (Join-Path $APP 'lunge.exe')
