@@ -260,8 +260,8 @@ static SONGREC_RUN: AtomicU64 = AtomicU64::new(0);
 static LAYOUT: Mutex<Vec<(i32, i32, i32, i32, u32)>> = Mutex::new(Vec::new());
 static REBUILD_FORCED: AtomicBool = AtomicBool::new(false);
 
-/// Each monitor's rectangle and effective DPI: all a bar is built from.
-fn monitor_layout() -> Vec<(i32, i32, i32, i32, u32)> {
+/// The monitors Windows has now, with their rectangles.
+fn enum_monitors() -> Vec<(HMONITOR, RECT)> {
   let mut monitors: Vec<(HMONITOR, RECT)> = Vec::new();
   unsafe extern "system" fn collect(m: HMONITOR, _: HDC, rc: *mut RECT, data: LPARAM) -> BOOL {
     let v = &mut *(data.0 as *mut Vec<(HMONITOR, RECT)>);
@@ -272,16 +272,30 @@ fn monitor_layout() -> Vec<(i32, i32, i32, i32, u32)> {
     let _ = EnumDisplayMonitors(None, None, Some(collect), LPARAM(&mut monitors as *mut _ as isize));
   }
   monitors
-    .into_iter()
+}
+
+/// Each monitor's rectangle and effective DPI: all a bar is built from.
+fn layout_of(monitors: &[(HMONITOR, RECT)]) -> Vec<(i32, i32, i32, i32, u32)> {
+  monitors
+    .iter()
     .map(|(m, r)| {
       let (mut dx, mut dy) = (96u32, 96u32);
       unsafe {
-        let _ = GetDpiForMonitor(m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
+        let _ = GetDpiForMonitor(*m, MDT_EFFECTIVE_DPI, &mut dx, &mut dy);
       }
       (r.left, r.top, r.right, r.bottom, dx)
     })
     .collect()
 }
+
+fn monitor_layout() -> Vec<(i32, i32, i32, i32, u32)> {
+  layout_of(&enum_monitors())
+}
+
+/// A monitor whose bar could not be made (graphics device busy or lost
+/// under load) is tried again this many times, a little later each time;
+/// after that the next display change or WM monitor change tries again.
+const BAR_RETRIES: u32 = 5;
 static SONGREC_CHILD: Mutex<Option<(u64, std::process::Child)>> = Mutex::new(None);
 
 /// Reads the windows asking for attention from the core.
@@ -619,6 +633,11 @@ struct Ui {
   last_key: u64,
   /// device loss: recovery attempts in a row
   recover_tries: u32,
+  /// bars that could not be made: rebuild attempts in a row
+  bar_retries: u32,
+  /// the WM's monitors are to be checked against the bars once game mode
+  /// ends (new bar windows would come up over the game)
+  bars_recheck: bool,
   toasts: toast::Toasts,
   update: update::UpdateCard,
   pops: pops::PopState,
@@ -746,6 +765,8 @@ fn ui_thread(
         last_mic: None,
         last_key: 0,
         recover_tries: 0,
+        bar_retries: 0,
+        bars_recheck: false,
         pops: Default::default(),
         toasts: Default::default(),
         update: Default::default(),
@@ -1318,7 +1339,11 @@ impl Ui {
         Msg::ToastImage(id, bytes) => self.toast_image(id, bytes),
         Msg::Update(e) => self.update_event(e),
         Msg::Wm(state) => {
+          let recheck = wm::monitors_moved(&self.model.wm, &state);
           self.model.wm = state;
+          if recheck {
+            self.bars_follow_wm();
+          }
           overview_dirty = true;
         }
         Msg::Apps(apps) => self.icons.set_apps(apps),
@@ -1460,17 +1485,13 @@ impl Ui {
         let _ = DestroyWindow(b.hwnd);
       }
     }
-    let mut monitors: Vec<(HMONITOR, RECT)> = Vec::new();
-    unsafe extern "system" fn collect(m: HMONITOR, _: HDC, rc: *mut RECT, data: LPARAM) -> BOOL {
-      let v = &mut *(data.0 as *mut Vec<(HMONITOR, RECT)>);
-      v.push((m, *rc));
-      BOOL(1)
-    }
-    unsafe {
-      let _ = EnumDisplayMonitors(None, None, Some(collect), LPARAM(&mut monitors as *mut _ as isize));
-    }
-    *LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) = monitor_layout();
+    // one enumeration for both the bars and the layout they are checked
+    // against: a display that came or went between two enumerations was
+    // recorded as built and never got its bar
+    let monitors = enum_monitors();
+    *LAYOUT.lock().unwrap_or_else(|e| e.into_inner()) = layout_of(&monitors);
     let title = if self.demo { format!("{} (native)", TITLE) } else { TITLE.to_string() };
+    let mut failed = 0;
     for (mon, rc) in monitors {
       match self.create_bar(mon, rc, &title) {
         Ok(bar) => {
@@ -1481,13 +1502,60 @@ impl Ui {
           }
           self.bars.push(bar);
         }
-        Err(err) => tracing::warn!("Native bar: monitor {:?}: {:?}", rc, err),
+        Err(err) => {
+          failed += 1;
+          tracing::warn!("Native bar: monitor {:?}: {:?}", rc, err);
+        }
       }
+    }
+    // the layout above counts that monitor as built: without another try
+    // it stayed without a bar until the next display change
+    if failed == 0 {
+      self.bar_retries = 0;
+    } else if self.bar_retries < BAR_RETRIES {
+      self.bar_retries += 1;
+      tracing::warn!("Native bar: {} bar(s) missing, trying again ({}/{})", failed, self.bar_retries, BAR_RETRIES);
+      REBUILD_FORCED.store(true, Ordering::Release);
+      unsafe { SetTimer(self.msg_hwnd, TIMER_REBUILD, 2000 * self.bar_retries, None) };
     }
     self.redraw_all();
     // new monitors or a new graphics device: the desktop widgets are made
     // again where they belong (the first time: they come back)
     self.widgets_after_bars();
+  }
+
+  /// The WM came back (the core restarts a hung one) or its monitors changed:
+  /// every monitor it tiles must have a bar on it. A display that came and
+  /// went while the WM was down (virtual displays reconnect renumbered) or a
+  /// bar that could not be made left a monitor without one, and nothing but
+  /// a later display change brought it back. While a fullscreen game is in
+  /// front the check waits for game mode to end.
+  fn bars_follow_wm(&mut self) {
+    // a test run next to the running shell has its own bars (or none)
+    if self.demo {
+      return;
+    }
+    if crate::common::game_mode::on() {
+      self.bars_recheck = true;
+      return;
+    }
+    self.bars_recheck = false;
+    let bars: Vec<(String, (i32, i32, i32, i32))> = self
+      .bars
+      .iter()
+      .map(|b| (b.device.clone(), (b.monitor.left, b.monitor.top, b.monitor.right, b.monitor.bottom)))
+      .collect();
+    let missing = wm::monitors_without_bar(&self.model.wm, &bars);
+    if missing.is_empty() {
+      return;
+    }
+    tracing::warn!("Native bar: no bar on {:?}, rebuilding the bars", missing);
+    // a fresh chance for monitors whose bars failed before
+    self.bar_retries = 0;
+    REBUILD_FORCED.store(true, Ordering::Release);
+    unsafe {
+      let _ = PostMessageW(self.msg_hwnd, WM_APP_REBUILD, WPARAM(0), LPARAM(0));
+    }
   }
 
   fn create_bar(&mut self, mon: HMONITOR, rc: RECT, title: &str) -> anyhow::Result<Bar> {
@@ -1817,6 +1885,9 @@ impl Ui {
         if crate::common::game_mode::set(None) {
           self.redraw_all();
           self.widgets_schedule();
+        }
+        if self.bars_recheck {
+          self.bars_follow_wm();
         }
         return;
       }

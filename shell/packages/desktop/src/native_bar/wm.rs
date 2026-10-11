@@ -79,6 +79,15 @@ impl WmState {
     self.monitors.iter().flat_map(|m| m.workspaces.iter())
   }
 
+  /// Each tiled monitor's device and rectangle (left, top, right, bottom).
+  fn monitor_rects(&self) -> Vec<(&str, (i32, i32, i32, i32))> {
+    self
+      .monitors
+      .iter()
+      .map(|m| (m.device_name.as_str(), (m.x, m.y, m.x + m.width, m.y + m.height)))
+      .collect()
+  }
+
   /// The bar uses one representative window per workspace. Geometry for
   /// every other window belongs to the overview and must not redraw the bar.
   pub fn hash_bar_visible(&self, h: &mut impl std::hash::Hasher) {
@@ -102,6 +111,27 @@ impl WmState {
       }
     }
   }
+}
+
+/// Whether the bars should check that every monitor has one: the WM came
+/// (back) up, or its monitors changed. A WM restarted by the core's watchdog
+/// (or one that hung through a display change) reports the monitors as it
+/// sees them now, which the bars may have missed.
+pub fn monitors_moved(old: &WmState, new: &WmState) -> bool {
+  new.connected && (!old.connected || old.monitor_rects() != new.monitor_rects())
+}
+
+/// The WM's monitors that no bar stands on: no bar for that device, or the
+/// bar for it was built for another rectangle (virtual displays come back
+/// renumbered or moved). `bars` holds each bar's device and monitor
+/// rectangle (left, top, right, bottom).
+pub fn monitors_without_bar<'a>(state: &'a WmState, bars: &[(String, (i32, i32, i32, i32))]) -> Vec<&'a str> {
+  state
+    .monitor_rects()
+    .into_iter()
+    .filter(|(device, rect)| !bars.iter().any(|(d, r)| d.eq_ignore_ascii_case(device) && r == rect))
+    .map(|(device, _)| device)
+    .collect()
 }
 
 /// The overview needs both focus commands to complete in order. Sending the
@@ -309,6 +339,44 @@ mod tests {
     assert_eq!((found[0].x, found[0].y, found[0].width, found[0].height), (10, 20, 500, 600));
     assert!(found[0].has_focus);
     assert_eq!(found[1].id, "c");
+  }
+
+  fn monitor(device: &str, x: i32) -> WmMonitor {
+    WmMonitor { device_name: device.into(), x, y: 0, width: 1920, height: 1080, ..Default::default() }
+  }
+
+  #[test]
+  fn reconnect_or_new_monitors_recheck_the_bars() {
+    let off = WmState::default();
+    let two = WmState { connected: true, monitors: vec![monitor(r"\\.\DISPLAY1", 0), monitor(r"\\.\DISPLAY2", 1920)], ..Default::default() };
+    // the WM restarted: same monitors, but it was down in between
+    assert!(monitors_moved(&off, &two));
+    // a workspace switch on the same monitors does not
+    let mut switched = two.clone();
+    switched.focused_window = Some(("app".into(), "title".into()));
+    assert!(!monitors_moved(&two, &switched));
+    // a virtual display renumbered at the same place does
+    let renamed = WmState { monitors: vec![monitor(r"\\.\DISPLAY1", 0), monitor(r"\\.\DISPLAY7", 1920)], ..two.clone() };
+    assert!(monitors_moved(&two, &renamed));
+    // the WM going down never rebuilds anything
+    assert!(!monitors_moved(&two, &off));
+  }
+
+  #[test]
+  fn monitors_without_bar_match_device_and_rectangle() {
+    let state = WmState { connected: true, monitors: vec![monitor(r"\\.\DISPLAY1", 0), monitor(r"\\.\DISPLAY2", 1920)], ..Default::default() };
+    let both = vec![
+      (r"\\.\DISPLAY1".to_string(), (0, 0, 1920, 1080)),
+      (r"\\.\display2".to_string(), (1920, 0, 3840, 1080)),
+    ];
+    assert!(monitors_without_bar(&state, &both).is_empty());
+    // the second monitor's bar was never made (or failed)
+    assert_eq!(monitors_without_bar(&state, &both[..1]), vec![r"\\.\DISPLAY2"]);
+    // a bar left for the old place of a moved display
+    let moved = vec![both[0].clone(), (r"\\.\DISPLAY2".to_string(), (-1920, 0, 0, 1080))];
+    assert_eq!(monitors_without_bar(&state, &moved), vec![r"\\.\DISPLAY2"]);
+    // no WM monitors (WM down): nothing is missing
+    assert!(monitors_without_bar(&WmState::default(), &[]).is_empty());
   }
 
   #[test]
