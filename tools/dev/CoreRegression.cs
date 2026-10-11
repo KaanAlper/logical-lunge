@@ -188,6 +188,19 @@ static class CoreRegression
         Check(TilingWatchdog.HungLimit(false) == 3 && TilingWatchdog.HungLimit(true) == 6, "The hung limit must double while a game runs");
     }
 
+    // A core asked to stop (uninstall, setup) silences its watchdogs at once and brings nothing back up
+    static void StopFlagTests() {
+        Check(!Maint.Stopping, "The stop flag must start cleared");
+        Maint.Stopping = true;
+        try {
+            Check(Maint.Quiet(), "A stopping core must keep its watchdogs quiet without the maintenance file");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            Supervisor.BringUp(false);
+            Check(sw.ElapsedMilliseconds < 2000, "A stopping core must not bring the desktop back up (BringUp waited for the window manager)");
+        }
+        finally { Maint.Stopping = false; }
+    }
+
     static void BorderLookTests() {
         string yaml = "gaps:\n  inner_gap: '5px'\nborders:\n  render_backend: V2\n  global:\n    border_width: 2\n    border_radius: 19\n"
             + "    focus_flash: 800\n    active_color: \"#b69df8cc\"\n    inactive_color: \"#3a3a4099\"\n    animations:\n      active:\n"
@@ -573,6 +586,7 @@ static class CoreRegression
         FullscreenLayerTests();
         DialogTests();
         LauncherTests();
+        StopFlagTests();
         string response = Request("POST", "/focus-color?v=invalid", "http://127.0.0.1:6124");
         Check(!response.Contains("text/event-stream") && response.Contains("\"ok\":false"), "Focus-color request was routed into SSE instead of returning a JSON result");
         Check(Request("GET", "/focus-color?v=invalid", "http://127.0.0.1:6124").Contains("405"), "Color writes must require POST");

@@ -6471,6 +6471,7 @@ static class Supervisor
     // Eksik parçaları sırayla açar: perde (istenirse), tiling, IPC'si hazır olunca shell. Çalışanlara dokunmaz.
     public static void BringUp(bool splash)
     {
+        if (Maint.Stopping) { Slider.Log("masaüstü kapanıyor: parçalar yeniden açılmadı"); return; }
         if (!Maint.Running(Names.Tiling))
         {
             if (splash && !WarmTerminal.SplashActive()) Start(Paths.Core, "--splash");
@@ -6627,6 +6628,7 @@ static class Supervisor
     // Detached coordinator retains the main core's elevation and inherits no shell/socket handles.
     public static void RestartDesktopDetached()
     {
+        if (Maint.Stopping) { Slider.Log("masaüstü kapanıyor: yenileme yapılmadı"); return; }
         DesktopRestart.StartInherited(Paths.Core, "--restart-desktop-now");
     }
 
@@ -6693,13 +6695,17 @@ static class Supervisor
 static class Maint
 {
     public static volatile bool SessionEnding;
+    // Çekirdek kapanıyor (kaldırma, kurulum, güncelleme: /cmd?a=stop-desktop): nöbetçiler bu süreçte artık hiçbir parçayı
+    // yeniden başlatmaz, yarıda kalan bir toparlama da masaüstünü geri açmaz. Dosyadaki bakım işaretinden bağımsız
+    // (o 10 dakikada geçersizleşir, toparlamanın sonu onu siler); süreç çıkana dek geri alınmaz.
+    public static volatile bool Stopping;
     static string Dir { get { return Paths.StateDir; } }
 
     // Bakım işareti: kurulum / güncelleme / kaldırma / "masaüstünü yenile" bırakır. Yarım kalan bir işlem nöbetçileri
     // sonsuza dek susturmasın diye 10 dakikadan eskisi sayılmaz.
     public static bool Quiet()
     {
-        if (SessionEnding) return true;
+        if (SessionEnding || Stopping) return true;
         try
         {
             var fi = new System.IO.FileInfo(System.IO.Path.Combine(Dir, "maintenance"));
@@ -7512,9 +7518,15 @@ static class Toasts
                 }
                 else if (act == "stop-desktop" && SelfHeal.IsMain)
                 {
+                    // Önce nöbetçiler susar (bu istek cevaplanmadan): kapatılan pencere yöneticisi, kabuk ya da donmuş
+                    // sayılan bir parça kapanış sürerken yeniden başlatılmasın. Çıkış takılırsa (kapanmayan bir iş
+                    // parçacığı) süreç 10 sn sonra kendini sonlandırır: kaldırıcı onu beklemesin.
+                    Maint.Stopping = true;
+                    Maint.Mark();
                     ThreadPool.QueueUserWorkItem(_ =>
                     {
                         try { Supervisor.StopDesktop(); } catch (Exception ex) { Slider.Log("masaüstü kapatılamadı: " + ex.Message); }
+                        new Thread(() => { Thread.Sleep(10000); try { Process.GetCurrentProcess().Kill(); } catch { } }) { IsBackground = true }.Start();
                         Environment.Exit(0);
                     });
                     status = "202 Accepted";
