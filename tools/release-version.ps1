@@ -10,7 +10,8 @@ function Get-BumpLevel([string[]]$commits) {
     foreach ($c in $commits) {
         if (-not $c) { continue }
         # the type (and its "!") is only the subject line's; a footer line must be "BREAKING CHANGE: <text>"
-        $subject = ($c -split "`n", 2)[0].Trim()
+        # (records after the first start with the newline that git log puts between commits)
+        $subject = ($c.Trim() -split "`n", 2)[0].Trim()
         if ($subject -match '^\w+(\([^)]*\))?!:' -or $c -match '(?m)^BREAKING[ -]CHANGE: \S') { return 'major' }
         if ($subject -match '^feat(\([^)]*\))?:') { $level = 'minor' }
     }
