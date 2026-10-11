@@ -527,13 +527,36 @@ pub fn handle_window_moved_or_resized(
         let in_tile = window.native().frame_with_shadows().ok().as_ref()
           == Some(&tile);
 
-        if !in_tile
-          && allow_self_resize_correction(state, window.native().hwnd().0)
-        {
-          tracing::info!(
-            "Returning self-resized window to its tile: {window}"
-          );
-          state.pending_sync.queue_container_to_redraw(window.clone());
+        if !in_tile {
+          use crate::commands::general::window_sync_policy::{
+            cannot_fit_tile, exceeds_tile,
+          };
+
+          let handle = window.native().hwnd().0;
+          let corrected = allow_self_resize_correction(state, handle);
+          // Logical Lunge: a window that can't take its tile (its minimum
+          // size, asked only when it is bigger than the tile, or a size it
+          // keeps after the corrections) floats instead of being cut in
+          // half, unless a `manage` window rule decided its state.
+          let live = window
+            .native()
+            .frame_with_shadows()
+            .unwrap_or_else(|_| frame_position.clone());
+          let min_track = exceeds_tile(&tile, (live.width(), live.height()))
+            .then(|| window.native().min_track_size())
+            .flatten();
+          if cannot_fit_tile(&tile, &live, min_track, !corrected)
+            && config.manage_rule_state(&window.native_properties()).is_none()
+          {
+            tracing::info!("Floating a window that can't take its tile: {window}");
+            state.self_resizes.remove(&handle);
+            crate::commands::window::float_unfit_window(window.clone(), state, config)?;
+          } else if corrected {
+            tracing::info!(
+              "Returning self-resized window to its tile: {window}"
+            );
+            state.pending_sync.queue_container_to_redraw(window.clone());
+          }
         }
       }
       WindowState::Floating(_) => {

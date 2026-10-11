@@ -780,6 +780,39 @@ impl NativeWindow {
     level.map_or(true, |level| level <= ours)
   }
 
+  /// Implements [`NativeWindowWindowsExt::min_track_size`]. Windows
+  /// copies `MINMAXINFO` across processes for this message; the timeout
+  /// keeps a busy app from holding the WM.
+  pub(crate) fn min_track_size(&self) -> Option<(i32, i32)> {
+    use windows::Win32::{
+      Foundation::WPARAM,
+      UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, MINMAXINFO, SMTO_ABORTIFHUNG, SMTO_ERRORONEXIT,
+        WM_GETMINMAXINFO,
+      },
+    };
+
+    const TIMEOUT_MS: u32 = 100;
+
+    let mut info = MINMAXINFO::default();
+    let answered = unsafe {
+      SendMessageTimeoutW(
+        self.hwnd(),
+        WM_GETMINMAXINFO,
+        WPARAM(0),
+        LPARAM(&raw mut info as isize),
+        SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT,
+        TIMEOUT_MS,
+        None,
+      )
+    };
+    if answered.0 == 0 {
+      return None;
+    }
+    let (width, height) = (info.ptMinTrackSize.x, info.ptMinTrackSize.y);
+    (width > 0 || height > 0).then_some((width, height))
+  }
+
   /// Implements [`NativeWindowWindowsExt::restored_frame`].
   pub(crate) fn restored_frame(&self) -> crate::Result<Rect> {
     let mut placement = WINDOWPLACEMENT {

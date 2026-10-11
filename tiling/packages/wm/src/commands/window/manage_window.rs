@@ -82,6 +82,11 @@ pub fn manage_window(
     }
   }
 
+  // Logical Lunge: a window whose minimum size is bigger than the tile it
+  // just got floats instead of being cut (see `float_unfit_window`).
+  #[cfg(target_os = "windows")]
+  let window = float_if_unfit_on_manage(window, controllable, state, config)?;
+
   // Set the newly added window as focus descendant. This means the window
   // rules will be run as if the window is focused.
   set_focused_descendant(&window.clone().into(), None);
@@ -163,6 +168,72 @@ pub fn manage_window(
   }
 
   Ok(())
+}
+
+/// Logical Lunge: floats a newly tiled window that can't take its tile
+/// (its minimum size is bigger), unless a `manage` window rule decided its
+/// state or the WM may not move it.
+#[cfg(target_os = "windows")]
+fn float_if_unfit_on_manage(
+  window: WindowContainer,
+  controllable: bool,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<WindowContainer> {
+  use wm_platform::NativeWindowWindowsExt;
+
+  use crate::commands::general::window_sync_policy::cannot_fit_tile;
+
+  if window.state() != WindowState::Tiling
+    || !controllable
+    || config.manage_rule_state(&window.native_properties()).is_some()
+  {
+    return Ok(window);
+  }
+
+  let tile = window
+    .to_rect()?
+    .apply_delta(&window.total_border_delta()?, None);
+  let min_track = window.native().min_track_size();
+  if !cannot_fit_tile(&tile, &window.native_properties().frame, min_track, false) {
+    return Ok(window);
+  }
+
+  info!("Floating a new window bigger than its tile: {window}");
+  float_unfit_window(window, state, config)
+}
+
+/// Logical Lunge: makes a tiled window that can't take its tile (a minimum
+/// size bigger than it, or an app that keeps its own size) floating, centred
+/// on its workspace at its own size, as Hyprland floats a window it can't
+/// fit. Its neighbours close the gap; the window is never cut in half.
+pub fn float_unfit_window(
+  window: WindowContainer,
+  state: &mut WmState,
+  config: &UserConfig,
+) -> anyhow::Result<WindowContainer> {
+  let workspace = window.workspace().context("No workspace.")?;
+  let max_workspace_rect = workspace.max_workspace_rect()?;
+  let placement = window
+    .native_properties()
+    .frame
+    .translate_to_center(&workspace.to_rect()?)
+    .clamp_size(
+      max_workspace_rect.width() - 10,
+      max_workspace_rect.height() - 10,
+    );
+  window.set_floating_placement(placement);
+
+  let floating = FloatingStateConfig {
+    centered: true,
+    ..config.value.window_behavior.state_defaults.floating.clone()
+  };
+  crate::commands::window::update_window_state(
+    window,
+    WindowState::Floating(floating),
+    state,
+    config,
+  )
 }
 
 /// Checks if a window is manageable and retrieves its native properties.
