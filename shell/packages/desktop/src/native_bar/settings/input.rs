@@ -15,7 +15,8 @@ use windows::Win32::{
 };
 
 use super::{
-  core_run, explorer, night, pages, set_pref, Act, Cursor, Event, Fld, Hit, Key, Sel, Sl, Sw, PAGES, TIMER_SETTINGS_COMMIT, WHEEL_STEP,
+  core_run, explorer, night, pages, set_pref, Act, Cursor, Event, Fld, Hit, Key, Part, Picker, Sel, Sl, Sw, PAGES, TIMER_SETTINGS_COMMIT,
+  WHEEL_STEP,
 };
 use crate::native_bar::{
   core_api,
@@ -76,8 +77,11 @@ impl Ui {
       }
       WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
         let cursor = self.settings.as_ref().map_or(Cursor::Arrow, |s| {
-          if s.drag.is_some() {
-            return Cursor::Resize;
+          match s.drag {
+            Some(Hit::Pick(Part::Sv)) => return Cursor::Cross,
+            Some(Hit::Pick(_)) => return Cursor::Hand,
+            Some(_) => return Cursor::Resize,
+            None => {}
           }
           s.hover.and_then(|h| s.region(h)).map_or(Cursor::Arrow, |r| r.cursor)
         });
@@ -86,6 +90,7 @@ impl Ui {
           Cursor::Hand => IDC_HAND,
           Cursor::Text => IDC_IBEAM,
           Cursor::Resize => IDC_SIZEWE,
+          Cursor::Cross => IDC_CROSS,
         };
         unsafe {
           if let Ok(c) = LoadCursorW(None, id) {
@@ -126,7 +131,7 @@ impl Ui {
     let Some(s) = self.settings.as_mut() else { return };
     crate::native_bar::track_leave(s.hwnd);
     if let Some(drag) = s.drag {
-      self.settings_drag_to(drag, x);
+      self.settings_drag_to(drag, x, y);
       return;
     }
     let mut changed = false;
@@ -150,7 +155,7 @@ impl Ui {
     }
   }
 
-  fn settings_drag_to(&mut self, drag: Hit, x: f32) {
+  fn settings_drag_to(&mut self, drag: Hit, x: f32, y: f32) {
     let Some(s) = self.settings.as_mut() else { return };
     match drag {
       Hit::Slider(sl) => {
@@ -167,7 +172,53 @@ impl Ui {
         s.ws.drag_divider(i, k);
         self.settings_paint();
       }
+      // the colour follows the pointer here; it is applied when the mouse lets go
+      Hit::Pick(part) => {
+        let Some(r) = s.region(drag).map(|r| r.r) else { return };
+        let Some(pk) = s.picker.as_mut() else { return };
+        pk.drag(part, r, x, y);
+        s.hex = pk.hex();
+        s.hex_bad = false;
+        self.settings_paint();
+      }
       _ => {}
+    }
+  }
+
+  /// Opens or closes the colour picker (on the hex field's colour, or the
+  /// one applied).
+  fn settings_picker_toggle(&mut self) {
+    let Some(s) = self.settings.as_mut() else { return };
+    if s.picker.take().is_some() {
+      s.focus = Some(Hit::PickerDot);
+    } else {
+      let applied = s.s["focusColor"].as_str().unwrap_or("#b69df8").to_lowercase();
+      let mut pk = Picker::new(&applied);
+      pk.follow(&s.hex);
+      s.hex = pk.hex();
+      s.hex_bad = false;
+      s.picker = Some(pk);
+      s.focus = Some(Hit::Pick(Part::Sv));
+    }
+    self.settings_paint();
+  }
+
+  /// The picker's colour, applied now (the mouse let go, Enter) or a moment
+  /// after the last arrow key (`later`).
+  fn settings_picker_commit(&mut self, later: bool) {
+    let Some(s) = self.settings.as_mut() else { return };
+    let Some(hex) = s.picker.as_ref().map(Picker::hex) else { return };
+    let applied = s.s["focusColor"].as_str().unwrap_or_default().to_lowercase();
+    let next = s.color_next.as_deref().or(s.pending_color.as_deref());
+    if hex == applied && next.is_none() {
+      return;
+    }
+    if later {
+      s.pending_color = Some(hex);
+      unsafe { SetTimer(self.msg_hwnd, TIMER_SETTINGS_COMMIT, 450, None) };
+    } else {
+      s.pending_color = None;
+      self.settings_color(hex);
     }
   }
 
@@ -200,6 +251,14 @@ impl Ui {
     }
     let Some(s) = self.settings.as_mut() else { return };
     let hit = s.hit_at(x, y).map(|r| (r.hit, r.focus));
+    // a click outside the colour picker (and its row) closes it and does nothing else
+    let near = |h: Hit| matches!(h, Hit::PickerDot | Hit::Pick(_) | Hit::Field(Fld::Hex) | Hit::Act(Act::HexApply));
+    if s.picker.is_some() && !hit.is_some_and(|(h, _)| near(h)) {
+      s.picker = None;
+      s.set_focus(None);
+      self.settings_paint();
+      return;
+    }
     let Some((hit, focusable)) = hit else {
       s.set_focus(None);
       self.settings_paint();
@@ -209,13 +268,14 @@ impl Ui {
       s.set_focus(Some(hit));
     }
     match hit {
-      Hit::Slider(_) | Hit::WsDivider(_) => {
+      Hit::Slider(_) | Hit::WsDivider(_) | Hit::Pick(Part::Sv | Part::Hue) => {
         s.drag = Some(hit);
         unsafe {
           SetCapture(s.hwnd);
         }
-        self.settings_drag_to(hit, x);
+        self.settings_drag_to(hit, x, y);
       }
+      Hit::Pick(Part::Panel) => {}
       Hit::Field(_) => self.settings_paint(),
       _ => {
         s.pressed = Some(hit);
@@ -233,6 +293,11 @@ impl Ui {
     let dragged = s.drag.take();
     unsafe {
       let _ = ReleaseCapture();
+    }
+    if let Some(Hit::Pick(_)) = dragged {
+      self.settings_picker_commit(false);
+      self.settings_paint();
+      return;
     }
     if dragged.is_some() {
       self.settings_paint();
@@ -299,6 +364,9 @@ impl Ui {
         return self.settings_color(c.to_string());
       }
       Hit::WsCustom(i) => s.ws.cycle_custom(i),
+      Hit::PickerDot => return self.settings_picker_toggle(),
+      // Enter / Space on the picker: apply now
+      Hit::Pick(_) => self.settings_picker_commit(false),
       Hit::Field(_) | Hit::Slider(_) | Hit::WsLine | Hit::WsDivider(_) => {}
     }
     self.settings_paint();
@@ -376,9 +444,11 @@ impl Ui {
     self.settings_paint();
   }
 
-  fn settings_color(&mut self, c: String) {
+  pub(super) fn settings_color(&mut self, c: String) {
     let Some(s) = self.settings.as_mut() else { return };
     if s.color_saving {
+      // the newest wins; it goes when this one is answered
+      s.color_next = Some(c);
       return;
     }
     s.color_saving = true;
@@ -404,6 +474,10 @@ impl Ui {
         let v = if s.hex.starts_with('#') { s.hex.to_lowercase() } else { format!("#{}", s.hex.to_lowercase()) };
         if v.len() == 7 && v[1..].chars().all(|c| c.is_ascii_hexdigit()) {
           s.hex_bad = false;
+          s.pending_color = None;
+          if let Some(pk) = s.picker.as_mut() {
+            pk.follow(&v);
+          }
           return self.settings_color(v);
         }
         s.hex_bad = true;
@@ -493,6 +567,10 @@ impl Ui {
     }
     if f == Fld::Hex {
       s.hex_bad = false;
+      // a whole colour typed moves the picker (applied with Enter / the button)
+      if let Some(pk) = s.picker.as_mut() {
+        pk.follow(&s.hex);
+      }
     }
     s.ws.fields_changed(f);
     self.settings_paint();
@@ -517,6 +595,11 @@ impl Ui {
           Fld::NightTo => &mut s.night_to,
         };
         text.pop();
+        if f == Fld::Hex {
+          if let Some(pk) = s.picker.as_mut() {
+            pk.follow(&s.hex);
+          }
+        }
         s.ws.fields_changed(f);
         self.settings_paint();
         return true;
@@ -541,7 +624,14 @@ impl Ui {
     }
     match vk {
       k if k == VK_ESCAPE.0 => {
-        self.settings_close();
+        if s.picker.is_some() {
+          // the picker first (what was applied stays), then the window
+          s.picker = None;
+          s.focus = Some(Hit::PickerDot);
+          self.settings_paint();
+        } else {
+          self.settings_close();
+        }
       }
       k if k == VK_TAB.0 => {
         s.focus_ring = true;
@@ -597,6 +687,17 @@ impl Ui {
           }
           Some(Hit::WsDivider(i)) if horizontal => {
             s.ws.nudge_divider(i, d);
+            self.settings_paint();
+          }
+          // across: saturation (the hue on its bar), up / down: brightness; Shift: bigger steps
+          Some(Hit::Pick(part @ (Part::Sv | Part::Hue))) => {
+            let (dx, dy) = if horizontal { (d, 0) } else { (0, -d) };
+            if let Some(pk) = s.picker.as_mut() {
+              pk.nudge(part, dx, dy, shift);
+              s.hex = pk.hex();
+              s.hex_bad = false;
+            }
+            self.settings_picker_commit(true);
             self.settings_paint();
           }
           Some(Hit::Swatch(i)) if horizontal => {

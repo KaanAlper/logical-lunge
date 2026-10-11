@@ -17,6 +17,8 @@ pub enum Cursor {
   Hand,
   Text,
   Resize,
+  /// the colour picker's square
+  Cross,
 }
 
 pub struct Region {

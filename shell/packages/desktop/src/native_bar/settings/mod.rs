@@ -12,12 +12,15 @@
 //! Esc, the close button, the gear again or the Super menu close it.
 //!
 //! Keyboard: Tab / Shift+Tab move between controls, Enter / Space press
-//! them, arrows change a choice, a slider or a monitor boundary (Up / Down
-//! on the page list change the page), PageUp / PageDown / Home / End
-//! scroll, Esc closes an open list, then the window.
+//! them, arrows change a choice, a slider, a monitor boundary or the
+//! colour picker's colour (Up / Down on the page list change the page),
+//! PageUp / PageDown / Home / End scroll, Esc closes an open list or the
+//! colour picker, then the window.
 
+mod color;
 mod input;
 mod pages;
+mod picker;
 mod widgets;
 mod workspaces;
 
@@ -42,6 +45,7 @@ use super::{
   TIMER_SETTINGS_SAVED,
 };
 
+use picker::{Part, Picker};
 pub(super) use widgets::{Cursor, Region};
 use workspaces::Ws;
 
@@ -156,6 +160,9 @@ pub(super) enum Hit {
   Step(Fld, i32),
   Select(Sel),
   Swatch(usize),
+  /// the dot left of the hex field: opens the colour picker
+  PickerDot,
+  Pick(Part),
   /// the workspace number line (its lens follows the pointer)
   WsLine,
   WsDivider(usize),
@@ -191,6 +198,12 @@ pub(super) struct Settings {
   pub hex_bad: bool,
   pub color_saving: bool,
   pub color_error: bool,
+  /// a colour picked while the last one was being saved (sent after it)
+  pub color_next: Option<String>,
+  /// the colour picker, while open
+  pub picker: Option<Picker>,
+  /// a colour from the picker's arrow keys, sent a moment after the last one
+  pending_color: Option<String>,
   pub night: Option<Value>,
   pub night_level: i32,
   pub night_from: String,
@@ -318,8 +331,11 @@ impl Settings {
   /// The controls that take the keyboard, in order.
   fn focusables(&self) -> Vec<Hit> {
     let mut seen = Vec::new();
+    // the colour picker keeps Tab in its row: the dot, the hex field, its button and itself
+    let open = self.picker.is_some();
     for r in &self.regions {
-      if r.focus && !seen.contains(&r.hit) {
+      let near = matches!(r.hit, Hit::PickerDot | Hit::Pick(_) | Hit::Field(Fld::Hex) | Hit::Act(Act::HexApply));
+      if r.focus && (!open || near) && !seen.contains(&r.hit) {
         seen.push(r.hit);
       }
     }
@@ -429,6 +445,9 @@ impl Ui {
       hex_bad: false,
       color_saving: false,
       color_error: false,
+      color_next: None,
+      picker: None,
+      pending_color: None,
       night: None,
       night_level: 50,
       night_from: "20:00".into(),
@@ -554,6 +573,9 @@ impl Ui {
         Sl::NightLevel => night(&["--nightlight-set", "level", &v.to_string()]),
       }
     }
+    if let Some(c) = s.pending_color.take() {
+      self.settings_color(c);
+    }
   }
 
   pub(super) fn settings_timer(&mut self, id: usize) {
@@ -585,6 +607,7 @@ impl Ui {
   fn settings_page_opened(&mut self) {
     let Some(s) = self.settings.as_mut() else { return };
     s.scroll = 0.0;
+    s.picker = None;
     unsafe {
       let _ = KillTimer(self.msg_hwnd, TIMER_SETTINGS_HEALTH);
     }
@@ -611,13 +634,16 @@ impl Ui {
           s.dirty = true;
         }
       }
-      Event::Color(Some(c)) => {
+      Event::Color(saved) => {
         s.color_saving = false;
-        s.s["focusColor"] = json!(c);
-      }
-      Event::Color(None) => {
-        s.color_saving = false;
-        s.color_error = true;
+        match saved {
+          Some(c) => s.s["focusColor"] = json!(c),
+          None => s.color_error = true,
+        }
+        // the picker moved on while this one was saved
+        if let Some(next) = s.color_next.take() {
+          return self.settings_color(next);
+        }
       }
       Event::Night(v) => {
         s.night_level = v["level"].as_i64().unwrap_or(50) as i32;

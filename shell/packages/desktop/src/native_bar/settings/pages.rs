@@ -6,7 +6,7 @@ use serde_json::Value;
 use super::{
   is_light,
   widgets::{card_border, ink, layer3, Btn, Ctrl, Ctx, Cursor, Row, BODY, SUB},
-  workspaces, Act, Fld, Hit, Key, Sel, Settings, Sl, Sw, APPLY_H, BODY_PAD, CARD_H, CARD_W, HEAD_H, M,
+  picker, workspaces, Act, Fld, Hit, Key, Sel, Settings, Sl, Sw, APPLY_H, BODY_PAD, CARD_H, CARD_W, HEAD_H, M,
   NAV_W, PAGES,
 };
 use crate::native_bar::{
@@ -130,6 +130,13 @@ pub fn paint(p: &mut Painter, t: &Theme, s: &mut Settings, tr: &dyn Fn(&str) -> 
 
   if s.dirty {
     apply_note(&mut cx, card)?;
+  }
+  // the colour picker over everything, by its dot (the hex row, and its error line when there is one)
+  if s.page == 0 {
+    if let Some(dot) = cx.regions.iter().find(|r| r.hit == Hit::PickerDot).map(|r| r.r) {
+      let error = if s.hex_bad || s.color_error { 8.0 + 18.0 } else { 0.0 };
+      picker::paint(&mut cx, s, Rect::new(dot.x, dot.y - 6.0, dot.w, dot.h + 12.0 + error), view)?;
+    }
   }
   s.regions = regions;
   Ok(())
@@ -257,9 +264,22 @@ fn look(cx: &mut Ctx, s: &Settings, x: f32, y: f32, w: f32) -> anyhow::Result<f3
     sx += 44.0 + 10.0;
   }
   sy += 44.0 + 16.0;
-  // .hexrow
-  let current = Rgba::hex(u32::from_str_radix(focus.trim_start_matches('#'), 16).unwrap_or(0xb69df8));
-  cx.p.fill_circle(x + 18.0 + 12.0, sy + 18.0, 12.0, current)?;
+  // .hexrow: the dot opens the colour picker (it shows the picker's colour while open)
+  let current = match &s.picker {
+    Some(pk) => {
+      let (r, g, b) = pk.rgb();
+      Rgba(r, g, b, 1.0)
+    }
+    None => Rgba::hex(u32::from_str_radix(focus.trim_start_matches('#'), 16).unwrap_or(0xb69df8)),
+  };
+  let dot = Rect::new(x + 18.0, sy + 6.0, 24.0, 24.0);
+  if cx.hot(Hit::PickerDot) || s.picker.is_some() {
+    cx.p.fill_circle(dot.x + 12.0, dot.y + 12.0, 17.0, t.layer1_hover)?;
+  }
+  cx.p.fill_circle(dot.x + 12.0, dot.y + 12.0, 12.0, current)?;
+  cx.p.stroke_round(dot, 12.0, t.on_layer1.alpha(0.22), 1.0)?;
+  cx.push(dot, Hit::PickerDot, true, Cursor::Hand);
+  cx.ring(dot, 12.0, Hit::PickerDot)?;
   let custom = !COLORS.iter().any(|c| c.1 == focus);
   let placeholder = if custom { focus.clone() } else { "#rrggbb".into() };
   cx.field(Rect::new(x + 18.0 + 24.0 + 10.0, sy, 130.0, 36.0), &s.hex, &placeholder, Fld::Hex)?;
