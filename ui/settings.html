@@ -619,6 +619,8 @@
             const r = await response.json();
             if (!response.ok || !r?.ok) throw new Error(r?.error || 'Color could not be saved');
             update({ focusColor: r.focusColor }); applyAccent(r.focusColor);
+            // Choosing a colour is choosing it over the wallpaper's: the shell, panels and borders take it
+            if (s.wallpaperColors === true) helper(['--set-pref', 'wallpaperColors', 'false']).then(() => update({ wallpaperColors: false })).catch(e => console.error('Wallpaper colors:', e));
           } catch (error) {
             console.error('Accent color:', error);
             setColorError('Renk kaydedilemedi. Yeniden dene.');
