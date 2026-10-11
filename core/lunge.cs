@@ -7082,7 +7082,7 @@ static class Toasts
             {
                 int q = target.IndexOf("a=");
                 string act = q < 0 ? "" : Uri.UnescapeDataString(target.Substring(q + 2).Split('&')[0]);
-                if (System.Text.RegularExpressions.Regex.IsMatch(act, @"^ws-(\d{1,2}|(next|prev)(@[\w\\.\-]{1,64})?)$") && Keys2.Instance != null)
+                if (System.Text.RegularExpressions.Regex.IsMatch(act, @"^ws-(\d{1,2}|next|prev)(@[\w\\.\-]{1,64})?$") && Keys2.Instance != null)
                 {
                     Keys2.Instance.Dispatch(act);
                     status = "204 No Content";
@@ -14806,14 +14806,15 @@ static class Program
         if (args.Length == 2 && args[0] == "--slide")
         {
             // Çalışan helper varsa işi ona devret (katman ve kenarlıkları hazır, animasyon hemen başlar)
-            string act = args[1] == "next" ? "ws-next" : args[1] == "prev" ? "ws-prev" : "ws-" + args[1];
+            // ws-3, ws-next ya da barın gönderdiği ws-3@<monitör>; kendi başına çalışırken monitör eki workspace adı değildir
+            string act = "ws-" + args[1], plain = args[1].Split('@')[0];
             if (Supervisor.PostToCore("/cmd?a=" + Uri.EscapeDataString(act), 400) == 204) return;
             try { Native.SetProcessDpiAwarenessContext(new IntPtr(-4)); } catch { }
             var g = new TilingClient();
             var sl = new Slider(g);
-            if (args[1] == "next") sl.Run(new[] { "focus --next-workspace" }, 1, null);
-            else if (args[1] == "prev") sl.Run(new[] { "focus --prev-workspace" }, -1, null);
-            else sl.Run(new[] { "focus --workspace " + args[1] }, 0, args[1]);
+            if (plain == "next") sl.Run(new[] { "focus --next-workspace" }, 1, null);
+            else if (plain == "prev") sl.Run(new[] { "focus --prev-workspace" }, -1, null);
+            else sl.Run(new[] { "focus --workspace " + plain }, 0, plain);
             return;
         }
 
