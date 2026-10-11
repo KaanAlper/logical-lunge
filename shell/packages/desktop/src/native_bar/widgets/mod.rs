@@ -711,7 +711,7 @@ impl Ui {
     let labels = ["Konumu değiştir", "Ülke", "Şehir", "İlçe (isteğe bağlı)", "Sonuçlar · tıklayın veya Enter ile seçin",
       "Tekrar dene", "Son konumlar", "İptal", "Kaydet", "Konumlar yüklenemedi", "Aranıyor…",
       "Konum seçildi · Kaydet ile uygulayın", "Sonuç yok · ülke ve şehir seçin", "Bir sonuç seçin", "Konum kaydedilemedi",
-      "Ülke, şehir ve isteğe bağlı ilçe", "Kapat"]
+      "Ülke, şehir ve isteğe bağlı ilçe", "Konum seçiciyi kapat"]
       .iter().map(|label| self.model.tr(label)).collect();
     self.widgets.picker_token += 1;
     let token = self.widgets.picker_token;

@@ -163,7 +163,7 @@ impl Picker {
     let title=self.control(hwnd,w!("STATIC"),&labels[0],WINDOW_STYLE(0),200,(22,20,326,26));
     SendMessageW(title,WM_SETFONT,WPARAM(self.title_font.0 as usize),LPARAM(1));
     self.control(hwnd,w!("STATIC"),labels.get(15).map(String::as_str).unwrap_or(""),WINDOW_STYLE(0),201,(22,48,350,18));
-    self.close=self.control(hwnd,w!("BUTTON"),labels.get(16).map(String::as_str).unwrap_or("Kapat"),WS_TABSTOP|WINDOW_STYLE(BS_OWNERDRAW as u32),3,(370,18,28,28));
+    self.close=self.control(hwnd,w!("BUTTON"),labels.get(16).map(String::as_str).unwrap_or("Konum seçiciyi kapat"),WS_TABSTOP|WINDOW_STYLE(BS_OWNERDRAW as u32),3,(370,18,28,28));
     for i in 0..3 {
       let y=FIELD_Y+i as i32*60;
       self.field_labels[i]=self.control(hwnd, w!("STATIC"), &labels[1 + i], WINDOW_STYLE(0), 202+i, (36,y+7,348,15));
@@ -487,7 +487,7 @@ mod tests {
       spec.recent_locations=vec![place.clone();recents];
       let (tx,rx)=mpsc::channel(); let (saved_tx,saved_rx)=mpsc::channel();
       let theme=super::super::super::view::DARK;
-      let labels=["Konumu değiştir","Ülke","Şehir","İlçe (isteğe bağlı)","Sonuçlar","Tekrar dene","Son konumlar","İptal","Kaydet","Konumlar yüklenemedi","Aranıyor…","Konum seçildi · Kaydet ile uygulayın","Sonuç yok","Bir sonuç seçin","Konum kaydedilemedi","Ülke, şehir ve isteğe bağlı ilçe","Kapat"].iter().map(|s|s.to_string()).collect();
+      let labels=["Konumu değiştir","Ülke","Şehir","İlçe (isteğe bağlı)","Sonuçlar","Tekrar dene","Son konumlar","İptal","Kaydet","Konumlar yüklenemedi","Aranıyor…","Konum seçildi · Kaydet ile uygulayın","Sonuç yok","Bir sonuç seçin","Konum kaydedilemedi","Ülke, şehir ve isteğe bağlı ilçe","Konum seçiciyi kapat"].iter().map(|s|s.to_string()).collect();
       let mut state=Box::new(Picker {id:1,token:1,language:"tr".into(),draft:Draft::new(&spec),edits:[HWND::default();3],results:HWND::default(),recent:HWND::default(),status:HWND::default(),save:HWND::default(),retry:HWND::default(),field_labels:[HWND::default();3],close:HWND::default(),updating:false,rx,tx,labels,theme,scale,
         font:make_font(scale,13.5,450),small_font:make_font(scale,11.0,400),title_font:make_font(scale,18.0,600),background:CreateSolidBrush(color(theme.layer0)),field_background:CreateSolidBrush(color(theme.surface_container_high)),popup_background:CreateSolidBrush(color(theme.layer1_hover)),controls:Vec::new(),saved_rx,saved_tx,save_busy:false,save_error:None,handling:false,ui_percent:100});
       let width=(WIDTH as f32*scale).round() as i32; let height=(client_height(recents) as f32*scale).round() as i32;

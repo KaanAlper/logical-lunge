@@ -618,7 +618,7 @@ impl Ui {
           let _ = GetCursorPos(&mut at);
         }
         let items = vec![
-          Item::new("close", Some("close"), self.model.tr("Kapat")),
+          Item::new("close", Some("close"), self.model.tr("Bildirimi kapat")),
           Item::new("all", Some("clear_all"), self.model.tr("Tümünü kapat")),
           Item::sep(),
           Item::new("dnd", Some("notifications_off"), self.model.tr("Rahatsız etme")).checked(dnd),
