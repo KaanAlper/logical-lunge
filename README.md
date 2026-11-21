@@ -4,8 +4,6 @@
 
 **The ultimate Hyprland experience for Windows.** (One core, two interfaces).
 
-Windows için kusursuz Hyprland deneyimi. (Tek çekirdek, iki arayüz).
-
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%C2%B7%2011-0078D4?style=flat-square&logo=windows&logoColor=white)](#compatibility)
 [![App](https://img.shields.io/badge/one%20app-lunge.exe-8B5CF6?style=flat-square)](#how-it-works)
 [![Languages](https://img.shields.io/badge/UI-14%20languages-2A59FF?style=flat-square)](#languages)
@@ -14,21 +12,15 @@ Windows için kusursuz Hyprland deneyimi. (Tek çekirdek, iki arayüz).
 
 <!-- Screenshots are added after the first clean-machine test run (docs/screenshots/). -->
 
-**[English](#english) · [Türkçe](#türkçe)**
-
 </div>
 
 > [!NOTE]
-> Logical Lunge brings the **Hyprland experience to Windows**. It is a complete desktop environment with its own native window manager (`lunge.exe` and `lunge-tiling`), high-performance graphics, and limitless customization. (GPL-3.0, see [Credits](#credits--teşekkürler)).
+> Logical Lunge brings the **Hyprland experience to Windows**. It is a complete desktop environment with its own native window manager (`lunge.exe` and `lunge-tiling`), high-performance graphics, and limitless customization. (GPL-3.0, see [Credits](#credits)).
 
 > [!WARNING]
 > **Beta — under active development.** Logical Lunge is usable day to day, but bugs and crashes can still happen, and it replaces parts of the Windows shell while it runs. Please read [Before you install](#before-you-install) first, and report problems through the in-app issue report or [GitHub issues](https://github.com/KaanAlper/logical-lunge/issues).
->
-> **Beta — aktif geliştirme altında.** Logical Lunge günlük kullanılabiliyor, ancak hatalar ve çökmeler hâlâ olabiliyor; çalışırken Windows kabuğunun bazı parçalarının yerini alıyor. Önce [Kurulumdan önce](#kurulumdan-önce) bölümünü oku; sorunları uygulama içi hata bildirimi ya da [GitHub issues](https://github.com/KaanAlper/logical-lunge/issues) üzerinden bildir.
 
 ---
-
-## English
 
 ### 🔀 Choose Your Experience
 
@@ -230,102 +222,7 @@ Needs Rust (rustup; the toolchain is pinned in `tiling/` and `shell/`), the Wind
 
 ---
 
-## Türkçe
-
-### 🔀 Deneyimini Seç
-
-Logical Lunge tam bir Windows masaüstü ortamıdır. Tek bir çekirdek ve pencere yöneticisi (`lunge.exe` ve `lunge-tiling`) kullanır, ancak paralel branch'lerde geliştirilen iki farklı arayüz deneyimi sunar.
-
-| ⚡ Native UI (`native-ui` branch'i) | 🎨 Web UI (`web-ui` branch'i) |
-| :--- | :--- |
-| **Sıfır Gecikme:** Her yüzey Direct2D ve DirectComposition ile çizilir — WebView yok, tarayıcı motoru yok. | **Sınırsız Özelleştirme:** React, HTML ve CSS (WebView2) ile inşa edilmiştir. |
-| **Maksimum Performans:** Animasyonlar doğrudan birleştiricide, kabuk sade bir Win32 programı. | **Tema Desteği:** Kendi CSS temalarınızı ve düzenlerinizi kolayca yazabilirsiniz. |
-| **Kimin için:** Pil tasarrufu isteyen laptoplar, kaynakları maksimize eden oyuncular. | **Kimin için:** Arayüz kurcalamayı seven Web geliştiricileri ve power user'lar. |
-| 👉 **[Native UI Kodlarını İncele](https://github.com/KaanAlper/logical-lunge/tree/native-ui)** | 👉 **[Web UI Kodlarını İncele](https://github.com/KaanAlper/logical-lunge/tree/web-ui)** |
-
-#### 🌐 Canlı Web Demosunu Dene
-Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Uygulamanın **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)**'nu hazırladık! Web sürümünün arayüzünü, sahte (mock) verilerle doğrudan tarayıcında çalıştırır.
-
-### Kurulumdan önce
-
-Logical Lunge çalışırken Windows'un kendi kabuğunun bazı parçalarını kapatır (görev çubuğu, bildirim bannerları, Snap düzenleri, Widgets / Görev Görünümü / Copilot düğmeleri). Her şeyi eski haline getirecek şekilde tasarlandı, ama beta olduğu için çıkış yolunu baştan bilmen iyi olur:
-
-- **Önerilen:** ilk kurulumdan önce bir Windows geri yükleme noktası oluştur (*Başlat → "Geri yükleme noktası oluştur"*).
-- **Her değişiklik önce yedeklenir.** Yükleyici başarısız olursa ya da Ctrl+C'ye basarsan her şey otomatik olarak geri konur.
-- **Çubuk 20 saniye görünmezse** o dönene kadar Windows'un görev çubuğu kendiliğinden geri gelir.
-- **Kaldırmadan Windows'u geri aç:** *Ayarlar → Gelişmiş → Windows'un yerini al* kapalı.
-- **Tamamen kaldır:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır* (ya da `%ProgramFiles%\LogicalLunge\uninstall.ps1`). Windows ayarlarının hepsi eski haline döner.
-- **Bir şey mi takıldı?** Oturum ekranındaki *Masaüstünü yenile* bütün parçaları yeniden başlatır. Günlükler `%LOCALAPPDATA%\LogicalLunge\logs` içinde.
-- **Önce incelemek ister misin?** Çalıştırmadan önce [`install.ps1`](install.ps1) dosyasını oku ya da en son `setup` sürümündeki **LogicalLunge-Setup-x64.exe** yükleyicisini kullan. Sürümler SHA-256 ile doğrulanır.
-
-### ⚡ Hızlı kurulum
-
-**PowerShell**'i aç ve yapıştır:
-
-```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
-```
-
-Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini ve saat biçimini sorar, sonra tek yönetici onayı; gerisi kendiliğinden iner ve kurulur. Bir şey ters giderse (ya da Ctrl+C'ye basarsan) her şey eski haline döner. Pencereli kurulum istersen en son `setup` sürümünden **LogicalLunge-Setup-x64.exe** (ya da **-x86.exe**) dosyasını indir.
-
-### Arayüz seçenekleri
-
-| Sürüm | Arayüz | Release tag / Paket |
-|---|---|---|
-| `native-ui` | Her şey native (Direct2D / DirectComposition): bar, Super menüsü, bildirim kartları, sağ panel, ayarlar, Dock, ekran klavyesi, oturum ekranı, güncelleme kartı, diyaloglar, menüler ve masaüstü widget'ları. Kabuk sade bir Win32 programı — WebView2 ve Tauri yok. | `vX.Y.Z-native-ui` / `LogicalLunge-native-ui-X.Y.Z.zip` |
-| `web-ui` | WebView2 bar, Super menüsü, paneller ve Dock (React / HTML / CSS). | `vX.Y.Z-web-ui` / `LogicalLunge-web-ui-X.Y.Z.zip` |
-
-Explorer arkada çalışmaya devam eder (masaüstü simgeleri, dosya yöneticisi); Logical Lunge'ın yerini aldığı Windows parçaları o çalışırken kapalıdır, durunca geri gelir.
-
-Ortak yükleyici seçilen arayüzün en son eksiksiz, yayımlanmış sürümünü indirip SHA-256 ile doğrular. Güncelleyici kurulu arayüzü korur. Her sürümün kendi numarası vardır ve **anlamsal sürümlemeye** uyar: yeni özellik getiren sürüm MINOR'ı, yalnızca düzeltme getiren PATCH'i, uyumsuz değişiklik MAJOR'ı artırır (son sürümden bu yana gelen commit'lere göre).
-
-Varsayılan arayüzü `$env:LL_EDITION = 'native-ui'` veya `'web-ui'` ile seçin; soruları atlamak için `$env:LL_DEFAULTS = 1` ekleyin.
-
-### Bu nedir
-
-Döşemeli pencere yönetimi, bar, yan paneller, uygulama arama, animasyonlar ve ayarlanabilir kısayollar sunan bir Windows masaüstü ortamı:
-
-- **Döşeme**: Hyprland'deki gibi gerçek ikili ağaçla dwindle; farenin altındaki yarıya açılan bölmeler, taşınan pencerenin bölme eşiyle yer değiştirmesi, kapanan pencerenin yerinin eşine geçmesi. `Super + J` bölmeyi döndürür. Kendi içinde büyüyen ya da tam ekrana geçen uygulamalar kendi döşemesinde kalır.
-- **Pencere kenarlıkları** pencere yöneticisinin içinde: odaktaki kurulumda seçtiğin renkte, diğerleri silik; yalnızca yönetilen pencerelerde.
-- **Bar**: uygulama simgeli workspace'ler (Ctrl+Super ile gezinirken numaralar yumuşakça belirir), kaynaklar (RAM / swap / CPU / **CPU & GPU sıcaklığı**), kapaklı medya, sürükleyerek sabitlenen tepsi, saat, pil, kenarlarda kaydırınca parlaklık ve ses (OSD'li).
-- **Super menüsü**: bulanık uygulama arama (yerelleştirilmiş adlar ve simgeler; Steam, Epic ve itch oyunları ve uygulamaları da; yeni kurulan uygulama birkaç saniyede çıkar), hesap makinesi, `/eylemler`, `$komut`, `?web`, **Google Lens**, **müzik tanıma**, **dosya araması** (`#`, Everything ile — NTFS diskler anında güncellenir, USB bellekler ve ağ klasörleri kendiliğinden yeniden taranır), pano (`;`), workspace önizlemeleri. Uygulamalarda kendi sağ tık menümüz (aç, yönetici olarak çalıştır, Dock'ta tut, dosya konumunu aç, uygulamayı kaldır, özellikler).
-- **Sağ panel**: Android tarzı hızlı ayarlar (ağ listeli ve şifreli Wi-Fi, Ethernet, eşleşmiş cihazlı Bluetooth, uyanık tut, mikrofon, ses çıkışı/girişi, zamanlamalı gece ışığı, karanlık mod, ekran alıntısı, ekran klavyesi, sessiz) ve basılı tutup sürükleyerek sıralama; bildirimler; takvim; yapılacaklar; zamanlayıcı ve **hata bildirimi** formu (panel kapanırsa taslak korunur).
-- **Duvar kağıdı sayfası** (sekmeler: Duvar kâğıdı / Canlı / Ekran koruyucu / Mağaza): monitör başına ya da tüm monitörlere yayılan tek resim; **canlı duvar kağıtları** — videolar masaüstü simgelerinin arkasında, ekran kartında çözülerek oynar, tam ekran uygulamada, kilitli ya da kapalı ekranda ve (isteğe bağlı) pilde durur; canlı duvar kağıdı ve ekran koruyucu için **tek mağaza**; video dosyası, Lively paketi veya Wallpaper Engine video projesi içe aktarma; galerideki öğeye sağ tıkla uygulama, klasörünü açma, kaldırma.
-- **Ekran koruyucular**: Windows'un koruyucuları toplu `.scr`/`.zip` içe aktarmalı galeride, ayrıca **video ekran koruyucu** (`LogicalLunge.scr`): kütüphaneden ya da mağazadan herhangi bir video, her monitörde, Windows'un kendi bekleme süresi ve dönüşte oturum açma ayarıyla.
-- **Masaüstü widget'ları** (`native-ui`): saat, medya, sistem, hava durumu (Open-Meteo), ajanda ve not — her workspace'te, masaüstü menüsünden eklenir, ızgarada taşınır ve boyutlanır, monitör başına kaydedilir.
-- **Masaüstü sağ tıkı** ve bütün menüler Logical Lunge'ın kendisinin: görünüm (simge boyutu, otomatik düzenleme, masaüstü simgelerini göster), sıralama, yeni klasör / metin belgesi, yapıştır; simgelerde aç, yönetici olarak çalıştır, birlikte aç, kes, kopyala, yeniden adlandır, sil (Geri Dönüşüm Kutusu'na, geri alınabilir), özellikler. Windows'un menüsü hiç açılmaz.
-- **Bildirimler ve sorular**: Windows uygulama bildirimleri ve bizim bütün uyarılarımız sağ üstte Logical Lunge kartı olarak gelir (sessiz mod bekletir); sorular (Evet / Hayır, isteğe bağlı onay kutusuyla) ortada kendi diyaloğumuzda. Programlarımız Windows hata kutusu göstermez: açılamayan dosya için nedenini söyleyen kart çıkar (*Birlikte aç* ile), çöken parça yeniden başlatılıp bildirilir.
-- **Ayarlar penceresi**: tema ve vurgu rengi (hazır renkler ve özel renk), **arayüz ölçeği** (%85–150, her şey birlikte ölçeklenir ve ekrana sığar; Windows'un *Metin boyutu* ayarına da uyulur), animasyonlar, hareketler, bildirim süreleri, workspace'ler ve monitörler, dil ve saat, gece ışığı, sistem sağlığı, gelişmiş (*Windows'un yerini al* anahtarı dahil).
-- **Klavye**: Logical Lunge çalışırken bütün Win tuşu kombinasyonları onundur — Başlat, Arama, bildirim merkezi ve Win+X açılmaz. **Kısayol düzenleyicisi** (sağ panel) değişiklikleri *Kaydet*'e kadar bekletir, çakışan satırları kırmızı gösterir (Kaydet titrer, kart çakışmaları sayar), istediğin uygulamaya kısayol eklemeni (listeden ya da dosyadan) ve her uygulama satırını silmeni sağlar; *Sıfırla* kendi eklediğin uygulamaların da kaldırılıp kaldırılmayacağını sorar.
-- **Çalışırken Windows kabuğunun yerini alır**: görev çubuğu (her monitörde, ekranda yer kaplamadan), bildirim balonları, Snap düzenleri ve sallayınca küçültme, dokunmatik klavye, Pencere Öğeleri / Görev Görünümü / Copilot düğmeleri kaynağında kapatılır; önceki her değer kaydedilir ve masaüstü durunca, çökünce ya da kaldırılınca birebir geri yüklenir. Bar 20 saniye görünmezse, dönene kadar Windows görev çubuğu geri gelir.
-- **Dock** (Super + Alt): sabitlenmiş ve çalışan uygulamalar, büyüme efektiyle; odağı hiç almayan **ekran klavyesi**; kilitle / uyku / masaüstünü yenile / oturumu kapat / yeniden başlat / UEFI-BIOS / kapat içeren **oturum ekranı**.
-- **Ekran alıntısı** (Print), **Ctrl+Print** ile tüm monitör; **pano geçmişi** (Super+V); **ekrandan metin** (Super+Shift+T, Windows OCR) ve **renk seçici** (Super+Shift+C); **kısayol listesi** (Super+/); canlı önizlemeli **Alt+Tab**.
-- **Kendini toparlar**: pencere yöneticisi, bar ya da çekirdek çöker veya donarsa o parça kendiliğinden yeniden başlar. **Masaüstünü yenile** her şeyi temiz baştan başlatır.
-- **Güncellemeler**: güncelleme kartı GitHub sürümlerine bakar, indirme ilerlemesini gösterir; kurarken yönetici iznini en başta, masaüstünün önünde ister.
-- **Animasyonlar**, **dokunmatik yüzey hareketleri**, **terminal** (WezTerm + fish + starship) ve **doğrudan masaüstüne açılış**.
-
-### Kurulum
-
-```powershell
-irm https://raw.githubusercontent.com/KaanAlper/logical-lunge/main/install.ps1 | iex
-```
-
-Kısa bir sihirbaz arayüz sürümünü, vurgu rengini, arayüz dilini, 12/24 saati ve ek bileşenleri sorar; Windows **bir kez** izin ister, gerisini yükleyici yapar (Visual C++ çalışma zamanı; WebView2 yalnızca web sürümü için). Her değişiklik önce yedeklenir: bir adım başarısız olursa ya da Ctrl+C ile vazgeçersen önceki dosyalar, ayarlar, kayıt defteri değerleri ve görevler geri konur, önceki masaüstün yeniden açılır. Yükleyici yalnızca kendi dosyalarından çalışan süreçleri durdurur; aynı adlı başka bir programa ya da araç klasörümüzden açtığın terminale dokunmaz. Uygulama `%ProgramFiles%\LogicalLunge`, ayarların `~\.config\logical-lunge`, veriler ve tek ortak log klasörü `%LOCALAPPDATA%\LogicalLunge` altında. **Güncelleme:** güncelleme kartı ya da aynı komutu tekrar çalıştırmak. **Kaldırma:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır*; değiştirilen tüm Windows ayarları eski haline döner, masaüstü açıkken soru kendi diyaloğumuzda gelir.
-
-### Sorun giderme
-
-- **Günlükler**: `%LOCALAPPDATA%\LogicalLunge\logs` — çekirdek, kabuk, pencere yöneticisi ve canlı duvar kağıdı oynatıcısı (`live-wallpaper.log`) buraya yazar.
-- **Hata bildirimi**: sağ panel → hata bildirimi, açıklamayı son günlükler ve kara kutu kaydıyla gönderir.
-- **Bir şey takıldıysa**: oturum ekranındaki *Masaüstünü yenile* bütün parçaları yeniden başlatır; Ayarlar → Sistem sağlığı neyin çalıştığını gösterir.
-- **Windows parçaları geri gelsin**: Ayarlar → Gelişmiş → *Windows'un yerini al* kapalı.
-
-### Uyumluluk
-
-Windows 10 22H2 üzerinde geliştirildi ve denendi. Windows 11'i tüm bileşenler destekliyor (canlı duvar kağıdı 24H2'nin yeni masaüstü düzeni dahil). Temiz bir Windows 11'de ilk test henüz yapılmadı.
-
----
-
-## Credits / Teşekkürler
+## Credits
 
 | Project | Used for | License |
 |---|---|---|
