@@ -21,6 +21,11 @@ Windows için kusursuz Hyprland deneyimi. (Tek çekirdek, iki arayüz).
 > [!NOTE]
 > Logical Lunge brings the **Hyprland experience to Windows**. It is a complete desktop environment with its own native window manager (`lunge.exe` and `lunge-tiling`), high-performance graphics, and limitless customization. (GPL-3.0, see [Credits](#credits--teşekkürler)).
 
+> [!WARNING]
+> **Beta — under active development.** Logical Lunge is usable day to day, but bugs and crashes can still happen, and it replaces parts of the Windows shell while it runs. Please read [Before you install](#before-you-install) first, and report problems through the in-app issue report or [GitHub issues](https://github.com/KaanAlper/logical-lunge/issues).
+>
+> **Beta — aktif geliştirme altında.** Logical Lunge günlük kullanılabiliyor, ancak hatalar ve çökmeler hâlâ olabiliyor; çalışırken Windows kabuğunun bazı parçalarının yerini alıyor. Önce [Kurulumdan önce](#kurulumdan-önce) bölümünü oku; sorunları uygulama içi hata bildirimi ya da [GitHub issues](https://github.com/KaanAlper/logical-lunge/issues) üzerinden bildir.
+
 ---
 
 ## English
@@ -38,6 +43,18 @@ Logical Lunge is a complete Windows desktop environment replacement. It uses a s
 
 #### 🌐 Try the Live Web Demo
 Curious how it feels before installing? We built a **[Live Web Demo](https://logical-lunge-web-demo.vercel.app/)**! It runs the web edition's React UI in your browser with mocked system data (CPU, RAM, Workspaces, Settings). You can interact with the top bar, settings, sidebar, and see the tiling windows in action right on the web.
+
+### Before you install
+
+Logical Lunge switches off parts of Windows' own shell while it runs (taskbar, notification banners, Snap layouts, Widgets / Task View / Copilot buttons). It is built to put everything back, but as a beta you should know the way out first:
+
+- **Recommended:** create a Windows restore point before the first install (*Start → "Create a restore point"*).
+- **Every change is backed up first.** If the installer fails or you press Ctrl+C, everything is put back automatically.
+- **If the bar is missing for 20 seconds**, Windows' taskbar comes back on its own until it returns.
+- **Turn Windows back on without uninstalling:** *Settings → Advanced → Replace Windows parts* off.
+- **Uninstall completely:** *Settings → Apps → Logical Lunge → Uninstall* (or `%ProgramFiles%\LogicalLunge\uninstall.ps1`). Every Windows setting returns to what it was.
+- **Something stuck?** *Reload desktop* on the session screen restarts every part. Logs are in `%LOCALAPPDATA%\LogicalLunge\logs`.
+- **Prefer to inspect first?** Read [`install.ps1`](install.ps1) before running it, or use the **LogicalLunge-Setup-x64.exe** installer from the latest `setup` release. Releases are verified with SHA-256.
 
 ### ⚡ Quick install
 
@@ -228,6 +245,18 @@ Logical Lunge tam bir Windows masaüstü ortamıdır. Tek bir çekirdek ve pence
 
 #### 🌐 Canlı Web Demosunu Dene
 Kurmadan önce nasıl hissettirdiğini merak ediyor musun? Uygulamanın **[Canlı Web Demosu](https://logical-lunge-web-demo.vercel.app/)**'nu hazırladık! Web sürümünün arayüzünü, sahte (mock) verilerle doğrudan tarayıcında çalıştırır.
+
+### Kurulumdan önce
+
+Logical Lunge çalışırken Windows'un kendi kabuğunun bazı parçalarını kapatır (görev çubuğu, bildirim bannerları, Snap düzenleri, Widgets / Görev Görünümü / Copilot düğmeleri). Her şeyi eski haline getirecek şekilde tasarlandı, ama beta olduğu için çıkış yolunu baştan bilmen iyi olur:
+
+- **Önerilen:** ilk kurulumdan önce bir Windows geri yükleme noktası oluştur (*Başlat → "Geri yükleme noktası oluştur"*).
+- **Her değişiklik önce yedeklenir.** Yükleyici başarısız olursa ya da Ctrl+C'ye basarsan her şey otomatik olarak geri konur.
+- **Çubuk 20 saniye görünmezse** o dönene kadar Windows'un görev çubuğu kendiliğinden geri gelir.
+- **Kaldırmadan Windows'u geri aç:** *Ayarlar → Gelişmiş → Windows'un yerini al* kapalı.
+- **Tamamen kaldır:** *Ayarlar → Uygulamalar → Logical Lunge → Kaldır* (ya da `%ProgramFiles%\LogicalLunge\uninstall.ps1`). Windows ayarlarının hepsi eski haline döner.
+- **Bir şey mi takıldı?** Oturum ekranındaki *Masaüstünü yenile* bütün parçaları yeniden başlatır. Günlükler `%LOCALAPPDATA%\LogicalLunge\logs` içinde.
+- **Önce incelemek ister misin?** Çalıştırmadan önce [`install.ps1`](install.ps1) dosyasını oku ya da en son `setup` sürümündeki **LogicalLunge-Setup-x64.exe** yükleyicisini kullan. Sürümler SHA-256 ile doğrulanır.
 
 ### ⚡ Hızlı kurulum
 
